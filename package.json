@@ -5,13 +5,15 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "codi-repo": "dist/index.js"
+    "codi-repo": "dist/index.js",
+    "cr": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "lint": "eslint src/",
-    "test": "vitest"
+    "test": "vitest",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "git",
