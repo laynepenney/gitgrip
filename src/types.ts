@@ -11,6 +11,14 @@ export interface RepoConfig {
 }
 
 /**
+ * Configuration for the manifest repository itself
+ */
+export interface ManifestRepoConfig {
+  /** Git URL for the manifest repository */
+  url: string;
+}
+
+/**
  * Global settings for the manifest
  */
 export interface ManifestSettings {
@@ -25,6 +33,8 @@ export interface ManifestSettings {
  */
 export interface Manifest {
   version: number;
+  /** Optional manifest repository configuration for self-tracking */
+  manifest?: ManifestRepoConfig;
   repos: Record<string, RepoConfig>;
   settings: ManifestSettings;
 }

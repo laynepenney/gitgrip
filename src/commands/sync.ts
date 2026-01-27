@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import { loadManifest, getAllRepoInfo, getManifestsDir } from '../lib/manifest.js';
-import { pullLatest, fetchRemote, pathExists, getCurrentBranch } from '../lib/git.js';
+import { pullLatest, fetchRemote, pathExists, getCurrentBranch, getRemoteUrl, setRemoteUrl, setUpstreamBranch } from '../lib/git.js';
 import type { RepoInfo } from '../types.js';
 
 interface SyncOptions {
@@ -21,7 +21,20 @@ export async function sync(options: SyncOptions = {}): Promise<void> {
   // 1. Update manifest repository first
   const manifestSpinner = ora('Updating manifests...').start();
   try {
-    if (options.fetch) {
+    // Check if manifest has a URL configured and ensure remote is set
+    if (manifest.manifest?.url) {
+      const existingRemote = await getRemoteUrl(manifestsDir);
+      if (!existingRemote) {
+        await setRemoteUrl(manifestsDir, manifest.manifest.url);
+        await setUpstreamBranch(manifestsDir);
+        manifestSpinner.text = 'Configured manifest remote, updating...';
+      }
+    }
+
+    const hasRemote = await getRemoteUrl(manifestsDir);
+    if (!hasRemote) {
+      manifestSpinner.warn('Manifests has no remote configured (add manifest.url to manifest.yaml)');
+    } else if (options.fetch) {
       await fetchRemote(manifestsDir);
       manifestSpinner.succeed('Fetched manifest updates');
     } else {

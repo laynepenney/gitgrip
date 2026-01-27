@@ -300,3 +300,39 @@ export async function pushAllRepos(
     await pushBranch(repo.absolutePath, branchName, 'origin', setUpstream);
   });
 }
+
+/**
+ * Get the URL of a remote
+ */
+export async function getRemoteUrl(repoPath: string, remote = 'origin'): Promise<string | null> {
+  const git = getGitInstance(repoPath);
+  try {
+    const remotes = await git.getRemotes(true);
+    const found = remotes.find((r) => r.name === remote);
+    return found?.refs?.fetch ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Set the URL of a remote (creates it if it doesn't exist)
+ */
+export async function setRemoteUrl(repoPath: string, url: string, remote = 'origin'): Promise<void> {
+  const git = getGitInstance(repoPath);
+  const existingUrl = await getRemoteUrl(repoPath, remote);
+  if (existingUrl === null) {
+    await git.addRemote(remote, url);
+  } else if (existingUrl !== url) {
+    await git.remote(['set-url', remote, url]);
+  }
+}
+
+/**
+ * Set upstream tracking for the current branch
+ */
+export async function setUpstreamBranch(repoPath: string, remote = 'origin'): Promise<void> {
+  const git = getGitInstance(repoPath);
+  const branch = await getCurrentBranch(repoPath);
+  await git.branch(['--set-upstream-to', `${remote}/${branch}`, branch]);
+}
