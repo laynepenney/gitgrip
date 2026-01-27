@@ -155,7 +155,7 @@ describe.skipIf(!runE2E)('GitHub API E2E Tests', () => {
 
       expect(file.commit).toBeDefined();
       expect(file.content?.sha).toBeDefined();
-      testFileSha = file.content!.sha;
+      testFileSha = file.content!.sha!;
       console.log(`Created commit: ${file.commit.sha}`);
     });
 

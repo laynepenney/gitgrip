@@ -1,11 +1,16 @@
 import { readFile, writeFile, access } from 'fs/promises';
-import { resolve, dirname } from 'path';
+import { resolve, dirname, join } from 'path';
 import YAML from 'yaml';
 import type { Manifest, RepoInfo, StateFile, GitHubRepoInfo } from '../types.js';
 
-const MANIFEST_FILENAME = 'codi-repos.yaml';
-const STATE_DIR = '.codi-repo';
+// AOSP-style: manifest lives in .codi-repo/manifests/manifest.yaml
+const CODI_REPO_DIR = '.codi-repo';
+const MANIFESTS_DIR = 'manifests';
+const MANIFEST_FILENAME = 'manifest.yaml';
 const STATE_FILENAME = 'state.json';
+
+// Legacy: old format used codi-repos.yaml at root
+const LEGACY_MANIFEST_FILENAME = 'codi-repos.yaml';
 
 /**
  * Default manifest settings
@@ -16,14 +21,35 @@ const DEFAULT_SETTINGS = {
 };
 
 /**
+ * Get the path to the manifests directory
+ */
+export function getManifestsDir(workspaceRoot: string): string {
+  return join(workspaceRoot, CODI_REPO_DIR, MANIFESTS_DIR);
+}
+
+/**
+ * Get the path to the manifest file
+ */
+export function getManifestPath(workspaceRoot: string): string {
+  return join(getManifestsDir(workspaceRoot), MANIFEST_FILENAME);
+}
+
+/**
+ * Get the path to .codi-repo directory
+ */
+export function getCodiRepoDir(workspaceRoot: string): string {
+  return join(workspaceRoot, CODI_REPO_DIR);
+}
+
+/**
  * Find the manifest file by walking up the directory tree
+ * Looks for .codi-repo/manifests/manifest.yaml (new format)
  */
 export async function findManifestPath(startDir: string = process.cwd()): Promise<string | null> {
   let currentDir = resolve(startDir);
-  const root = dirname(currentDir);
 
-  while (currentDir !== root) {
-    const manifestPath = resolve(currentDir, MANIFEST_FILENAME);
+  while (currentDir !== dirname(currentDir)) {
+    const manifestPath = getManifestPath(currentDir);
     try {
       await access(manifestPath);
       return manifestPath;
@@ -32,23 +58,36 @@ export async function findManifestPath(startDir: string = process.cwd()): Promis
     }
   }
 
-  // Check root as well
-  const rootManifest = resolve(root, MANIFEST_FILENAME);
-  try {
-    await access(rootManifest);
-    return rootManifest;
-  } catch {
-    return null;
+  return null;
+}
+
+/**
+ * Find a legacy manifest file (codi-repos.yaml at root)
+ */
+export async function findLegacyManifestPath(startDir: string = process.cwd()): Promise<string | null> {
+  let currentDir = resolve(startDir);
+
+  while (currentDir !== dirname(currentDir)) {
+    const manifestPath = join(currentDir, LEGACY_MANIFEST_FILENAME);
+    try {
+      await access(manifestPath);
+      return manifestPath;
+    } catch {
+      currentDir = dirname(currentDir);
+    }
   }
+
+  return null;
 }
 
 /**
  * Load and parse the manifest file
+ * Returns the workspace root (parent of .codi-repo, not the manifests dir)
  */
 export async function loadManifest(manifestPath?: string): Promise<{ manifest: Manifest; rootDir: string }> {
   const path = manifestPath ?? (await findManifestPath());
   if (!path) {
-    throw new Error(`Manifest file not found. Run 'codi-repo init' first or create ${MANIFEST_FILENAME}`);
+    throw new Error(`Manifest file not found. Run 'codi-repo init <manifest-url>' first.`);
   }
 
   const content = await readFile(path, 'utf-8');
@@ -80,17 +119,23 @@ export async function loadManifest(manifestPath?: string): Promise<{ manifest: M
     }
   }
 
+  // rootDir is the workspace root (parent of .codi-repo/manifests/)
+  // Path is: <workspace>/.codi-repo/manifests/manifest.yaml
+  const manifestsDir = dirname(path);
+  const codiRepoDir = dirname(manifestsDir);
+  const workspaceRoot = dirname(codiRepoDir);
+
   return {
     manifest: parsed as Manifest,
-    rootDir: dirname(path),
+    rootDir: workspaceRoot,
   };
 }
 
 /**
- * Create a new manifest file
+ * Create a new manifest file in the manifests directory
  */
-export async function createManifest(rootDir: string, manifest: Manifest): Promise<void> {
-  const manifestPath = resolve(rootDir, MANIFEST_FILENAME);
+export async function createManifest(manifestsDir: string, manifest: Manifest): Promise<void> {
+  const manifestPath = join(manifestsDir, MANIFEST_FILENAME);
   const content = YAML.stringify(manifest, {
     indent: 2,
     lineWidth: 0,
@@ -142,7 +187,7 @@ export function getAllRepoInfo(manifest: Manifest, rootDir: string): RepoInfo[] 
  * Get the state file path
  */
 function getStatePath(rootDir: string): string {
-  return resolve(rootDir, STATE_DIR, STATE_FILENAME);
+  return join(getCodiRepoDir(rootDir), STATE_FILENAME);
 }
 
 /**

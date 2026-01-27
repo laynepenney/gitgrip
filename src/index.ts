@@ -3,6 +3,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { init } from './commands/init.js';
+import { migrate } from './commands/migrate.js';
 import { sync } from './commands/sync.js';
 import { status } from './commands/status.js';
 import { branch, listBranches } from './commands/branch.js';
@@ -16,15 +17,28 @@ program
   .description('Multi-repository orchestration CLI for unified PR workflows')
   .version('0.1.0');
 
-// Init command
+// Init command - AOSP-style with manifest URL
 program
-  .command('init')
-  .description('Initialize a codi-repo workspace')
-  .option('--clone', 'Clone repositories after creating manifest')
-  .option('--force', 'Overwrite existing manifest')
+  .command('init <manifest-url>')
+  .description('Initialize a codi-repo workspace from a manifest repository')
+  .action(async (manifestUrl) => {
+    try {
+      await init(manifestUrl);
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exit(1);
+    }
+  });
+
+// Migrate command - convert legacy format to new structure
+program
+  .command('migrate')
+  .description('Migrate from legacy codi-repos.yaml to .codi-repo/manifests/ structure')
+  .option('-f, --force', 'Skip confirmation prompts')
+  .option('-r, --remote <url>', 'Remote URL to push manifest repository')
   .action(async (options) => {
     try {
-      await init(options);
+      await migrate(options);
     } catch (error) {
       console.error(chalk.red(error instanceof Error ? error.message : String(error)));
       process.exit(1);
@@ -34,7 +48,7 @@ program
 // Sync command
 program
   .command('sync')
-  .description('Pull latest changes from all repositories')
+  .description('Pull latest changes from manifest and all repositories')
   .option('--fetch', 'Fetch only (do not merge)')
   .action(async (options) => {
     try {

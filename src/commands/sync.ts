@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import { loadManifest, getAllRepoInfo } from '../lib/manifest.js';
+import { loadManifest, getAllRepoInfo, getManifestsDir } from '../lib/manifest.js';
 import { pullLatest, fetchRemote, pathExists, getCurrentBranch } from '../lib/git.js';
 import type { RepoInfo } from '../types.js';
 
@@ -11,12 +11,37 @@ interface SyncOptions {
 
 /**
  * Sync (pull or fetch) all repositories
+ * First updates the manifest repository, then syncs each managed repo
  */
 export async function sync(options: SyncOptions = {}): Promise<void> {
+  // Load manifest to get rootDir
   const { manifest, rootDir } = await loadManifest();
-  const repos = getAllRepoInfo(manifest, rootDir);
+  const manifestsDir = getManifestsDir(rootDir);
 
-  console.log(chalk.blue(`Syncing ${repos.length} repositories...\n`));
+  // 1. Update manifest repository first
+  const manifestSpinner = ora('Updating manifests...').start();
+  try {
+    if (options.fetch) {
+      await fetchRemote(manifestsDir);
+      manifestSpinner.succeed('Fetched manifest updates');
+    } else {
+      await pullLatest(manifestsDir);
+      manifestSpinner.succeed('Pulled latest manifest');
+    }
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    if (errorMsg.includes('uncommitted changes')) {
+      manifestSpinner.warn('Manifests have uncommitted changes, skipping');
+    } else {
+      manifestSpinner.fail(`Failed to update manifests: ${errorMsg}`);
+    }
+  }
+
+  // 2. Reload manifest (may have changed after pull)
+  const { manifest: updatedManifest } = await loadManifest();
+  const repos = getAllRepoInfo(updatedManifest, rootDir);
+
+  console.log(chalk.blue(`\nSyncing ${repos.length} repositories...\n`));
 
   const results: { repo: RepoInfo; success: boolean; error?: string; branch?: string }[] = [];
 
@@ -24,7 +49,7 @@ export async function sync(options: SyncOptions = {}): Promise<void> {
     const exists = await pathExists(repo.absolutePath);
 
     if (!exists) {
-      console.log(chalk.yellow(`  ${repo.name}: not cloned (run 'codi-repo init --clone')`));
+      console.log(chalk.yellow(`  ${repo.name}: not cloned (run 'codi-repo init <url>')`));
       results.push({ repo, success: false, error: 'not cloned' });
       continue;
     }

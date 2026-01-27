@@ -1,8 +1,8 @@
 /**
  * Manifest-based workflow E2E tests
  *
- * Tests the full codi-repo workflow using a manifest file:
- * - Creating/loading manifest
+ * Tests the full codi-repo workflow using the new AOSP-style manifest structure:
+ * - Creating/loading manifest from .codi-repo/manifests/
  * - Cloning repos
  * - Branch operations across repos
  * - Status aggregation
@@ -22,7 +22,7 @@ describe.skipIf(!runE2E)('Manifest Workflow E2E Tests', () => {
   let workspaceDir: string;
   let testBranchName: string;
 
-  // Test manifest content
+  // Test manifest content (new format)
   const manifestContent = `
 version: 1
 repos:
@@ -40,12 +40,13 @@ settings:
 `;
 
   beforeAll(async () => {
-    // Create a temp workspace directory
+    // Create a temp workspace directory with AOSP-style structure
     workspaceDir = join(tmpdir(), `codi-repo-test-${Date.now()}`);
-    await mkdir(workspaceDir, { recursive: true });
+    const manifestsDir = join(workspaceDir, '.codi-repo', 'manifests');
+    await mkdir(manifestsDir, { recursive: true });
 
-    // Write manifest file
-    await writeFile(join(workspaceDir, 'codi-repos.yaml'), manifestContent);
+    // Write manifest file in new location
+    await writeFile(join(manifestsDir, 'manifest.yaml'), manifestContent);
 
     testBranchName = `test/manifest-${Date.now()}`;
     console.log(`Workspace: ${workspaceDir}`);
@@ -80,16 +81,18 @@ settings:
   });
 
   describe('Manifest Loading', () => {
-    it('can load manifest from workspace', async () => {
+    it('can load manifest from .codi-repo/manifests/', async () => {
       const { loadManifest } = await import('../manifest.js');
 
-      const { manifest, rootDir } = await loadManifest(join(workspaceDir, 'codi-repos.yaml'));
+      const manifestPath = join(workspaceDir, '.codi-repo', 'manifests', 'manifest.yaml');
+      const { manifest, rootDir } = await loadManifest(manifestPath);
 
       expect(manifest.version).toBe(1);
       expect(Object.keys(manifest.repos)).toEqual(['repo1', 'repo2']);
       expect(manifest.repos.repo1.url).toContain('codi-repo-test');
       expect(manifest.repos.repo2.url).toContain('codi-repo-test-2');
       expect(manifest.settings.merge_strategy).toBe('all-or-nothing');
+      // rootDir should be the workspace root, not the manifests dir
       expect(rootDir).toBe(workspaceDir);
 
       console.log('Manifest loaded successfully');
@@ -98,7 +101,8 @@ settings:
     it('can get repo info with computed fields', async () => {
       const { loadManifest, getAllRepoInfo } = await import('../manifest.js');
 
-      const { manifest, rootDir } = await loadManifest(join(workspaceDir, 'codi-repos.yaml'));
+      const manifestPath = join(workspaceDir, '.codi-repo', 'manifests', 'manifest.yaml');
+      const { manifest, rootDir } = await loadManifest(manifestPath);
       const repos = getAllRepoInfo(manifest, rootDir);
 
       expect(repos.length).toBe(2);
@@ -121,7 +125,8 @@ settings:
       const { loadManifest, getAllRepoInfo } = await import('../manifest.js');
       const { cloneRepo, pathExists } = await import('../git.js');
 
-      const { manifest, rootDir } = await loadManifest(join(workspaceDir, 'codi-repos.yaml'));
+      const manifestPath = join(workspaceDir, '.codi-repo', 'manifests', 'manifest.yaml');
+      const { manifest, rootDir } = await loadManifest(manifestPath);
       const repos = getAllRepoInfo(manifest, rootDir);
 
       for (const repo of repos) {
@@ -143,7 +148,8 @@ settings:
       const { loadManifest, getAllRepoInfo } = await import('../manifest.js');
       const { pathExists } = await import('../git.js');
 
-      const { manifest, rootDir } = await loadManifest(join(workspaceDir, 'codi-repos.yaml'));
+      const manifestPath = join(workspaceDir, '.codi-repo', 'manifests', 'manifest.yaml');
+      const { manifest, rootDir } = await loadManifest(manifestPath);
       const repos = getAllRepoInfo(manifest, rootDir);
 
       for (const repo of repos) {
@@ -158,7 +164,8 @@ settings:
       const { loadManifest, getAllRepoInfo } = await import('../manifest.js');
       const { getAllRepoStatus } = await import('../git.js');
 
-      const { manifest, rootDir } = await loadManifest(join(workspaceDir, 'codi-repos.yaml'));
+      const manifestPath = join(workspaceDir, '.codi-repo', 'manifests', 'manifest.yaml');
+      const { manifest, rootDir } = await loadManifest(manifestPath);
       const repos = getAllRepoInfo(manifest, rootDir);
       const statuses = await getAllRepoStatus(repos);
 
@@ -182,7 +189,8 @@ settings:
       const { loadManifest, getAllRepoInfo } = await import('../manifest.js');
       const { createBranchInAllRepos, getCurrentBranch } = await import('../git.js');
 
-      const { manifest, rootDir } = await loadManifest(join(workspaceDir, 'codi-repos.yaml'));
+      const manifestPath = join(workspaceDir, '.codi-repo', 'manifests', 'manifest.yaml');
+      const { manifest, rootDir } = await loadManifest(manifestPath);
       const repos = getAllRepoInfo(manifest, rootDir);
 
       const results = await createBranchInAllRepos(repos, testBranchName);
@@ -203,7 +211,8 @@ settings:
       const { loadManifest, getAllRepoInfo } = await import('../manifest.js');
       const { checkoutBranchInAllRepos, getCurrentBranch } = await import('../git.js');
 
-      const { manifest, rootDir } = await loadManifest(join(workspaceDir, 'codi-repos.yaml'));
+      const manifestPath = join(workspaceDir, '.codi-repo', 'manifests', 'manifest.yaml');
+      const { manifest, rootDir } = await loadManifest(manifestPath);
       const repos = getAllRepoInfo(manifest, rootDir);
 
       // First checkout main
@@ -262,7 +271,7 @@ settings:
       console.log('State saved and loaded successfully');
     });
 
-    it('state directory exists', async () => {
+    it('state file is in .codi-repo/', async () => {
       const statePath = join(workspaceDir, '.codi-repo', 'state.json');
 
       try {
@@ -290,7 +299,8 @@ settings:
       const { loadManifest, getAllRepoInfo } = await import('../manifest.js');
       const { checkBranchSync } = await import('../linker.js');
 
-      const { manifest, rootDir } = await loadManifest(join(workspaceDir, 'codi-repos.yaml'));
+      const manifestPath = join(workspaceDir, '.codi-repo', 'manifests', 'manifest.yaml');
+      const { manifest, rootDir } = await loadManifest(manifestPath);
       const repos = getAllRepoInfo(manifest, rootDir);
 
       const { inSync, missing } = await checkBranchSync(repos, testBranchName);
@@ -305,7 +315,8 @@ settings:
       const { loadManifest, getAllRepoInfo } = await import('../manifest.js');
       const { checkBranchSync } = await import('../linker.js');
 
-      const { manifest, rootDir } = await loadManifest(join(workspaceDir, 'codi-repos.yaml'));
+      const manifestPath = join(workspaceDir, '.codi-repo', 'manifests', 'manifest.yaml');
+      const { manifest, rootDir } = await loadManifest(manifestPath);
       const repos = getAllRepoInfo(manifest, rootDir);
 
       const { inSync, missing } = await checkBranchSync(repos, 'nonexistent-branch-xyz');
