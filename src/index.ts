@@ -15,7 +15,7 @@ const program = new Command();
 program
   .name('codi-repo')
   .description('Multi-repository orchestration CLI for unified PR workflows\n\nAlias: You can also use "cr" as a shorthand for "codi-repo"')
-  .version('0.1.0');
+  .version('0.1.1');
 
 // Init command - AOSP-style with manifest URL
 program
