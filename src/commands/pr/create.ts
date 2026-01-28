@@ -200,13 +200,15 @@ export async function createPR(options: CreateOptions = {}): Promise<void> {
     let manifestPR: LinkedPR | null = null;
     if (manifestHasChanges && manifestInfo) {
       try {
+        // Generate manifest PR body with linked PR table
+        const manifestBody = generateManifestPRBody(title, linkedPRs, body);
         const manifestPRResult = await createPullRequest(
           manifestInfo.owner,
           manifestInfo.repo,
           branchName,
           manifestInfo.default_branch,
           title,
-          body,
+          manifestBody,
           options.draft
         );
         manifestPR = {
