@@ -129,25 +129,33 @@ src/
 ├── types.ts              # TypeScript interfaces
 ├── commands/             # CLI command implementations
 │   ├── init.ts           # cr init
+│   ├── migrate.ts        # cr migrate (legacy format conversion)
 │   ├── sync.ts           # cr sync
-│   ├── status.ts         # cr status
-│   ├── branch.ts         # cr branch
+│   ├── status.ts         # cr status (includes manifest section)
+│   ├── branch.ts         # cr branch (supports --include-manifest)
 │   ├── checkout.ts       # cr checkout
+│   ├── add.ts            # cr add (includes manifest)
+│   ├── diff.ts           # cr diff (includes manifest)
+│   ├── commit.ts         # cr commit (includes manifest)
+│   ├── push.ts           # cr push (includes manifest)
 │   ├── link.ts           # cr link
 │   ├── run.ts            # cr run
 │   ├── env.ts            # cr env
+│   ├── bench.ts          # cr bench
 │   └── pr/               # PR subcommands
 │       ├── index.ts
-│       ├── create.ts
-│       ├── status.ts
-│       └── merge.ts
+│       ├── create.ts     # Includes manifest PR
+│       ├── status.ts     # Includes manifest PR
+│       └── merge.ts      # Includes manifest PR
 └── lib/                  # Core libraries
-    ├── manifest.ts       # Manifest parsing & validation
+    ├── manifest.ts       # Manifest parsing, validation, getManifestRepoInfo()
     ├── git.ts            # Git operations
     ├── github.ts         # GitHub CLI wrapper
+    ├── linker.ts         # PR-to-manifest linking
     ├── files.ts          # copyfile/linkfile operations
     ├── hooks.ts          # Post-sync/checkout hooks
-    └── scripts.ts        # Workspace script runner
+    ├── scripts.ts        # Workspace script runner
+    └── timing.ts         # Benchmarking & timing utilities
 ```
 
 ## Key Concepts
@@ -163,11 +171,17 @@ Workspace configuration in `.codi-repo/manifests/manifest.yaml`:
 All commands use `cr` alias:
 - `cr init <url>` - Initialize workspace from manifest
 - `cr sync` - Pull all repos + process links + run hooks
-- `cr status` - Show repo status
+- `cr status` - Show repo and manifest status
 - `cr branch/checkout` - Branch operations across all repos
-- `cr pr create/status/merge` - Linked PR workflow
+- `cr add` - Stage changes across all repos (including manifest)
+- `cr diff` - Show diff across all repos (including manifest)
+- `cr commit` - Commit staged changes across all repos (including manifest)
+- `cr push` - Push current branch in all repos (including manifest)
+- `cr pr create/status/merge` - Linked PR workflow (including manifest PRs)
 - `cr link` - Manage copyfile/linkfile entries
 - `cr run` - Execute workspace scripts
+- `cr env` - Show workspace environment variables
+- `cr bench` - Run benchmarks
 
 ### File Linking
 - `copyfile`: Copy file from repo to workspace

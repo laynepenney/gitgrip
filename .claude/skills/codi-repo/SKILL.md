@@ -28,9 +28,12 @@ cr sync --no-hooks           # Skip post-sync hooks
 cr branch feat/my-feature              # Create branch across ALL repos
 cr branch feat/x --repo tooling        # Create branch in specific repo only
 cr branch feat/x --repo a --repo b     # Create branch in multiple specific repos
+cr branch feat/x --include-manifest    # Force include manifest repo
 cr checkout feat/my-feature            # Switch branch across ALL repos
 cr checkout -b new-branch              # Create and switch to new branch
 ```
+
+Manifest repo is automatically included in branch operations when it has uncommitted changes.
 
 ### Git Operations Across Repos
 ```bash
@@ -170,6 +173,17 @@ workspace:
       - command: "pnpm install"
         cwd: "./repo-name"
 ```
+
+## Manifest Repo Management
+
+The manifest repo (`.codi-repo/manifests/`) is automatically included in commands when it has changes:
+
+- **`cr status`** shows a separate "Manifest" section with branch, changes, and ahead/behind
+- **`cr add/diff/commit/push`** operate on the manifest alongside regular repos
+- **`cr pr create/status/merge`** handle manifest PRs alongside repo PRs
+- **`cr branch --include-manifest`** explicitly includes manifest in branch creation
+
+No special flags needed for most commands - manifest is auto-detected.
 
 ## Error Recovery
 
