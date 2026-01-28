@@ -46,6 +46,12 @@ Items here should be reviewed before creating GitHub issues.
 - **Proposal**: Consider adding manifest repo to `cr status` output or special handling
 - **Priority**: Low
 
+#### `cr sync` fails after PR merge when manifest was on feature branch
+- **Problem**: After merging a PR that included manifest changes, `cr sync` fails with "no such ref was fetched" because the manifest repo is still tracking the deleted remote branch
+- **Workaround**: Manually `git checkout main && git pull` in manifest repo
+- **GitHub Issue**: [#4](https://github.com/laynepenney/codi-repo/issues/4)
+- **Priority**: High - happens every PR merge cycle
+
 ---
 
 ## Approved (Ready for Issues)
