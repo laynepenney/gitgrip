@@ -12,13 +12,32 @@ import { createPR, prStatus, mergePRs } from './commands/pr/index.js';
 import { link } from './commands/link.js';
 import { run } from './commands/run.js';
 import { env } from './commands/env.js';
+import { bench } from './commands/bench.js';
+import { TimingContext, formatTimingReport, setTimingContext, getTimingContext } from './lib/timing.js';
 
 const program = new Command();
 
 program
   .name('codi-repo')
   .description('Multi-repository orchestration CLI for unified PR workflows\n\nAlias: You can also use "cr" as a shorthand for "codi-repo"')
-  .version('0.1.2');
+  .version('0.1.2')
+  .option('--timing', 'Show timing breakdown for operations');
+
+// Set up timing hooks
+program.hook('preAction', (thisCommand) => {
+  const opts = thisCommand.optsWithGlobals();
+  if (opts.timing) {
+    setTimingContext(new TimingContext(true));
+  }
+});
+
+program.hook('postAction', () => {
+  const ctx = getTimingContext();
+  if (ctx && ctx.isEnabled()) {
+    console.log('\n' + formatTimingReport(ctx.getReport()));
+    setTimingContext(undefined);
+  }
+});
 
 // Init command - AOSP-style with manifest URL
 program
@@ -206,6 +225,28 @@ pr.command('merge')
         method: options.method as 'merge' | 'squash' | 'rebase',
         deleteBranch: options.deleteBranch,
         force: options.force,
+      });
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exit(1);
+    }
+  });
+
+// Bench command
+program
+  .command('bench [operation]')
+  .description('Benchmark workspace operations')
+  .option('--list', 'List available benchmarks')
+  .option('-n, --iterations <n>', 'Number of iterations', '5')
+  .option('-w, --warmup <n>', 'Number of warmup iterations', '1')
+  .option('--json', 'Output as JSON')
+  .action(async (operation, options) => {
+    try {
+      await bench(operation, {
+        list: options.list,
+        iterations: parseInt(options.iterations, 10),
+        warmup: parseInt(options.warmup, 10),
+        json: options.json,
       });
     } catch (error) {
       console.error(chalk.red(error instanceof Error ? error.message : String(error)));

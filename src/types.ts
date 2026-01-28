@@ -288,3 +288,47 @@ export interface LinkStatus {
   /** Additional message */
   message?: string;
 }
+
+/**
+ * A single timing entry in a timing report
+ */
+export interface TimingEntry {
+  /** Label for this timing phase */
+  label: string;
+  /** Duration in milliseconds */
+  duration: number;
+  /** Nested timing entries */
+  children?: TimingEntry[];
+}
+
+/**
+ * A complete timing report with all phases
+ */
+export interface TimingReport {
+  /** Total duration in milliseconds */
+  total: number;
+  /** Individual timing entries */
+  entries: TimingEntry[];
+}
+
+/**
+ * Result of a benchmark run
+ */
+export interface BenchmarkResult {
+  /** Benchmark name */
+  name: string;
+  /** Number of iterations run */
+  iterations: number;
+  /** Minimum duration in milliseconds */
+  min: number;
+  /** Maximum duration in milliseconds */
+  max: number;
+  /** Average duration in milliseconds */
+  avg: number;
+  /** 50th percentile (median) in milliseconds */
+  p50: number;
+  /** 95th percentile in milliseconds */
+  p95: number;
+  /** Standard deviation in milliseconds */
+  stdDev: number;
+}

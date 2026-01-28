@@ -2,6 +2,7 @@ import chalk from 'chalk';
 import { loadManifest, getAllRepoInfo, getManifestsDir } from '../lib/manifest.js';
 import { getAllRepoStatus } from '../lib/git.js';
 import { getAllLinkStatus } from '../lib/files.js';
+import { getTimingContext } from '../lib/timing.js';
 import type { RepoStatus } from '../types.js';
 
 interface StatusOptions {
@@ -57,9 +58,16 @@ function formatRepoStatus(status: RepoStatus): string {
  * Show status of all repositories
  */
 export async function status(options: StatusOptions = {}): Promise<void> {
+  const timing = getTimingContext();
+
+  timing?.startPhase('load manifest');
   const { manifest, rootDir } = await loadManifest();
   const repos = getAllRepoInfo(manifest, rootDir);
+  timing?.endPhase('load manifest');
+
+  timing?.startPhase('get repo status');
   const statuses = await getAllRepoStatus(repos);
+  timing?.endPhase('get repo status');
 
   if (options.json) {
     console.log(JSON.stringify(statuses, null, 2));
@@ -134,8 +142,11 @@ export async function status(options: StatusOptions = {}): Promise<void> {
   }
 
   // Show link status summary
+  timing?.startPhase('get link status');
   const manifestsDir = getManifestsDir(rootDir);
   const linkStatuses = await getAllLinkStatus(manifest, rootDir, manifestsDir);
+  timing?.endPhase('get link status');
+
   if (linkStatuses.length > 0) {
     const validLinks = linkStatuses.filter((l) => l.status === 'valid').length;
     const brokenLinks = linkStatuses.filter((l) => l.status === 'broken').length;

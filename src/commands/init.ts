@@ -10,6 +10,7 @@ import {
   findLegacyManifestPath,
 } from '../lib/manifest.js';
 import { cloneRepo, pathExists } from '../lib/git.js';
+import { getTimingContext } from '../lib/timing.js';
 
 export interface InitOptions {
   /** Branch to clone from manifest repository */
@@ -26,6 +27,7 @@ export interface InitOptions {
  * 4. Clones all repositories defined in the manifest
  */
 export async function init(manifestUrl: string, options: InitOptions = {}): Promise<void> {
+  const timing = getTimingContext();
   const cwd = process.cwd();
   const codiRepoDir = getCodiRepoDir(cwd);
   const manifestsDir = getManifestsDir(cwd);
@@ -46,16 +48,20 @@ export async function init(manifestUrl: string, options: InitOptions = {}): Prom
   }
 
   // Create .codi-repo/ directory
+  timing?.startPhase('create dirs');
   const spinner = ora('Creating workspace...').start();
   try {
     await mkdir(codiRepoDir, { recursive: true });
     spinner.succeed('Created .codi-repo/');
   } catch (error) {
     spinner.fail('Failed to create .codi-repo/');
+    timing?.endPhase('create dirs');
     throw error;
   }
+  timing?.endPhase('create dirs');
 
   // Clone manifest repository into .codi-repo/manifests/
+  timing?.startPhase('clone manifest');
   const branchInfo = options.branch ? ` (branch: ${options.branch})` : '';
   const cloneSpinner = ora(`Cloning manifest from ${manifestUrl}${branchInfo}...`).start();
   try {
@@ -63,10 +69,13 @@ export async function init(manifestUrl: string, options: InitOptions = {}): Prom
     cloneSpinner.succeed('Cloned manifest repository');
   } catch (error) {
     cloneSpinner.fail('Failed to clone manifest repository');
+    timing?.endPhase('clone manifest');
     throw error;
   }
+  timing?.endPhase('clone manifest');
 
   // Load the manifest
+  timing?.startPhase('load manifest');
   let manifest;
   let rootDir;
   try {
@@ -77,10 +86,13 @@ export async function init(manifestUrl: string, options: InitOptions = {}): Prom
   } catch (error) {
     console.error(chalk.red('Failed to load manifest.yaml from cloned repository.'));
     console.error(chalk.dim('Ensure the manifest repository contains a manifest.yaml file.'));
+    timing?.endPhase('load manifest');
     throw error;
   }
+  timing?.endPhase('load manifest');
 
   // Clone all repositories defined in manifest
+  timing?.startPhase('clone repos');
   const repos = getAllRepoInfo(manifest, rootDir);
   console.log(chalk.blue(`\nCloning ${repos.length} repositories...\n`));
 
@@ -92,6 +104,7 @@ export async function init(manifestUrl: string, options: InitOptions = {}): Prom
       continue;
     }
 
+    timing?.startPhase(repo.name);
     const repoSpinner = ora(`Cloning ${repo.name}...`).start();
     try {
       await cloneRepo(repo.url, repo.absolutePath, repo.default_branch);
@@ -100,7 +113,9 @@ export async function init(manifestUrl: string, options: InitOptions = {}): Prom
       repoSpinner.fail(`Failed to clone ${repo.name}`);
       console.error(chalk.red(`  Error: ${error instanceof Error ? error.message : error}`));
     }
+    timing?.endPhase(repo.name);
   }
+  timing?.endPhase('clone repos');
 
   console.log('');
   console.log(chalk.green('Workspace initialized successfully!'));

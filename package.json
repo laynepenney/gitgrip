@@ -13,6 +13,7 @@
     "dev": "tsx src/index.ts",
     "lint": "eslint src/",
     "test": "vitest",
+    "bench": "vitest bench",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

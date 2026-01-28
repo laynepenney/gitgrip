@@ -4,6 +4,7 @@ import { loadManifest, getAllRepoInfo, getManifestsDir } from '../lib/manifest.j
 import { pullLatest, fetchRemote, pathExists, getCurrentBranch, getRemoteUrl, setRemoteUrl, setUpstreamBranch } from '../lib/git.js';
 import { processAllLinks } from '../lib/files.js';
 import { runHooks } from '../lib/hooks.js';
+import { getTimingContext } from '../lib/timing.js';
 import type { RepoInfo } from '../types.js';
 
 interface SyncOptions {
@@ -18,11 +19,16 @@ interface SyncOptions {
  * First updates the manifest repository, then syncs each managed repo
  */
 export async function sync(options: SyncOptions = {}): Promise<void> {
+  const timing = getTimingContext();
+
   // Load manifest to get rootDir
+  timing?.startPhase('load manifest');
   const { manifest, rootDir } = await loadManifest();
   const manifestsDir = getManifestsDir(rootDir);
+  timing?.endPhase('load manifest');
 
   // 1. Update manifest repository first
+  timing?.startPhase('update manifest');
   const manifestSpinner = ora('Updating manifests...').start();
   try {
     // Check if manifest has a URL configured and ensure remote is set
@@ -53,6 +59,7 @@ export async function sync(options: SyncOptions = {}): Promise<void> {
       manifestSpinner.fail(`Failed to update manifests: ${errorMsg}`);
     }
   }
+  timing?.endPhase('update manifest');
 
   // 2. Reload manifest (may have changed after pull)
   const { manifest: updatedManifest } = await loadManifest();
@@ -60,6 +67,7 @@ export async function sync(options: SyncOptions = {}): Promise<void> {
 
   console.log(chalk.blue(`\nSyncing ${repos.length} repositories...\n`));
 
+  timing?.startPhase('sync repos');
   const results: { repo: RepoInfo; success: boolean; error?: string; branch?: string }[] = [];
 
   for (const repo of repos) {
@@ -72,6 +80,7 @@ export async function sync(options: SyncOptions = {}): Promise<void> {
     }
 
     const spinner = ora(`${options.fetch ? 'Fetching' : 'Pulling'} ${repo.name}...`).start();
+    timing?.startPhase(repo.name);
 
     try {
       const branch = await getCurrentBranch(repo.absolutePath);
@@ -85,6 +94,7 @@ export async function sync(options: SyncOptions = {}): Promise<void> {
       }
 
       results.push({ repo, success: true, branch });
+      timing?.endPhase(repo.name);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
 
@@ -99,8 +109,10 @@ export async function sync(options: SyncOptions = {}): Promise<void> {
         spinner.fail(`${repo.name}: ${errorMsg}`);
         results.push({ repo, success: false, error: errorMsg });
       }
+      timing?.endPhase(repo.name);
     }
   }
+  timing?.endPhase('sync repos');
 
   // Summary
   console.log('');
@@ -127,6 +139,7 @@ export async function sync(options: SyncOptions = {}): Promise<void> {
 
     if (hasRepoLinks || hasManifestLinks) {
       console.log('');
+      timing?.startPhase('process links');
       const linkSpinner = ora('Processing links...').start();
       try {
         const linkResults = await processAllLinks(updatedManifest, rootDir, { force: false }, manifestsDir);
@@ -150,6 +163,7 @@ export async function sync(options: SyncOptions = {}): Promise<void> {
       } catch (error) {
         linkSpinner.fail(`Failed to process links: ${error instanceof Error ? error.message : String(error)}`);
       }
+      timing?.endPhase('process links');
     }
   }
 
@@ -160,6 +174,7 @@ export async function sync(options: SyncOptions = {}): Promise<void> {
       console.log('');
       console.log(chalk.blue('Running post-sync hooks...\n'));
 
+      timing?.startPhase('run hooks');
       const hookResults = await runHooks(postSyncHooks, rootDir, updatedManifest.workspace?.env);
 
       for (const result of hookResults) {
@@ -181,6 +196,7 @@ export async function sync(options: SyncOptions = {}): Promise<void> {
         console.log('');
         console.log(chalk.yellow('Some post-sync hooks failed.'));
       }
+      timing?.endPhase('run hooks');
     }
   }
 }
