@@ -1,6 +1,6 @@
-# codi-repo Development Guide
+# gitgrip Development Guide
 
-Multi-repository orchestration CLI for unified PR workflows.
+**git a grip** - Multi-repo workflow tool
 
 ## Build & Test
 
@@ -13,7 +13,7 @@ pnpm lint             # Lint code
 
 ## Git Workflow
 
-**IMPORTANT:** Never push directly to main. Never use raw `git` commands. Always use `cr` for all operations.
+**IMPORTANT:** Never push directly to main. Never use raw `git` commands. Always use `gr` for all operations.
 
 ### Branch Strategy
 
@@ -21,7 +21,7 @@ pnpm lint             # Lint code
 - Production-ready code
 - Protected with PR requirements
 - All PRs must target `main`
-- Use `cr sync` to stay current (not `git pull`)
+- Use `gr sync` to stay current (not `git pull`)
 
 **Feature Branches (`feat/*`, `fix/*`, `chore/*`)**
 - All development happens here
@@ -31,27 +31,27 @@ pnpm lint             # Lint code
 
 ```bash
 # Start new work
-cr sync                              # Pull latest from all repos
-cr status                            # Verify clean state
-cr branch feat/my-feature            # Create branch across repos
+gr sync                              # Pull latest from all repos
+gr status                            # Verify clean state
+gr branch feat/my-feature            # Create branch across repos
 
 # Make changes...
-cr diff                              # Review changes
-cr add .                             # Stage changes across repos
-cr commit -m "feat: description"     # Commit across repos
-cr push -u                           # Push with upstream tracking
+gr diff                              # Review changes
+gr add .                             # Stage changes across repos
+gr commit -m "feat: description"     # Commit across repos
+gr push -u                           # Push with upstream tracking
 
 # Create PR
-cr pr create -t "feat: description" --push
+gr pr create -t "feat: description" --push
 
 # After PR merged
-cr sync                              # Pull latest and cleanup
-cr checkout main                     # Switch back to main
+gr sync                              # Pull latest and cleanup
+gr checkout main                     # Switch back to main
 ```
 
 ### IMPORTANT: Never Use Raw Git
 
-All git operations must go through `cr`. There is no exception.
+All git operations must go through `gr`. There is no exception.
 
 ```
 ❌ WRONG:
@@ -60,72 +60,32 @@ All git operations must go through `cr`. There is no exception.
    gh pr create --title "msg"
 
 ✅ CORRECT:
-   cr branch feat/x
-   cr add . && cr commit -m "msg" && cr push -u
-   cr pr create -t "msg" --push
+   gr branch feat/x
+   gr add . && gr commit -m "msg" && gr push -u
+   gr pr create -t "msg" --push
 ```
 
-`cr` manages all repos and the manifest together. Using raw `git` or `gh` bypasses multi-repo coordination and will miss the manifest repo.
+`gr` manages all repos and the manifest together. Using raw `git` or `gh` bypasses multi-repo coordination and will miss the manifest repo.
 
 ### PR Review Process
 
-**IMPORTANT: Never merge a PR without reviewing it first.** Always review your own PRs before merging. This creates a traceable review history and catches mistakes before they reach main.
+**IMPORTANT: Never merge a PR without reviewing it first.** Always review your own PRs before merging.
 
 **For AI agents (Claude, Codi, etc.):** Do NOT immediately merge after creating a PR. Always:
-1. Create the PR with `cr pr create -t "title"`
+1. Create the PR with `gr pr create -t "title"`
 2. Run `pnpm build && pnpm test` to verify nothing is broken
-3. Check PR status with `cr pr status`
+3. Check PR status with `gr pr status`
 4. Review the diff with `gh pr diff <number>` (for each repo with changes)
 5. Check feature completeness (see checklist below)
 6. Add a review comment documenting what was checked
-7. Only then merge with `cr pr merge` (if all tests pass and no issues found)
+7. Only then merge with `gr pr merge` (if all tests pass and no issues found)
 
-**Full Process:**
-
-1. **Create the PR** with clear title and description:
-   ```bash
-   cr pr create -t "feat: description" --push
-   ```
-2. **Run build and tests** to verify nothing is broken:
-   ```bash
-   pnpm build && pnpm test
-   ```
-   If tests fail, fix the issues before proceeding.
-3. **Check PR status** across all repos:
-   ```bash
-   cr pr status
-   ```
-4. **Review the diff** thoroughly using `gh pr diff <number>` for each repo
-5. **Check feature completeness** (for new features/commands):
-   - [ ] New command registered in `src/index.ts`
-   - [ ] Types added to `src/types.ts` if needed
-   - [ ] Tests added for new functionality
-   - [ ] `CLAUDE.md` updated with documentation
-   - [ ] `README.md` updated if user-facing
-6. **Document the review** - add a comment listing what was verified:
-   ```bash
-   gh pr comment <number> --body "## Self-Review
-   - ✅ Build passes
-   - ✅ All tests pass
-   - ✅ Diff reviewed
-   - ✅ Feature completeness checked
-   - No issues found. Ready to merge."
-   ```
-7. **If issues found**, fix in a new commit (don't amend if already pushed)
-8. **For issues to address later**, create a GitHub issue:
-   ```bash
-   gh issue create --title "Title" --body "Description"
-   ```
-9. **Merge only after review is complete and all tests pass**:
-   ```bash
-   cr pr merge
-   ```
-
-This ensures:
-- All review feedback is tracked in the PR history
-- Future contributors can understand why changes were made
-- AI agents don't blindly merge without verification
-- **No broken code reaches main** - tests must pass before merge
+**Feature completeness checklist:**
+- [ ] New command registered in `src/index.ts`
+- [ ] Types added to `src/types.ts` if needed
+- [ ] Tests added for new functionality
+- [ ] `CLAUDE.md` updated with documentation
+- [ ] `README.md` updated if user-facing
 
 ## Project Structure
 
@@ -134,28 +94,28 @@ src/
 ├── index.ts              # CLI entry point (Commander.js)
 ├── types.ts              # TypeScript interfaces
 ├── commands/             # CLI command implementations
-│   ├── init.ts           # cr init
-│   ├── migrate.ts        # cr migrate (legacy format conversion)
-│   ├── sync.ts           # cr sync
-│   ├── status.ts         # cr status (includes manifest section)
-│   ├── branch.ts         # cr branch (supports --include-manifest)
-│   ├── checkout.ts       # cr checkout
-│   ├── add.ts            # cr add (includes manifest)
-│   ├── diff.ts           # cr diff (includes manifest)
-│   ├── commit.ts         # cr commit (includes manifest)
-│   ├── push.ts           # cr push (includes manifest)
-│   ├── link.ts           # cr link
-│   ├── run.ts            # cr run
-│   ├── env.ts            # cr env
-│   ├── bench.ts          # cr bench
-│   ├── forall.ts         # cr forall (run command in each repo)
+│   ├── init.ts           # gr init
+│   ├── migrate.ts        # gr migrate
+│   ├── sync.ts           # gr sync
+│   ├── status.ts         # gr status
+│   ├── branch.ts         # gr branch
+│   ├── checkout.ts       # gr checkout
+│   ├── add.ts            # gr add
+│   ├── diff.ts           # gr diff
+│   ├── commit.ts         # gr commit
+│   ├── push.ts           # gr push
+│   ├── link.ts           # gr link
+│   ├── run.ts            # gr run
+│   ├── env.ts            # gr env
+│   ├── bench.ts          # gr bench
+│   ├── forall.ts         # gr forall
 │   └── pr/               # PR subcommands
 │       ├── index.ts
-│       ├── create.ts     # Includes manifest PR
-│       ├── status.ts     # Includes manifest PR
-│       └── merge.ts      # Includes manifest PR
+│       ├── create.ts
+│       ├── status.ts
+│       └── merge.ts
 └── lib/                  # Core libraries
-    ├── manifest.ts       # Manifest parsing, validation, getManifestRepoInfo()
+    ├── manifest.ts       # Manifest parsing and validation
     ├── git.ts            # Git operations
     ├── github.ts         # GitHub CLI wrapper
     ├── linker.ts         # PR-to-manifest linking
@@ -168,28 +128,30 @@ src/
 ## Key Concepts
 
 ### Manifest
-Workspace configuration in `.codi-repo/manifests/manifest.yaml`:
+Workspace configuration in `.gitgrip/manifests/manifest.yaml`:
 - `repos`: Repository definitions with URL, path, default_branch
 - `manifest`: Self-tracking for the manifest repo itself
 - `workspace`: Scripts, hooks, and environment variables
 - `settings`: PR prefix, merge strategy
 
+Note: `.codi-repo/` is also supported for backward compatibility.
+
 ### Commands
-All commands use `cr` alias:
-- `cr init <url>` - Initialize workspace from manifest
-- `cr sync` - Pull all repos + process links + run hooks
-- `cr status` - Show repo and manifest status
-- `cr branch/checkout` - Branch operations across all repos
-- `cr add` - Stage changes across all repos (including manifest)
-- `cr diff` - Show diff across all repos (including manifest)
-- `cr commit` - Commit staged changes across all repos (including manifest)
-- `cr push` - Push current branch in all repos (including manifest)
-- `cr pr create/status/merge` - Linked PR workflow (including manifest PRs)
-- `cr link` - Manage copyfile/linkfile entries
-- `cr run` - Execute workspace scripts
-- `cr env` - Show workspace environment variables
-- `cr bench` - Run benchmarks
-- `cr forall -c "cmd"` - Run command in each repo (like AOSP repo forall)
+All commands use `gr` (or `gitgrip`):
+- `gr init <url>` - Initialize workspace from manifest
+- `gr sync` - Pull all repos + process links + run hooks
+- `gr status` - Show repo and manifest status
+- `gr branch/checkout` - Branch operations across all repos
+- `gr add` - Stage changes across all repos
+- `gr diff` - Show diff across all repos
+- `gr commit` - Commit staged changes across all repos
+- `gr push` - Push current branch in all repos
+- `gr pr create/status/merge` - Linked PR workflow
+- `gr link` - Manage copyfile/linkfile entries
+- `gr run` - Execute workspace scripts
+- `gr env` - Show workspace environment variables
+- `gr bench` - Run benchmarks
+- `gr forall -c "cmd"` - Run command in each repo
 
 ### File Linking
 - `copyfile`: Copy file from repo to workspace
@@ -223,7 +185,7 @@ Test files are in `src/lib/__tests__/`.
 
 ## Continuous Improvement
 
-codi-repo is self-improving. When using `cr` commands, capture any friction or ideas in:
+gitgrip is self-improving. When using `gr` commands, capture any friction or ideas in:
 
 ```
 ./IMPROVEMENTS.md
@@ -238,7 +200,7 @@ codi-repo is self-improving. When using `cr` commands, capture any friction or i
 
 **If you ever use raw `git` or `gh` commands, you MUST immediately:**
 
-1. Add an entry to `IMPROVEMENTS.md` explaining why `cr` couldn't handle the use case
+1. Add an entry to `IMPROVEMENTS.md` explaining why `gr` couldn't handle the use case
 2. Tell the user about the friction point
 
-This is mandatory. Every workaround reveals a gap in `cr` that should be fixed.
+This is mandatory. Every workaround reveals a gap in `gr` that should be fixed.

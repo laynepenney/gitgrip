@@ -5,9 +5,10 @@ import ora from 'ora';
 import {
   loadManifest,
   getAllRepoInfo,
-  getCodiRepoDir,
+  getNewGitgripDir,
   getManifestsDir,
   findLegacyManifestPath,
+  getGitgripDir,
 } from '../lib/manifest.js';
 import { cloneRepo, pathExists } from '../lib/git.js';
 import { getTimingContext } from '../lib/timing.js';
@@ -18,24 +19,25 @@ export interface InitOptions {
 }
 
 /**
- * Initialize a new codi-repo workspace (AOSP-style)
+ * Initialize a new gitgrip workspace (AOSP-style)
  *
  * This command:
- * 1. Creates .codi-repo/ directory
- * 2. Clones the manifest repository into .codi-repo/manifests/
+ * 1. Creates .gitgrip/ directory
+ * 2. Clones the manifest repository into .gitgrip/manifests/
  * 3. Reads manifest.yaml from the cloned repo
  * 4. Clones all repositories defined in the manifest
  */
 export async function init(manifestUrl: string, options: InitOptions = {}): Promise<void> {
   const timing = getTimingContext();
   const cwd = process.cwd();
-  const codiRepoDir = getCodiRepoDir(cwd);
+  const gitgripDir = getNewGitgripDir(cwd);
+  const existingDir = getGitgripDir(cwd);
   const manifestsDir = getManifestsDir(cwd);
 
-  // Check if already initialized
-  if (await pathExists(codiRepoDir)) {
+  // Check if already initialized (either .gitgrip or .codi-repo)
+  if (await pathExists(existingDir)) {
     console.log(chalk.yellow('Workspace already initialized.'));
-    console.log(chalk.dim('Run `codi-repo sync` to update, or delete .codi-repo/ to reinitialize.'));
+    console.log(chalk.dim('Run `gr sync` to update, or delete .gitgrip/ to reinitialize.'));
     return;
   }
 
@@ -43,24 +45,24 @@ export async function init(manifestUrl: string, options: InitOptions = {}): Prom
   const legacyManifest = await findLegacyManifestPath(cwd);
   if (legacyManifest) {
     console.log(chalk.yellow('Found legacy codi-repos.yaml format.'));
-    console.log(chalk.dim('Run `codi-repo migrate` to convert to the new .codi-repo/ structure.'));
+    console.log(chalk.dim('Run `gr migrate` to convert to the new .gitgrip/ structure.'));
     return;
   }
 
-  // Create .codi-repo/ directory
+  // Create .gitgrip/ directory
   timing?.startPhase('create dirs');
   const spinner = ora('Creating workspace...').start();
   try {
-    await mkdir(codiRepoDir, { recursive: true });
-    spinner.succeed('Created .codi-repo/');
+    await mkdir(gitgripDir, { recursive: true });
+    spinner.succeed('Created .gitgrip/');
   } catch (error) {
-    spinner.fail('Failed to create .codi-repo/');
+    spinner.fail('Failed to create .gitgrip/');
     timing?.endPhase('create dirs');
     throw error;
   }
   timing?.endPhase('create dirs');
 
-  // Clone manifest repository into .codi-repo/manifests/
+  // Clone manifest repository into .gitgrip/manifests/
   timing?.startPhase('clone manifest');
   const branchInfo = options.branch ? ` (branch: ${options.branch})` : '';
   const cloneSpinner = ora(`Cloning manifest from ${manifestUrl}${branchInfo}...`).start();
@@ -119,5 +121,5 @@ export async function init(manifestUrl: string, options: InitOptions = {}): Prom
 
   console.log('');
   console.log(chalk.green('Workspace initialized successfully!'));
-  console.log(chalk.dim('Run `codi-repo status` to see the status of all repositories.'));
+  console.log(chalk.dim('Run `gr status` to see the status of all repositories.'));
 }

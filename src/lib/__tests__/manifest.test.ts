@@ -64,16 +64,19 @@ describe('generateSampleManifest', () => {
 });
 
 describe('path helpers', () => {
-  it('getCodiRepoDir returns correct path', () => {
-    expect(getCodiRepoDir('/workspace')).toBe('/workspace/.codi-repo');
+  it('getCodiRepoDir returns correct path for new workspaces', () => {
+    // For paths that don't exist, defaults to new .gitgrip directory
+    expect(getCodiRepoDir('/workspace')).toBe('/workspace/.gitgrip');
   });
 
-  it('getManifestsDir returns correct path', () => {
-    expect(getManifestsDir('/workspace')).toBe('/workspace/.codi-repo/manifests');
+  it('getManifestsDir returns correct path for new workspaces', () => {
+    // For paths that don't exist, defaults to new .gitgrip directory
+    expect(getManifestsDir('/workspace')).toBe('/workspace/.gitgrip/manifests');
   });
 
-  it('getManifestPath returns correct path', () => {
-    expect(getManifestPath('/workspace')).toBe('/workspace/.codi-repo/manifests/manifest.yaml');
+  it('getManifestPath returns correct path for new workspaces', () => {
+    // For paths that don't exist, defaults to new .gitgrip directory
+    expect(getManifestPath('/workspace')).toBe('/workspace/.gitgrip/manifests/manifest.yaml');
   });
 });
 

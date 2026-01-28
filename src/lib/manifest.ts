@@ -1,10 +1,13 @@
 import { readFile, writeFile, access } from 'fs/promises';
+import { existsSync } from 'fs';
 import { resolve, dirname, join, normalize } from 'path';
 import YAML from 'yaml';
 import type { Manifest, RepoInfo, StateFile, GitHubRepoInfo, CopyFileConfig, LinkFileConfig, WorkspaceScript } from '../types.js';
 
-// AOSP-style: manifest lives in .codi-repo/manifests/manifest.yaml
-const CODI_REPO_DIR = '.codi-repo';
+// AOSP-style: manifest lives in .gitgrip/manifests/manifest.yaml
+// (Legacy: .codi-repo/manifests/manifest.yaml also supported for backward compatibility)
+const GITGRIP_DIR = '.gitgrip';
+const LEGACY_CODI_REPO_DIR = '.codi-repo';
 const MANIFESTS_DIR = 'manifests';
 const MANIFEST_FILENAME = 'manifest.yaml';
 const STATE_FILENAME = 'state.json';
@@ -78,10 +81,43 @@ function validateScript(script: WorkspaceScript, scriptName: string): void {
 }
 
 /**
+ * Get the path to the gitgrip directory (.gitgrip or .codi-repo for backward compat)
+ * Prefers .gitgrip if it exists, falls back to .codi-repo, defaults to .gitgrip for new workspaces
+ */
+export function getGitgripDir(workspaceRoot: string): string {
+  const newDir = join(workspaceRoot, GITGRIP_DIR);
+  const legacyDir = join(workspaceRoot, LEGACY_CODI_REPO_DIR);
+
+  // Synchronous check for simplicity in path resolution
+  if (existsSync(newDir)) {
+    return newDir;
+  }
+  if (existsSync(legacyDir)) {
+    return legacyDir;
+  }
+  // Default to new directory for new workspaces
+  return newDir;
+}
+
+/**
+ * Get the path to the gitgrip directory for new workspaces (always .gitgrip)
+ */
+export function getNewGitgripDir(workspaceRoot: string): string {
+  return join(workspaceRoot, GITGRIP_DIR);
+}
+
+/**
+ * @deprecated Use getGitgripDir instead
+ */
+export function getCodiRepoDir(workspaceRoot: string): string {
+  return getGitgripDir(workspaceRoot);
+}
+
+/**
  * Get the path to the manifests directory
  */
 export function getManifestsDir(workspaceRoot: string): string {
-  return join(workspaceRoot, CODI_REPO_DIR, MANIFESTS_DIR);
+  return join(getGitgripDir(workspaceRoot), MANIFESTS_DIR);
 }
 
 /**
@@ -89,13 +125,6 @@ export function getManifestsDir(workspaceRoot: string): string {
  */
 export function getManifestPath(workspaceRoot: string): string {
   return join(getManifestsDir(workspaceRoot), MANIFEST_FILENAME);
-}
-
-/**
- * Get the path to .codi-repo directory
- */
-export function getCodiRepoDir(workspaceRoot: string): string {
-  return join(workspaceRoot, CODI_REPO_DIR);
 }
 
 /**
@@ -144,7 +173,7 @@ export async function findLegacyManifestPath(startDir: string = process.cwd()): 
 export async function loadManifest(manifestPath?: string): Promise<{ manifest: Manifest; rootDir: string }> {
   const path = manifestPath ?? (await findManifestPath());
   if (!path) {
-    throw new Error(`Manifest file not found. Run 'codi-repo init <manifest-url>' first.`);
+    throw new Error(`Manifest file not found. Run 'gr init <manifest-url>' first.`);
   }
 
   const content = await readFile(path, 'utf-8');
@@ -336,10 +365,14 @@ export function getManifestRepoInfo(manifest: Manifest, rootDir: string): RepoIn
   try {
     const parsed = parseGitHubUrl(manifest.manifest.url);
 
+    // Determine which directory is in use for the path field
+    const gitgripDir = getGitgripDir(rootDir);
+    const dirName = gitgripDir.endsWith(LEGACY_CODI_REPO_DIR) ? LEGACY_CODI_REPO_DIR : GITGRIP_DIR;
+
     return {
       name: 'manifest',
       url: manifest.manifest.url,
-      path: '.codi-repo/manifests',
+      path: `${dirName}/manifests`,
       absolutePath: manifestsDir,
       default_branch: manifest.manifest.default_branch ?? 'main',
       owner: parsed.owner,

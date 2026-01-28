@@ -1,19 +1,10 @@
-<p align="center">
-  <img src="assets/banner.svg" alt="codi-repo" width="600">
-</p>
+# gitgrip
 
-<p align="center">
-  <a href="#installation">Installation</a> •
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#commands">Commands</a> •
-  <a href="#manifest-format">Manifest</a>
-</p>
+**git a grip** - Multi-repo workflow tool
 
----
+Manage multiple related repositories as a single workspace with synchronized branches, linked pull requests, and atomic merges.
 
-Multi-repository orchestration CLI for unified PR workflows. Manage multiple related repositories as a single workspace with synchronized branches, linked pull requests, and atomic merges.
-
-Inspired by Android's [repo tool](https://source.android.com/docs/setup/create/repo), `codi-repo` brings manifest-based multi-repo management to any project.
+Inspired by Android's [repo tool](https://source.android.com/docs/setup/create/repo), gitgrip brings manifest-based multi-repo management to any project.
 
 ## Features
 
@@ -26,13 +17,7 @@ Inspired by Android's [repo tool](https://source.android.com/docs/setup/create/r
 ## Installation
 
 ```bash
-npm install -g codi-repo
-```
-
-Or with pnpm:
-
-```bash
-pnpm add -g codi-repo
+npm install -g gitgrip
 ```
 
 ## Quick Start
@@ -72,70 +57,96 @@ settings:
 
 ```bash
 mkdir my-workspace && cd my-workspace
-cr init git@github.com:your-org/my-workspace.git
+gr init git@github.com:your-org/my-workspace.git
 ```
 
-This clones the manifest repo into `.codi-repo/manifests/` and all defined repositories.
+This clones the manifest repo into `.gitgrip/manifests/` and all defined repositories.
 
 ### 3. Start working
 
 ```bash
 # Check status of all repos
-cr status
+gr status
 
 # Create a feature branch across all repos
-cr branch feature/new-feature
+gr branch feature/new-feature
 
 # Make changes, commit in each repo, then create linked PRs
-cr pr create --title "Add new feature"
+gr pr create --title "Add new feature"
 
 # Sync all repos with latest from remote
-cr sync
+gr sync
 ```
 
 ## Commands
 
-### `cr init <manifest-url>`
+| Command | Description |
+|---------|-------------|
+| `gr init <url>` | Initialize workspace from manifest repo |
+| `gr sync` | Pull latest from all repos |
+| `gr status` | Show status of all repos |
+| `gr branch [name]` | Create or list branches |
+| `gr checkout <branch>` | Checkout branch across repos |
+| `gr add [files]` | Stage changes across repos |
+| `gr diff` | Show diff across repos |
+| `gr commit -m "msg"` | Commit across repos |
+| `gr push` | Push across repos |
+| `gr pr create` | Create linked PRs |
+| `gr pr status` | Show PR status |
+| `gr pr merge` | Merge all linked PRs |
+| `gr forall -c "cmd"` | Run command in each repo |
+
+### Command Details
+
+#### `gr init <manifest-url>`
 
 Initialize a new workspace by cloning the manifest repository and all defined repos.
 
-### `cr sync [options]`
+#### `gr sync [options]`
 
 Pull latest changes from the manifest and all repositories.
 
 | Option | Description |
 |--------|-------------|
 | `--fetch` | Fetch only, don't merge |
-| `--all` | Include repos not on default branch |
+| `--no-link` | Skip processing copyfile/linkfile entries |
+| `--no-hooks` | Skip running post-sync hooks |
 
-### `cr status [options]`
+#### `gr status`
 
-Show status of all repositories including branch, changes, and sync state. Also shows manifest repo status in a separate section.
+Show status of all repositories including branch, changes, and sync state.
 
-### `cr branch [name]`
+#### `gr branch [name]`
 
 Create a new branch across all repositories, or list existing branches.
 
 | Option | Description |
 |--------|-------------|
-| `--all` | Show branches from all repos |
-| `--include-manifest` | Include manifest repo in branch operation |
+| `-r, --repo <repos...>` | Only operate on specific repos |
+| `--include-manifest` | Include manifest repo |
 
-The manifest repo is automatically included if it has uncommitted changes.
+#### `gr pr create`
 
-### `cr checkout <branch>`
+Create linked PRs across repos with changes.
 
-Checkout a branch across all repositories.
+| Option | Description |
+|--------|-------------|
+| `-t, --title <title>` | PR title |
+| `-b, --body <body>` | PR body |
+| `-d, --draft` | Create as draft |
+| `--push` | Push branches first |
 
-### `cr pr`
+#### `gr pr merge`
 
-Pull request management subcommands:
+Merge all linked PRs atomically.
 
-- `cr pr create` - Create linked PRs across repos with changes (including manifest if it has commits)
-- `cr pr status` - Show status of linked PRs (including manifest PR)
-- `cr pr merge` - Merge all linked PRs atomically (including manifest PR)
+| Option | Description |
+|--------|-------------|
+| `-m, --method <method>` | merge, squash, or rebase |
+| `--no-delete-branch` | Keep branches after merge |
+| `-f, --force` | Merge even if checks pending |
 
-### `cr forall -c "<command>"`
+#### `gr forall -c "<command>"`
 
 Run a command in each repository (like AOSP's `repo forall`).
 
@@ -144,24 +155,12 @@ Run a command in each repository (like AOSP's `repo forall`).
 | `-c, --command` | Command to run (required) |
 | `-r, --repo <repos...>` | Only run in specific repos |
 | `--include-manifest` | Include manifest repo |
-| `--continue-on-error` | Continue if command fails in a repo |
+| `--continue-on-error` | Continue if command fails |
 
 Environment variables available in command:
 - `REPO_NAME` - Repository name
 - `REPO_PATH` - Absolute path to repo
 - `REPO_URL` - Repository URL
-
-Example:
-```bash
-# Show current branch in all repos
-cr forall -c "git rev-parse --abbrev-ref HEAD"
-
-# Rebase all repos onto main
-cr forall -c "git rebase origin/main"
-
-# Run only in specific repos
-cr forall -c "npm test" --repo frontend --repo backend
-```
 
 ## Manifest Format
 
@@ -170,37 +169,36 @@ The manifest file (`manifest.yaml`) defines your workspace:
 ```yaml
 version: 1
 
-# Optional: URL for the manifest repo itself (enables sync)
 manifest:
   url: git@github.com:your-org/workspace.git
 
-# Repository definitions
 repos:
   repo-name:
-    url: git@github.com:your-org/repo.git  # Git URL (SSH or HTTPS)
-    path: ./local-path                      # Local path relative to workspace
-    default_branch: main                    # Default branch name
+    url: git@github.com:your-org/repo.git
+    path: ./local-path
+    default_branch: main
 
-# Global settings
 settings:
-  pr_prefix: "[cross-repo]"      # Prefix for linked PR titles
-  merge_strategy: all-or-nothing  # or "independent"
+  pr_prefix: "[cross-repo]"
+  merge_strategy: all-or-nothing
 ```
 
 ### Merge Strategies
 
-- **all-or-nothing** - All linked PRs must be approved before any can merge. Ensures repos stay in sync.
-- **independent** - PRs can be merged independently. Use when repos don't have tight dependencies.
+- **all-or-nothing** - All linked PRs must be approved before any can merge
+- **independent** - PRs can be merged independently
 
-## Alias
+## Shorthand
 
-You can use `cr` as a shorthand for `codi-repo`:
+Use `gr` as the primary command:
 
 ```bash
-cr status
-cr sync
-cr branch feature/foo
+gr status
+gr sync
+gr branch feature/foo
 ```
+
+The long form `gitgrip` also works.
 
 ## Requirements
 

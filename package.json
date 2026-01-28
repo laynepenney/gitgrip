@@ -1,12 +1,12 @@
 {
-  "name": "codi-repo",
-  "version": "0.1.2",
-  "description": "Multi-repository orchestration CLI for unified PR workflows",
+  "name": "gitgrip",
+  "version": "0.2.0",
+  "description": "git a grip - Multi-repo workflow tool",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "codi-repo": "dist/index.js",
-    "cr": "dist/index.js"
+    "gitgrip": "dist/index.js",
+    "gr": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
@@ -18,17 +18,24 @@
   },
   "keywords": [
     "git",
+    "gitgrip",
+    "grip",
     "multi-repo",
     "monorepo",
     "github",
     "pr",
-    "cli"
+    "cli",
+    "workflow"
   ],
-  "author": "",
+  "author": "Layne Penney",
   "license": "MIT",
+  "homepage": "https://github.com/laynepenney/gitgrip#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/laynepenney/codi-repo"
+    "url": "git+https://github.com/laynepenney/gitgrip.git"
+  },
+  "bugs": {
+    "url": "https://github.com/laynepenney/gitgrip/issues"
   },
   "dependencies": {
     "@octokit/rest": "^21.0.0",
