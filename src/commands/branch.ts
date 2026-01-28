@@ -1,18 +1,23 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import { loadManifest, getAllRepoInfo } from '../lib/manifest.js';
+import { loadManifest, getAllRepoInfo, getManifestRepoInfo } from '../lib/manifest.js';
 import {
   createBranchInAllRepos,
   checkoutBranchInAllRepos,
   pathExists,
   branchExists,
   getCurrentBranch,
+  hasUncommittedChanges,
+  isGitRepo,
+  createBranch,
+  checkoutBranch,
 } from '../lib/git.js';
 import type { RepoInfo } from '../types.js';
 
 interface BranchOptions {
   create?: boolean;
   repo?: string[];
+  includeManifest?: boolean;
 }
 
 /**
@@ -134,6 +139,33 @@ export async function branch(branchName: string, options: BranchOptions = {}): P
         console.log(chalk.green(`  ✓ ${result.repoName}: switched`));
       } else {
         console.log(chalk.red(`  ✗ ${result.repoName}: ${result.error}`));
+      }
+    }
+  }
+
+  // Handle manifest repo if configured
+  const manifestInfo = getManifestRepoInfo(manifest, rootDir);
+  if (manifestInfo && await isGitRepo(manifestInfo.absolutePath)) {
+    const manifestHasChanges = await hasUncommittedChanges(manifestInfo.absolutePath);
+    const shouldIncludeManifest = options.includeManifest || manifestHasChanges;
+
+    if (shouldIncludeManifest) {
+      const manifestBranchExists = await branchExists(manifestInfo.absolutePath, branchName);
+      const spinner = ora(`${manifestInfo.name}...`).start();
+
+      try {
+        if (shouldCreate && !manifestBranchExists) {
+          await createBranch(manifestInfo.absolutePath, branchName);
+          spinner.succeed(`${manifestInfo.name}: created ${branchName}`);
+        } else if (manifestBranchExists) {
+          await checkoutBranch(manifestInfo.absolutePath, branchName);
+          spinner.succeed(`${manifestInfo.name}: switched to ${branchName}`);
+        } else {
+          await createBranch(manifestInfo.absolutePath, branchName);
+          spinner.succeed(`${manifestInfo.name}: created ${branchName}`);
+        }
+      } catch (error) {
+        spinner.fail(`${manifestInfo.name}: ${error instanceof Error ? error.message : error}`);
       }
     }
   }

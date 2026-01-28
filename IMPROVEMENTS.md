@@ -12,9 +12,22 @@ Items here should be reviewed before creating GitHub issues.
 #### Manifest repo not managed by cr
 - **Problem**: The manifest repo (`.codi-repo/manifests/`) requires manual git commands
 - **Observation**: This creates inconsistency - sometimes you use `cr`, sometimes raw `git`
-- **Proposal**: Consider adding manifest repo to `cr status` output or special handling
 - **GitHub Issue**: [#9](https://github.com/laynepenney/codi-repo/issues/9)
-- **Priority**: Low
+- **Priority**: Medium
+
+**Specific friction points:**
+1. `cr status` doesn't show manifest repo status
+2. `cr branch` doesn't create branches in manifest repo
+3. `cr pr create` doesn't create PR for manifest changes
+4. `cr pr merge` doesn't merge manifest PRs - must use `gh pr merge` manually
+5. `cr add/commit/push/diff` don't operate on manifest repo
+
+**Proposal:**
+- Add `manifest` as a special repo in all commands (opt-in or automatic when manifest has changes)
+- `cr status` should show manifest status in a separate section
+- `cr branch` should create branch in manifest when `--include-manifest` flag or when manifest has changes
+- `cr pr create/merge` should handle manifest PRs alongside repo PRs
+- Alternative: Add `--manifest` flag to commands to include manifest repo
 
 ---
 

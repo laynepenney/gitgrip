@@ -110,7 +110,7 @@ Pull latest changes from the manifest and all repositories.
 
 ### `cr status [options]`
 
-Show status of all repositories including branch, changes, and sync state.
+Show status of all repositories including branch, changes, and sync state. Also shows manifest repo status in a separate section.
 
 ### `cr branch [name]`
 
@@ -119,6 +119,9 @@ Create a new branch across all repositories, or list existing branches.
 | Option | Description |
 |--------|-------------|
 | `--all` | Show branches from all repos |
+| `--include-manifest` | Include manifest repo in branch operation |
+
+The manifest repo is automatically included if it has uncommitted changes.
 
 ### `cr checkout <branch>`
 
@@ -128,9 +131,9 @@ Checkout a branch across all repositories.
 
 Pull request management subcommands:
 
-- `cr pr create` - Create linked PRs across repos with changes
-- `cr pr status` - Show status of linked PRs
-- `cr pr merge` - Merge all linked PRs atomically
+- `cr pr create` - Create linked PRs across repos with changes (including manifest if it has commits)
+- `cr pr status` - Show status of linked PRs (including manifest PR)
+- `cr pr merge` - Merge all linked PRs atomically (including manifest PR)
 
 ## Manifest Format
 

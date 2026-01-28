@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import { loadManifest, getAllRepoInfo } from '../lib/manifest.js';
-import { pathExists, getCurrentBranch, pushBranch, getGitInstance } from '../lib/git.js';
+import { loadManifest, getAllRepoInfo, getManifestRepoInfo } from '../lib/manifest.js';
+import { pathExists, getCurrentBranch, pushBranch, getGitInstance, isGitRepo } from '../lib/git.js';
 import type { RepoInfo } from '../types.js';
 
 interface PushOptions {
@@ -52,7 +52,13 @@ export async function push(options: PushOptions = {}): Promise<void> {
   const { setUpstream = false, force = false } = options;
 
   const { manifest, rootDir } = await loadManifest();
-  const repos = getAllRepoInfo(manifest, rootDir);
+  let repos: RepoInfo[] = getAllRepoInfo(manifest, rootDir);
+
+  // Include manifest repo if it exists
+  const manifestInfo = getManifestRepoInfo(manifest, rootDir);
+  if (manifestInfo && await isGitRepo(manifestInfo.absolutePath)) {
+    repos = [...repos, manifestInfo];
+  }
 
   const results: PushResult[] = [];
   let hasCommits = false;

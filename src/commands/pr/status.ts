@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import { loadManifest, getAllRepoInfo } from '../../lib/manifest.js';
-import { pathExists, getCurrentBranch } from '../../lib/git.js';
+import { loadManifest, getAllRepoInfo, getManifestRepoInfo } from '../../lib/manifest.js';
+import { pathExists, getCurrentBranch, isGitRepo } from '../../lib/git.js';
 import { findPRByBranch, getLinkedPRInfo } from '../../lib/github.js';
 import type { LinkedPR } from '../../types.js';
 
@@ -58,9 +58,25 @@ export async function prStatus(options: StatusOptions = {}): Promise<void> {
       })
     );
 
+    // Check for manifest PR too
+    const manifestInfo = getManifestRepoInfo(manifest, rootDir);
+    let manifestPR: LinkedPR | null = null;
+    if (manifestInfo && await isGitRepo(manifestInfo.absolutePath)) {
+      const manifestBranch = await getCurrentBranch(manifestInfo.absolutePath);
+      if (manifestBranch === currentBranch) {
+        const pr = await findPRByBranch(manifestInfo.owner, manifestInfo.repo, currentBranch);
+        if (pr) {
+          manifestPR = await getLinkedPRInfo(manifestInfo.owner, manifestInfo.repo, pr.number, manifestInfo.name);
+        }
+      }
+    }
+
     spinner.stop();
 
     const foundPRs = prStatuses.filter((pr): pr is LinkedPR => pr !== null);
+    if (manifestPR) {
+      foundPRs.push(manifestPR);
+    }
 
     if (options.json) {
       console.log(JSON.stringify(foundPRs, null, 2));

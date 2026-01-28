@@ -323,6 +323,35 @@ export function getAllRepoInfo(manifest: Manifest, rootDir: string): RepoInfo[] 
 }
 
 /**
+ * Get manifest repo as RepoInfo (if manifest.url is configured)
+ * Returns null if manifest section is not configured, has no URL, or URL is invalid
+ */
+export function getManifestRepoInfo(manifest: Manifest, rootDir: string): RepoInfo | null {
+  if (!manifest.manifest?.url) {
+    return null;
+  }
+
+  const manifestsDir = getManifestsDir(rootDir);
+
+  try {
+    const parsed = parseGitHubUrl(manifest.manifest.url);
+
+    return {
+      name: 'manifest',
+      url: manifest.manifest.url,
+      path: '.codi-repo/manifests',
+      absolutePath: manifestsDir,
+      default_branch: manifest.manifest.default_branch ?? 'main',
+      owner: parsed.owner,
+      repo: parsed.repo,
+    };
+  } catch {
+    // Invalid GitHub URL format
+    return null;
+  }
+}
+
+/**
  * Get the state file path
  */
 function getStatePath(rootDir: string): string {

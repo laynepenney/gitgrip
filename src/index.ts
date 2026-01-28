@@ -112,10 +112,11 @@ program
   .description('Create or list branches across all repositories')
   .option('-c, --create', 'Create a new branch')
   .option('-r, --repo <repos...>', 'Only operate on specific repositories')
+  .option('--include-manifest', 'Include manifest repo in branch operation')
   .action(async (name, options) => {
     try {
       if (name) {
-        await branch(name, { create: options.create, repo: options.repo });
+        await branch(name, { create: options.create, repo: options.repo, includeManifest: options.includeManifest });
       } else {
         await listBranches();
       }

@@ -1,8 +1,8 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import inquirer from 'inquirer';
-import { loadManifest, getAllRepoInfo } from '../../lib/manifest.js';
-import { pathExists, getCurrentBranch } from '../../lib/git.js';
+import { loadManifest, getAllRepoInfo, getManifestRepoInfo } from '../../lib/manifest.js';
+import { pathExists, getCurrentBranch, isGitRepo } from '../../lib/git.js';
 import { findPRByBranch, getLinkedPRInfo, mergePullRequest } from '../../lib/github.js';
 import type { LinkedPR, PRMergeOptions } from '../../types.js';
 
@@ -59,7 +59,23 @@ export async function mergePRs(options: MergeOptions = {}): Promise<void> {
       })
     );
 
+    // Check for manifest PR too
+    const manifestInfo = getManifestRepoInfo(manifest, rootDir);
+    let manifestPR: LinkedPR | null = null;
+    if (manifestInfo && await isGitRepo(manifestInfo.absolutePath)) {
+      const manifestBranch = await getCurrentBranch(manifestInfo.absolutePath);
+      if (manifestBranch === currentBranch) {
+        const pr = await findPRByBranch(manifestInfo.owner, manifestInfo.repo, currentBranch);
+        if (pr) {
+          manifestPR = await getLinkedPRInfo(manifestInfo.owner, manifestInfo.repo, pr.number, manifestInfo.name);
+        }
+      }
+    }
+
     const prsToMerge = prResults.filter((pr): pr is LinkedPR => pr !== null);
+    if (manifestPR) {
+      prsToMerge.push(manifestPR);
+    }
     spinner.stop();
 
     if (prsToMerge.length === 0) {

@@ -1,6 +1,6 @@
 import chalk from 'chalk';
-import { loadManifest, getAllRepoInfo } from '../lib/manifest.js';
-import { pathExists, getGitInstance } from '../lib/git.js';
+import { loadManifest, getAllRepoInfo, getManifestRepoInfo } from '../lib/manifest.js';
+import { pathExists, getGitInstance, isGitRepo } from '../lib/git.js';
 import type { RepoInfo } from '../types.js';
 
 interface DiffOptions {
@@ -51,7 +51,13 @@ async function hasChanges(repoPath: string, staged: boolean): Promise<boolean> {
  */
 export async function diff(options: DiffOptions = {}): Promise<void> {
   const { manifest, rootDir } = await loadManifest();
-  const repos = getAllRepoInfo(manifest, rootDir);
+  let repos: RepoInfo[] = getAllRepoInfo(manifest, rootDir);
+
+  // Include manifest repo if it exists
+  const manifestInfo = getManifestRepoInfo(manifest, rootDir);
+  if (manifestInfo && await isGitRepo(manifestInfo.absolutePath)) {
+    repos = [...repos, manifestInfo];
+  }
 
   let hasAnyChanges = false;
   const outputs: { repo: RepoInfo; diff: string }[] = [];

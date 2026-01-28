@@ -1,6 +1,6 @@
 import chalk from 'chalk';
-import { loadManifest, getAllRepoInfo, getManifestsDir } from '../lib/manifest.js';
-import { getAllRepoStatus } from '../lib/git.js';
+import { loadManifest, getAllRepoInfo, getManifestsDir, getManifestRepoInfo } from '../lib/manifest.js';
+import { getAllRepoStatus, getRepoStatus, isGitRepo } from '../lib/git.js';
 import { getAllLinkStatus } from '../lib/files.js';
 import { getTimingContext } from '../lib/timing.js';
 import type { RepoStatus } from '../types.js';
@@ -69,8 +69,24 @@ export async function status(options: StatusOptions = {}): Promise<void> {
   const statuses = await getAllRepoStatus(repos);
   timing?.endPhase('get repo status');
 
+  // Get manifest status
+  timing?.startPhase('get manifest status');
+  const manifestInfo = getManifestRepoInfo(manifest, rootDir);
+  let manifestStatus: RepoStatus | null = null;
+  if (manifestInfo) {
+    const isRepo = await isGitRepo(manifestInfo.absolutePath);
+    if (isRepo) {
+      manifestStatus = await getRepoStatus(manifestInfo);
+    }
+  }
+  timing?.endPhase('get manifest status');
+
   if (options.json) {
-    console.log(JSON.stringify(statuses, null, 2));
+    const output = {
+      repos: statuses,
+      manifest: manifestStatus,
+    };
+    console.log(JSON.stringify(output, null, 2));
     return;
   }
 
@@ -139,6 +155,41 @@ export async function status(options: StatusOptions = {}): Promise<void> {
   if (branches.size > 1) {
     console.log('');
     console.log(chalk.yellow('  \u26a0 Repositories are on different branches'));
+  }
+
+  // Show manifest status (already fetched above)
+  if (manifestStatus) {
+    console.log('');
+    console.log(chalk.blue('Manifest'));
+
+    const parts: string[] = [];
+
+    // Branch
+    const branchDisplay = manifestStatus.branch.length > 20
+      ? manifestStatus.branch.slice(0, 17) + '...'
+      : manifestStatus.branch;
+    parts.push(`branch: ${chalk.cyan(branchDisplay)}`);
+
+    // Status indicators
+    if (manifestStatus.clean) {
+      parts.push(chalk.green('✓'));
+    } else {
+      const indicators: string[] = [];
+      if (manifestStatus.staged > 0) indicators.push(chalk.green(`+${manifestStatus.staged}`));
+      if (manifestStatus.modified > 0) indicators.push(chalk.yellow(`~${manifestStatus.modified}`));
+      if (manifestStatus.untracked > 0) indicators.push(chalk.dim(`?${manifestStatus.untracked}`));
+      parts.push(indicators.join(' '));
+    }
+
+    // Ahead/behind
+    if (manifestStatus.ahead > 0 || manifestStatus.behind > 0) {
+      const sync: string[] = [];
+      if (manifestStatus.ahead > 0) sync.push(chalk.green(`↑${manifestStatus.ahead}`));
+      if (manifestStatus.behind > 0) sync.push(chalk.red(`↓${manifestStatus.behind}`));
+      parts.push(sync.join(' '));
+    }
+
+    console.log(chalk.dim(`  ${parts.join('  ')}`));
   }
 
   // Show link status summary

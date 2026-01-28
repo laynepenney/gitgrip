@@ -1,13 +1,14 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import inquirer from 'inquirer';
-import { loadManifest, getAllRepoInfo, loadState, saveState, parseGitHubUrl } from '../../lib/manifest.js';
+import { loadManifest, getAllRepoInfo, loadState, saveState, parseGitHubUrl, getManifestRepoInfo } from '../../lib/manifest.js';
 import {
   pathExists,
   getCurrentBranch,
   hasCommitsAhead,
   pushBranch,
   remoteBranchExists,
+  isGitRepo,
 } from '../../lib/git.js';
 import {
   createPullRequest,
@@ -16,7 +17,7 @@ import {
   findPRByBranch,
 } from '../../lib/github.js';
 import { linkBranchToManifestPR, saveLinkedPRs } from '../../lib/linker.js';
-import type { RepoInfo, PRCreateOptions } from '../../types.js';
+import type { RepoInfo, PRCreateOptions, LinkedPR } from '../../types.js';
 
 interface CreateOptions {
   title?: string;
@@ -88,26 +89,49 @@ export async function createPR(options: CreateOptions = {}): Promise<void> {
       })
     );
 
+  // Check manifest for changes too
+  const manifestInfo = getManifestRepoInfo(manifest, rootDir);
+  let manifestHasChanges = false;
+  let manifestNeedsPush = false;
+  let manifestOnSameBranch = false;
+  if (manifestInfo && await isGitRepo(manifestInfo.absolutePath)) {
+    const manifestBranch = await getCurrentBranch(manifestInfo.absolutePath);
+    manifestOnSameBranch = manifestBranch === branchName;
+    if (manifestOnSameBranch) {
+      manifestHasChanges = await hasCommitsAhead(manifestInfo.absolutePath, manifestInfo.default_branch);
+      manifestNeedsPush = manifestHasChanges && !(await remoteBranchExists(manifestInfo.absolutePath, branchName));
+    }
+  }
+
   const withChanges = reposWithChanges.filter((r) => r.hasChanges);
 
-  if (withChanges.length === 0) {
+  if (withChanges.length === 0 && !manifestHasChanges) {
     console.log(chalk.yellow('No repositories have commits ahead of their default branch.'));
     console.log(chalk.dim('Make some commits first, then run this command again.'));
     return;
   }
 
-  console.log(`Found changes in ${withChanges.length} repos:`);
+  const totalChanges = withChanges.length + (manifestHasChanges ? 1 : 0);
+  console.log(`Found changes in ${totalChanges} repos:`);
   for (const { repo } of withChanges) {
     console.log(`  ${chalk.green('•')} ${repo.name}`);
   }
+  if (manifestHasChanges && manifestInfo) {
+    console.log(`  ${chalk.green('•')} ${manifestInfo.name}`);
+  }
   console.log('');
 
-  // Check if any need to be pushed first
+  // Check if any need to be pushed first (including manifest)
   const needsPush = reposWithChanges.filter((r) => r.needsPush);
-  if (needsPush.length > 0) {
+  const allNeedsPush: { repo: RepoInfo; needsPush: boolean }[] = [...needsPush];
+  if (manifestNeedsPush && manifestInfo) {
+    allNeedsPush.push({ repo: manifestInfo, needsPush: true });
+  }
+
+  if (allNeedsPush.length > 0) {
     if (options.push) {
       console.log(chalk.dim('Pushing branches to remote...\n'));
-      for (const { repo } of needsPush) {
+      for (const { repo } of allNeedsPush) {
         const spinner = ora(`Pushing ${repo.name}...`).start();
         try {
           await pushBranch(repo.absolutePath, branchName, 'origin', true);
@@ -121,7 +145,7 @@ export async function createPR(options: CreateOptions = {}): Promise<void> {
       console.log('');
     } else {
       console.log(chalk.yellow('Some branches need to be pushed to remote first:'));
-      for (const { repo } of needsPush) {
+      for (const { repo } of allNeedsPush) {
         console.log(`  ${repo.name}`);
       }
       console.log('');
@@ -163,10 +187,6 @@ export async function createPR(options: CreateOptions = {}): Promise<void> {
   const spinner = ora('Creating pull requests...').start();
 
   try {
-    // First, check if manifest PR already exists
-    // For now, we'll use the first repo with a manifest setting or skip manifest PR
-    // In a real setup, you'd have a manifest repo defined in settings
-
     const reposForPR = withChanges.map((r) => r.repo);
     const prOptions: PRCreateOptions = {
       title,
@@ -175,8 +195,38 @@ export async function createPR(options: CreateOptions = {}): Promise<void> {
       base: options.base,
     };
 
-    // Create PRs in each repo (without manifest reference for now)
+    // Create PRs in each repo
     const linkedPRs = await createLinkedPRs(reposForPR, branchName, prOptions);
+
+    // Create manifest PR if manifest has changes
+    let manifestPR: LinkedPR | null = null;
+    if (manifestHasChanges && manifestInfo) {
+      try {
+        const manifestPRResult = await createPullRequest(
+          manifestInfo.owner,
+          manifestInfo.repo,
+          branchName,
+          manifestInfo.default_branch,
+          title,
+          body,
+          options.draft
+        );
+        manifestPR = {
+          repoName: manifestInfo.name,
+          owner: manifestInfo.owner,
+          repo: manifestInfo.repo,
+          number: manifestPRResult.number,
+          url: manifestPRResult.url,
+          state: 'open',
+          approved: false,
+          checksPass: true,
+          mergeable: true,
+        };
+      } catch (error) {
+        // Don't fail the whole operation if manifest PR fails
+        console.log(chalk.yellow(`\nWarning: Could not create manifest PR: ${error instanceof Error ? error.message : error}`));
+      }
+    }
 
     spinner.succeed('Pull requests created!\n');
 
@@ -184,6 +234,9 @@ export async function createPR(options: CreateOptions = {}): Promise<void> {
     console.log(chalk.green('Created PRs:'));
     for (const pr of linkedPRs) {
       console.log(`  ${pr.repoName}: ${chalk.cyan(pr.url)}`);
+    }
+    if (manifestPR) {
+      console.log(`  ${manifestPR.repoName}: ${chalk.cyan(manifestPR.url)}`);
     }
 
     // Generate a summary for the user
@@ -194,7 +247,7 @@ export async function createPR(options: CreateOptions = {}): Promise<void> {
     // Save state
     const state = await loadState(rootDir);
     // We don't have a manifest PR number in simple mode, use branch name as key
-    state.branchToPR[branchName] = -1; // Placeholder
+    state.branchToPR[branchName] = manifestPR?.number ?? -1;
     await saveState(rootDir, state);
   } catch (error) {
     spinner.fail('Failed to create PRs');
