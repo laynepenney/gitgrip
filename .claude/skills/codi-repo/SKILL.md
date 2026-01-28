@@ -1,7 +1,7 @@
 ---
 name: codi-repo
 description: Multi-repository workflow using codi-repo (cr). Use this when working with multiple repos, creating branches across repos, syncing repos, creating linked pull requests, or any cross-repo operations.
-allowed-tools: Bash(cr *), Bash(node */codi-repo/dist/index.js *)
+allowed-tools: Bash(cr *), Bash(gr *), Bash(node */codi-repo/dist/index.js *)
 ---
 
 # codi-repo Multi-Repository Workflow
@@ -28,12 +28,9 @@ cr sync --no-hooks           # Skip post-sync hooks
 cr branch feat/my-feature              # Create branch across ALL repos
 cr branch feat/x --repo tooling        # Create branch in specific repo only
 cr branch feat/x --repo a --repo b     # Create branch in multiple specific repos
-cr branch feat/x --include-manifest    # Force include manifest repo
 cr checkout feat/my-feature            # Switch branch across ALL repos
 cr checkout -b new-branch              # Create and switch to new branch
 ```
-
-Manifest repo is automatically included in branch operations when it has uncommitted changes.
 
 ### Git Operations Across Repos
 ```bash
@@ -95,20 +92,6 @@ cr run build -- --verbose    # Pass arguments to script
 cr env                       # Show workspace environment variables
 ```
 
-### Run Commands Across Repos (like AOSP repo forall)
-```bash
-cr forall -c "pwd"                           # Run command in all repos
-cr forall -c "git rebase origin/main"        # Rebase all repos
-cr forall -c "npm test" --repo frontend      # Run in specific repo only
-cr forall -c "git stash" --include-manifest  # Include manifest repo
-cr forall -c "npm install" --continue-on-error  # Continue past failures
-```
-
-Environment variables available in command:
-- `REPO_NAME` - Repository name
-- `REPO_PATH` - Absolute path to repo
-- `REPO_URL` - Repository URL
-
 ### Benchmarking & Timing
 ```bash
 cr status --timing           # Show timing breakdown for any command
@@ -119,13 +102,11 @@ cr bench manifest-load -n 10 # Run specific benchmark
 
 ## Workflow Rules
 
-1. **NEVER use raw `git` or `gh` commands** - Use `cr` for ALL operations (branch, add, commit, push, PR)
-2. **Always run `cr sync` before starting new work**
-3. **Always use `cr branch` to create branches** - Creates across all repos simultaneously
-4. **Always use pull requests** - `cr pr create`, never push directly to main
+1. **Always run `cr sync` before starting new work**
+2. **Always use `cr branch` to create branches** - Creates across all repos simultaneously
+3. **Use `cr add`, `cr commit`, `cr push`** instead of raw git commands
+4. **Always use pull requests** - No direct pushes to main
 5. **Check `cr status` frequently** - Before and after operations
-6. **`cr` handles the manifest repo automatically** - No need for separate git operations in `.codi-repo/manifests/`
-7. **If you MUST use raw `git`/`gh`** - Immediately add to `codi-repo/IMPROVEMENTS.md` explaining why `cr` couldn't handle it
 
 ## Typical Workflow
 
@@ -189,17 +170,6 @@ workspace:
       - command: "pnpm install"
         cwd: "./repo-name"
 ```
-
-## Manifest Repo Management
-
-The manifest repo (`.codi-repo/manifests/`) is automatically included in commands when it has changes:
-
-- **`cr status`** shows a separate "Manifest" section with branch, changes, and ahead/behind
-- **`cr add/diff/commit/push`** operate on the manifest alongside regular repos
-- **`cr pr create/status/merge`** handle manifest PRs alongside repo PRs
-- **`cr branch --include-manifest`** explicitly includes manifest in branch creation
-
-No special flags needed for most commands - manifest is auto-detected.
 
 ## Error Recovery
 
