@@ -7,10 +7,7 @@ Items here should be reviewed before creating GitHub issues.
 
 ## Pending Review
 
-#### `cr pr status` and `cr pr merge` should work when repos are on different branches
-- **Problem**: Similar to the `cr pr create` issue (now fixed), `cr pr status` and `cr pr merge` check the branch of ALL repos instead of repos with PRs/changes.
-- **Example**: After fixing `cr pr create`, I still had to use raw `gh pr merge` because `cr pr merge` couldn't find the PRs - it was looking at `main` branch instead of the feature branch.
-- **Proposal**: Apply the same fix as `cr pr create` - only check branch consistency for repos that have open PRs.
+_No items pending review._
 
 ---
 
@@ -23,6 +20,10 @@ _No items approved._
 ## Completed
 
 _Items that have been implemented. Keep for historical reference._
+
+### `cr pr status/merge` branch check fix (Issue #20)
+- **Added in**: PR #21
+- **Description**: `cr pr status` and `cr pr merge` now find PRs by checking each repo's own branch. Repos on their default branch are skipped.
 
 ### `cr pr create` branch check fix
 - **Added in**: PR #19
