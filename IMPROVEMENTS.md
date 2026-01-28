@@ -12,22 +12,26 @@ Items here should be reviewed before creating GitHub issues.
 #### `cr commit`
 - **Problem**: Must use raw `git commit` in individual repos, breaking the "always use cr" philosophy
 - **Proposal**: `cr commit -m "message"` commits staged changes across all repos with changes
+- **GitHub Issue**: [#5](https://github.com/laynepenney/codi-repo/issues/5)
 - **Priority**: High - this is used constantly
 
 #### `cr push`
 - **Problem**: Must use raw `git push` for iterative pushes during PR development
 - **Proposal**: `cr push` pushes current branch in all repos that have commits ahead
 - **Note**: `cr pr create --push` exists but requires creating a PR
+- **GitHub Issue**: [#6](https://github.com/laynepenney/codi-repo/issues/6)
 - **Priority**: High
 
 #### `cr add`
 - **Problem**: Must use raw `git add` in individual repos
 - **Proposal**: `cr add .` or `cr add <file>` stages changes across repos
+- **GitHub Issue**: [#7](https://github.com/laynepenney/codi-repo/issues/7)
 - **Priority**: Medium
 
 #### `cr diff`
 - **Problem**: No way to see diffs across all repos in one view
 - **Proposal**: `cr diff` shows combined diff, `cr diff --stat` for summary
+- **GitHub Issue**: [#8](https://github.com/laynepenney/codi-repo/issues/8)
 - **Priority**: Medium
 
 ### Command Improvements
@@ -44,6 +48,7 @@ Items here should be reviewed before creating GitHub issues.
 - **Problem**: The manifest repo (`.codi-repo/manifests/`) requires manual git commands
 - **Observation**: This creates inconsistency - sometimes you use `cr`, sometimes raw `git`
 - **Proposal**: Consider adding manifest repo to `cr status` output or special handling
+- **GitHub Issue**: [#9](https://github.com/laynepenney/codi-repo/issues/9)
 - **Priority**: Low
 
 #### `cr sync` fails after PR merge when manifest was on feature branch
