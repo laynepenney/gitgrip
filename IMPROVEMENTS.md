@@ -13,16 +13,17 @@ _No items pending review._
 
 ## Approved (Ready for Issues)
 
-#### `cr forall` command (like AOSP `repo forall`)
-- **GitHub Issue**: [#15](https://github.com/laynepenney/codi-repo/issues/15)
-- **Problem**: Some git operations (rebase, cherry-pick, stash, etc.) don't have dedicated `cr` commands yet
-- **Proposal**: Add `cr forall -c "command"` that runs an arbitrary command in each repo
+_No items approved._
 
 ---
 
 ## Completed
 
 _Items that have been implemented. Keep for historical reference._
+
+### `cr forall` command (Issue #15)
+- **Added in**: PR #17
+- **Description**: Run arbitrary commands in each repository with `cr forall -c "command"`. Supports `--repo`, `--include-manifest`, and `--continue-on-error` flags.
 
 ### Manifest repo managed by cr (Issue #9)
 - **Added in**: PR #12
