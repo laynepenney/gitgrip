@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import { loadManifest, getAllRepoInfo } from '../lib/manifest.js';
-import { pathExists, getGitInstance, hasUncommittedChanges } from '../lib/git.js';
+import { pathExists, getGitInstance } from '../lib/git.js';
 import type { RepoInfo } from '../types.js';
 
 interface DiffOptions {

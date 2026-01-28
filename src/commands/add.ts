@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import { loadManifest, getAllRepoInfo } from '../lib/manifest.js';
-import { pathExists, getGitInstance, hasUncommittedChanges } from '../lib/git.js';
+import { pathExists, getGitInstance } from '../lib/git.js';
 import type { RepoInfo } from '../types.js';
 
 interface AddOptions {
@@ -41,10 +41,8 @@ async function stageFiles(repoPath: string, files: string[]): Promise<void> {
  * Stage changes across all repositories
  */
 export async function add(files: string[], options: AddOptions = {}): Promise<void> {
-  const { all = false } = options;
-
-  // Default to staging all if no files specified
-  const filesToAdd = files.length > 0 ? files : ['.'];
+  // Default to staging all if no files specified (or if -A flag used)
+  const filesToAdd = (files.length > 0 && !options.all) ? files : ['.'];
 
   const { manifest, rootDir } = await loadManifest();
   const repos = getAllRepoInfo(manifest, rootDir);
