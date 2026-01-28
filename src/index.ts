@@ -15,6 +15,8 @@ import { env } from './commands/env.js';
 import { bench } from './commands/bench.js';
 import { commit } from './commands/commit.js';
 import { push } from './commands/push.js';
+import { add } from './commands/add.js';
+import { diff } from './commands/diff.js';
 import { TimingContext, formatTimingReport, setTimingContext, getTimingContext } from './lib/timing.js';
 
 const program = new Command();
@@ -109,10 +111,11 @@ program
   .command('branch [name]')
   .description('Create or list branches across all repositories')
   .option('-c, --create', 'Create a new branch')
+  .option('-r, --repo <repos...>', 'Only operate on specific repositories')
   .action(async (name, options) => {
     try {
       if (name) {
-        await branch(name, options);
+        await branch(name, { create: options.create, repo: options.repo });
       } else {
         await listBranches();
       }
@@ -285,6 +288,40 @@ program
       await push({
         setUpstream: options.setUpstream,
         force: options.force,
+      });
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exit(1);
+    }
+  });
+
+// Add command
+program
+  .command('add [files...]')
+  .description('Stage changes across all repositories')
+  .option('-A, --all', 'Stage all changes (same as git add -A)')
+  .action(async (files, options) => {
+    try {
+      await add(files ?? [], { all: options.all });
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exit(1);
+    }
+  });
+
+// Diff command
+program
+  .command('diff')
+  .description('Show diff across all repositories')
+  .option('--staged', 'Show staged changes')
+  .option('--stat', 'Show diffstat')
+  .option('--name-only', 'Show only file names')
+  .action(async (options) => {
+    try {
+      await diff({
+        staged: options.staged,
+        stat: options.stat,
+        nameOnly: options.nameOnly,
       });
     } catch (error) {
       console.error(chalk.red(error instanceof Error ? error.message : String(error)));

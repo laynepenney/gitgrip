@@ -7,28 +7,6 @@ Items here should be reviewed before creating GitHub issues.
 
 ## Pending Review
 
-### Missing Commands
-
-#### `cr add`
-- **Problem**: Must use raw `git add` in individual repos
-- **Proposal**: `cr add .` or `cr add <file>` stages changes across repos
-- **GitHub Issue**: [#7](https://github.com/laynepenney/codi-repo/issues/7)
-- **Priority**: Medium
-
-#### `cr diff`
-- **Problem**: No way to see diffs across all repos in one view
-- **Proposal**: `cr diff` shows combined diff, `cr diff --stat` for summary
-- **GitHub Issue**: [#8](https://github.com/laynepenney/codi-repo/issues/8)
-- **Priority**: Medium
-
-### Command Improvements
-
-#### `cr branch --repo <name>`
-- **Problem**: `cr branch` always creates branches in ALL repos even when changes are isolated
-- **Proposal**: Add `--repo` flag to target specific repos
-- **GitHub Issue**: [#2](https://github.com/laynepenney/codi-repo/issues/2)
-- **Priority**: Medium
-
 ### Workflow Gaps
 
 #### Manifest repo not managed by cr
@@ -69,3 +47,15 @@ _Items that have been implemented. Keep for historical reference._
 ### `--timing` flag
 - **Added in**: PR #1
 - **Description**: Global `--timing` flag shows operation timing breakdown
+
+### `cr add` command (Issue #7)
+- **Added in**: PR #11
+- **Description**: Stage changes across all repos with `cr add .` or `cr add <files>`
+
+### `cr diff` command (Issue #8)
+- **Added in**: PR #11
+- **Description**: Show diff across all repos with `cr diff`, supports `--staged`, `--stat`, `--name-only`
+
+### `cr branch --repo` flag (Issue #2)
+- **Added in**: PR #11
+- **Description**: Create branches in specific repos only with `cr branch feat/x --repo tooling`

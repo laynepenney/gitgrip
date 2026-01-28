@@ -25,9 +25,33 @@ cr sync --no-hooks           # Skip post-sync hooks
 
 ### Branching
 ```bash
-cr branch feat/my-feature    # Create branch across ALL repos
-cr checkout feat/my-feature  # Switch branch across ALL repos
-cr checkout -b new-branch    # Create and switch to new branch
+cr branch feat/my-feature              # Create branch across ALL repos
+cr branch feat/x --repo tooling        # Create branch in specific repo only
+cr branch feat/x --repo a --repo b     # Create branch in multiple specific repos
+cr checkout feat/my-feature            # Switch branch across ALL repos
+cr checkout -b new-branch              # Create and switch to new branch
+```
+
+### Git Operations Across Repos
+```bash
+# Stage changes
+cr add                       # Stage all changes in all repos
+cr add .                     # Same as above
+cr add src/file.ts           # Stage specific files
+
+# View changes
+cr diff                      # Show diff across all repos (colored)
+cr diff --staged             # Show staged changes only
+cr diff --stat               # Show diffstat summary
+cr diff --name-only          # Show only filenames
+
+# Commit
+cr commit -m "message"       # Commit staged changes in all repos
+cr commit -a -m "message"    # Stage all and commit
+
+# Push
+cr push                      # Push all repos with commits ahead
+cr push -u                   # Set upstream tracking
 ```
 
 ### Pull Request Workflow
@@ -38,6 +62,7 @@ cr checkout -b new-branch    # Create and switch to new branch
 # 1. Create linked PRs across repos with changes
 cr pr create -t "feat: description"
 cr pr create -t "title" -b "body" --draft    # Draft PR with body
+cr pr create -t "title" --push               # Push before creating PR
 
 # 2. Check PR status
 cr pr status
@@ -67,11 +92,19 @@ cr run build -- --verbose    # Pass arguments to script
 cr env                       # Show workspace environment variables
 ```
 
+### Benchmarking & Timing
+```bash
+cr status --timing           # Show timing breakdown for any command
+cr bench                     # Run all benchmarks
+cr bench --list              # List available benchmarks
+cr bench manifest-load -n 10 # Run specific benchmark
+```
+
 ## Workflow Rules
 
 1. **Always run `cr sync` before starting new work**
 2. **Always use `cr branch` to create branches** - Creates across all repos simultaneously
-3. **Never use raw `git` commands** for branch/checkout/push operations
+3. **Use `cr add`, `cr commit`, `cr push`** instead of raw git commands
 4. **Always use pull requests** - No direct pushes to main
 5. **Check `cr status` frequently** - Before and after operations
 
@@ -83,9 +116,15 @@ cr sync
 cr status
 cr branch feat/my-feature
 
-# After making changes
-cr status                           # Verify changes
-cr pr create -t "feat: my feature"  # Create linked PRs
+# Making changes
+# ... edit files ...
+cr diff                             # Review changes
+cr add .                            # Stage changes
+cr commit -m "feat: my changes"     # Commit
+cr push -u                          # Push with upstream
+
+# Creating PR
+cr pr create -t "feat: my feature"
 
 # After PR approval
 cr pr merge

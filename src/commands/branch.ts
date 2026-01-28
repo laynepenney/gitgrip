@@ -12,6 +12,7 @@ import type { RepoInfo } from '../types.js';
 
 interface BranchOptions {
   create?: boolean;
+  repo?: string[];
 }
 
 /**
@@ -19,7 +20,27 @@ interface BranchOptions {
  */
 export async function branch(branchName: string, options: BranchOptions = {}): Promise<void> {
   const { manifest, rootDir } = await loadManifest();
-  const repos = getAllRepoInfo(manifest, rootDir);
+  let repos = getAllRepoInfo(manifest, rootDir);
+
+  // Filter by --repo flag if specified
+  if (options.repo && options.repo.length > 0) {
+    const requestedRepos = new Set(options.repo);
+    const filteredRepos = repos.filter((r) => requestedRepos.has(r.name));
+
+    // Check for unknown repo names
+    const knownNames = new Set(repos.map((r) => r.name));
+    const unknownRepos = options.repo.filter((name) => !knownNames.has(name));
+    if (unknownRepos.length > 0) {
+      console.log(chalk.yellow(`Unknown repositories: ${unknownRepos.join(', ')}`));
+      console.log(chalk.dim(`Available: ${repos.map((r) => r.name).join(', ')}\n`));
+    }
+
+    repos = filteredRepos;
+    if (repos.length === 0) {
+      console.log(chalk.red('No valid repositories specified.'));
+      return;
+    }
+  }
 
   // Filter to cloned repos only
   const clonedRepos: RepoInfo[] = [];
