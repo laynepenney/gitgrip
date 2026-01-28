@@ -93,7 +93,7 @@ export async function createPR(options: CreateOptions = {}): Promise<void> {
       console.log(`  ${manifestInfo.name}: ${chalk.cyan(manifestBranch)}`);
     }
     console.log('');
-    console.log(chalk.dim('Use `codi-repo checkout <branch>` to sync branches first.'));
+    console.log(chalk.dim('Use `gitgrip checkout <branch>` to sync branches first.'));
     return;
   }
 
@@ -103,7 +103,7 @@ export async function createPR(options: CreateOptions = {}): Promise<void> {
   const onDefaultBranch = withChanges.some((r) => r.repo.default_branch === branchName);
   if (onDefaultBranch) {
     console.log(chalk.yellow(`You're on the default branch (${branchName}).`));
-    console.log(chalk.dim('Create a feature branch first with `codi-repo branch <name>`.'));
+    console.log(chalk.dim('Create a feature branch first with `gitgrip branch <name>`.'));
     return;
   }
 
@@ -239,8 +239,8 @@ export async function createPR(options: CreateOptions = {}): Promise<void> {
 
     // Generate a summary for the user
     console.log('');
-    console.log(chalk.dim('To view PR status: codi-repo pr status'));
-    console.log(chalk.dim('To merge all PRs:  codi-repo pr merge'));
+    console.log(chalk.dim('To view PR status: gitgrip pr status'));
+    console.log(chalk.dim('To merge all PRs:  gitgrip pr merge'));
 
     // Save state
     const state = await loadState(rootDir);

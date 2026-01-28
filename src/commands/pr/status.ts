@@ -77,7 +77,7 @@ export async function prStatus(options: StatusOptions = {}): Promise<void> {
 
     if (foundPRs.length === 0) {
       console.log(chalk.yellow('No open PRs found.'));
-      console.log(chalk.dim('\nCreate PRs with: codi-repo pr create'));
+      console.log(chalk.dim('\nCreate PRs with: gitgrip pr create'));
       return;
     }
 
@@ -145,7 +145,7 @@ export async function prStatus(options: StatusOptions = {}): Promise<void> {
 
     if (allOpen && allApproved && allChecksPass && allMergeable) {
       console.log(chalk.green('  ✓ All PRs are ready to merge'));
-      console.log(chalk.dim('\n  Run `codi-repo pr merge` to merge all PRs.'));
+      console.log(chalk.dim('\n  Run `gitgrip pr merge` to merge all PRs.'));
     } else {
       const issues: string[] = [];
       if (!allOpen) issues.push('some PRs are not open');

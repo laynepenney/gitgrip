@@ -1,7 +1,9 @@
-# codi-repo Improvement Ideas
+# gitgrip Improvement Ideas
 
-This file captures friction points, feature ideas, and bugs discovered while using `cr`.
+This file captures friction points, feature ideas, and bugs discovered while using `gr`.
 Items here should be reviewed before creating GitHub issues.
+
+> **Note**: Historical entries may reference `cr` (the old command name). The current command is `gr`.
 
 ---
 

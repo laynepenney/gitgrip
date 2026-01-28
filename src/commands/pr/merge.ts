@@ -188,7 +188,7 @@ export async function mergePRs(options: MergeOptions = {}): Promise<void> {
 
       if (mergeOptions.deleteBranch) {
         console.log(chalk.dim('\nRemote branches have been deleted.'));
-        console.log(chalk.dim('Switch to default branch with: codi-repo checkout main'));
+        console.log(chalk.dim('Switch to default branch with: gitgrip checkout main'));
       }
     } else {
       console.log(

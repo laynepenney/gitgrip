@@ -4,7 +4,8 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
+| 0.2.x   | :white_check_mark: |
+| 0.1.x   | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -22,7 +23,7 @@ We aim to respond within 48 hours and will work with you to understand and addre
 
 ## Security Considerations
 
-codi-repo interacts with:
+gitgrip interacts with:
 - **Git repositories** - Uses your local git credentials
 - **GitHub API** - Uses `gh` CLI authentication
 - **File system** - Reads/writes to workspace directories

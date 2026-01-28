@@ -1,6 +1,6 @@
 name: 'Cross-Repo PR Status Sync'
 description: 'Synchronize status between linked cross-repository PRs'
-author: 'codi-repo'
+author: 'gitgrip'
 
 inputs:
   manifest_repo:
@@ -21,10 +21,10 @@ runs:
       with:
         node-version: '20'
 
-    - name: Install codi-repo
+    - name: Install gitgrip
       shell: bash
       run: |
-        npm install -g codi-repo || npm install codi-repo
+        npm install -g gitgrip || npm install gitgrip
 
     - name: Sync PR Status
       shell: bash
@@ -36,7 +36,7 @@ runs:
         # If manifest PR is provided, sync that specific PR
         if [ -n "$MANIFEST_PR" ]; then
           echo "Syncing manifest PR #$MANIFEST_PR"
-          codi-repo pr status --json > status.json
+          gr pr status --json > status.json
 
           # Update manifest PR body with current status
           # This would call the GitHub API to update the PR
@@ -46,7 +46,7 @@ runs:
           # In a PR context, we can get the PR number from the event
           if [ -n "${{ github.event.pull_request.number }}" ]; then
             echo "Found PR #${{ github.event.pull_request.number }}"
-            codi-repo pr status
+            gr pr status
           fi
         fi
 

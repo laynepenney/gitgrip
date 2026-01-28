@@ -26,7 +26,7 @@ export async function checkout(branchName: string, options: CheckoutOptions = {}
   }
 
   if (clonedRepos.length === 0) {
-    console.log(chalk.yellow('No repositories are cloned. Run `codi-repo init --clone` first.'));
+    console.log(chalk.yellow('No repositories are cloned. Run `gitgrip init --clone` first.'));
     return;
   }
 
@@ -55,7 +55,7 @@ export async function checkout(branchName: string, options: CheckoutOptions = {}
       console.log(chalk.dim(`  - ${repo.name}`));
     }
     console.log('');
-    console.log(chalk.dim(`Use 'codi-repo branch ${branchName}' to create it everywhere.`));
+    console.log(chalk.dim(`Use 'gitgrip branch ${branchName}' to create it everywhere.`));
     return;
   }
 

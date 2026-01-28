@@ -1,139 +1,77 @@
-# Testing codi-repo
-
-## Unit Tests (Mocked)
-
-Run all unit tests:
-```bash
-npm test
-```
-
-These tests mock the GitHub API and git operations, so they don't require any external access.
-
-## E2E Tests (Real GitHub API)
-
-To run tests against the real GitHub API:
-
-```bash
-# Set up test environment
-export TEST_GITHUB_OWNER=your-username
-export TEST_GITHUB_REPO=your-test-repo
-
-# Run E2E tests
-GITHUB_E2E=1 npx vitest run src/lib/__tests__/github.e2e.test.ts
-```
-
-Requirements:
-- `gh` CLI authenticated (`gh auth login`), OR
-- `GITHUB_TOKEN` environment variable set
-- Access to the test repository
+# Testing gitgrip
 
 ## Manual Testing
 
-### 1. Set Up Test Workspace
+### Setup Test Environment
 
 ```bash
-# Create a test directory
-mkdir ~/test-codi-repo && cd ~/test-codi-repo
-
-# Initialize (creates sample manifest)
-npx codi-repo init
-
-# Edit the manifest to point to your test repos
-vim codi-repos.yaml
+mkdir ~/test-gitgrip && cd ~/test-gitgrip
+npx gitgrip init <manifest-url>
 ```
 
-Example manifest for testing:
+### Create Test Manifest
+
+Create a manifest repository with `manifest.yaml`:
+
 ```yaml
 version: 1
+
 repos:
   test-public:
-    url: git@github.com:your-username/test-public.git
+    url: git@github.com:yourusername/test-public.git
     path: ./test-public
     default_branch: main
   test-private:
-    url: git@github.com:your-username/test-private.git
+    url: git@github.com:yourusername/test-private.git
     path: ./test-private
     default_branch: main
+
 settings:
   pr_prefix: "[cross-repo]"
   merge_strategy: all-or-nothing
 ```
 
-### 2. Clone Repositories
+### Test Commands
 
 ```bash
-npx codi-repo init --clone
-```
+# Initialize workspace
+npx gitgrip init <manifest-url>
 
-### 3. Test Branch Operations
-
-```bash
 # Check status
-npx codi-repo status
+npx gitgrip status
 
-# Create a feature branch in all repos
-npx codi-repo branch feature/test-1
-
-# Make changes in each repo
-echo "test" >> test-public/test.txt
-echo "test" >> test-private/test.txt
-
-# Commit changes
-cd test-public && git add . && git commit -m "Test change" && cd ..
-cd test-private && git add . && git commit -m "Test change" && cd ..
+# Create feature branch
+npx gitgrip branch feature/test-1
 
 # Check status again
-npx codi-repo status
-```
+npx gitgrip status
 
-### 4. Test PR Creation
-
-```bash
-# Create linked PRs (will push branches first)
-npx codi-repo pr create --push --title "Test cross-repo PR"
+# Create cross-repo PR
+npx gitgrip pr create --push --title "Test cross-repo PR"
 
 # Check PR status
-npx codi-repo pr status
+npx gitgrip pr status
+
+# Merge PRs
+npx gitgrip pr merge
 ```
 
-### 5. Test PR Merge
+### Test Repositories
+
+Create test repositories:
+   - `test-public` (public)
+   - `test-private` (private)
+
+### Debug Mode
 
 ```bash
-# After PRs are approved
-npx codi-repo pr merge
+DEBUG=* npx gitgrip status
 ```
 
-## Creating Test Repositories
+## Automated Tests
 
-For thorough testing, create 2-3 test repositories on GitHub:
-
-1. Go to github.com and create new repos:
-   - `test-codi-public` (public)
-   - `test-codi-private` (private)
-
-2. Add a simple file to each:
-   ```bash
-   echo "# Test Repo" > README.md
-   git add . && git commit -m "Initial commit"
-   git push origin main
-   ```
-
-3. Update your manifest to use these repos
-
-## Debugging
-
-Enable verbose output:
 ```bash
-DEBUG=* npx codi-repo status
-```
-
-Check GitHub token:
-```bash
-gh auth status
-gh auth token
-```
-
-Test GitHub API directly:
-```bash
-gh api repos/owner/repo/pulls
+pnpm test              # Run all tests
+pnpm test:watch        # Watch mode
+pnpm test -- --grep "manifest"  # Filter tests
 ```

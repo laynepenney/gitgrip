@@ -85,7 +85,7 @@ export async function sync(options: SyncOptions = {}): Promise<void> {
     const exists = await pathExists(repo.absolutePath);
 
     if (!exists) {
-      console.log(chalk.yellow(`  ${repo.name}: not cloned (run 'codi-repo init <url>')`));
+      console.log(chalk.yellow(`  ${repo.name}: not cloned (run 'gitgrip init <url>')`));
       results.push({ repo, success: false, error: 'not cloned' });
       continue;
     }

@@ -56,7 +56,7 @@ export async function branch(branchName: string, options: BranchOptions = {}): P
   }
 
   if (clonedRepos.length === 0) {
-    console.log(chalk.yellow('No repositories are cloned. Run `codi-repo init --clone` first.'));
+    console.log(chalk.yellow('No repositories are cloned. Run `gitgrip init --clone` first.'));
     return;
   }
 

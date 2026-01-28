@@ -104,8 +104,8 @@ export async function bench(operation: string | undefined, options: BenchOptions
   try {
     await loadManifest();
   } catch {
-    console.log(chalk.yellow('Not in a codi-repo workspace.'));
-    console.log(chalk.dim('Run `codi-repo init <manifest-url>` first.'));
+    console.log(chalk.yellow('Not in a gitgrip workspace.'));
+    console.log(chalk.dim('Run `gitgrip init <manifest-url>` first.'));
     return;
   }
 

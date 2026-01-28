@@ -117,7 +117,7 @@ export interface WorkspaceConfig {
 }
 
 /**
- * The full manifest file structure (codi-repos.yaml)
+ * The full manifest file structure (manifest.yaml)
  */
 export interface Manifest {
   version: number;
@@ -210,7 +210,7 @@ export interface ManifestPR {
 }
 
 /**
- * State file for tracking cross-repo work (.codi-repo/state.json)
+ * State file for tracking cross-repo work (.gitgrip/state.json)
  */
 export interface StateFile {
   /** Current manifest PR being worked on */
