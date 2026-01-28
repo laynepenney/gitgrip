@@ -16,76 +16,79 @@ export async function prStatus(options: StatusOptions = {}): Promise<void> {
   const { manifest, rootDir } = await loadManifest();
   const repos = getAllRepoInfo(manifest, rootDir);
 
-  // Get current branch from first cloned repo
-  let currentBranch: string | null = null;
+  // Check if any repos are cloned
+  const clonedRepos = [];
   for (const repo of repos) {
     if (await pathExists(repo.absolutePath)) {
-      currentBranch = await getCurrentBranch(repo.absolutePath);
-      break;
+      clonedRepos.push(repo);
     }
   }
 
-  if (!currentBranch) {
+  if (clonedRepos.length === 0) {
     console.log(chalk.yellow('No repositories are cloned.'));
     return;
   }
 
-  console.log(chalk.blue(`PR Status for branch: ${chalk.cyan(currentBranch)}\n`));
-
   const spinner = ora('Fetching PR status...').start();
 
   try {
-    const prStatuses: (LinkedPR | null)[] = await Promise.all(
-      repos.map(async (repo) => {
-        if (!(await pathExists(repo.absolutePath))) {
-          return null;
-        }
-
-        // Check if this repo is on the same branch
+    // Find PRs for each repo based on its own current branch (not a single global branch)
+    const prStatuses: (LinkedPR & { branch: string } | null)[] = await Promise.all(
+      clonedRepos.map(async (repo) => {
         const branch = await getCurrentBranch(repo.absolutePath);
-        if (branch !== currentBranch) {
+
+        // Skip repos on their default branch (no PR expected)
+        if (branch === repo.default_branch) {
           return null;
         }
 
-        // Find PR for this branch
-        const pr = await findPRByBranch(repo.owner, repo.repo, currentBranch);
+        // Find PR for this repo's current branch
+        const pr = await findPRByBranch(repo.owner, repo.repo, branch);
         if (!pr) {
           return null;
         }
 
         // Get full PR info
-        return getLinkedPRInfo(repo.owner, repo.repo, pr.number, repo.name);
+        const prInfo = await getLinkedPRInfo(repo.owner, repo.repo, pr.number, repo.name);
+        return { ...prInfo, branch };
       })
     );
 
     // Check for manifest PR too
     const manifestInfo = getManifestRepoInfo(manifest, rootDir);
-    let manifestPR: LinkedPR | null = null;
+    let manifestPR: (LinkedPR & { branch: string }) | null = null;
     if (manifestInfo && await isGitRepo(manifestInfo.absolutePath)) {
       const manifestBranch = await getCurrentBranch(manifestInfo.absolutePath);
-      if (manifestBranch === currentBranch) {
-        const pr = await findPRByBranch(manifestInfo.owner, manifestInfo.repo, currentBranch);
+      if (manifestBranch !== manifestInfo.default_branch) {
+        const pr = await findPRByBranch(manifestInfo.owner, manifestInfo.repo, manifestBranch);
         if (pr) {
-          manifestPR = await getLinkedPRInfo(manifestInfo.owner, manifestInfo.repo, pr.number, manifestInfo.name);
+          const prInfo = await getLinkedPRInfo(manifestInfo.owner, manifestInfo.repo, pr.number, manifestInfo.name);
+          manifestPR = { ...prInfo, branch: manifestBranch };
         }
       }
     }
 
     spinner.stop();
 
-    const foundPRs = prStatuses.filter((pr): pr is LinkedPR => pr !== null);
+    const foundPRs = prStatuses.filter((pr): pr is LinkedPR & { branch: string } => pr !== null);
     if (manifestPR) {
       foundPRs.push(manifestPR);
     }
 
-    if (options.json) {
-      console.log(JSON.stringify(foundPRs, null, 2));
+    if (foundPRs.length === 0) {
+      console.log(chalk.yellow('No open PRs found.'));
+      console.log(chalk.dim('\nCreate PRs with: codi-repo pr create'));
       return;
     }
 
-    if (foundPRs.length === 0) {
-      console.log(chalk.yellow('No open PRs found for this branch.'));
-      console.log(chalk.dim('\nCreate PRs with: codi-repo pr create'));
+    // Determine the branch name for display (use the common branch if all same, otherwise show per-PR)
+    const branches = [...new Set(foundPRs.map(pr => pr.branch))];
+    const branchDisplay = branches.length === 1 ? branches[0] : `${branches.length} branches`;
+
+    console.log(chalk.blue(`PR Status for branch: ${chalk.cyan(branchDisplay)}\n`));
+
+    if (options.json) {
+      console.log(JSON.stringify(foundPRs, null, 2));
       return;
     }
 
