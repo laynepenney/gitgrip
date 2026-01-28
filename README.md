@@ -135,6 +135,34 @@ Pull request management subcommands:
 - `cr pr status` - Show status of linked PRs (including manifest PR)
 - `cr pr merge` - Merge all linked PRs atomically (including manifest PR)
 
+### `cr forall -c "<command>"`
+
+Run a command in each repository (like AOSP's `repo forall`).
+
+| Option | Description |
+|--------|-------------|
+| `-c, --command` | Command to run (required) |
+| `-r, --repo <repos...>` | Only run in specific repos |
+| `--include-manifest` | Include manifest repo |
+| `--continue-on-error` | Continue if command fails in a repo |
+
+Environment variables available in command:
+- `REPO_NAME` - Repository name
+- `REPO_PATH` - Absolute path to repo
+- `REPO_URL` - Repository URL
+
+Example:
+```bash
+# Show current branch in all repos
+cr forall -c "git rev-parse --abbrev-ref HEAD"
+
+# Rebase all repos onto main
+cr forall -c "git rebase origin/main"
+
+# Run only in specific repos
+cr forall -c "npm test" --repo frontend --repo backend
+```
+
 ## Manifest Format
 
 The manifest file (`manifest.yaml`) defines your workspace:

@@ -17,6 +17,7 @@ import { commit } from './commands/commit.js';
 import { push } from './commands/push.js';
 import { add } from './commands/add.js';
 import { diff } from './commands/diff.js';
+import { forall } from './commands/forall.js';
 import { TimingContext, formatTimingReport, setTimingContext, getTimingContext } from './lib/timing.js';
 
 const program = new Command();
@@ -323,6 +324,28 @@ program
         staged: options.staged,
         stat: options.stat,
         nameOnly: options.nameOnly,
+      });
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exit(1);
+    }
+  });
+
+// Forall command - run command in all repos (like AOSP repo forall)
+program
+  .command('forall')
+  .description('Run a command in each repository (like AOSP repo forall)')
+  .requiredOption('-c, --command <command>', 'Command to run in each repo')
+  .option('-r, --repo <repos...>', 'Only run in specific repositories')
+  .option('--include-manifest', 'Include manifest repo')
+  .option('--continue-on-error', 'Continue running in other repos if command fails')
+  .action(async (options) => {
+    try {
+      await forall({
+        command: options.command,
+        repo: options.repo,
+        includeManifest: options.includeManifest,
+        continueOnError: options.continueOnError,
       });
     } catch (error) {
       console.error(chalk.red(error instanceof Error ? error.message : String(error)));

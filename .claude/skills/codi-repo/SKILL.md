@@ -95,6 +95,20 @@ cr run build -- --verbose    # Pass arguments to script
 cr env                       # Show workspace environment variables
 ```
 
+### Run Commands Across Repos (like AOSP repo forall)
+```bash
+cr forall -c "pwd"                           # Run command in all repos
+cr forall -c "git rebase origin/main"        # Rebase all repos
+cr forall -c "npm test" --repo frontend      # Run in specific repo only
+cr forall -c "git stash" --include-manifest  # Include manifest repo
+cr forall -c "npm install" --continue-on-error  # Continue past failures
+```
+
+Environment variables available in command:
+- `REPO_NAME` - Repository name
+- `REPO_PATH` - Absolute path to repo
+- `REPO_URL` - Repository URL
+
 ### Benchmarking & Timing
 ```bash
 cr status --timing           # Show timing breakdown for any command

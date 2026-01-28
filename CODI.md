@@ -148,6 +148,7 @@ src/
 │   ├── run.ts            # cr run
 │   ├── env.ts            # cr env
 │   ├── bench.ts          # cr bench
+│   ├── forall.ts         # cr forall (run command in each repo)
 │   └── pr/               # PR subcommands
 │       ├── index.ts
 │       ├── create.ts     # Includes manifest PR
@@ -188,6 +189,7 @@ All commands use `cr` alias:
 - `cr run` - Execute workspace scripts
 - `cr env` - Show workspace environment variables
 - `cr bench` - Run benchmarks
+- `cr forall -c "cmd"` - Run command in each repo (like AOSP repo forall)
 
 ### File Linking
 - `copyfile`: Copy file from repo to workspace
