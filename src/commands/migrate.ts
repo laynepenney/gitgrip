@@ -6,7 +6,7 @@ import inquirer from 'inquirer';
 import { simpleGit } from 'simple-git';
 import {
   findLegacyManifestPath,
-  getCodiRepoDir,
+  getNewGitgripDir,
   getManifestsDir,
 } from '../lib/manifest.js';
 import { pathExists } from '../lib/git.js';
@@ -17,12 +17,12 @@ interface MigrateOptions {
 }
 
 /**
- * Migrate from old codi-repos.yaml format to new .codi-repo/manifests/ structure
+ * Migrate from old codi-repos.yaml format to new .gitgrip/manifests/ structure
  *
  * This command:
  * 1. Finds codi-repos.yaml in current or parent directory
- * 2. Creates .codi-repo/manifests/ as a new git repo
- * 3. Moves codi-repos.yaml to .codi-repo/manifests/manifest.yaml
+ * 2. Creates .gitgrip/manifests/ as a new git repo
+ * 3. Moves codi-repos.yaml to .gitgrip/manifests/manifest.yaml
  * 4. Commits the manifest
  * 5. Optionally pushes to a remote
  */
@@ -36,7 +36,7 @@ export async function migrate(options: MigrateOptions = {}): Promise<void> {
   }
 
   const workspaceRoot = dirname(legacyPath);
-  const codiRepoDir = getCodiRepoDir(workspaceRoot);
+  const gitgripDir = getNewGitgripDir(workspaceRoot);
   const manifestsDir = getManifestsDir(workspaceRoot);
 
   console.log(chalk.blue('Migration Plan:'));
@@ -44,14 +44,14 @@ export async function migrate(options: MigrateOptions = {}): Promise<void> {
   console.log(chalk.dim(`  To:   ${manifestsDir}/manifest.yaml`));
   console.log('');
 
-  // Check if .codi-repo already exists
-  if (await pathExists(codiRepoDir)) {
+  // Check if .gitgrip already exists
+  if (await pathExists(gitgripDir)) {
     if (!options.force) {
       const { proceed } = await inquirer.prompt([
         {
           type: 'confirm',
           name: 'proceed',
-          message: '.codi-repo/ already exists. Overwrite?',
+          message: '.gitgrip/ already exists. Overwrite?',
           default: false,
         },
       ]);
@@ -60,8 +60,8 @@ export async function migrate(options: MigrateOptions = {}): Promise<void> {
         return;
       }
     }
-    // Remove existing .codi-repo
-    await rm(codiRepoDir, { recursive: true, force: true });
+    // Remove existing .gitgrip
+    await rm(gitgripDir, { recursive: true, force: true });
   }
 
   // Ask for confirmation
@@ -80,11 +80,11 @@ export async function migrate(options: MigrateOptions = {}): Promise<void> {
     }
   }
 
-  // Create .codi-repo/manifests/ directory
-  const mkdirSpinner = ora('Creating .codi-repo/manifests/...').start();
+  // Create .gitgrip/manifests/ directory
+  const mkdirSpinner = ora('Creating .gitgrip/manifests/...').start();
   try {
     await mkdir(manifestsDir, { recursive: true });
-    mkdirSpinner.succeed('Created .codi-repo/manifests/');
+    mkdirSpinner.succeed('Created .gitgrip/manifests/');
   } catch (error) {
     mkdirSpinner.fail('Failed to create directories');
     throw error;
@@ -163,7 +163,7 @@ export async function migrate(options: MigrateOptions = {}): Promise<void> {
     removeSpinner.warn('Could not remove old codi-repos.yaml (you may want to remove it manually)');
   }
 
-  // Remove old .codi-repo entries from .gitignore if present
+  // Remove old .gitgrip entries from .gitignore if present
   const gitignorePath = resolve(workspaceRoot, '.gitignore');
   if (await pathExists(gitignorePath)) {
     try {
@@ -180,13 +180,13 @@ export async function migrate(options: MigrateOptions = {}): Promise<void> {
   console.log('');
   console.log(chalk.dim('Your workspace is now using the AOSP-style structure:'));
   console.log(chalk.cyan(`  ${workspaceRoot}/`));
-  console.log(chalk.cyan('  ├── .codi-repo/'));
+  console.log(chalk.cyan('  ├── .gitgrip/'));
   console.log(chalk.cyan('  │   └── manifests/'));
   console.log(chalk.cyan('  │       ├── .git/'));
   console.log(chalk.cyan('  │       └── manifest.yaml'));
   console.log(chalk.cyan('  └── <your repos>/'));
   console.log('');
-  console.log(chalk.dim('Run `codi-repo status` to verify everything is working.'));
+  console.log(chalk.dim('Run `gr status` to verify everything is working.'));
 
   if (!remoteUrl) {
     console.log('');

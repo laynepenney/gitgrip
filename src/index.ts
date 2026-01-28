@@ -23,9 +23,9 @@ import { TimingContext, formatTimingReport, setTimingContext, getTimingContext }
 const program = new Command();
 
 program
-  .name('codi-repo')
-  .description('Multi-repository orchestration CLI for unified PR workflows\n\nAlias: You can also use "cr" as a shorthand for "codi-repo"')
-  .version('0.1.2')
+  .name('gitgrip')
+  .description('git a grip - Multi-repo workflow tool\n\nShorthand: Use "gr" instead of "gitgrip"')
+  .version('0.2.0')
   .option('--timing', 'Show timing breakdown for operations');
 
 // Set up timing hooks
@@ -47,7 +47,7 @@ program.hook('postAction', () => {
 // Init command - AOSP-style with manifest URL
 program
   .command('init <manifest-url>')
-  .description('Initialize a codi-repo workspace from a manifest repository')
+  .description('Initialize a gitgrip workspace from a manifest repository')
   .option('-b, --branch <branch>', 'Branch to clone from manifest repository')
   .action(async (manifestUrl, options) => {
     try {
@@ -61,7 +61,7 @@ program
 // Migrate command - convert legacy format to new structure
 program
   .command('migrate')
-  .description('Migrate from legacy codi-repos.yaml to .codi-repo/manifests/ structure')
+  .description('Migrate from legacy format to .gitgrip/manifests/ structure')
   .option('-f, --force', 'Skip confirmation prompts')
   .option('-r, --remote <url>', 'Remote URL to push manifest repository')
   .action(async (options) => {
