@@ -96,6 +96,37 @@ All git operations must go through `gr`. There is no exception.
 
 Forgetting to update docs creates drift between code and documentation. Always check these files when adding/modifying commands.
 
+### Release Process
+
+When creating a new release:
+
+1. **Update version numbers:**
+   - [ ] `package.json` - version field
+   - [ ] `src/index.ts` - `.version()` in Commander setup
+   - [ ] `CHANGELOG.md` - Change `[Unreleased]` to `[x.y.z] - YYYY-MM-DD`
+
+2. **Create and merge release PR:**
+   ```bash
+   gr branch release/vX.Y.Z
+   # Make version changes
+   gr add . && gr commit -m "chore: release vX.Y.Z"
+   gr push -u && gr pr create -t "chore: release vX.Y.Z"
+   gr pr merge
+   ```
+
+3. **Create GitHub release:**
+   ```bash
+   gh release create vX.Y.Z --title "vX.Y.Z" --notes "..."
+   ```
+   This triggers GitHub Actions to automatically publish to npm.
+
+4. **CRITICAL: Update Homebrew formula:**
+   - [ ] Update `homebrew-tap/Formula/gitgrip.rb` with new version and SHA256
+   - [ ] Test with `brew install --build-from-source ./Formula/gitgrip.rb`
+   - [ ] Commit and push to homebrew-tap repo
+
+Forgetting to update Homebrew means users on `brew upgrade` won't get the new version.
+
 ## Project Structure
 
 ```
