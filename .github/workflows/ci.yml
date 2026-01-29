@@ -51,3 +51,6 @@ jobs:
 
       - name: Type check
         run: pnpm exec tsc --noEmit
+
+      - name: Run benchmarks
+        run: pnpm bench
