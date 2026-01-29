@@ -9,6 +9,48 @@ Items here should be reviewed before creating GitHub issues.
 
 ## Pending Review
 
+### Missing: Single-repo branch creation from existing commit
+
+**Discovered**: 2026-01-29 during centralized griptree metadata implementation
+
+**Problem**: Accidentally committed to `main` instead of a feature branch. Needed to create a feature branch from the current commit, then reset main to origin/main. `gr branch` creates branches across ALL repos, which isn't appropriate for fixing a single-repo mistake.
+
+**Workaround**:
+```bash
+cd gitgrip
+git branch feat/centralized-griptree-metadata  # Create branch at HEAD
+git reset --hard HEAD~1                         # Reset main
+git checkout feat/centralized-griptree-metadata # Switch to feature
+```
+
+**Suggested**: Add `--repo` support for branch creation in a single repo:
+```bash
+gr branch feat/x --repo tooling  # Already supported, but doesn't handle "move commit" scenario
+```
+
+Or add a "move last commit to new branch" helper.
+
+### Missing: Non-interactive `gr pr create --body`
+
+**Discovered**: 2026-01-29 during PR creation
+
+**Problem**: `gr pr create -t "title"` prompts interactively for the PR body. This blocks automation and requires falling back to raw `gh pr create` with `--body` flag.
+
+**Workaround**:
+```bash
+gh pr create --title "title" --body "$(cat <<'EOF'
+body content
+EOF
+)"
+```
+
+**Suggested**: Add `--body` or `-b` flag to `gr pr create`:
+```bash
+gr pr create -t "title" -b "body content"
+# Or read from stdin:
+echo "body" | gr pr create -t "title" --body-stdin
+```
+
 ### Missing: `gr commit --amend` support
 
 **Discovered**: 2026-01-29 during sync fix + repo add implementation
