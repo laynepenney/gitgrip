@@ -436,3 +436,44 @@ export function generateSampleManifest(): Manifest {
     },
   };
 }
+
+/**
+ * Configuration for adding a new repo to the manifest
+ */
+export interface AddRepoConfig {
+  url: string;
+  path: string;
+  default_branch: string;
+}
+
+/**
+ * Add a repository to the manifest file
+ * Note: Re-serializes the YAML, which may change formatting
+ */
+export async function addRepoToManifest(
+  manifestPath: string,
+  name: string,
+  config: AddRepoConfig
+): Promise<void> {
+  const content = await readFile(manifestPath, 'utf-8');
+  const manifest = YAML.parse(content) as Manifest;
+
+  // Check if repo already exists
+  if (manifest.repos[name]) {
+    throw new Error(`Repository '${name}' already exists in manifest`);
+  }
+
+  // Add the new repo
+  manifest.repos[name] = {
+    url: config.url,
+    path: config.path,
+    default_branch: config.default_branch,
+  };
+
+  // Write back with consistent formatting
+  const newContent = YAML.stringify(manifest, {
+    indent: 2,
+    lineWidth: 0,
+  });
+  await writeFile(manifestPath, newContent, 'utf-8');
+}

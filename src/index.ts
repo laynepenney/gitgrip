@@ -17,6 +17,7 @@ import { push } from './commands/push.js';
 import { add } from './commands/add.js';
 import { diff } from './commands/diff.js';
 import { forall } from './commands/forall.js';
+import { repoAdd } from './commands/repo.js';
 import { TimingContext, formatTimingReport, setTimingContext, getTimingContext } from './lib/timing.js';
 
 const program = new Command();
@@ -330,6 +331,29 @@ program
         repo: options.repo,
         includeManifest: options.includeManifest,
         continueOnError: options.continueOnError,
+      });
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exit(1);
+    }
+  });
+
+// Repo commands - manage workspace repositories
+const repo = program.command('repo').description('Manage workspace repositories');
+
+repo.command('add <url>')
+  .description('Add a repository to the workspace')
+  .option('--path <path>', 'Local path for the repository (default: ./<repo-name>)')
+  .option('--name <name>', 'Name in manifest (default: extracted from URL)')
+  .option('--branch <branch>', 'Default branch', 'main')
+  .option('--no-clone', 'Only add to manifest, skip cloning')
+  .action(async (url, options) => {
+    try {
+      await repoAdd(url, {
+        path: options.path,
+        name: options.name,
+        branch: options.branch,
+        noClone: !options.clone,
       });
     } catch (error) {
       console.error(chalk.red(error instanceof Error ? error.message : String(error)));
