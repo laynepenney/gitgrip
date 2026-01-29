@@ -21,6 +21,7 @@ Inspired by Android's [repo tool](https://source.android.com/docs/setup/create/r
 ## Features
 
 - **Manifest-based configuration** - Define all your repos in a single YAML file
+- **Multi-platform support** - Works with GitHub, GitLab, and Azure DevOps (even mixed in one workspace)
 - **Synchronized branches** - Create and checkout branches across all repos at once
 - **Linked PRs** - Create pull requests that reference each other across repos
 - **Atomic merges** - All-or-nothing merge strategy ensures repos stay in sync
@@ -200,6 +201,76 @@ settings:
 - **all-or-nothing** - All linked PRs must be approved before any can merge
 - **independent** - PRs can be merged independently
 
+## Multi-Platform Support
+
+gitgrip supports multiple hosting platforms. The platform is auto-detected from the repository URL.
+
+### Supported Platforms
+
+| Platform | URL Patterns |
+|----------|--------------|
+| GitHub | `git@github.com:org/repo.git`, `https://github.com/org/repo.git` |
+| GitLab | `git@gitlab.com:group/repo.git`, `https://gitlab.com/group/repo.git` |
+| Azure DevOps | `git@ssh.dev.azure.com:v3/org/project/repo`, `https://dev.azure.com/org/project/_git/repo` |
+
+### Authentication
+
+Each platform requires its own authentication:
+
+**GitHub:**
+```bash
+export GITHUB_TOKEN=your-token
+# or
+gh auth login
+```
+
+**GitLab:**
+```bash
+export GITLAB_TOKEN=your-token
+# or
+glab auth login
+```
+
+**Azure DevOps:**
+```bash
+export AZURE_DEVOPS_TOKEN=your-pat
+# or
+az login
+```
+
+### Mixed-Platform Workspaces
+
+A single manifest can contain repos from different platforms:
+
+```yaml
+repos:
+  frontend:
+    url: git@github.com:org/frontend.git
+    path: ./frontend
+
+  backend:
+    url: git@gitlab.com:org/backend.git
+    path: ./backend
+
+  infra:
+    url: https://dev.azure.com/org/project/_git/infra
+    path: ./infra
+```
+
+### Self-Hosted Instances
+
+For GitHub Enterprise, GitLab self-hosted, or Azure DevOps Server, add a `platform` config:
+
+```yaml
+repos:
+  internal:
+    url: git@gitlab.company.com:team/repo.git
+    path: ./internal
+    platform:
+      type: gitlab
+      baseUrl: https://gitlab.company.com
+```
+
 ## Shorthand
 
 Use `gr` as the primary command:
@@ -216,7 +287,10 @@ The long form `gitgrip` also works.
 
 - Node.js >= 18.0.0
 - Git
-- GitHub CLI (`gh`) for PR operations
+- Platform CLI (optional, for token auth fallback):
+  - GitHub: `gh` CLI
+  - GitLab: `glab` CLI
+  - Azure DevOps: `az` CLI
 
 ## License
 
