@@ -371,6 +371,10 @@ export async function upstreamBranchExists(repoPath: string, remote = 'origin'):
 /**
  * Safely pull latest, handling the case where upstream branch was deleted
  * Returns true if pull succeeded, false if had to recover (checkout default branch)
+ *
+ * IMPORTANT: Will NOT auto-switch branches if:
+ * - Branch was never pushed (no upstream configured) - would lose local work
+ * - Branch has local-only commits not on default branch - would lose commits
  */
 export async function safePullLatest(
   repoPath: string,
@@ -391,11 +395,37 @@ export async function safePullLatest(
     }
   }
 
-  // Check if upstream branch still exists
+  // Check if branch was ever pushed (has remote tracking configured)
+  const upstreamBranch = await getUpstreamBranch(repoPath);
+  const hasUpstreamConfig = upstreamBranch !== null;
+
+  // Check if upstream branch still exists on remote
   const upstreamExists = await upstreamBranchExists(repoPath, remote);
 
   if (!upstreamExists) {
-    // Upstream was deleted (likely after PR merge), recover by checking out default branch
+    // No upstream exists - need to determine if safe to switch
+
+    if (!hasUpstreamConfig) {
+      // Branch was never pushed - don't auto-switch, would lose local work
+      return {
+        pulled: false,
+        recovered: false,
+        message: `Branch '${currentBranch}' has no upstream configured. Push with 'gr push -u' first, or checkout '${defaultBranch}' manually.`
+      };
+    }
+
+    // Upstream was configured but deleted - check for local-only commits
+    // that would be lost if we switch to default branch
+    const hasLocalOnlyCommits = await hasCommitsAhead(repoPath, defaultBranch);
+    if (hasLocalOnlyCommits) {
+      return {
+        pulled: false,
+        recovered: false,
+        message: `Branch '${currentBranch}' has local commits not in '${defaultBranch}'. Push your changes or merge manually.`
+      };
+    }
+
+    // Safe to switch - upstream was deleted and no local-only work would be lost
     try {
       await git.checkout(defaultBranch);
       await git.pull(remote);

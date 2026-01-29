@@ -9,7 +9,91 @@ Items here should be reviewed before creating GitHub issues.
 
 ## Pending Review
 
-_No items pending review._
+### Missing: `gr commit --amend` support
+
+**Discovered**: 2026-01-29 during sync fix + repo add implementation
+
+**Problem**: Needed to amend a commit after review found minor issues (unused import, misleading comment). Had to use `git commit --amend --no-edit` directly.
+
+**Workaround**: `gr add <files> && git commit --amend --no-edit`
+
+**Suggested**: Add `--amend` flag to `gr commit`
+
+### Missing: `gr pr checks` command
+
+**Discovered**: 2026-01-29 during PR review workflow
+
+**Problem**: To check CI status across all repos with PRs, must run `gh pr checks <number>` separately for each repo. No way to see combined check status across all linked PRs.
+
+**Workaround**:
+```bash
+gh pr checks 47 --repo laynepenney/gitgrip
+# Repeat for each repo with a PR...
+```
+
+**Suggested**: Add `gr pr checks` command that:
+1. Shows check status for all linked PRs in the current branch
+2. Aggregates pass/fail/pending status across repos
+3. Blocks/warns if any checks are failing
+
+**Example output**:
+```
+PR Checks for branch: feat/my-feature
+
+  Repo       PR    Check              Status
+  ─────────────────────────────────────────────
+  tooling    #47   build              ✓ pass
+  tooling    #47   test               ✓ pass
+  tooling    #47   sync-status        ⏭ skipped
+  frontend   #123  build              ✓ pass
+  frontend   #123  deploy-preview     ⏳ pending
+
+  Summary: 4 passed, 1 pending, 0 failed
+```
+
+**Related**: Issue #30 (cr pr checks) was created previously but not yet implemented.
+
+### Feature: `gr forall` should default to changed repos only
+
+**Discovered**: 2026-01-29 during workflow discussion
+
+**Problem**: `gr forall -c "pnpm test"` runs in ALL repos, even ones with no changes. This wastes time running tests in repos that haven't been modified. Running in all repos should be opt-in, not the default.
+
+**Current behavior**:
+```bash
+gr forall -c "pnpm test"  # Runs in ALL repos (wasteful)
+gr forall -c "pnpm test" --repo tooling  # Must manually specify repos
+```
+
+**Suggested**: Default to repos with changes, require `--all` for all repos:
+
+```bash
+# Only run in repos with changes (NEW DEFAULT)
+gr forall -c "pnpm test"
+
+# Explicitly run in ALL repos
+gr forall -c "pnpm test" --all
+
+# Only repos with staged changes
+gr forall -c "pnpm build" --staged
+
+# Only repos with commits ahead of main
+gr forall -c "pnpm lint" --ahead
+```
+
+**Use cases**:
+1. Run tests only in modified repos before committing (default)
+2. Run build only in repos that changed (default)
+3. CI/CD that needs all repos uses `--all`
+4. Pre-push hooks automatically only check affected repos
+
+**Implementation notes**:
+- Default = has uncommitted changes OR commits ahead of default branch
+- `--staged` = only repos with staged changes
+- `--ahead` = only repos with commits ahead of default branch
+- `--all` = all repos (current behavior, becomes opt-in)
+
+**Breaking change**: Yes, but safer default. Could warn for one version.
 
 ---
 

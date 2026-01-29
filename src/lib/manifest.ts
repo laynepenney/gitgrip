@@ -436,3 +436,51 @@ export function generateSampleManifest(): Manifest {
     },
   };
 }
+
+/**
+ * Configuration for adding a new repo to the manifest
+ */
+export interface AddRepoConfig {
+  url: string;
+  path: string;
+  default_branch: string;
+}
+
+/**
+ * Add a repository to the manifest file
+ * Preserves existing YAML comments and formatting
+ */
+export async function addRepoToManifest(
+  manifestPath: string,
+  name: string,
+  config: AddRepoConfig
+): Promise<void> {
+  const content = await readFile(manifestPath, 'utf-8');
+
+  // Use parseDocument to preserve comments and formatting
+  const doc = YAML.parseDocument(content);
+
+  // Get the repos node
+  const reposNode = doc.get('repos', true) as YAML.YAMLMap;
+  if (!reposNode || !(reposNode instanceof YAML.YAMLMap)) {
+    throw new Error('Invalid manifest: missing repos section');
+  }
+
+  // Check if repo already exists
+  if (reposNode.has(name)) {
+    throw new Error(`Repository '${name}' already exists in manifest`);
+  }
+
+  // Create the new repo entry as a YAMLMap to preserve structure
+  const newRepo = doc.createNode({
+    url: config.url,
+    path: config.path,
+    default_branch: config.default_branch,
+  });
+
+  // Add the new repo to the repos map
+  reposNode.set(name, newRepo);
+
+  // Write back preserving comments
+  await writeFile(manifestPath, doc.toString(), 'utf-8');
+}

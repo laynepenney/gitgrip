@@ -116,6 +116,7 @@ gr sync
 | `gr pr create` | Create linked PRs |
 | `gr pr status` | Show PR status |
 | `gr pr merge` | Merge all linked PRs |
+| `gr repo add <url>` | Add a new repository to workspace |
 | `gr forall -c "cmd"` | Run command in each repo |
 
 ### Command Details
@@ -167,6 +168,19 @@ Merge all linked PRs atomically.
 | `-m, --method <method>` | merge, squash, or rebase |
 | `--no-delete-branch` | Keep branches after merge |
 | `-f, --force` | Merge even if checks pending |
+
+#### `gr repo add <url>`
+
+Add a new repository to the workspace. Parses the URL, updates the manifest, and optionally clones the repo.
+
+| Option | Description |
+|--------|-------------|
+| `--path <path>` | Local path (default: `./<repo-name>`) |
+| `--name <name>` | Name in manifest (default: from URL) |
+| `--branch <branch>` | Default branch (default: `main`) |
+| `--no-clone` | Only update manifest, skip cloning |
+
+If the workspace is on a feature branch, the new repo will be checked out to that branch automatically.
 
 #### `gr forall -c "<command>"`
 

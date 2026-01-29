@@ -75,17 +75,26 @@ All git operations must go through `gr`. There is no exception.
 1. Create the PR with `gr pr create -t "title"`
 2. Run `pnpm build && pnpm test` to verify nothing is broken
 3. Check PR status with `gr pr status`
-4. Review the diff with `gh pr diff <number>` (for each repo with changes)
-5. Check feature completeness (see checklist below)
-6. Add a review comment documenting what was checked
-7. Only then merge with `gr pr merge` (if all tests pass and no issues found)
+4. **Wait for GitHub checks to pass** - use `gh pr checks <number>` to verify
+5. Review the diff with `gh pr diff <number>` (for each repo with changes)
+6. Check feature completeness (see checklist below)
+7. Only then merge with `gr pr merge` (if all checks pass and no issues found)
+
+**CRITICAL: GitHub checks must pass before merging.** If checks are pending, wait. If checks fail, fix the issues first.
 
 **Feature completeness checklist:**
 - [ ] New command registered in `src/index.ts`
 - [ ] Types added to `src/types.ts` if needed
 - [ ] Tests added for new functionality
-- [ ] `CLAUDE.md` updated with documentation
-- [ ] `README.md` updated if user-facing
+
+**CRITICAL: Update all documentation when changing commands/API:**
+- [ ] `CLAUDE.md` - Development guide and command reference
+- [ ] `README.md` - User-facing documentation
+- [ ] `CONTRIBUTING.md` - If workflow changes
+- [ ] `CHANGELOG.md` - Add entry for the change
+- [ ] `.claude/skills/gitgrip/SKILL.md` - Claude Code skill definition
+
+Forgetting to update docs creates drift between code and documentation. Always check these files when adding/modifying commands.
 
 ## Project Structure
 
@@ -152,6 +161,7 @@ All commands use `gr` (or `gitgrip`):
 - `gr commit` - Commit staged changes across all repos
 - `gr push` - Push current branch in all repos
 - `gr pr create/status/merge` - Linked PR workflow
+- `gr repo add <url>` - Add a new repository to workspace
 - `gr link` - Manage copyfile/linkfile entries
 - `gr run` - Execute workspace scripts
 - `gr env` - Show workspace environment variables
