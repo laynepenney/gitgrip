@@ -118,9 +118,9 @@ gr sync
 | `gr pr merge` | Merge all linked PRs |
 | `gr repo add <url>` | Add a new repository to workspace |
 | `gr forall -c "cmd"` | Run command in each repo |
-| `gr griptree add <branch>` | Create a worktree-based workspace |
-| `gr griptree list` | List all griptrees |
-| `gr griptree remove <branch>` | Remove a griptree |
+| `gr tree add <branch>` | Create a worktree-based workspace |
+| `gr tree list` | List all trees |
+| `gr tree remove <branch>` | Remove a tree |
 
 ### Command Details
 
@@ -297,17 +297,17 @@ repos:
       baseUrl: https://gitlab.company.com
 ```
 
-## Griptrees (Multi-Branch Workspaces)
+## Trees (Multi-Branch Workspaces)
 
-Work on multiple branches simultaneously without switching. Griptrees use git worktrees to create parallel workspace directories.
+Work on multiple branches simultaneously without switching. Trees use git worktrees to create parallel workspace directories.
 
 <p align="center">
-  <img src="assets/griptree-concept.svg" alt="Griptrees Concept" width="700">
+  <img src="assets/tree-concept.svg" alt="Trees Concept" width="700">
 </p>
 
 ```bash
-# Create a griptree for a feature branch
-gr griptree add feat/new-feature
+# Create a tree for a feature branch
+gr tree add feat/new-feature
 
 # Creates a sibling directory with all repos on that branch:
 # ../feat-new-feature/
@@ -315,22 +315,22 @@ gr griptree add feat/new-feature
 #   ├── backend/
 #   └── shared/
 
-# Work in the griptree
+# Work in the tree
 cd ../feat-new-feature
 gr status
 
-# List all griptrees
-gr griptree list
+# List all trees
+gr tree list
 
 # Lock to prevent accidental removal
-gr griptree lock feat/new-feature
+gr tree lock feat/new-feature
 
 # Remove when done (branches are preserved)
-gr griptree remove feat/new-feature
+gr tree remove feat/new-feature
 ```
 
 <p align="center">
-  <img src="assets/griptree-workflow.svg" alt="Griptree Workflow" width="700">
+  <img src="assets/tree-workflow.svg" alt="Tree Workflow" width="700">
 </p>
 
 **Benefits:**

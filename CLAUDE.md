@@ -163,7 +163,7 @@ src/
 │   ├── env.ts            # gr env
 │   ├── bench.ts          # gr bench
 │   ├── forall.ts         # gr forall
-│   ├── griptree.ts       # gr griptree (worktree-based workspaces)
+│   ├── tree.ts           # gr tree (worktree-based workspaces)
 │   └── pr/               # PR subcommands
 │       ├── index.ts
 │       ├── create.ts
@@ -213,15 +213,15 @@ All commands use `gr` (or `gitgrip`):
 - `gr env` - Show workspace environment variables
 - `gr bench` - Run benchmarks
 - `gr forall -c "cmd"` - Run command in each repo
-- `gr griptree add/list/remove` - Manage worktree-based multi-branch workspaces
+- `gr tree add/list/remove` - Manage worktree-based multi-branch workspaces
 
-### Griptrees (Multi-Branch Workspaces)
+### Trees (Multi-Branch Workspaces)
 
-Griptrees allow you to work on multiple branches simultaneously without switching branches. Each griptree is a parallel workspace using git worktrees.
+Trees allow you to work on multiple branches simultaneously without switching branches. Each tree is a parallel workspace using git worktrees.
 
 ```bash
-# Create a griptree for a feature branch
-gr griptree add feat/auth
+# Create a tree for a feature branch
+gr tree add feat/auth
 
 # This creates a directory structure:
 # ../feat-auth/
@@ -229,14 +229,14 @@ gr griptree add feat/auth
 #   ├── codi-private/   # worktree of main/codi-private on feat/auth
 #   └── .gitgrip/manifests/  # worktree of manifest on feat/auth
 
-# List all griptrees
-gr griptree list
+# List all trees
+gr tree list
 
-# Lock a griptree to prevent accidental removal
-gr griptree lock feat/auth
+# Lock a tree to prevent accidental removal
+gr tree lock feat/auth
 
-# Remove a griptree (removes worktrees, not branches)
-gr griptree remove feat/auth
+# Remove a tree (removes worktrees, not branches)
+gr tree remove feat/auth
 ```
 
 **Benefits:**

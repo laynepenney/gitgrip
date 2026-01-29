@@ -371,23 +371,23 @@ export interface BenchmarkResult {
 }
 
 /**
- * Information about a griptree (worktree-based workspace)
+ * Information about a tree (worktree-based workspace)
  */
-export interface GriptreeInfo {
-  /** Branch name this griptree is for */
+export interface TreeInfo {
+  /** Branch name this tree is for */
   branch: string;
-  /** Absolute path to the griptree directory */
+  /** Absolute path to the tree directory */
   path: string;
-  /** Whether the griptree is locked (prevents accidental removal) */
+  /** Whether the tree is locked (prevents accidental removal) */
   locked: boolean;
   /** Per-repo worktree info */
-  repos: GriptreeRepoInfo[];
+  repos: TreeRepoInfo[];
 }
 
 /**
- * Per-repo information within a griptree
+ * Per-repo information within a tree
  */
-export interface GriptreeRepoInfo {
+export interface TreeRepoInfo {
   /** Repository name */
   name: string;
   /** Worktree path */

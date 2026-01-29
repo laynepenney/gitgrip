@@ -21,7 +21,7 @@
   <rect width="800" height="500" fill="#0F172A"/>
 
   <!-- Title -->
-  <text x="400" y="45" font-family="system-ui, -apple-system, sans-serif" font-size="28" font-weight="bold" fill="#F8FAFC" text-anchor="middle">Griptrees: Multi-Branch Workspaces</text>
+  <text x="400" y="45" font-family="system-ui, -apple-system, sans-serif" font-size="28" font-weight="bold" fill="#F8FAFC" text-anchor="middle">Trees: Multi-Branch Workspaces</text>
   <text x="400" y="75" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#94A3B8" text-anchor="middle">Work on multiple features simultaneously without switching branches</text>
 
   <!-- Main Workspace Box -->
@@ -48,10 +48,10 @@
     </g>
   </g>
 
-  <!-- Griptree 1 -->
+  <!-- Tree 1 -->
   <g transform="translate(290, 110)">
     <rect x="0" y="0" width="220" height="280" rx="12" fill="url(#treeGrad)" filter="url(#shadow)"/>
-    <text x="110" y="30" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="bold" fill="white" text-anchor="middle">Griptree: feat/auth</text>
+    <text x="110" y="30" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="bold" fill="white" text-anchor="middle">Tree: feat/auth</text>
     <text x="110" y="50" font-family="monospace" font-size="12" fill="#BFDBFE" text-anchor="middle">branch: feat/auth</text>
 
     <!-- Repos as worktrees -->
@@ -72,10 +72,10 @@
     </g>
   </g>
 
-  <!-- Griptree 2 -->
+  <!-- Tree 2 -->
   <g transform="translate(530, 110)">
     <rect x="0" y="0" width="220" height="280" rx="12" fill="url(#treeGrad)" filter="url(#shadow)"/>
-    <text x="110" y="30" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="bold" fill="white" text-anchor="middle">Griptree: feat/api</text>
+    <text x="110" y="30" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="bold" fill="white" text-anchor="middle">Tree: feat/api</text>
     <text x="110" y="50" font-family="monospace" font-size="12" fill="#BFDBFE" text-anchor="middle">branch: feat/api</text>
 
     <!-- Repos as worktrees -->
@@ -103,7 +103,7 @@
     </marker>
   </defs>
 
-  <!-- Curved lines from main to griptrees -->
+  <!-- Curved lines from main to trees -->
   <path d="M 270 250 Q 280 200 290 250" stroke="#10B981" stroke-width="2" fill="none" stroke-dasharray="5,5"/>
   <path d="M 270 250 Q 400 150 530 250" stroke="#10B981" stroke-width="2" fill="none" stroke-dasharray="5,5"/>
 

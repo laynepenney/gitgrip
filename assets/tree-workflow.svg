@@ -17,13 +17,13 @@
   <rect width="800" height="300" fill="#0F172A"/>
 
   <!-- Title -->
-  <text x="400" y="35" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="bold" fill="#F8FAFC" text-anchor="middle">Griptree Workflow</text>
+  <text x="400" y="35" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="bold" fill="#F8FAFC" text-anchor="middle">Tree Workflow</text>
 
   <!-- Step 1: Create -->
   <g transform="translate(60, 70)">
     <rect x="0" y="0" width="180" height="90" rx="10" fill="#1E293B" stroke="#10B981" stroke-width="2"/>
     <text x="90" y="25" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="bold" fill="#10B981" text-anchor="middle">1. Create</text>
-    <text x="90" y="50" font-family="monospace" font-size="11" fill="#94A3B8" text-anchor="middle">gr griptree add</text>
+    <text x="90" y="50" font-family="monospace" font-size="11" fill="#94A3B8" text-anchor="middle">gr tree add</text>
     <text x="90" y="68" font-family="monospace" font-size="11" fill="#60A5FA" text-anchor="middle">feat/my-feature</text>
   </g>
 
@@ -55,7 +55,7 @@
   <g transform="translate(560, 70)">
     <rect x="0" y="0" width="180" height="90" rx="10" fill="#1E293B" stroke="#F59E0B" stroke-width="2"/>
     <text x="90" y="25" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="bold" fill="#F59E0B" text-anchor="middle">3. Cleanup</text>
-    <text x="90" y="50" font-family="monospace" font-size="11" fill="#94A3B8" text-anchor="middle">gr griptree remove</text>
+    <text x="90" y="50" font-family="monospace" font-size="11" fill="#94A3B8" text-anchor="middle">gr tree remove</text>
     <text x="90" y="68" font-family="monospace" font-size="11" fill="#60A5FA" text-anchor="middle">feat/my-feature</text>
   </g>
 
@@ -64,16 +64,16 @@
     <rect x="0" y="0" width="680" height="90" rx="8" fill="#1E293B"/>
     <text x="20" y="25" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="bold" fill="#F8FAFC">Quick Reference:</text>
 
-    <text x="20" y="50" font-family="monospace" font-size="11" fill="#10B981">gr griptree add &lt;branch&gt;</text>
+    <text x="20" y="50" font-family="monospace" font-size="11" fill="#10B981">gr tree add &lt;branch&gt;</text>
     <text x="200" y="50" font-family="system-ui, sans-serif" font-size="11" fill="#6B7280">Create parallel workspace</text>
 
-    <text x="20" y="70" font-family="monospace" font-size="11" fill="#10B981">gr griptree list</text>
-    <text x="200" y="70" font-family="system-ui, sans-serif" font-size="11" fill="#6B7280">Show all griptrees</text>
+    <text x="20" y="70" font-family="monospace" font-size="11" fill="#10B981">gr tree list</text>
+    <text x="200" y="70" font-family="system-ui, sans-serif" font-size="11" fill="#6B7280">Show all trees</text>
 
-    <text x="380" y="50" font-family="monospace" font-size="11" fill="#10B981">gr griptree lock &lt;branch&gt;</text>
+    <text x="380" y="50" font-family="monospace" font-size="11" fill="#10B981">gr tree lock &lt;branch&gt;</text>
     <text x="560" y="50" font-family="system-ui, sans-serif" font-size="11" fill="#6B7280">Protect from removal</text>
 
-    <text x="380" y="70" font-family="monospace" font-size="11" fill="#10B981">gr griptree remove &lt;branch&gt;</text>
+    <text x="380" y="70" font-family="monospace" font-size="11" fill="#10B981">gr tree remove &lt;branch&gt;</text>
     <text x="590" y="70" font-family="system-ui, sans-serif" font-size="11" fill="#6B7280">Remove worktrees</text>
   </g>
 </svg>

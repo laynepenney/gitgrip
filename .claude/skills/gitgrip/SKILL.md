@@ -109,30 +109,30 @@ gr bench --list              # List available benchmarks
 gr bench manifest-load -n 10 # Run specific benchmark
 ```
 
-### Griptrees (Multi-Branch Workspaces)
+### Trees (Multi-Branch Workspaces)
 
-Griptrees let you work on multiple feature branches simultaneously without switching branches. Each griptree is a parallel workspace using git worktrees.
+Trees let you work on multiple feature branches simultaneously without switching branches. Each tree is a parallel workspace using git worktrees.
 
 ```bash
-# Create a griptree for a feature branch
-gr griptree add feat/auth
+# Create a tree for a feature branch
+gr tree add feat/auth
 # Creates: ../feat-auth/ with all repos on feat/auth branch
 
-# List all griptrees
-gr griptree list
+# List all trees
+gr tree list
 
-# Work in a griptree
+# Work in a tree
 cd ../feat-auth
 gr status                    # Works just like main workspace
 gr commit -m "changes"
 gr push
 
-# Protect important griptrees
-gr griptree lock feat/auth   # Prevents accidental removal
+# Protect important trees
+gr tree lock feat/auth       # Prevents accidental removal
 
 # Cleanup when done
-gr griptree unlock feat/auth
-gr griptree remove feat/auth # Removes worktrees, keeps branches
+gr tree unlock feat/auth
+gr tree remove feat/auth     # Removes worktrees, keeps branches
 ```
 
 **Benefits:**
@@ -142,8 +142,8 @@ gr griptree remove feat/auth # Removes worktrees, keeps branches
 
 **Options:**
 ```bash
-gr griptree add feat/x --path ./custom-path  # Custom location
-gr griptree remove feat/x --force            # Remove even if locked
+gr tree add feat/x --path ./custom-path  # Custom location
+gr tree remove feat/x --force            # Remove even if locked
 ```
 
 ## Workflow Rules
