@@ -1,8 +1,8 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import path from 'path';
-import { mkdir, rm, readdir, stat, writeFile, readFile } from 'fs/promises';
-import { loadManifest, getAllRepoInfo, getManifestRepoInfo, getManifestsDir } from '../lib/manifest.js';
+import { mkdir, rm, readdir, writeFile, readFile } from 'fs/promises';
+import { loadManifest, getAllRepoInfo, getManifestRepoInfo } from '../lib/manifest.js';
 import { pathExists, getGitInstance, isGitRepo } from '../lib/git.js';
 import type { RepoInfo, GriptreeInfo, GriptreeRepoInfo } from '../types.js';
 
@@ -53,6 +53,32 @@ async function readGriptreeConfig(griptreePath: string): Promise<GriptreeConfig 
 async function writeGriptreeConfig(griptreePath: string, config: GriptreeConfig): Promise<void> {
   const configPath = path.join(griptreePath, GRIPTREE_CONFIG_FILE);
   await writeFile(configPath, JSON.stringify(config, null, 2));
+}
+
+/**
+ * Find a griptree by branch name
+ */
+async function findGriptreeByBranch(rootDir: string, branch: string): Promise<{ path: string; config: GriptreeConfig } | null> {
+  const parentDir = path.dirname(rootDir);
+
+  try {
+    const entries = await readdir(parentDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      const dirPath = path.join(parentDir, entry.name);
+      const config = await readGriptreeConfig(dirPath);
+
+      if (config && config.branch === branch) {
+        return { path: dirPath, config };
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 /**
@@ -276,34 +302,13 @@ export async function griptreeRemove(branch: string, options: { force?: boolean 
   const repos = getAllRepoInfo(manifest, rootDir);
 
   // Find the griptree
-  const parentDir = path.dirname(rootDir);
-  let griptreePath: string | null = null;
-  let config: GriptreeConfig | null = null;
-
-  try {
-    const entries = await readdir(parentDir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-
-      const dirPath = path.join(parentDir, entry.name);
-      const dirConfig = await readGriptreeConfig(dirPath);
-
-      if (dirConfig && dirConfig.branch === branch) {
-        griptreePath = dirPath;
-        config = dirConfig;
-        break;
-      }
-    }
-  } catch (error) {
-    console.error(chalk.red(`Failed to find griptree: ${error instanceof Error ? error.message : String(error)}`));
-    process.exit(1);
-  }
-
-  if (!griptreePath || !config) {
+  const found = await findGriptreeByBranch(rootDir, branch);
+  if (!found) {
     console.error(chalk.red(`Griptree for branch '${branch}' not found.`));
     process.exit(1);
   }
+
+  const { path: griptreePath, config } = found;
 
   // Check if locked
   if (config.locked && !options.force) {
@@ -377,36 +382,14 @@ export async function griptreeRemove(branch: string, options: { force?: boolean 
  */
 export async function griptreeLock(branch: string): Promise<void> {
   const { rootDir } = await loadManifest();
-  const parentDir = path.dirname(rootDir);
 
-  // Find the griptree
-  let griptreePath: string | null = null;
-  let config: GriptreeConfig | null = null;
-
-  try {
-    const entries = await readdir(parentDir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-
-      const dirPath = path.join(parentDir, entry.name);
-      const dirConfig = await readGriptreeConfig(dirPath);
-
-      if (dirConfig && dirConfig.branch === branch) {
-        griptreePath = dirPath;
-        config = dirConfig;
-        break;
-      }
-    }
-  } catch (error) {
-    console.error(chalk.red(`Failed to find griptree: ${error instanceof Error ? error.message : String(error)}`));
-    process.exit(1);
-  }
-
-  if (!griptreePath || !config) {
+  const found = await findGriptreeByBranch(rootDir, branch);
+  if (!found) {
     console.error(chalk.red(`Griptree for branch '${branch}' not found.`));
     process.exit(1);
   }
+
+  const { path: griptreePath, config } = found;
 
   if (config.locked) {
     console.log(chalk.yellow(`Griptree for branch '${branch}' is already locked.`));
@@ -423,36 +406,14 @@ export async function griptreeLock(branch: string): Promise<void> {
  */
 export async function griptreeUnlock(branch: string): Promise<void> {
   const { rootDir } = await loadManifest();
-  const parentDir = path.dirname(rootDir);
 
-  // Find the griptree
-  let griptreePath: string | null = null;
-  let config: GriptreeConfig | null = null;
-
-  try {
-    const entries = await readdir(parentDir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-
-      const dirPath = path.join(parentDir, entry.name);
-      const dirConfig = await readGriptreeConfig(dirPath);
-
-      if (dirConfig && dirConfig.branch === branch) {
-        griptreePath = dirPath;
-        config = dirConfig;
-        break;
-      }
-    }
-  } catch (error) {
-    console.error(chalk.red(`Failed to find griptree: ${error instanceof Error ? error.message : String(error)}`));
-    process.exit(1);
-  }
-
-  if (!griptreePath || !config) {
+  const found = await findGriptreeByBranch(rootDir, branch);
+  if (!found) {
     console.error(chalk.red(`Griptree for branch '${branch}' not found.`));
     process.exit(1);
   }
+
+  const { path: griptreePath, config } = found;
 
   if (!config.locked) {
     console.log(chalk.yellow(`Griptree for branch '${branch}' is not locked.`));
