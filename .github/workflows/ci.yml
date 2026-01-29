@@ -47,7 +47,7 @@ jobs:
         run: pnpm build
 
       - name: Run tests
-        run: pnpm test --run
+        run: pnpm test -- --run
 
       - name: Type check
         run: pnpm exec tsc --noEmit
