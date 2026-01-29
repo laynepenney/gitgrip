@@ -29,6 +29,15 @@ Inspired by Android's [repo tool](https://source.android.com/docs/setup/create/r
 
 ## Installation
 
+### Homebrew (macOS/Linux)
+
+```bash
+brew tap laynepenney/tap
+brew install gitgrip
+```
+
+### npm
+
 ```bash
 npm install -g gitgrip
 ```
