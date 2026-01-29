@@ -26,7 +26,7 @@ const program = new Command();
 program
   .name('gitgrip')
   .description('git a grip - Multi-repo workflow tool\n\nShorthand: Use "gr" instead of "gitgrip"')
-  .version('0.4.0')
+  .version('0.4.1')
   .option('--timing', 'Show timing breakdown for operations');
 
 // Set up timing hooks
@@ -362,12 +362,12 @@ repo.command('add <url>')
     }
   });
 
-// Tree commands - worktree-based multi-branch workspaces
-const tree = program.command('tree').description('Manage trees (worktree-based multi-branch workspaces)');
+// Tree commands - worktree-based multi-branch workspaces (griptrees)
+const tree = program.command('tree').description('Manage griptrees (worktree-based multi-branch workspaces)');
 
 tree.command('add <branch>')
-  .description('Create a tree for a branch')
-  .option('-p, --path <path>', 'Custom path for the tree directory')
+  .description('Create a griptree for a branch')
+  .option('-p, --path <path>', 'Custom path for the griptree directory')
   .action(async (branch, options) => {
     try {
       await treeAdd(branch, { path: options.path });
@@ -378,7 +378,7 @@ tree.command('add <branch>')
   });
 
 tree.command('list')
-  .description('List all trees')
+  .description('List all griptrees')
   .action(async () => {
     try {
       await treeList();
@@ -389,7 +389,7 @@ tree.command('list')
   });
 
 tree.command('remove <branch>')
-  .description('Remove a tree')
+  .description('Remove a griptree')
   .option('-f, --force', 'Force removal even if locked')
   .action(async (branch, options) => {
     try {
@@ -401,7 +401,7 @@ tree.command('remove <branch>')
   });
 
 tree.command('lock <branch>')
-  .description('Lock a tree to prevent accidental removal')
+  .description('Lock a griptree to prevent accidental removal')
   .action(async (branch) => {
     try {
       await treeLock(branch);
@@ -412,7 +412,7 @@ tree.command('lock <branch>')
   });
 
 tree.command('unlock <branch>')
-  .description('Unlock a tree')
+  .description('Unlock a griptree')
   .action(async (branch) => {
     try {
       await treeUnlock(branch);

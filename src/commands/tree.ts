@@ -97,14 +97,14 @@ export async function treeAdd(branch: string, options: TreeAddOptions = {}): Pro
   if (await pathExists(treePath)) {
     const config = await readTreeConfig(treePath);
     if (config) {
-      console.error(chalk.red(`Tree already exists at ${treePath} for branch '${config.branch}'`));
+      console.error(chalk.red(`Griptree already exists at ${treePath} for branch '${config.branch}'`));
       process.exit(1);
     }
     console.error(chalk.red(`Directory already exists: ${treePath}`));
     process.exit(1);
   }
 
-  console.log(chalk.blue(`Creating tree for branch '${branch}' at ${treePath}\n`));
+  console.log(chalk.blue(`Creating griptree for branch '${branch}' at ${treePath}\n`));
 
   // Create tree directory
   await mkdir(treePath, { recursive: true });
@@ -202,10 +202,10 @@ export async function treeAdd(branch: string, options: TreeAddOptions = {}): Pro
   const failed = repoResults.filter(r => !r.success).length;
 
   if (failed === 0) {
-    console.log(chalk.green(`Tree created successfully with ${succeeded} repo(s).`));
-    console.log(chalk.dim(`\nTo work in this tree:\n  cd ${treePath}`));
+    console.log(chalk.green(`Griptree created successfully with ${succeeded} repo(s).`));
+    console.log(chalk.dim(`\nTo work in this griptree:\n  cd ${treePath}`));
   } else {
-    console.log(chalk.yellow(`Tree created with ${succeeded} repo(s). ${failed} failed.`));
+    console.log(chalk.yellow(`Griptree created with ${succeeded} repo(s). ${failed} failed.`));
   }
 }
 
@@ -273,17 +273,17 @@ export async function treeList(): Promise<void> {
       }
     }
   } catch (error) {
-    console.error(chalk.red(`Failed to list trees: ${error instanceof Error ? error.message : String(error)}`));
+    console.error(chalk.red(`Failed to list griptrees: ${error instanceof Error ? error.message : String(error)}`));
     process.exit(1);
   }
 
   if (trees.length === 0) {
-    console.log(chalk.yellow('No trees found.'));
+    console.log(chalk.yellow('No griptrees found.'));
     console.log(chalk.dim('\nCreate one with: gr tree add <branch>'));
     return;
   }
 
-  console.log(chalk.blue('Trees:\n'));
+  console.log(chalk.blue('Griptrees:\n'));
 
   for (const tree of trees) {
     const lockIcon = tree.locked ? chalk.yellow(' [locked]') : '';
@@ -304,7 +304,7 @@ export async function treeRemove(branch: string, options: { force?: boolean } = 
   // Find the tree
   const found = await findTreeByBranch(rootDir, branch);
   if (!found) {
-    console.error(chalk.red(`Tree for branch '${branch}' not found.`));
+    console.error(chalk.red(`Griptree for branch '${branch}' not found.`));
     process.exit(1);
   }
 
@@ -312,12 +312,12 @@ export async function treeRemove(branch: string, options: { force?: boolean } = 
 
   // Check if locked
   if (config.locked && !options.force) {
-    console.error(chalk.red(`Tree for branch '${branch}' is locked.`));
+    console.error(chalk.red(`Griptree for branch '${branch}' is locked.`));
     console.log(chalk.dim('Use --force to remove anyway, or unlock first with: gr tree unlock ' + branch));
     process.exit(1);
   }
 
-  console.log(chalk.blue(`Removing tree for branch '${branch}' at ${treePath}\n`));
+  console.log(chalk.blue(`Removing griptree for branch '${branch}' at ${treePath}\n`));
 
   // Remove worktrees from each repo in parallel
   const results = await Promise.all(
@@ -371,9 +371,9 @@ export async function treeRemove(branch: string, options: { force?: boolean } = 
   // Remove the tree directory
   try {
     await rm(treePath, { recursive: true, force: true });
-    console.log(chalk.green(`\nTree for branch '${branch}' removed successfully.`));
+    console.log(chalk.green(`\nGriptree for branch '${branch}' removed successfully.`));
   } catch (error) {
-    console.error(chalk.red(`Failed to remove tree directory: ${error instanceof Error ? error.message : String(error)}`));
+    console.error(chalk.red(`Failed to remove griptree directory: ${error instanceof Error ? error.message : String(error)}`));
   }
 }
 
@@ -385,20 +385,20 @@ export async function treeLock(branch: string): Promise<void> {
 
   const found = await findTreeByBranch(rootDir, branch);
   if (!found) {
-    console.error(chalk.red(`Tree for branch '${branch}' not found.`));
+    console.error(chalk.red(`Griptree for branch '${branch}' not found.`));
     process.exit(1);
   }
 
   const { path: treePath, config } = found;
 
   if (config.locked) {
-    console.log(chalk.yellow(`Tree for branch '${branch}' is already locked.`));
+    console.log(chalk.yellow(`Griptree for branch '${branch}' is already locked.`));
     return;
   }
 
   config.locked = true;
   await writeTreeConfig(treePath, config);
-  console.log(chalk.green(`Tree for branch '${branch}' is now locked.`));
+  console.log(chalk.green(`Griptree for branch '${branch}' is now locked.`));
 }
 
 /**
@@ -409,18 +409,18 @@ export async function treeUnlock(branch: string): Promise<void> {
 
   const found = await findTreeByBranch(rootDir, branch);
   if (!found) {
-    console.error(chalk.red(`Tree for branch '${branch}' not found.`));
+    console.error(chalk.red(`Griptree for branch '${branch}' not found.`));
     process.exit(1);
   }
 
   const { path: treePath, config } = found;
 
   if (!config.locked) {
-    console.log(chalk.yellow(`Tree for branch '${branch}' is not locked.`));
+    console.log(chalk.yellow(`Griptree for branch '${branch}' is not locked.`));
     return;
   }
 
   config.locked = false;
   await writeTreeConfig(treePath, config);
-  console.log(chalk.green(`Tree for branch '${branch}' is now unlocked.`));
+  console.log(chalk.green(`Griptree for branch '${branch}' is now unlocked.`));
 }
