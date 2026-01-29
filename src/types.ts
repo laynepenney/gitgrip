@@ -371,6 +371,41 @@ export interface BenchmarkResult {
 }
 
 /**
+ * Griptree registry config stored in main workspace (.gitgrip/griptrees/<branch>/config.json)
+ */
+export interface GriptreeConfig {
+  /** Branch name this griptree is for */
+  branch: string;
+  /** Absolute path to the griptree directory */
+  path: string;
+  /** ISO timestamp when griptree was created */
+  createdAt: string;
+  /** User who created the griptree */
+  createdBy?: string;
+  /** Whether the griptree is locked (prevents accidental removal) */
+  locked: boolean;
+  /** ISO timestamp when griptree was locked */
+  lockedAt?: string;
+  /** Reason for locking the griptree */
+  lockedReason?: string;
+}
+
+/**
+ * Griptree pointer file stored in griptree directory (.griptree)
+ */
+export interface GriptreePointer {
+  /** Absolute path to the main workspace */
+  mainWorkspace: string;
+  /** Branch name this griptree is for */
+  branch: string;
+}
+
+/**
+ * Status of a griptree
+ */
+export type GriptreeStatus = 'active' | 'orphan' | 'legacy';
+
+/**
  * Information about a tree (worktree-based workspace)
  */
 export interface TreeInfo {
@@ -382,6 +417,8 @@ export interface TreeInfo {
   locked: boolean;
   /** Per-repo worktree info */
   repos: TreeRepoInfo[];
+  /** Status of the griptree */
+  status?: GriptreeStatus;
 }
 
 /**

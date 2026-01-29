@@ -1,84 +1,25 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import path from 'path';
-import { mkdir, rm, readdir, writeFile, readFile } from 'fs/promises';
+import { mkdir, rm, readdir } from 'fs/promises';
 import { loadManifest, getAllRepoInfo, getManifestRepoInfo } from '../lib/manifest.js';
 import { pathExists, getGitInstance, isGitRepo } from '../lib/git.js';
-import type { RepoInfo, TreeInfo, TreeRepoInfo } from '../types.js';
-
-const TREE_CONFIG_FILE = '.griptree';
+import {
+  sanitizeBranchName,
+  getDefaultGriptreePath,
+  readGriptreeConfig,
+  writeGriptreeConfig,
+  removeGriptreeConfig,
+  readGriptreeRegistry,
+  writeGriptreePointer,
+  findLegacyGriptrees,
+  registerLegacyGriptree,
+  isGriptreePathValid,
+} from '../lib/griptree.js';
+import type { RepoInfo, TreeInfo, TreeRepoInfo, GriptreeConfig, GriptreeStatus } from '../types.js';
 
 interface TreeAddOptions {
   path?: string;
-}
-
-interface TreeConfig {
-  branch: string;
-  locked: boolean;
-  createdAt: string;
-}
-
-/**
- * Sanitize branch name for use as directory name
- */
-function sanitizeBranchName(branch: string): string {
-  return branch.replace(/\//g, '-');
-}
-
-/**
- * Get the default tree path for a branch
- */
-function getDefaultTreePath(rootDir: string, branch: string): string {
-  const parentDir = path.dirname(rootDir);
-  const sanitized = sanitizeBranchName(branch);
-  return path.join(parentDir, sanitized);
-}
-
-/**
- * Read tree config from a directory
- */
-async function readTreeConfig(treePath: string): Promise<TreeConfig | null> {
-  const configPath = path.join(treePath, TREE_CONFIG_FILE);
-  try {
-    const content = await readFile(configPath, 'utf-8');
-    return JSON.parse(content);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Write tree config to a directory
- */
-async function writeTreeConfig(treePath: string, config: TreeConfig): Promise<void> {
-  const configPath = path.join(treePath, TREE_CONFIG_FILE);
-  await writeFile(configPath, JSON.stringify(config, null, 2));
-}
-
-/**
- * Find a tree by branch name
- */
-async function findTreeByBranch(rootDir: string, branch: string): Promise<{ path: string; config: TreeConfig } | null> {
-  const parentDir = path.dirname(rootDir);
-
-  try {
-    const entries = await readdir(parentDir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-
-      const dirPath = path.join(parentDir, entry.name);
-      const config = await readTreeConfig(dirPath);
-
-      if (config && config.branch === branch) {
-        return { path: dirPath, config };
-      }
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
 }
 
 /**
@@ -91,15 +32,23 @@ export async function treeAdd(branch: string, options: TreeAddOptions = {}): Pro
   // Determine tree path
   const treePath = options.path
     ? path.resolve(options.path)
-    : getDefaultTreePath(rootDir, branch);
+    : getDefaultGriptreePath(rootDir, branch);
 
-  // Check if tree already exists
-  if (await pathExists(treePath)) {
-    const config = await readTreeConfig(treePath);
-    if (config) {
-      console.error(chalk.red(`Griptree already exists at ${treePath} for branch '${config.branch}'`));
+  // Check if griptree already exists in registry
+  const existingConfig = await readGriptreeConfig(rootDir, branch);
+  if (existingConfig) {
+    if (await pathExists(existingConfig.path)) {
+      console.error(chalk.red(`Griptree already exists for branch '${branch}' at ${existingConfig.path}`));
       process.exit(1);
+    } else {
+      // Registry entry exists but directory is gone - clean up orphan
+      console.log(chalk.yellow(`Cleaning up orphaned registry entry for branch '${branch}'...`));
+      await removeGriptreeConfig(rootDir, branch);
     }
+  }
+
+  // Check if tree directory already exists
+  if (await pathExists(treePath)) {
     console.error(chalk.red(`Directory already exists: ${treePath}`));
     process.exit(1);
   }
@@ -190,11 +139,19 @@ export async function treeAdd(branch: string, options: TreeAddOptions = {}): Pro
     }
   }
 
-  // Write tree config
-  await writeTreeConfig(treePath, {
+  // Write griptree config to central registry
+  const config: GriptreeConfig = {
     branch,
-    locked: false,
+    path: treePath,
     createdAt: new Date().toISOString(),
+    locked: false,
+  };
+  await writeGriptreeConfig(rootDir, branch, config);
+
+  // Write pointer file in griptree directory
+  await writeGriptreePointer(treePath, {
+    mainWorkspace: rootDir,
+    branch,
   });
 
   // Summary
@@ -215,67 +172,84 @@ export async function treeAdd(branch: string, options: TreeAddOptions = {}): Pro
  */
 export async function treeList(): Promise<void> {
   const { rootDir } = await loadManifest();
-  const parentDir = path.dirname(rootDir);
 
-  // Find all directories that contain a .tree config file
-  const trees: TreeInfo[] = [];
+  // Read from central registry
+  let registryConfigs = await readGriptreeRegistry(rootDir);
 
-  try {
-    const entries = await readdir(parentDir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-
-      const dirPath = path.join(parentDir, entry.name);
-      const config = await readTreeConfig(dirPath);
-
-      if (config) {
-        // Get repo info for this tree
-        const repoInfos: TreeRepoInfo[] = [];
-
-        try {
-          const subentries = await readdir(dirPath, { withFileTypes: true });
-          for (const subentry of subentries) {
-            if (!subentry.isDirectory() || subentry.name.startsWith('.')) continue;
-
-            const repoPath = path.join(dirPath, subentry.name);
-            const isRepo = await isGitRepo(repoPath);
-
-            if (isRepo) {
-              const git = getGitInstance(repoPath);
-              try {
-                const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
-                repoInfos.push({
-                  name: subentry.name,
-                  path: repoPath,
-                  branch,
-                  exists: true,
-                });
-              } catch {
-                repoInfos.push({
-                  name: subentry.name,
-                  path: repoPath,
-                  branch: 'unknown',
-                  exists: true,
-                });
-              }
-            }
-          }
-        } catch {
-          // Skip if we can't read the directory
-        }
-
-        trees.push({
-          branch: config.branch,
-          path: dirPath,
-          locked: config.locked,
-          repos: repoInfos,
-        });
-      }
+  // Find and auto-register legacy griptrees
+  const legacyGriptrees = await findLegacyGriptrees(rootDir);
+  for (const legacy of legacyGriptrees) {
+    const spinner = ora(`Registering legacy griptree '${legacy.config.branch}'...`).start();
+    try {
+      const config = await registerLegacyGriptree(rootDir, legacy.path, legacy.config);
+      registryConfigs.push(config);
+      spinner.succeed(`Registered legacy griptree '${legacy.config.branch}'`);
+    } catch (error) {
+      spinner.fail(`Failed to register legacy griptree: ${error instanceof Error ? error.message : String(error)}`);
     }
-  } catch (error) {
-    console.error(chalk.red(`Failed to list griptrees: ${error instanceof Error ? error.message : String(error)}`));
-    process.exit(1);
+  }
+
+  // Build tree info list with status
+  const trees: TreeInfo[] = [];
+  const orphanedBranches: string[] = [];
+
+  for (const config of registryConfigs) {
+    const exists = await isGriptreePathValid(config);
+
+    if (!exists) {
+      // Auto-prune: remove orphaned registry entries
+      orphanedBranches.push(config.branch);
+      await removeGriptreeConfig(rootDir, config.branch);
+      continue;
+    }
+
+    // Get repo info for this tree
+    const repoInfos: TreeRepoInfo[] = [];
+
+    try {
+      const subentries = await readdir(config.path, { withFileTypes: true });
+      for (const subentry of subentries) {
+        if (!subentry.isDirectory() || subentry.name.startsWith('.')) continue;
+
+        const repoPath = path.join(config.path, subentry.name);
+        const isRepo = await isGitRepo(repoPath);
+
+        if (isRepo) {
+          const git = getGitInstance(repoPath);
+          try {
+            const branchName = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+            repoInfos.push({
+              name: subentry.name,
+              path: repoPath,
+              branch: branchName,
+              exists: true,
+            });
+          } catch {
+            repoInfos.push({
+              name: subentry.name,
+              path: repoPath,
+              branch: 'unknown',
+              exists: true,
+            });
+          }
+        }
+      }
+    } catch {
+      // Skip if we can't read the directory
+    }
+
+    trees.push({
+      branch: config.branch,
+      path: config.path,
+      locked: config.locked,
+      repos: repoInfos,
+      status: 'active' as GriptreeStatus,
+    });
+  }
+
+  // Report auto-pruned orphans
+  if (orphanedBranches.length > 0) {
+    console.log(chalk.yellow(`Auto-pruned ${orphanedBranches.length} orphaned griptree(s): ${orphanedBranches.join(', ')}\n`));
   }
 
   if (trees.length === 0) {
@@ -302,14 +276,14 @@ export async function treeRemove(branch: string, options: { force?: boolean } = 
   const { manifest, rootDir } = await loadManifest();
   const repos = getAllRepoInfo(manifest, rootDir);
 
-  // Find the tree
-  const found = await findTreeByBranch(rootDir, branch);
-  if (!found) {
+  // Find the tree in central registry
+  const config = await readGriptreeConfig(rootDir, branch);
+  if (!config) {
     console.error(chalk.red(`Griptree for branch '${branch}' not found.`));
     process.exit(1);
   }
 
-  const { path: treePath, config } = found;
+  const treePath = config.path;
 
   // Check if locked
   if (config.locked && !options.force) {
@@ -320,63 +294,74 @@ export async function treeRemove(branch: string, options: { force?: boolean } = 
 
   console.log(chalk.blue(`Removing griptree for branch '${branch}' at ${treePath}\n`));
 
-  // Remove worktrees from each repo in parallel
-  const results = await Promise.all(
-    repos.map(async (repo): Promise<{ repo: RepoInfo; success: boolean; error?: string }> => {
-      // Use the same relative path as in the manifest (e.g., ./codi -> codi)
-      const worktreePath = path.join(treePath!, repo.path);
-      const spinner = ora(`Removing worktree for ${repo.name}...`).start();
+  // Check if griptree directory exists
+  const treeExists = await pathExists(treePath);
+
+  if (treeExists) {
+    // Remove worktrees from each repo in parallel
+    const results = await Promise.all(
+      repos.map(async (repo): Promise<{ repo: RepoInfo; success: boolean; error?: string }> => {
+        // Use the same relative path as in the manifest (e.g., ./codi -> codi)
+        const worktreePath = path.join(treePath, repo.path);
+        const spinner = ora(`Removing worktree for ${repo.name}...`).start();
+
+        try {
+          if (!await pathExists(repo.absolutePath)) {
+            spinner.warn(`${repo.name}: main repo not found, skipping`);
+            return { repo, success: true };
+          }
+
+          if (!await pathExists(worktreePath)) {
+            spinner.succeed(`${repo.name}: worktree not found, skipping`);
+            return { repo, success: true };
+          }
+
+          const git = getGitInstance(repo.absolutePath);
+          await git.raw(['worktree', 'remove', worktreePath, '--force']);
+          spinner.succeed(`${repo.name}: worktree removed`);
+          return { repo, success: true };
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          spinner.fail(`${repo.name}: ${errorMsg}`);
+          return { repo, success: false, error: errorMsg };
+        }
+      })
+    );
+
+    // Remove manifest worktree
+    const manifestInfo = getManifestRepoInfo(manifest, rootDir);
+    if (manifestInfo && await isGitRepo(manifestInfo.absolutePath)) {
+      const manifestWorktreePath = path.join(treePath, '.gitgrip', 'manifests');
+      const spinner = ora('Removing worktree for manifest...').start();
 
       try {
-        if (!await pathExists(repo.absolutePath)) {
-          spinner.warn(`${repo.name}: main repo not found, skipping`);
-          return { repo, success: true };
+        if (await pathExists(manifestWorktreePath)) {
+          const git = getGitInstance(manifestInfo.absolutePath);
+          await git.raw(['worktree', 'remove', manifestWorktreePath, '--force']);
+          spinner.succeed('manifest: worktree removed');
+        } else {
+          spinner.succeed('manifest: worktree not found, skipping');
         }
-
-        if (!await pathExists(worktreePath)) {
-          spinner.succeed(`${repo.name}: worktree not found, skipping`);
-          return { repo, success: true };
-        }
-
-        const git = getGitInstance(repo.absolutePath);
-        await git.raw(['worktree', 'remove', worktreePath, '--force']);
-        spinner.succeed(`${repo.name}: worktree removed`);
-        return { repo, success: true };
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        spinner.fail(`${repo.name}: ${errorMsg}`);
-        return { repo, success: false, error: errorMsg };
+        spinner.fail(`manifest: ${errorMsg}`);
       }
-    })
-  );
-
-  // Remove manifest worktree
-  const manifestInfo = getManifestRepoInfo(manifest, rootDir);
-  if (manifestInfo && await isGitRepo(manifestInfo.absolutePath)) {
-    const manifestWorktreePath = path.join(treePath, '.gitgrip', 'manifests');
-    const spinner = ora('Removing worktree for manifest...').start();
-
-    try {
-      if (await pathExists(manifestWorktreePath)) {
-        const git = getGitInstance(manifestInfo.absolutePath);
-        await git.raw(['worktree', 'remove', manifestWorktreePath, '--force']);
-        spinner.succeed('manifest: worktree removed');
-      } else {
-        spinner.succeed('manifest: worktree not found, skipping');
-      }
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      spinner.fail(`manifest: ${errorMsg}`);
     }
+
+    // Remove the tree directory
+    try {
+      await rm(treePath, { recursive: true, force: true });
+    } catch (error) {
+      console.error(chalk.red(`Failed to remove griptree directory: ${error instanceof Error ? error.message : String(error)}`));
+    }
+  } else {
+    console.log(chalk.yellow(`Griptree directory not found, cleaning up registry entry...`));
   }
 
-  // Remove the tree directory
-  try {
-    await rm(treePath, { recursive: true, force: true });
-    console.log(chalk.green(`\nGriptree for branch '${branch}' removed successfully.`));
-  } catch (error) {
-    console.error(chalk.red(`Failed to remove griptree directory: ${error instanceof Error ? error.message : String(error)}`));
-  }
+  // Remove from central registry
+  await removeGriptreeConfig(rootDir, branch);
+
+  console.log(chalk.green(`\nGriptree for branch '${branch}' removed successfully.`));
 }
 
 /**
@@ -385,13 +370,11 @@ export async function treeRemove(branch: string, options: { force?: boolean } = 
 export async function treeLock(branch: string): Promise<void> {
   const { rootDir } = await loadManifest();
 
-  const found = await findTreeByBranch(rootDir, branch);
-  if (!found) {
+  const config = await readGriptreeConfig(rootDir, branch);
+  if (!config) {
     console.error(chalk.red(`Griptree for branch '${branch}' not found.`));
     process.exit(1);
   }
-
-  const { path: treePath, config } = found;
 
   if (config.locked) {
     console.log(chalk.yellow(`Griptree for branch '${branch}' is already locked.`));
@@ -399,7 +382,8 @@ export async function treeLock(branch: string): Promise<void> {
   }
 
   config.locked = true;
-  await writeTreeConfig(treePath, config);
+  config.lockedAt = new Date().toISOString();
+  await writeGriptreeConfig(rootDir, branch, config);
   console.log(chalk.green(`Griptree for branch '${branch}' is now locked.`));
 }
 
@@ -409,13 +393,11 @@ export async function treeLock(branch: string): Promise<void> {
 export async function treeUnlock(branch: string): Promise<void> {
   const { rootDir } = await loadManifest();
 
-  const found = await findTreeByBranch(rootDir, branch);
-  if (!found) {
+  const config = await readGriptreeConfig(rootDir, branch);
+  if (!config) {
     console.error(chalk.red(`Griptree for branch '${branch}' not found.`));
     process.exit(1);
   }
-
-  const { path: treePath, config } = found;
 
   if (!config.locked) {
     console.log(chalk.yellow(`Griptree for branch '${branch}' is not locked.`));
@@ -423,6 +405,8 @@ export async function treeUnlock(branch: string): Promise<void> {
   }
 
   config.locked = false;
-  await writeTreeConfig(treePath, config);
+  config.lockedAt = undefined;
+  config.lockedReason = undefined;
+  await writeGriptreeConfig(rootDir, branch, config);
   console.log(chalk.green(`Griptree for branch '${branch}' is now unlocked.`));
 }
