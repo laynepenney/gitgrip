@@ -112,7 +112,8 @@ export async function treeAdd(branch: string, options: TreeAddOptions = {}): Pro
   // Create worktree for each repo in parallel
   const repoResults = await Promise.all(
     repos.map(async (repo): Promise<{ repo: RepoInfo; success: boolean; error?: string }> => {
-      const worktreePath = path.join(treePath, repo.name);
+      // Use the same relative path as in the manifest (e.g., ./codi -> codi)
+      const worktreePath = path.join(treePath, repo.path);
       const spinner = ora(`Creating worktree for ${repo.name}...`).start();
 
       try {
@@ -322,7 +323,8 @@ export async function treeRemove(branch: string, options: { force?: boolean } = 
   // Remove worktrees from each repo in parallel
   const results = await Promise.all(
     repos.map(async (repo): Promise<{ repo: RepoInfo; success: boolean; error?: string }> => {
-      const worktreePath = path.join(treePath!, repo.name);
+      // Use the same relative path as in the manifest (e.g., ./codi -> codi)
+      const worktreePath = path.join(treePath!, repo.path);
       const spinner = ora(`Removing worktree for ${repo.name}...`).start();
 
       try {

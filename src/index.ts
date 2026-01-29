@@ -26,7 +26,7 @@ const program = new Command();
 program
   .name('gitgrip')
   .description('git a grip - Multi-repo workflow tool\n\nShorthand: Use "gr" instead of "gitgrip"')
-  .version('0.4.1')
+  .version('0.4.2')
   .option('--timing', 'Show timing breakdown for operations');
 
 // Set up timing hooks
