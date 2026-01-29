@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `gr repo add <url>` command - add new repositories to workspace
+  - Parses GitHub, GitLab, Azure DevOps URLs automatically
+  - Updates manifest.yaml preserving comments
+  - Clones repo and syncs to current workspace branch
+  - Options: `--path`, `--name`, `--branch`, `--no-clone`
+
+### Fixed
+- `gr sync` no longer discards local commits on unpushed feature branches
+  - Now checks if branch was ever pushed before auto-switching
+  - Warns if local-only commits would be lost
+
 ## [0.2.4] - 2026-01-28
 
 ### Removed

@@ -86,8 +86,15 @@ All git operations must go through `gr`. There is no exception.
 - [ ] New command registered in `src/index.ts`
 - [ ] Types added to `src/types.ts` if needed
 - [ ] Tests added for new functionality
-- [ ] `CLAUDE.md` updated with documentation
-- [ ] `README.md` updated if user-facing
+
+**CRITICAL: Update all documentation when changing commands/API:**
+- [ ] `CLAUDE.md` - Development guide and command reference
+- [ ] `README.md` - User-facing documentation
+- [ ] `CONTRIBUTING.md` - If workflow changes
+- [ ] `CHANGELOG.md` - Add entry for the change
+- [ ] `.claude/skills/gitgrip/SKILL.md` - Claude Code skill definition
+
+Forgetting to update docs creates drift between code and documentation. Always check these files when adding/modifying commands.
 
 ## Project Structure
 

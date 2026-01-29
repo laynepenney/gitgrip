@@ -84,6 +84,15 @@ gr link --force              # Overwrite existing files/links
 gr link --dry-run            # Preview changes
 ```
 
+### Adding Repositories
+```bash
+gr repo add <url>                    # Add repo to workspace (updates manifest + clones)
+gr repo add <url> --name my-repo     # Custom name in manifest
+gr repo add <url> --path ./custom    # Custom local path
+gr repo add <url> --branch develop   # Set default branch
+gr repo add <url> --no-clone         # Only update manifest, don't clone
+```
+
 ### Workspace Scripts
 ```bash
 gr run --list                # List available scripts
