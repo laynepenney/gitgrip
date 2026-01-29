@@ -87,6 +87,20 @@ All git operations must go through `gr`. There is no exception.
 - [ ] Types added to `src/types.ts` if needed
 - [ ] Tests added for new functionality
 
+**CRITICAL: Run benchmarks for performance-related changes:**
+
+When modifying `push.ts`, `sync.ts`, `commit.ts`, `add.ts`, `diff.ts`, or `git.ts`:
+
+```bash
+# Run workspace benchmarks (requires gitgrip workspace)
+gr bench -n 10
+
+# Run isolated microbenchmarks (runs in CI)
+pnpm bench
+```
+
+Compare results before/after your changes. Document significant improvements or regressions in the PR description.
+
 **CRITICAL: Update all documentation when changing commands/API:**
 - [ ] `CLAUDE.md` - Development guide and command reference
 - [ ] `README.md` - User-facing documentation
