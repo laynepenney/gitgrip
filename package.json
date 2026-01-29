@@ -1,6 +1,6 @@
 {
   "name": "gitgrip",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "git a grip - Multi-repo workflow tool",
   "type": "module",
   "main": "dist/index.js",
