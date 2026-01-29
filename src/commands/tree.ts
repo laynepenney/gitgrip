@@ -6,7 +6,7 @@ import { loadManifest, getAllRepoInfo, getManifestRepoInfo } from '../lib/manife
 import { pathExists, getGitInstance, isGitRepo } from '../lib/git.js';
 import type { RepoInfo, TreeInfo, TreeRepoInfo } from '../types.js';
 
-const TREE_CONFIG_FILE = '.tree';
+const TREE_CONFIG_FILE = '.griptree';
 
 interface TreeAddOptions {
   path?: string;
