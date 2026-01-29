@@ -9,18 +9,7 @@ Items here should be reviewed before creating GitHub issues.
 
 ## Pending Review
 
-### `gr pr merge` check status messaging could be more precise
-
-**Context**: When merging PR #33, `gr pr merge` reported "checks not passing" but the actual check status was `SKIPPED` (not failed).
-
-**Current behavior**: Any non-success check status shows as "checks not passing"
-
-**Suggested improvement**: Distinguish between:
-- "checks failed" (actual failure)
-- "checks skipped" (not applicable)
-- "checks pending" (still running)
-
-This would help users understand if they're bypassing a real failure or just a non-applicable check when using `--force`.
+_No items pending review._
 
 ---
 
@@ -46,12 +35,13 @@ This would help users understand if they're bypassing a real failure or just a n
 | #35 | feat: Use GitHub Check Runs API for better status checks |
 | #36 | feat: Add retry logic with exponential backoff |
 | #37 | feat: Add rate limiting handling |
+| #39 | feat: improve check status messaging in gr pr merge |
 
 #### Minor Friction (No Raw Commands Needed)
 
 | Observation | Notes |
 |-------------|-------|
-| Check status messaging | `gr pr merge` showed "checks not passing" when check was actually SKIPPED. See Pending Review. |
+| Check status messaging | `gr pr merge` showed "checks not passing" when check was actually SKIPPED. Issue #39 created. |
 
 ---
 
