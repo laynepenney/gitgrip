@@ -1,0 +1,236 @@
+//! Repository information and operations
+
+use std::path::PathBuf;
+
+use crate::core::manifest::{PlatformType, RepoConfig};
+
+/// Extended repository information with computed fields
+#[derive(Debug, Clone)]
+pub struct RepoInfo {
+    /// Repository name (from manifest key)
+    pub name: String,
+    /// Git URL (SSH or HTTPS)
+    pub url: String,
+    /// Local path relative to manifest root
+    pub path: String,
+    /// Absolute path on disk
+    pub absolute_path: PathBuf,
+    /// Default branch (e.g., "main", "master")
+    pub default_branch: String,
+    /// Owner/namespace from git URL
+    pub owner: String,
+    /// Repo name from git URL
+    pub repo: String,
+    /// Detected or configured platform type
+    pub platform_type: PlatformType,
+    /// Project name (Azure DevOps only)
+    pub project: Option<String>,
+}
+
+impl RepoInfo {
+    /// Create RepoInfo from a manifest RepoConfig
+    pub fn from_config(name: &str, config: &RepoConfig, workspace_root: &PathBuf) -> Option<Self> {
+        let parsed = parse_git_url(&config.url)?;
+
+        let absolute_path = workspace_root.join(&config.path);
+
+        let platform_type = config
+            .platform
+            .as_ref()
+            .map(|p| p.platform_type)
+            .unwrap_or_else(|| detect_platform(&config.url));
+
+        Some(Self {
+            name: name.to_string(),
+            url: config.url.clone(),
+            path: config.path.clone(),
+            absolute_path,
+            default_branch: config.default_branch.clone(),
+            owner: parsed.owner,
+            repo: parsed.repo,
+            platform_type,
+            project: parsed.project,
+        })
+    }
+
+    /// Check if the repository exists on disk
+    pub fn exists(&self) -> bool {
+        self.absolute_path.join(".git").exists()
+    }
+}
+
+/// Parsed git URL components
+struct ParsedUrl {
+    owner: String,
+    repo: String,
+    project: Option<String>,
+}
+
+/// Parse a git URL to extract owner and repo
+fn parse_git_url(url: &str) -> Option<ParsedUrl> {
+    // Handle SSH URLs: git@github.com:owner/repo.git
+    if url.starts_with("git@") {
+        let parts: Vec<&str> = url.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            return None;
+        }
+        let path = parts[1].trim_end_matches(".git");
+
+        // Handle Azure DevOps SSH: git@ssh.dev.azure.com:v3/org/project/repo
+        if url.contains("dev.azure.com") || url.contains("visualstudio.com") {
+            let segments: Vec<&str> = path.split('/').collect();
+            if segments.len() >= 4 && segments[0] == "v3" {
+                return Some(ParsedUrl {
+                    owner: segments[1].to_string(),
+                    repo: segments[3].to_string(),
+                    project: Some(segments[2].to_string()),
+                });
+            }
+        }
+
+        // Standard format: owner/repo
+        let segments: Vec<&str> = path.split('/').collect();
+        if segments.len() >= 2 {
+            return Some(ParsedUrl {
+                owner: segments[0].to_string(),
+                repo: segments[segments.len() - 1].to_string(),
+                project: None,
+            });
+        }
+    }
+
+    // Handle HTTPS URLs: https://github.com/owner/repo.git
+    if url.starts_with("https://") || url.starts_with("http://") {
+        let url_without_proto = url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://");
+        let path = url_without_proto
+            .splitn(2, '/')
+            .nth(1)?
+            .trim_end_matches(".git");
+
+        // Handle Azure DevOps HTTPS: https://dev.azure.com/org/project/_git/repo
+        if url.contains("dev.azure.com") {
+            let segments: Vec<&str> = path.split('/').collect();
+            if segments.len() >= 4 && segments[2] == "_git" {
+                return Some(ParsedUrl {
+                    owner: segments[0].to_string(),
+                    repo: segments[3].to_string(),
+                    project: Some(segments[1].to_string()),
+                });
+            }
+        }
+
+        // Handle visualstudio.com: https://org.visualstudio.com/project/_git/repo
+        if url.contains("visualstudio.com") {
+            // Extract org from subdomain
+            let host_and_path: Vec<&str> = url_without_proto.splitn(2, '/').collect();
+            if host_and_path.len() < 2 {
+                return None;
+            }
+            let host = host_and_path[0];
+            let org = host.split('.').next()?;
+            let segments: Vec<&str> = path.split('/').collect();
+            if segments.len() >= 3 && segments[1] == "_git" {
+                return Some(ParsedUrl {
+                    owner: org.to_string(),
+                    repo: segments[2].to_string(),
+                    project: Some(segments[0].to_string()),
+                });
+            }
+        }
+
+        // Standard format: owner/repo
+        let segments: Vec<&str> = path.split('/').collect();
+        if segments.len() >= 2 {
+            return Some(ParsedUrl {
+                owner: segments[0].to_string(),
+                repo: segments[segments.len() - 1].to_string(),
+                project: None,
+            });
+        }
+    }
+
+    None
+}
+
+/// Detect platform type from URL
+fn detect_platform(url: &str) -> PlatformType {
+    // Check GitHub first (most common)
+    if url.contains("github.com") {
+        return PlatformType::GitHub;
+    }
+
+    // Check Azure DevOps before GitLab (avoid false positives)
+    if url.contains("dev.azure.com") || url.contains("visualstudio.com") {
+        return PlatformType::AzureDevOps;
+    }
+
+    // Check GitLab - ensure it's in hostname, not just path
+    if url.contains("gitlab.com") || url.contains("gitlab.") {
+        return PlatformType::GitLab;
+    }
+
+    // Default to GitHub for backward compatibility
+    PlatformType::GitHub
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_github_ssh() {
+        let parsed = parse_git_url("git@github.com:user/repo.git").unwrap();
+        assert_eq!(parsed.owner, "user");
+        assert_eq!(parsed.repo, "repo");
+        assert!(parsed.project.is_none());
+    }
+
+    #[test]
+    fn test_parse_github_https() {
+        let parsed = parse_git_url("https://github.com/user/repo.git").unwrap();
+        assert_eq!(parsed.owner, "user");
+        assert_eq!(parsed.repo, "repo");
+    }
+
+    #[test]
+    fn test_parse_azure_https() {
+        let parsed = parse_git_url("https://dev.azure.com/org/project/_git/repo").unwrap();
+        assert_eq!(parsed.owner, "org");
+        assert_eq!(parsed.repo, "repo");
+        assert_eq!(parsed.project, Some("project".to_string()));
+    }
+
+    #[test]
+    fn test_parse_azure_ssh() {
+        let parsed = parse_git_url("git@ssh.dev.azure.com:v3/org/project/repo").unwrap();
+        assert_eq!(parsed.owner, "org");
+        assert_eq!(parsed.repo, "repo");
+        assert_eq!(parsed.project, Some("project".to_string()));
+    }
+
+    #[test]
+    fn test_detect_github() {
+        assert_eq!(
+            detect_platform("git@github.com:user/repo.git"),
+            PlatformType::GitHub
+        );
+    }
+
+    #[test]
+    fn test_detect_gitlab() {
+        assert_eq!(
+            detect_platform("git@gitlab.com:user/repo.git"),
+            PlatformType::GitLab
+        );
+    }
+
+    #[test]
+    fn test_detect_azure() {
+        assert_eq!(
+            detect_platform("https://dev.azure.com/org/project/_git/repo"),
+            PlatformType::AzureDevOps
+        );
+    }
+}
