@@ -16,6 +16,9 @@ enum Commands {
     Init {
         /// Manifest URL
         url: Option<String>,
+        /// Target directory
+        #[arg(short, long)]
+        path: Option<String>,
     },
     /// Sync all repositories
     Sync {
@@ -90,17 +93,32 @@ enum Commands {
         /// Command to run
         #[arg(short, long)]
         command: String,
+        /// Run in parallel
+        #[arg(short, long)]
+        parallel: bool,
+        /// Only run in repos with changes
+        #[arg(long)]
+        changed: bool,
     },
     /// Rebase branches across repos
     Rebase {
         /// Target branch
         onto: Option<String>,
+        /// Abort rebase in progress
+        #[arg(long)]
+        abort: bool,
+        /// Continue rebase after resolving conflicts
+        #[arg(long, name = "continue")]
+        continue_rebase: bool,
     },
     /// Manage file links
     Link {
         /// Show link status
         #[arg(long)]
         status: bool,
+        /// Apply/fix links
+        #[arg(long)]
+        apply: bool,
     },
     /// Run workspace scripts
     Run {
@@ -211,12 +229,19 @@ enum RepoCommands {
         /// Repository URL
         url: String,
         /// Local path
+        #[arg(short, long)]
         path: Option<String>,
+        /// Default branch
+        #[arg(short, long)]
+        branch: Option<String>,
     },
     /// Remove a repository
     Remove {
         /// Repository name
         name: String,
+        /// Delete files from disk
+        #[arg(long)]
+        delete: bool,
     },
 }
 
@@ -315,11 +340,68 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Some(Commands::Init { url, path }) => {
+            gitgrip::cli::commands::init::run_init(
+                url.as_deref(),
+                path.as_deref(),
+            )?;
+        }
+        Some(Commands::Tree { action }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            match action {
+                TreeCommands::Add { branch } => {
+                    gitgrip::cli::commands::tree::run_tree_add(&workspace_root, &manifest, &branch)?;
+                }
+                TreeCommands::List => {
+                    gitgrip::cli::commands::tree::run_tree_list(&workspace_root)?;
+                }
+                TreeCommands::Remove { branch, force } => {
+                    gitgrip::cli::commands::tree::run_tree_remove(&workspace_root, &branch, force)?;
+                }
+                TreeCommands::Lock { branch, reason } => {
+                    gitgrip::cli::commands::tree::run_tree_lock(&workspace_root, &branch, reason.as_deref())?;
+                }
+                TreeCommands::Unlock { branch } => {
+                    gitgrip::cli::commands::tree::run_tree_unlock(&workspace_root, &branch)?;
+                }
+            }
+        }
+        Some(Commands::Forall { command, parallel, changed }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::forall::run_forall(&workspace_root, &manifest, &command, parallel, changed)?;
+        }
+        Some(Commands::Rebase { onto, abort, continue_rebase }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::rebase::run_rebase(&workspace_root, &manifest, onto.as_deref(), abort, continue_rebase)?;
+        }
+        Some(Commands::Link { status, apply }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::link::run_link(&workspace_root, &manifest, status, apply)?;
+        }
+        Some(Commands::Run { name, list }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::run::run_run(&workspace_root, &manifest, name.as_deref(), list)?;
+        }
+        Some(Commands::Env) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::env::run_env(&workspace_root, &manifest)?;
+        }
+        Some(Commands::Repo { action }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            match action {
+                RepoCommands::List => {
+                    gitgrip::cli::commands::repo::run_repo_list(&workspace_root, &manifest)?;
+                }
+                RepoCommands::Add { url, path, branch } => {
+                    gitgrip::cli::commands::repo::run_repo_add(&workspace_root, &url, path.as_deref(), branch.as_deref())?;
+                }
+                RepoCommands::Remove { name, delete } => {
+                    gitgrip::cli::commands::repo::run_repo_remove(&workspace_root, &name, delete)?;
+                }
+            }
+        }
         Some(Commands::Bench { name, iterations }) => {
             run_benchmarks(name.as_deref(), iterations).await?;
-        }
-        Some(_) => {
-            println!("Command not yet implemented - coming in Phase 6");
         }
         None => {
             println!("gitgrip - Multi-repo workflow tool");
