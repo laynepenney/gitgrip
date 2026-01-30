@@ -49,9 +49,8 @@ pub enum GitError {
 
 /// Open a git repository at the given path
 pub fn open_repo<P: AsRef<Path>>(path: P) -> Result<Repository, GitError> {
-    Repository::open(path.as_ref()).map_err(|e| {
-        GitError::NotARepo(format!("{}: {}", path.as_ref().display(), e))
-    })
+    Repository::open(path.as_ref())
+        .map_err(|e| GitError::NotARepo(format!("{}: {}", path.as_ref().display(), e)))
 }
 
 /// Check if a path is a git repository
@@ -65,7 +64,11 @@ pub fn path_exists<P: AsRef<Path>>(path: P) -> bool {
 }
 
 /// Clone a repository
-pub fn clone_repo<P: AsRef<Path>>(url: &str, path: P, branch: Option<&str>) -> Result<Repository, GitError> {
+pub fn clone_repo<P: AsRef<Path>>(
+    url: &str,
+    path: P,
+    branch: Option<&str>,
+) -> Result<Repository, GitError> {
     let path = path.as_ref();
 
     let mut args = vec!["clone"];
@@ -83,7 +86,10 @@ pub fn clone_repo<P: AsRef<Path>>(url: &str, path: P, branch: Option<&str>) -> R
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GitError::OperationFailed(format!("git clone failed: {}", stderr)));
+        return Err(GitError::OperationFailed(format!(
+            "git clone failed: {}",
+            stderr
+        )));
     }
 
     open_repo(path)
@@ -91,16 +97,18 @@ pub fn clone_repo<P: AsRef<Path>>(url: &str, path: P, branch: Option<&str>) -> R
 
 /// Get the current branch name
 pub fn get_current_branch(repo: &Repository) -> Result<String, GitError> {
-    let head = repo.head().map_err(|e| GitError::Reference(e.to_string()))?;
+    let head = repo
+        .head()
+        .map_err(|e| GitError::Reference(e.to_string()))?;
 
     if head.is_branch() {
         let name = head.shorthand().unwrap_or("HEAD");
         Ok(name.to_string())
     } else {
         // Detached HEAD
-        let oid = head.target().ok_or_else(|| {
-            GitError::Reference("HEAD has no target".to_string())
-        })?;
+        let oid = head
+            .target()
+            .ok_or_else(|| GitError::Reference("HEAD has no target".to_string()))?;
         Ok(format!("(HEAD detached at {})", &oid.to_string()[..7]))
     }
 }

@@ -224,11 +224,7 @@ fn run_benchmark_operation(name: &str) -> Result<()> {
 }
 
 /// Run a single benchmark with warmup and iterations
-fn run_single_benchmark(
-    name: &str,
-    iterations: usize,
-    warmup: usize,
-) -> Result<BenchmarkResult> {
+fn run_single_benchmark(name: &str, iterations: usize, warmup: usize) -> Result<BenchmarkResult> {
     let mut durations = Vec::with_capacity(iterations);
 
     // Warmup runs

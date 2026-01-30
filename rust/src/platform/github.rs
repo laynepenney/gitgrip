@@ -28,9 +28,9 @@ impl GitHubAdapter {
         let mut builder = Octocrab::builder().personal_token(token);
 
         if let Some(ref base_url) = self.base_url {
-            builder = builder.base_uri(base_url).map_err(|e| {
-                PlatformError::ApiError(format!("Invalid base URL: {}", e))
-            })?;
+            builder = builder
+                .base_uri(base_url)
+                .map_err(|e| PlatformError::ApiError(format!("Invalid base URL: {}", e)))?;
         }
 
         builder
@@ -198,7 +198,10 @@ impl HostingPlatform for GitHubAdapter {
                 if error_str.contains("405") || error_str.contains("not mergeable") {
                     Ok(false)
                 } else {
-                    Err(PlatformError::ApiError(format!("Failed to merge PR: {}", e)))
+                    Err(PlatformError::ApiError(format!(
+                        "Failed to merge PR: {}",
+                        e
+                    )))
                 }
             }
         }
@@ -224,7 +227,11 @@ impl HostingPlatform for GitHubAdapter {
         if let Some(pr) = prs.items.first() {
             Ok(Some(PRCreateResult {
                 number: pr.number,
-                url: pr.html_url.as_ref().map(|u| u.to_string()).unwrap_or_default(),
+                url: pr
+                    .html_url
+                    .as_ref()
+                    .map(|u| u.to_string())
+                    .unwrap_or_default(),
             }))
         } else {
             Ok(None)
@@ -237,7 +244,9 @@ impl HostingPlatform for GitHubAdapter {
         repo: &str,
         pull_number: u64,
     ) -> Result<bool, PlatformError> {
-        let reviews = self.get_pull_request_reviews(owner, repo, pull_number).await?;
+        let reviews = self
+            .get_pull_request_reviews(owner, repo, pull_number)
+            .await?;
 
         // Check for at least one approval and no changes requested
         let has_approval = reviews.iter().any(|r| r.state == "APPROVED");
@@ -265,7 +274,11 @@ impl HostingPlatform for GitHubAdapter {
             .items
             .iter()
             .map(|r| PRReview {
-                state: r.state.clone().map(|s| format!("{:?}", s)).unwrap_or_default(),
+                state: r
+                    .state
+                    .clone()
+                    .map(|s| format!("{:?}", s))
+                    .unwrap_or_default(),
                 user: r.user.as_ref().map(|u| u.login.clone()).unwrap_or_default(),
             })
             .collect())
@@ -280,7 +293,10 @@ impl HostingPlatform for GitHubAdapter {
         // Get combined status using raw API call
         let token = self.get_token().await?;
         let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
-        let url = format!("{}/repos/{}/{}/commits/{}/status", base_url, owner, repo, ref_name);
+        let url = format!(
+            "{}/repos/{}/{}/commits/{}/status",
+            base_url, owner, repo, ref_name
+        );
 
         let http_client = reqwest::Client::new();
         let response = http_client
@@ -363,7 +379,10 @@ impl HostingPlatform for GitHubAdapter {
         let token = self.get_token().await?;
         let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
 
-        let url = format!("{}/repos/{}/{}/pulls/{}", base_url, owner, repo, pull_number);
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}",
+            base_url, owner, repo, pull_number
+        );
 
         let client = reqwest::Client::new();
         let response = client

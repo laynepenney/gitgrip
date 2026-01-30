@@ -8,11 +8,7 @@ use git2::{DiffOptions, Repository};
 use std::path::PathBuf;
 
 /// Run the diff command
-pub fn run_diff(
-    workspace_root: &PathBuf,
-    manifest: &Manifest,
-    staged: bool,
-) -> anyhow::Result<()> {
+pub fn run_diff(workspace_root: &PathBuf, manifest: &Manifest, staged: bool) -> anyhow::Result<()> {
     let repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
@@ -96,8 +92,8 @@ fn get_diff(repo: &Repository, staged: bool) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
+    use tempfile::TempDir;
 
     fn setup_test_repo() -> (TempDir, Repository) {
         let temp_dir = TempDir::new().unwrap();

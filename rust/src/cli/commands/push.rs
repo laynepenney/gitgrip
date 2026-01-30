@@ -3,8 +3,8 @@
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
-use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::git::remote::{force_push_branch, push_branch};
+use crate::git::{get_current_branch, open_repo, path_exists};
 use git2::Repository;
 use std::path::PathBuf;
 
@@ -110,7 +110,10 @@ pub fn run_push(
     } else {
         Output::warning(&format!(
             "{} {}, {} failed, {} skipped",
-            success_count, action.to_lowercase(), error_count, skip_count
+            success_count,
+            action.to_lowercase(),
+            error_count,
+            skip_count
         ));
     }
 
@@ -135,8 +138,12 @@ fn has_commits_to_push(repo: &Repository, branch: &str) -> anyhow::Result<bool> 
         }
     };
 
-    let local_oid = local_ref.target().ok_or_else(|| anyhow::anyhow!("No local target"))?;
-    let remote_oid = remote_branch.target().ok_or_else(|| anyhow::anyhow!("No remote target"))?;
+    let local_oid = local_ref
+        .target()
+        .ok_or_else(|| anyhow::anyhow!("No local target"))?;
+    let remote_oid = remote_branch
+        .target()
+        .ok_or_else(|| anyhow::anyhow!("No remote target"))?;
 
     // If they're the same, nothing to push
     if local_oid == remote_oid {
@@ -151,8 +158,8 @@ fn has_commits_to_push(repo: &Repository, branch: &str) -> anyhow::Result<bool> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
+    use tempfile::TempDir;
 
     fn setup_test_repo() -> (TempDir, Repository) {
         let temp_dir = TempDir::new().unwrap();

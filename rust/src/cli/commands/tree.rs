@@ -102,12 +102,15 @@ pub fn run_tree_add(
     griptree_config.save(&griptree_config_path)?;
 
     // Add to griptrees list
-    griptrees.griptrees.insert(branch.to_string(), GriptreeEntry {
-        path: tree_path.to_string_lossy().to_string(),
-        branch: branch.to_string(),
-        locked: false,
-        lock_reason: None,
-    });
+    griptrees.griptrees.insert(
+        branch.to_string(),
+        GriptreeEntry {
+            path: tree_path.to_string_lossy().to_string(),
+            branch: branch.to_string(),
+            locked: false,
+            lock_reason: None,
+        },
+    );
 
     // Save griptrees list
     let config_json = serde_json::to_string_pretty(&griptrees)?;
@@ -172,11 +175,7 @@ pub fn run_tree_list(workspace_root: &PathBuf) -> anyhow::Result<()> {
 }
 
 /// Run tree remove command
-pub fn run_tree_remove(
-    workspace_root: &PathBuf,
-    branch: &str,
-    force: bool,
-) -> anyhow::Result<()> {
+pub fn run_tree_remove(workspace_root: &PathBuf, branch: &str, force: bool) -> anyhow::Result<()> {
     Output::header(&format!("Removing griptree for '{}'", branch));
     println!();
 
@@ -188,14 +187,20 @@ pub fn run_tree_remove(
     let content = std::fs::read_to_string(&config_path)?;
     let mut griptrees: GriptreesList = serde_json::from_str(&content)?;
 
-    let entry = griptrees.griptrees.get(branch)
+    let entry = griptrees
+        .griptrees
+        .get(branch)
         .ok_or_else(|| anyhow::anyhow!("Griptree '{}' not found", branch))?;
 
     if entry.locked && !force {
         anyhow::bail!(
             "Griptree '{}' is locked{}. Use --force to remove anyway.",
             branch,
-            entry.lock_reason.as_ref().map(|r| format!(": {}", r)).unwrap_or_default()
+            entry
+                .lock_reason
+                .as_ref()
+                .map(|r| format!(": {}", r))
+                .unwrap_or_default()
         );
     }
 
@@ -231,7 +236,9 @@ pub fn run_tree_lock(
     let content = std::fs::read_to_string(&config_path)?;
     let mut griptrees: GriptreesList = serde_json::from_str(&content)?;
 
-    let entry = griptrees.griptrees.get_mut(branch)
+    let entry = griptrees
+        .griptrees
+        .get_mut(branch)
         .ok_or_else(|| anyhow::anyhow!("Griptree '{}' not found", branch))?;
 
     entry.locked = true;
@@ -254,7 +261,9 @@ pub fn run_tree_unlock(workspace_root: &PathBuf, branch: &str) -> anyhow::Result
     let content = std::fs::read_to_string(&config_path)?;
     let mut griptrees: GriptreesList = serde_json::from_str(&content)?;
 
-    let entry = griptrees.griptrees.get_mut(branch)
+    let entry = griptrees
+        .griptrees
+        .get_mut(branch)
         .ok_or_else(|| anyhow::anyhow!("Griptree '{}' not found", branch))?;
 
     entry.locked = false;
@@ -268,7 +277,11 @@ pub fn run_tree_unlock(workspace_root: &PathBuf, branch: &str) -> anyhow::Result
 }
 
 /// Create a git worktree using git2
-fn create_worktree(repo_path: &PathBuf, worktree_path: &PathBuf, branch: &str) -> anyhow::Result<()> {
+fn create_worktree(
+    repo_path: &PathBuf,
+    worktree_path: &PathBuf,
+    branch: &str,
+) -> anyhow::Result<()> {
     let repo = open_repo(repo_path)?;
 
     // Create parent directory if needed
@@ -284,9 +297,13 @@ fn create_worktree(repo_path: &PathBuf, worktree_path: &PathBuf, branch: &str) -
         repo.worktree(
             branch,
             worktree_path,
-            Some(git2::WorktreeAddOptions::new().reference(
-                Some(&repo.find_branch(branch, git2::BranchType::Local)?.into_reference())
-            )),
+            Some(
+                git2::WorktreeAddOptions::new().reference(Some(
+                    &repo
+                        .find_branch(branch, git2::BranchType::Local)?
+                        .into_reference(),
+                )),
+            ),
         )?;
     } else {
         // Create branch and worktree
@@ -297,9 +314,13 @@ fn create_worktree(repo_path: &PathBuf, worktree_path: &PathBuf, branch: &str) -
         repo.worktree(
             branch,
             worktree_path,
-            Some(git2::WorktreeAddOptions::new().reference(
-                Some(&repo.find_branch(branch, git2::BranchType::Local)?.into_reference())
-            )),
+            Some(
+                git2::WorktreeAddOptions::new().reference(Some(
+                    &repo
+                        .find_branch(branch, git2::BranchType::Local)?
+                        .into_reference(),
+                )),
+            ),
         )?;
     }
 

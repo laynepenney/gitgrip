@@ -120,7 +120,9 @@ impl AzureDevOpsAdapter {
         // Azure DevOps uses Basic auth with PAT (username can be empty)
         let auth = STANDARD.encode(format!(":{}", token));
 
-        let mut request = self.http_client.request(method, &url)
+        let mut request = self
+            .http_client
+            .request(method, &url)
             .header("Authorization", format!("Basic {}", auth))
             .header("Content-Type", "application/json");
 
@@ -163,7 +165,8 @@ impl AzureDevOpsAdapter {
 
         let auth = STANDARD.encode(format!(":{}", token));
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .patch(&url)
             .header("Authorization", format!("Basic {}", auth))
             .header("Content-Type", "application/json")
@@ -292,7 +295,10 @@ impl HostingPlatform for AzureDevOpsAdapter {
             .api_request(
                 reqwest::Method::GET,
                 &ctx,
-                &format!("/git/repositories/{}/pullrequests/{}", ctx.repository, pull_number),
+                &format!(
+                    "/git/repositories/{}/pullrequests/{}",
+                    ctx.repository, pull_number
+                ),
                 None::<()>,
             )
             .await?;
@@ -301,7 +307,14 @@ impl HostingPlatform for AzureDevOpsAdapter {
         let (state, merged) = match pr.status.as_str() {
             "completed" => {
                 let merged = pr.merge_status.as_deref() == Some("succeeded");
-                (if merged { PRState::Merged } else { PRState::Closed }, merged)
+                (
+                    if merged {
+                        PRState::Merged
+                    } else {
+                        PRState::Closed
+                    },
+                    merged,
+                )
             }
             "abandoned" => (PRState::Closed, false),
             _ => (PRState::Open, false),
@@ -322,7 +335,10 @@ impl HostingPlatform for AzureDevOpsAdapter {
             mergeable: Some(mergeable),
             head: PRHead {
                 ref_name: pr.source_ref_name.replace("refs/heads/", ""),
-                sha: pr.last_merge_source_commit.map(|c| c.commit_id).unwrap_or_default(),
+                sha: pr
+                    .last_merge_source_commit
+                    .map(|c| c.commit_id)
+                    .unwrap_or_default(),
             },
             base: PRBase {
                 ref_name: pr.target_ref_name.replace("refs/heads/", ""),
@@ -346,7 +362,10 @@ impl HostingPlatform for AzureDevOpsAdapter {
 
         self.api_patch(
             &ctx,
-            &format!("/git/repositories/{}/pullrequests/{}", ctx.repository, pull_number),
+            &format!(
+                "/git/repositories/{}/pullrequests/{}",
+                ctx.repository, pull_number
+            ),
             UpdateBody {
                 description: body.to_string(),
             },
@@ -411,7 +430,10 @@ impl HostingPlatform for AzureDevOpsAdapter {
         let result = self
             .api_patch(
                 &ctx,
-                &format!("/git/repositories/{}/pullrequests/{}", ctx.repository, pull_number),
+                &format!(
+                    "/git/repositories/{}/pullrequests/{}",
+                    ctx.repository, pull_number
+                ),
                 CompletePR {
                     status: "completed".to_string(),
                     last_merge_source_commit: LastMergeCommit {
@@ -465,15 +487,17 @@ impl HostingPlatform for AzureDevOpsAdapter {
         repo: &str,
         pull_number: u64,
     ) -> Result<bool, PlatformError> {
-        let reviews = self.get_pull_request_reviews(owner, repo, pull_number).await?;
+        let reviews = self
+            .get_pull_request_reviews(owner, repo, pull_number)
+            .await?;
 
         // Azure DevOps: vote 10 = approved, 5 = approved with suggestions
-        let has_approval = reviews.iter().any(|r| {
-            r.state == "APPROVED" || r.state == "APPROVED_WITH_SUGGESTIONS"
-        });
-        let has_rejection = reviews.iter().any(|r| {
-            r.state == "REJECTED" || r.state == "WAITING_FOR_AUTHOR"
-        });
+        let has_approval = reviews
+            .iter()
+            .any(|r| r.state == "APPROVED" || r.state == "APPROVED_WITH_SUGGESTIONS");
+        let has_rejection = reviews
+            .iter()
+            .any(|r| r.state == "REJECTED" || r.state == "WAITING_FOR_AUTHOR");
 
         Ok(has_approval && !has_rejection)
     }
@@ -490,7 +514,10 @@ impl HostingPlatform for AzureDevOpsAdapter {
             .api_request(
                 reqwest::Method::GET,
                 &ctx,
-                &format!("/git/repositories/{}/pullrequests/{}", ctx.repository, pull_number),
+                &format!(
+                    "/git/repositories/{}/pullrequests/{}",
+                    ctx.repository, pull_number
+                ),
                 None::<()>,
             )
             .await?;
@@ -509,7 +536,11 @@ impl HostingPlatform for AzureDevOpsAdapter {
                 };
                 PRReview {
                     state: state.to_string(),
-                    user: r.display_name.clone().or_else(|| r.unique_name.clone()).unwrap_or_default(),
+                    user: r
+                        .display_name
+                        .clone()
+                        .or_else(|| r.unique_name.clone())
+                        .unwrap_or_default(),
                 }
             })
             .collect())
@@ -528,7 +559,10 @@ impl HostingPlatform for AzureDevOpsAdapter {
             .api_request(
                 reqwest::Method::GET,
                 &ctx,
-                &format!("/build/builds?repositoryId={}&repositoryType=TfsGit&$top=5", ctx.repository),
+                &format!(
+                    "/build/builds?repositoryId={}&repositoryType=TfsGit&$top=5",
+                    ctx.repository
+                ),
                 None::<()>,
             )
             .await;
@@ -542,9 +576,10 @@ impl HostingPlatform for AzureDevOpsAdapter {
                     });
                 }
 
-                let has_failure = response.value.iter().any(|b| {
-                    matches!(b.result.as_deref(), Some("failed") | Some("canceled"))
-                });
+                let has_failure = response
+                    .value
+                    .iter()
+                    .any(|b| matches!(b.result.as_deref(), Some("failed") | Some("canceled")));
                 let has_in_progress = response.value.iter().any(|b| b.status != "completed");
 
                 let state = if has_failure {
@@ -607,7 +642,8 @@ impl HostingPlatform for AzureDevOpsAdapter {
 
         let auth = STANDARD.encode(format!(":{}", token));
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .get(&url)
             .header("Authorization", format!("Basic {}", auth))
             .send()
@@ -640,7 +676,11 @@ impl HostingPlatform for AzureDevOpsAdapter {
 
         // Build a summary of commits
         let mut diff = String::new();
-        diff.push_str(&format!("Pull Request #{} - {} commits\n\n", pull_number, commits.value.len()));
+        diff.push_str(&format!(
+            "Pull Request #{} - {} commits\n\n",
+            pull_number,
+            commits.value.len()
+        ));
         for commit in &commits.value {
             diff.push_str(&format!(
                 "{}: {}\n",
@@ -690,7 +730,8 @@ impl HostingPlatform for AzureDevOpsAdapter {
             if let Some(git_idx) = parts.iter().position(|&p| p == "_git") {
                 if git_idx >= 2 && git_idx + 1 < parts.len() {
                     // Extract org from hostname
-                    if let Some(host_part) = parts.iter().find(|p| p.contains(".visualstudio.com")) {
+                    if let Some(host_part) = parts.iter().find(|p| p.contains(".visualstudio.com"))
+                    {
                         let org = host_part.split('.').next()?;
                         let project = parts[git_idx - 1];
                         return Some(ParsedRepoInfo {

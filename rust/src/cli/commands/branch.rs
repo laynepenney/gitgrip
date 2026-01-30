@@ -58,7 +58,11 @@ pub fn run_branch(
         }
         Some(branch_name) => {
             // Create branch
-            Output::header(&format!("Creating branch '{}' in {} repos...", branch_name, repos.len()));
+            Output::header(&format!(
+                "Creating branch '{}' in {} repos...",
+                branch_name,
+                repos.len()
+            ));
             println!();
 
             for repo in &repos {
@@ -84,7 +88,10 @@ pub fn run_branch(
             }
 
             println!();
-            println!("All repos now on branch: {}", Output::branch_name(branch_name));
+            println!(
+                "All repos now on branch: {}",
+                Output::branch_name(branch_name)
+            );
         }
         None => {
             // List branches

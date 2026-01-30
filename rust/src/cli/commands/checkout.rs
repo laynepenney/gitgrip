@@ -15,7 +15,11 @@ pub fn run_checkout(
     manifest: &Manifest,
     branch_name: &str,
 ) -> anyhow::Result<()> {
-    Output::header(&format!("Checking out '{}' in {} repos...", branch_name, manifest.repos.len()));
+    Output::header(&format!(
+        "Checking out '{}' in {} repos...",
+        branch_name,
+        manifest.repos.len()
+    ));
     println!();
 
     let repos: Vec<RepoInfo> = manifest

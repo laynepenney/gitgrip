@@ -3,8 +3,8 @@
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
-use crate::git::{open_repo, path_exists};
 use crate::git::cache::invalidate_status_cache;
+use crate::git::{open_repo, path_exists};
 use git2::Repository;
 use std::path::PathBuf;
 use std::process::Command;
@@ -116,7 +116,9 @@ fn create_commit(repo: &Repository, message: &str, amend: bool) -> anyhow::Resul
         .current_dir(repo_path)
         .output()?;
 
-    let commit_id = String::from_utf8_lossy(&hash_output.stdout).trim().to_string();
+    let commit_id = String::from_utf8_lossy(&hash_output.stdout)
+        .trim()
+        .to_string();
     Ok(commit_id)
 }
 
@@ -124,9 +126,9 @@ fn create_commit(repo: &Repository, message: &str, amend: bool) -> anyhow::Resul
 mod tests {
     use super::*;
     use crate::git::open_repo;
-    use tempfile::TempDir;
     use std::fs;
     use std::process::Command as StdCommand;
+    use tempfile::TempDir;
 
     fn setup_test_repo() -> (TempDir, Repository) {
         let temp_dir = TempDir::new().unwrap();
@@ -237,7 +239,10 @@ mod tests {
             .current_dir(temp_dir.path())
             .output()
             .unwrap();
-        let count: usize = String::from_utf8_lossy(&output.stdout).trim().parse().unwrap();
+        let count: usize = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .unwrap();
         assert_eq!(count, 1);
 
         // Verify message was updated

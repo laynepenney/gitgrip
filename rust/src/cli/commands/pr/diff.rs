@@ -51,9 +51,15 @@ pub async fn run_pr_diff(
         let platform_type = detect_platform(&repo.url);
         let platform = get_platform_adapter(platform_type, None);
 
-        match platform.find_pr_by_branch(&repo.owner, &repo.repo, &branch).await {
+        match platform
+            .find_pr_by_branch(&repo.owner, &repo.repo, &branch)
+            .await
+        {
             Ok(Some(pr)) => {
-                match platform.get_pull_request_diff(&repo.owner, &repo.repo, pr.number).await {
+                match platform
+                    .get_pull_request_diff(&repo.owner, &repo.repo, pr.number)
+                    .await
+                {
                     Ok(diff) => {
                         if stat_only {
                             // Parse diff for stats

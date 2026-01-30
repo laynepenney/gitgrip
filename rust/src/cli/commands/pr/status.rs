@@ -61,19 +61,31 @@ pub async fn run_pr_status(
         let platform_type = detect_platform(&repo.url);
         let platform = get_platform_adapter(platform_type, None);
 
-        match platform.find_pr_by_branch(&repo.owner, &repo.repo, &branch).await {
+        match platform
+            .find_pr_by_branch(&repo.owner, &repo.repo, &branch)
+            .await
+        {
             Ok(Some(pr)) => {
                 // Get PR details including approval and mergeable status
-                let (approved, mergeable) = match platform.get_pull_request(&repo.owner, &repo.repo, pr.number).await {
+                let (approved, mergeable) = match platform
+                    .get_pull_request(&repo.owner, &repo.repo, pr.number)
+                    .await
+                {
                     Ok(full_pr) => {
-                        let is_approved = platform.is_pull_request_approved(&repo.owner, &repo.repo, pr.number).await.unwrap_or(false);
+                        let is_approved = platform
+                            .is_pull_request_approved(&repo.owner, &repo.repo, pr.number)
+                            .await
+                            .unwrap_or(false);
                         (is_approved, full_pr.mergeable.unwrap_or(false))
                     }
                     Err(_) => (false, false),
                 };
 
                 // Get status checks
-                let checks_pass = match platform.get_status_checks(&repo.owner, &repo.repo, &branch).await {
+                let checks_pass = match platform
+                    .get_status_checks(&repo.owner, &repo.repo, &branch)
+                    .await
+                {
                     Ok(status) => status.state == crate::platform::CheckState::Success,
                     Err(_) => false,
                 };
@@ -120,10 +132,20 @@ pub async fn run_pr_status(
     }
 
     // Display table
-    let mut table = Table::new(vec!["Repo", "PR#", "State", "Approved", "Checks", "Mergeable"]);
+    let mut table = Table::new(vec![
+        "Repo",
+        "PR#",
+        "State",
+        "Approved",
+        "Checks",
+        "Mergeable",
+    ]);
 
     for status in &statuses {
-        let pr_num = status.pr_number.map(|n| format!("#{}", n)).unwrap_or_else(|| "-".to_string());
+        let pr_num = status
+            .pr_number
+            .map(|n| format!("#{}", n))
+            .unwrap_or_else(|| "-".to_string());
         let approved = if status.approved { "✓" } else { "✗" };
         let checks = if status.checks_pass { "✓" } else { "✗" };
         let mergeable = if status.mergeable { "✓" } else { "✗" };
@@ -143,9 +165,10 @@ pub async fn run_pr_status(
     // Summary
     println!();
     let with_prs = statuses.iter().filter(|s| s.pr_number.is_some()).count();
-    let ready = statuses.iter().filter(|s| {
-        s.pr_number.is_some() && s.approved && s.checks_pass && s.mergeable
-    }).count();
+    let ready = statuses
+        .iter()
+        .filter(|s| s.pr_number.is_some() && s.approved && s.checks_pass && s.mergeable)
+        .count();
 
     if ready == with_prs && with_prs > 0 {
         Output::success(&format!("All {} PRs ready to merge!", with_prs));

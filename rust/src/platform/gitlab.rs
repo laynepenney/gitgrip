@@ -77,7 +77,9 @@ impl GitLabAdapter {
         let token = self.get_token().await?;
         let url = format!("{}/api/v4{}", self.base_url, endpoint);
 
-        let mut request = self.http_client.request(method, &url)
+        let mut request = self
+            .http_client
+            .request(method, &url)
             .header("PRIVATE-TOKEN", &token)
             .header("Content-Type", "application/json");
 
@@ -114,7 +116,9 @@ impl GitLabAdapter {
         let token = self.get_token().await?;
         let url = format!("{}/api/v4{}", self.base_url, endpoint);
 
-        let mut request = self.http_client.put(&url)
+        let mut request = self
+            .http_client
+            .put(&url)
             .header("PRIVATE-TOKEN", &token)
             .header("Content-Type", "application/json");
 
@@ -319,7 +323,10 @@ impl HostingPlatform for GitLabAdapter {
 
         let result = self
             .api_put(
-                &format!("/projects/{}/merge_requests/{}/merge", project_id, pull_number),
+                &format!(
+                    "/projects/{}/merge_requests/{}/merge",
+                    project_id, pull_number
+                ),
                 Some(params),
             )
             .await;
@@ -371,7 +378,10 @@ impl HostingPlatform for GitLabAdapter {
         let result: Result<GitLabApproval, _> = self
             .api_request(
                 reqwest::Method::GET,
-                &format!("/projects/{}/merge_requests/{}/approvals", project_id, pull_number),
+                &format!(
+                    "/projects/{}/merge_requests/{}/approvals",
+                    project_id, pull_number
+                ),
                 None::<()>,
             )
             .await;
@@ -396,7 +406,10 @@ impl HostingPlatform for GitLabAdapter {
         let result: Result<GitLabApproval, _> = self
             .api_request(
                 reqwest::Method::GET,
-                &format!("/projects/{}/merge_requests/{}/approvals", project_id, pull_number),
+                &format!(
+                    "/projects/{}/merge_requests/{}/approvals",
+                    project_id, pull_number
+                ),
                 None::<()>,
             )
             .await;
@@ -425,7 +438,10 @@ impl HostingPlatform for GitLabAdapter {
         let result: Result<Vec<GitLabPipeline>, _> = self
             .api_request(
                 reqwest::Method::GET,
-                &format!("/projects/{}/pipelines?sha={}&per_page=1", project_id, ref_name),
+                &format!(
+                    "/projects/{}/pipelines?sha={}&per_page=1",
+                    project_id, ref_name
+                ),
                 None::<()>,
             )
             .await;
@@ -490,7 +506,8 @@ impl HostingPlatform for GitLabAdapter {
             self.base_url, project_id, pull_number
         );
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .get(&url)
             .header("PRIVATE-TOKEN", &token)
             .send()

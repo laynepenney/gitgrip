@@ -7,7 +7,11 @@ use crate::git::status::{get_repo_status, RepoStatus};
 use std::path::PathBuf;
 
 /// Run the status command
-pub fn run_status(workspace_root: &PathBuf, manifest: &Manifest, verbose: bool) -> anyhow::Result<()> {
+pub fn run_status(
+    workspace_root: &PathBuf,
+    manifest: &Manifest,
+    verbose: bool,
+) -> anyhow::Result<()> {
     Output::header("Repository Status");
     println!();
 

@@ -2,14 +2,14 @@
 //!
 //! Subcommands for pull request operations.
 
-mod create;
-mod status;
-mod merge;
 mod checks;
+mod create;
 mod diff;
+mod merge;
+mod status;
 
-pub use create::run_pr_create;
-pub use status::run_pr_status;
-pub use merge::run_pr_merge;
 pub use checks::run_pr_checks;
+pub use create::run_pr_create;
 pub use diff::run_pr_diff;
+pub use merge::run_pr_merge;
+pub use status::run_pr_status;

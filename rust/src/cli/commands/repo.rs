@@ -9,10 +9,7 @@ use crate::git::path_exists;
 use std::path::PathBuf;
 
 /// Run repo list command
-pub fn run_repo_list(
-    workspace_root: &PathBuf,
-    manifest: &Manifest,
-) -> anyhow::Result<()> {
+pub fn run_repo_list(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<()> {
     Output::header("Repositories");
     println!();
 
@@ -31,18 +28,16 @@ pub fn run_repo_list(
             "not cloned"
         };
 
-        table.add_row(vec![
-            &repo.name,
-            &repo.path,
-            &repo.default_branch,
-            status,
-        ]);
+        table.add_row(vec![&repo.name, &repo.path, &repo.default_branch, status]);
     }
 
     table.print();
 
     println!();
-    let cloned = repos.iter().filter(|r| path_exists(&r.absolute_path)).count();
+    let cloned = repos
+        .iter()
+        .filter(|r| path_exists(&r.absolute_path))
+        .count();
     println!("{}/{} repositories cloned", cloned, repos.len());
 
     Ok(())
@@ -62,7 +57,8 @@ pub fn run_repo_add(
     let repo_name = extract_repo_name(url)
         .ok_or_else(|| anyhow::anyhow!("Could not parse repository name from URL"))?;
 
-    let repo_path = path.map(|p| p.to_string())
+    let repo_path = path
+        .map(|p| p.to_string())
         .unwrap_or_else(|| repo_name.clone());
 
     let branch = default_branch.unwrap_or("main").to_string();
@@ -89,8 +85,11 @@ pub fn run_repo_add(
 
         // Find where to insert (before settings, workspace, or at end)
         for (i, line) in lines.iter().enumerate() {
-            if (line.starts_with("settings:") || line.starts_with("workspace:") || line.starts_with("manifest:"))
-                && i > 0 {
+            if (line.starts_with("settings:")
+                || line.starts_with("workspace:")
+                || line.starts_with("manifest:"))
+                && i > 0
+            {
                 insert_index = i;
                 break;
             }
@@ -125,7 +124,9 @@ pub fn run_repo_remove(
     let content = std::fs::read_to_string(&manifest_path)?;
     let manifest = Manifest::parse(&content)?;
 
-    let repo_config = manifest.repos.get(name)
+    let repo_config = manifest
+        .repos
+        .get(name)
         .ok_or_else(|| anyhow::anyhow!("Repository '{}' not found in manifest", name))?;
 
     // Delete files if requested

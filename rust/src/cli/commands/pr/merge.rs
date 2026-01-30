@@ -67,19 +67,31 @@ pub async fn run_pr_merge(
         let platform_type = detect_platform(&repo.url);
         let platform = get_platform_adapter(platform_type, None);
 
-        match platform.find_pr_by_branch(&repo.owner, &repo.repo, &branch).await {
+        match platform
+            .find_pr_by_branch(&repo.owner, &repo.repo, &branch)
+            .await
+        {
             Ok(Some(pr)) => {
                 // Get PR details
-                let (approved, mergeable) = match platform.get_pull_request(&repo.owner, &repo.repo, pr.number).await {
+                let (approved, mergeable) = match platform
+                    .get_pull_request(&repo.owner, &repo.repo, pr.number)
+                    .await
+                {
                     Ok(full_pr) => {
-                        let is_approved = platform.is_pull_request_approved(&repo.owner, &repo.repo, pr.number).await.unwrap_or(false);
+                        let is_approved = platform
+                            .is_pull_request_approved(&repo.owner, &repo.repo, pr.number)
+                            .await
+                            .unwrap_or(false);
                         (is_approved, full_pr.mergeable.unwrap_or(false))
                     }
                     Err(_) => (false, false),
                 };
 
                 // Get status checks
-                let checks_pass = match platform.get_status_checks(&repo.owner, &repo.repo, &branch).await {
+                let checks_pass = match platform
+                    .get_status_checks(&repo.owner, &repo.repo, &branch)
+                    .await
+                {
                     Ok(status) => status.state == CheckState::Success,
                     Err(_) => false,
                 };
@@ -114,13 +126,22 @@ pub async fn run_pr_merge(
         let mut issues = Vec::new();
         for pr in &prs_to_merge {
             if !pr.approved {
-                issues.push(format!("{} PR #{}: not approved", pr.repo_name, pr.pr_number));
+                issues.push(format!(
+                    "{} PR #{}: not approved",
+                    pr.repo_name, pr.pr_number
+                ));
             }
             if !pr.checks_pass {
-                issues.push(format!("{} PR #{}: checks failing", pr.repo_name, pr.pr_number));
+                issues.push(format!(
+                    "{} PR #{}: checks failing",
+                    pr.repo_name, pr.pr_number
+                ));
             }
             if !pr.mergeable {
-                issues.push(format!("{} PR #{}: not mergeable (conflicts?)", pr.repo_name, pr.pr_number));
+                issues.push(format!(
+                    "{} PR #{}: not mergeable (conflicts?)",
+                    pr.repo_name, pr.pr_number
+                ));
             }
         }
 
@@ -142,19 +163,29 @@ pub async fn run_pr_merge(
     for pr in prs_to_merge {
         let spinner = Output::spinner(&format!("Merging {} PR #{}...", pr.repo_name, pr.pr_number));
 
-        match pr.platform.merge_pull_request(
-            &pr.owner,
-            &pr.repo,
-            pr.pr_number,
-            Some(merge_method),
-            true, // delete branch
-        ).await {
+        match pr
+            .platform
+            .merge_pull_request(
+                &pr.owner,
+                &pr.repo,
+                pr.pr_number,
+                Some(merge_method),
+                true, // delete branch
+            )
+            .await
+        {
             Ok(merged) => {
                 if merged {
-                    spinner.finish_with_message(format!("{}: merged PR #{}", pr.repo_name, pr.pr_number));
+                    spinner.finish_with_message(format!(
+                        "{}: merged PR #{}",
+                        pr.repo_name, pr.pr_number
+                    ));
                     success_count += 1;
                 } else {
-                    spinner.finish_with_message(format!("{}: PR #{} was already merged", pr.repo_name, pr.pr_number));
+                    spinner.finish_with_message(format!(
+                        "{}: PR #{} was already merged",
+                        pr.repo_name, pr.pr_number
+                    ));
                     success_count += 1;
                 }
             }
@@ -163,7 +194,9 @@ pub async fn run_pr_merge(
                 error_count += 1;
 
                 // Check for all-or-nothing merge strategy
-                if manifest.settings.merge_strategy == crate::core::manifest::MergeStrategy::AllOrNothing {
+                if manifest.settings.merge_strategy
+                    == crate::core::manifest::MergeStrategy::AllOrNothing
+                {
                     Output::error("Stopping due to all-or-nothing merge strategy.");
                     return Err(e.into());
                 }
@@ -176,10 +209,7 @@ pub async fn run_pr_merge(
     if error_count == 0 {
         Output::success(&format!("Successfully merged {} PR(s).", success_count));
     } else {
-        Output::warning(&format!(
-            "{} merged, {} failed",
-            success_count, error_count
-        ));
+        Output::warning(&format!("{} merged, {} failed", success_count, error_count));
     }
 
     Ok(())

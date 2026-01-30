@@ -115,7 +115,8 @@ impl Timer {
 
     /// Record a checkpoint with the current elapsed time
     pub fn checkpoint(&mut self, label: &str) {
-        self.checkpoints.push((label.to_string(), self.start.elapsed()));
+        self.checkpoints
+            .push((label.to_string(), self.start.elapsed()));
     }
 
     /// Stop and return a timing entry
@@ -221,7 +222,8 @@ where
     let p95 = durations[p95_idx.min(durations.len() - 1)];
 
     // Standard deviation
-    let variance: f64 = durations.iter().map(|d| (d - avg).powi(2)).sum::<f64>() / iterations as f64;
+    let variance: f64 =
+        durations.iter().map(|d| (d - avg).powi(2)).sum::<f64>() / iterations as f64;
     let std_dev = variance.sqrt();
 
     BenchmarkResult {
@@ -269,7 +271,8 @@ where
     let p50 = durations[p50_idx.min(durations.len() - 1)];
     let p95 = durations[p95_idx.min(durations.len() - 1)];
 
-    let variance: f64 = durations.iter().map(|d| (d - avg).powi(2)).sum::<f64>() / iterations as f64;
+    let variance: f64 =
+        durations.iter().map(|d| (d - avg).powi(2)).sum::<f64>() / iterations as f64;
     let std_dev = variance.sqrt();
 
     BenchmarkResult {

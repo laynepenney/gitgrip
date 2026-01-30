@@ -65,9 +65,16 @@ enum ParsedCommand {
     /// Simple git command
     Git(GitCommand),
     /// Git command piped to another command
-    Piped { git_cmd: GitCommand, pipe_to: String },
+    Piped {
+        git_cmd: GitCommand,
+        pipe_to: String,
+    },
     /// Git command redirected to file
-    Redirect { git_cmd: GitCommand, file: String, append: bool },
+    Redirect {
+        git_cmd: GitCommand,
+        file: String,
+        append: bool,
+    },
     /// Not interceptable, run as shell command
     Shell(String),
 }
@@ -136,11 +143,26 @@ fn try_parse_git_command(command: &str) -> Option<GitCommand> {
         ["git", "status", "--short"] => Some(GitCommand::Status { porcelain: true }),
 
         // === BRANCH ===
-        ["git", "branch"] => Some(GitCommand::ListBranches { all: false, remotes: false }),
-        ["git", "branch", "-a"] => Some(GitCommand::ListBranches { all: true, remotes: false }),
-        ["git", "branch", "--all"] => Some(GitCommand::ListBranches { all: true, remotes: false }),
-        ["git", "branch", "-r"] => Some(GitCommand::ListBranches { all: false, remotes: true }),
-        ["git", "branch", "--remotes"] => Some(GitCommand::ListBranches { all: false, remotes: true }),
+        ["git", "branch"] => Some(GitCommand::ListBranches {
+            all: false,
+            remotes: false,
+        }),
+        ["git", "branch", "-a"] => Some(GitCommand::ListBranches {
+            all: true,
+            remotes: false,
+        }),
+        ["git", "branch", "--all"] => Some(GitCommand::ListBranches {
+            all: true,
+            remotes: false,
+        }),
+        ["git", "branch", "-r"] => Some(GitCommand::ListBranches {
+            all: false,
+            remotes: true,
+        }),
+        ["git", "branch", "--remotes"] => Some(GitCommand::ListBranches {
+            all: false,
+            remotes: true,
+        }),
 
         // === REV-PARSE ===
         ["git", "rev-parse", "HEAD"] => Some(GitCommand::GetHead),
@@ -152,25 +174,57 @@ fn try_parse_git_command(command: &str) -> Option<GitCommand> {
         ["git", "log", "--oneline", "-n", n] => {
             n.parse().ok().map(|count| GitCommand::LogOneline { count })
         }
-        ["git", "log", "--oneline", n] if n.starts_with('-') => {
-            n[1..].parse().ok().map(|count| GitCommand::LogOneline { count })
-        }
+        ["git", "log", "--oneline", n] if n.starts_with('-') => n[1..]
+            .parse()
+            .ok()
+            .map(|count| GitCommand::LogOneline { count }),
         ["git", "log", "-1", "--oneline"] => Some(GitCommand::LogOneline { count: 1 }),
-        ["git", "log", n, "--oneline"] if n.starts_with('-') => {
-            n[1..].parse().ok().map(|count| GitCommand::LogOneline { count })
-        }
+        ["git", "log", n, "--oneline"] if n.starts_with('-') => n[1..]
+            .parse()
+            .ok()
+            .map(|count| GitCommand::LogOneline { count }),
 
         // === DIFF ===
-        ["git", "diff"] => Some(GitCommand::Diff { staged: false, format: DiffFormat::Patch }),
-        ["git", "diff", "--stat"] => Some(GitCommand::Diff { staged: false, format: DiffFormat::Stat }),
-        ["git", "diff", "--name-only"] => Some(GitCommand::Diff { staged: false, format: DiffFormat::NameOnly }),
-        ["git", "diff", "--name-status"] => Some(GitCommand::Diff { staged: false, format: DiffFormat::NameStatus }),
-        ["git", "diff", "--staged"] => Some(GitCommand::Diff { staged: true, format: DiffFormat::Patch }),
-        ["git", "diff", "--cached"] => Some(GitCommand::Diff { staged: true, format: DiffFormat::Patch }),
-        ["git", "diff", "--staged", "--stat"] => Some(GitCommand::Diff { staged: true, format: DiffFormat::Stat }),
-        ["git", "diff", "--cached", "--stat"] => Some(GitCommand::Diff { staged: true, format: DiffFormat::Stat }),
-        ["git", "diff", "--staged", "--name-only"] => Some(GitCommand::Diff { staged: true, format: DiffFormat::NameOnly }),
-        ["git", "diff", "--cached", "--name-only"] => Some(GitCommand::Diff { staged: true, format: DiffFormat::NameOnly }),
+        ["git", "diff"] => Some(GitCommand::Diff {
+            staged: false,
+            format: DiffFormat::Patch,
+        }),
+        ["git", "diff", "--stat"] => Some(GitCommand::Diff {
+            staged: false,
+            format: DiffFormat::Stat,
+        }),
+        ["git", "diff", "--name-only"] => Some(GitCommand::Diff {
+            staged: false,
+            format: DiffFormat::NameOnly,
+        }),
+        ["git", "diff", "--name-status"] => Some(GitCommand::Diff {
+            staged: false,
+            format: DiffFormat::NameStatus,
+        }),
+        ["git", "diff", "--staged"] => Some(GitCommand::Diff {
+            staged: true,
+            format: DiffFormat::Patch,
+        }),
+        ["git", "diff", "--cached"] => Some(GitCommand::Diff {
+            staged: true,
+            format: DiffFormat::Patch,
+        }),
+        ["git", "diff", "--staged", "--stat"] => Some(GitCommand::Diff {
+            staged: true,
+            format: DiffFormat::Stat,
+        }),
+        ["git", "diff", "--cached", "--stat"] => Some(GitCommand::Diff {
+            staged: true,
+            format: DiffFormat::Stat,
+        }),
+        ["git", "diff", "--staged", "--name-only"] => Some(GitCommand::Diff {
+            staged: true,
+            format: DiffFormat::NameOnly,
+        }),
+        ["git", "diff", "--cached", "--name-only"] => Some(GitCommand::Diff {
+            staged: true,
+            format: DiffFormat::NameOnly,
+        }),
 
         // === LS-FILES ===
         ["git", "ls-files"] => Some(GitCommand::LsFiles { modified: false }),
@@ -191,10 +245,14 @@ fn try_parse_git_command(command: &str) -> Option<GitCommand> {
         ["git", "stash", "list"] => Some(GitCommand::StashList),
 
         // === BLAME ===
-        ["git", "blame", file] => Some(GitCommand::Blame { file: file.to_string() }),
+        ["git", "blame", file] => Some(GitCommand::Blame {
+            file: file.to_string(),
+        }),
 
         // === CONFIG ===
-        ["git", "config", "--get", key] => Some(GitCommand::ConfigGet { key: key.to_string() }),
+        ["git", "config", "--get", key] => Some(GitCommand::ConfigGet {
+            key: key.to_string(),
+        }),
 
         _ => None,
     }
@@ -202,8 +260,8 @@ fn try_parse_git_command(command: &str) -> Option<GitCommand> {
 
 /// Execute an intercepted git command using git2 (fast path)
 fn execute_git_command(repo_path: &PathBuf, cmd: &GitCommand) -> Result<String, String> {
-    let repo = crate::git::open_repo(repo_path)
-        .map_err(|e| format!("Failed to open repo: {}", e))?;
+    let repo =
+        crate::git::open_repo(repo_path).map_err(|e| format!("Failed to open repo: {}", e))?;
 
     match cmd {
         GitCommand::Status { porcelain } => execute_status(&repo, *porcelain),
@@ -223,7 +281,8 @@ fn execute_git_command(repo_path: &PathBuf, cmd: &GitCommand) -> Result<String, 
 }
 
 fn execute_status(repo: &git2::Repository, porcelain: bool) -> Result<String, String> {
-    let statuses = repo.statuses(None)
+    let statuses = repo
+        .statuses(None)
         .map_err(|e| format!("Failed to get status: {}", e))?;
 
     if porcelain {
@@ -232,19 +291,33 @@ fn execute_status(repo: &git2::Repository, porcelain: bool) -> Result<String, St
             let status = entry.status();
             let path = entry.path().unwrap_or("?");
 
-            let index_status = if status.is_index_new() { 'A' }
-                else if status.is_index_modified() { 'M' }
-                else if status.is_index_deleted() { 'D' }
-                else if status.is_index_renamed() { 'R' }
-                else if status.is_index_typechange() { 'T' }
-                else { ' ' };
+            let index_status = if status.is_index_new() {
+                'A'
+            } else if status.is_index_modified() {
+                'M'
+            } else if status.is_index_deleted() {
+                'D'
+            } else if status.is_index_renamed() {
+                'R'
+            } else if status.is_index_typechange() {
+                'T'
+            } else {
+                ' '
+            };
 
-            let wt_status = if status.is_wt_new() { '?' }
-                else if status.is_wt_modified() { 'M' }
-                else if status.is_wt_deleted() { 'D' }
-                else if status.is_wt_renamed() { 'R' }
-                else if status.is_wt_typechange() { 'T' }
-                else { ' ' };
+            let wt_status = if status.is_wt_new() {
+                '?'
+            } else if status.is_wt_modified() {
+                'M'
+            } else if status.is_wt_deleted() {
+                'D'
+            } else if status.is_wt_renamed() {
+                'R'
+            } else if status.is_wt_typechange() {
+                'T'
+            } else {
+                ' '
+            };
 
             output.push_str(&format!("{}{} {}\n", index_status, wt_status, path));
         }
@@ -299,18 +372,18 @@ fn execute_status(repo: &git2::Repository, porcelain: bool) -> Result<String, St
 fn execute_branches(repo: &git2::Repository, all: bool, remotes: bool) -> Result<String, String> {
     let mut output = String::new();
     let head = repo.head().ok();
-    let current_branch = head.as_ref()
-        .and_then(|h| h.shorthand())
-        .unwrap_or("");
+    let current_branch = head.as_ref().and_then(|h| h.shorthand()).unwrap_or("");
 
     // Local branches (unless remotes-only)
     if !remotes {
-        let branches = repo.branches(Some(git2::BranchType::Local))
+        let branches = repo
+            .branches(Some(git2::BranchType::Local))
             .map_err(|e| format!("Failed to list branches: {}", e))?;
 
         for branch in branches {
             let (branch, _) = branch.map_err(|e| format!("Failed to read branch: {}", e))?;
-            let name = branch.name()
+            let name = branch
+                .name()
                 .map_err(|e| format!("Failed to get branch name: {}", e))?
                 .unwrap_or("?");
 
@@ -324,12 +397,14 @@ fn execute_branches(repo: &git2::Repository, all: bool, remotes: bool) -> Result
 
     // Remote branches if -a or -r flag
     if all || remotes {
-        let remote_branches = repo.branches(Some(git2::BranchType::Remote))
+        let remote_branches = repo
+            .branches(Some(git2::BranchType::Remote))
             .map_err(|e| format!("Failed to list remote branches: {}", e))?;
 
         for branch in remote_branches {
             let (branch, _) = branch.map_err(|e| format!("Failed to read branch: {}", e))?;
-            let name = branch.name()
+            let name = branch
+                .name()
                 .map_err(|e| format!("Failed to get branch name: {}", e))?
                 .unwrap_or("?");
             output.push_str(&format!("  remotes/{}\n", name));
@@ -340,31 +415,47 @@ fn execute_branches(repo: &git2::Repository, all: bool, remotes: bool) -> Result
 }
 
 fn execute_get_head(repo: &git2::Repository) -> Result<String, String> {
-    let head = repo.head().map_err(|e| format!("Failed to get HEAD: {}", e))?;
-    let oid = head.target().ok_or_else(|| "HEAD has no target".to_string())?;
+    let head = repo
+        .head()
+        .map_err(|e| format!("Failed to get HEAD: {}", e))?;
+    let oid = head
+        .target()
+        .ok_or_else(|| "HEAD has no target".to_string())?;
     Ok(format!("{}\n", oid))
 }
 
 fn execute_get_branch(repo: &git2::Repository) -> Result<String, String> {
-    let head = repo.head().map_err(|e| format!("Failed to get HEAD: {}", e))?;
+    let head = repo
+        .head()
+        .map_err(|e| format!("Failed to get HEAD: {}", e))?;
     let name = head.shorthand().unwrap_or("HEAD");
     Ok(format!("{}\n", name))
 }
 
 fn execute_get_head_short(repo: &git2::Repository) -> Result<String, String> {
-    let head = repo.head().map_err(|e| format!("Failed to get HEAD: {}", e))?;
-    let oid = head.target().ok_or_else(|| "HEAD has no target".to_string())?;
+    let head = repo
+        .head()
+        .map_err(|e| format!("Failed to get HEAD: {}", e))?;
+    let oid = head
+        .target()
+        .ok_or_else(|| "HEAD has no target".to_string())?;
     Ok(format!("{}\n", &oid.to_string()[..7]))
 }
 
 fn execute_log_oneline(repo: &git2::Repository, count: usize) -> Result<String, String> {
-    let mut revwalk = repo.revwalk().map_err(|e| format!("Failed to create revwalk: {}", e))?;
-    revwalk.push_head().map_err(|e| format!("Failed to push HEAD: {}", e))?;
+    let mut revwalk = repo
+        .revwalk()
+        .map_err(|e| format!("Failed to create revwalk: {}", e))?;
+    revwalk
+        .push_head()
+        .map_err(|e| format!("Failed to push HEAD: {}", e))?;
 
     let mut output = String::new();
     for oid in revwalk.take(count) {
         let oid = oid.map_err(|e| format!("Failed to get oid: {}", e))?;
-        let commit = repo.find_commit(oid).map_err(|e| format!("Failed to find commit: {}", e))?;
+        let commit = repo
+            .find_commit(oid)
+            .map_err(|e| format!("Failed to find commit: {}", e))?;
         let short = &oid.to_string()[..7];
         let msg = commit.summary().unwrap_or("");
         output.push_str(&format!("{} {}\n", short, msg));
@@ -372,22 +463,35 @@ fn execute_log_oneline(repo: &git2::Repository, count: usize) -> Result<String, 
     Ok(output)
 }
 
-fn execute_diff(repo: &git2::Repository, staged: bool, format: &DiffFormat) -> Result<String, String> {
+fn execute_diff(
+    repo: &git2::Repository,
+    staged: bool,
+    format: &DiffFormat,
+) -> Result<String, String> {
     let diff = if staged {
-        let head = repo.head().map_err(|e| format!("Failed to get HEAD: {}", e))?;
-        let tree = head.peel_to_tree().map_err(|e| format!("Failed to get tree: {}", e))?;
+        let head = repo
+            .head()
+            .map_err(|e| format!("Failed to get HEAD: {}", e))?;
+        let tree = head
+            .peel_to_tree()
+            .map_err(|e| format!("Failed to get tree: {}", e))?;
         repo.diff_tree_to_index(Some(&tree), None, None)
     } else {
         repo.diff_index_to_workdir(None, None)
-    }.map_err(|e| format!("Failed to get diff: {}", e))?;
+    }
+    .map_err(|e| format!("Failed to get diff: {}", e))?;
 
     match format {
         DiffFormat::Stat => {
-            let stats = diff.stats().map_err(|e| format!("Failed to get stats: {}", e))?;
+            let stats = diff
+                .stats()
+                .map_err(|e| format!("Failed to get stats: {}", e))?;
             let mut output = String::new();
 
             for delta in diff.deltas() {
-                let path = delta.new_file().path()
+                let path = delta
+                    .new_file()
+                    .path()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "?".to_string());
                 output.push_str(&format!(" {} |\n", path));
@@ -402,7 +506,8 @@ fn execute_diff(repo: &git2::Repository, staged: bool, format: &DiffFormat) -> R
             Ok(output)
         }
         DiffFormat::NameOnly => {
-            let output: Vec<String> = diff.deltas()
+            let output: Vec<String> = diff
+                .deltas()
                 .filter_map(|d| d.new_file().path().map(|p| p.display().to_string()))
                 .collect();
             Ok(output.join("\n") + if output.is_empty() { "" } else { "\n" })
@@ -418,7 +523,9 @@ fn execute_diff(repo: &git2::Repository, staged: bool, format: &DiffFormat) -> R
                     git2::Delta::Copied => 'C',
                     _ => '?',
                 };
-                let path = delta.new_file().path()
+                let path = delta
+                    .new_file()
+                    .path()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "?".to_string());
                 output.push_str(&format!("{}\t{}\n", status, path));
@@ -443,7 +550,8 @@ fn execute_diff(repo: &git2::Repository, staged: bool, format: &DiffFormat) -> R
                     }
                 }
                 true
-            }).map_err(|e| format!("Failed to print diff: {}", e))?;
+            })
+            .map_err(|e| format!("Failed to print diff: {}", e))?;
             Ok(output)
         }
     }
@@ -451,15 +559,21 @@ fn execute_diff(repo: &git2::Repository, staged: bool, format: &DiffFormat) -> R
 
 fn execute_ls_files(repo: &git2::Repository, modified: bool) -> Result<String, String> {
     if modified {
-        let statuses = repo.statuses(None).map_err(|e| format!("Failed to get status: {}", e))?;
-        let files: Vec<String> = statuses.iter()
+        let statuses = repo
+            .statuses(None)
+            .map_err(|e| format!("Failed to get status: {}", e))?;
+        let files: Vec<String> = statuses
+            .iter()
             .filter(|e| e.status().is_wt_modified() || e.status().is_index_modified())
             .filter_map(|e| e.path().map(String::from))
             .collect();
         Ok(files.join("\n") + if files.is_empty() { "" } else { "\n" })
     } else {
-        let index = repo.index().map_err(|e| format!("Failed to get index: {}", e))?;
-        let files: Vec<String> = index.iter()
+        let index = repo
+            .index()
+            .map_err(|e| format!("Failed to get index: {}", e))?;
+        let files: Vec<String> = index
+            .iter()
             .filter_map(|e| String::from_utf8(e.path.clone()).ok())
             .collect();
         Ok(files.join("\n") + if files.is_empty() { "" } else { "\n" })
@@ -474,13 +588,16 @@ fn execute_tag_list(repo: &git2::Repository) -> Result<String, String> {
             tags.push(name.to_string());
         }
         true
-    }).map_err(|e| format!("Failed to list tags: {}", e))?;
+    })
+    .map_err(|e| format!("Failed to list tags: {}", e))?;
     tags.sort();
     Ok(tags.join("\n") + if tags.is_empty() { "" } else { "\n" })
 }
 
 fn execute_remote(repo: &git2::Repository, verbose: bool) -> Result<String, String> {
-    let remotes = repo.remotes().map_err(|e| format!("Failed to get remotes: {}", e))?;
+    let remotes = repo
+        .remotes()
+        .map_err(|e| format!("Failed to get remotes: {}", e))?;
     let mut output = String::new();
 
     for name in remotes.iter().flatten() {
@@ -488,7 +605,11 @@ fn execute_remote(repo: &git2::Repository, verbose: bool) -> Result<String, Stri
             if let Ok(remote) = repo.find_remote(name) {
                 let url = remote.url().unwrap_or("");
                 output.push_str(&format!("{}\t{} (fetch)\n", name, url));
-                output.push_str(&format!("{}\t{} (push)\n", name, remote.pushurl().unwrap_or(url)));
+                output.push_str(&format!(
+                    "{}\t{} (push)\n",
+                    name,
+                    remote.pushurl().unwrap_or(url)
+                ));
             }
         } else {
             output.push_str(&format!("{}\n", name));
@@ -512,8 +633,11 @@ fn execute_stash_list(repo: &git2::Repository) -> Result<String, String> {
             // If no reflog, at least show the current stash
             if let Ok(commit) = repo.find_commit(oid) {
                 let msg = commit.summary().unwrap_or("WIP");
-                stashes.push(format!("stash@{{0}}: On {}: {}",
-                    commit.parent(0).ok()
+                stashes.push(format!(
+                    "stash@{{0}}: On {}: {}",
+                    commit
+                        .parent(0)
+                        .ok()
                         .and_then(|_| repo.head().ok())
                         .and_then(|h| h.shorthand().map(String::from))
                         .unwrap_or_else(|| "branch".to_string()),
@@ -527,13 +651,14 @@ fn execute_stash_list(repo: &git2::Repository) -> Result<String, String> {
 }
 
 fn execute_blame(repo: &git2::Repository, repo_path: &Path, file: &str) -> Result<String, String> {
-    let blame = repo.blame_file(Path::new(file), None)
+    let blame = repo
+        .blame_file(Path::new(file), None)
         .map_err(|e| format!("Failed to blame file: {}", e))?;
 
     let workdir = repo.workdir().unwrap_or(repo_path);
     let file_path = workdir.join(file);
-    let content = std::fs::read_to_string(&file_path)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+    let content =
+        std::fs::read_to_string(&file_path).map_err(|e| format!("Failed to read file: {}", e))?;
     let lines: Vec<&str> = content.lines().collect();
 
     let mut output = String::new();
@@ -558,7 +683,9 @@ fn execute_blame(repo: &git2::Repository, repo_path: &Path, file: &str) -> Resul
 }
 
 fn execute_config_get(repo: &git2::Repository, key: &str) -> Result<String, String> {
-    let config = repo.config().map_err(|e| format!("Failed to get config: {}", e))?;
+    let config = repo
+        .config()
+        .map_err(|e| format!("Failed to get config: {}", e))?;
     let value = config.get_string(key).unwrap_or_default();
     Ok(format!("{}\n", value))
 }
@@ -581,11 +708,13 @@ fn execute_piped_command(
         .map_err(|e| format!("Failed to spawn pipe command: {}", e))?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(git_output.as_bytes())
+        stdin
+            .write_all(git_output.as_bytes())
             .map_err(|e| format!("Failed to write to pipe: {}", e))?;
     }
 
-    let output = child.wait_with_output()
+    let output = child
+        .wait_with_output()
         .map_err(|e| format!("Failed to wait for pipe command: {}", e))?;
 
     if output.status.success() {
@@ -614,9 +743,11 @@ fn execute_redirected_command(
             .open(file)
     } else {
         std::fs::File::create(file)
-    }.map_err(|e| format!("Failed to open file '{}': {}", file, e))?;
+    }
+    .map_err(|e| format!("Failed to open file '{}': {}", file, e))?;
 
-    file_handle.write_all(git_output.as_bytes())
+    file_handle
+        .write_all(git_output.as_bytes())
         .map_err(|e| format!("Failed to write to file: {}", e))?;
 
     Ok(format!("Output written to {}\n", file))
@@ -661,15 +792,15 @@ fn execute_parsed_command(
     repo: &RepoInfo,
 ) -> Result<String, String> {
     match parsed {
-        ParsedCommand::Git(git_cmd) => {
-            execute_git_command(repo_path, git_cmd)
-        }
+        ParsedCommand::Git(git_cmd) => execute_git_command(repo_path, git_cmd),
         ParsedCommand::Piped { git_cmd, pipe_to } => {
             execute_piped_command(repo_path, git_cmd, pipe_to)
         }
-        ParsedCommand::Redirect { git_cmd, file, append } => {
-            execute_redirected_command(repo_path, git_cmd, file, *append)
-        }
+        ParsedCommand::Redirect {
+            git_cmd,
+            file,
+            append,
+        } => execute_redirected_command(repo_path, git_cmd, file, *append),
         ParsedCommand::Shell(_) => {
             // Run as shell command
             let output = Command::new("sh")
@@ -741,7 +872,11 @@ fn run_sequential(
         Output::success(&format!(
             "Command completed in {} repo(s){}",
             success_count,
-            if skip_count > 0 { format!(", {} skipped", skip_count) } else { String::new() }
+            if skip_count > 0 {
+                format!(", {} skipped", skip_count)
+            } else {
+                String::new()
+            }
         ));
     } else {
         Output::warning(&format!(
@@ -758,9 +893,16 @@ fn run_sequential(
 #[allow(dead_code)]
 enum CloneableParsedCommand {
     Git(GitCommand),
-    Piped { git_cmd: GitCommand, pipe_to: String },
-    Redirect { git_cmd: GitCommand, file: String, append: bool },
-    Shell(String),  // String kept for structural consistency with ParsedCommand
+    Piped {
+        git_cmd: GitCommand,
+        pipe_to: String,
+    },
+    Redirect {
+        git_cmd: GitCommand,
+        file: String,
+        append: bool,
+    },
+    Shell(String), // String kept for structural consistency with ParsedCommand
 }
 
 impl From<&ParsedCommand> for CloneableParsedCommand {
@@ -771,7 +913,11 @@ impl From<&ParsedCommand> for CloneableParsedCommand {
                 git_cmd: git_cmd.clone(),
                 pipe_to: pipe_to.clone(),
             },
-            ParsedCommand::Redirect { git_cmd, file, append } => CloneableParsedCommand::Redirect {
+            ParsedCommand::Redirect {
+                git_cmd,
+                file,
+                append,
+            } => CloneableParsedCommand::Redirect {
                 git_cmd: git_cmd.clone(),
                 file: file.clone(),
                 append: *append,
@@ -815,15 +961,15 @@ fn run_parallel(
 
         let handle = thread::spawn(move || {
             let result = match &parsed_cmd {
-                CloneableParsedCommand::Git(git_cmd) => {
-                    execute_git_command(&repo_path, git_cmd)
-                }
+                CloneableParsedCommand::Git(git_cmd) => execute_git_command(&repo_path, git_cmd),
                 CloneableParsedCommand::Piped { git_cmd, pipe_to } => {
                     execute_piped_command(&repo_path, git_cmd, pipe_to)
                 }
-                CloneableParsedCommand::Redirect { git_cmd, file, append } => {
-                    execute_redirected_command(&repo_path, git_cmd, file, *append)
-                }
+                CloneableParsedCommand::Redirect {
+                    git_cmd,
+                    file,
+                    append,
+                } => execute_redirected_command(&repo_path, git_cmd, file, *append),
                 CloneableParsedCommand::Shell(_) => {
                     // Run as shell command
                     let output = Command::new("sh")
@@ -843,7 +989,12 @@ fn run_parallel(
                             if out.status.success() {
                                 Ok(format!("{}{}", stdout, stderr))
                             } else {
-                                Err(format!("Exit code: {:?}\n{}{}", out.status.code(), stdout, stderr))
+                                Err(format!(
+                                    "Exit code: {:?}\n{}{}",
+                                    out.status.code(),
+                                    stdout,
+                                    stderr
+                                ))
                             }
                         }
                         Err(e) => Err(e.to_string()),
@@ -886,7 +1037,10 @@ fn run_parallel(
     if error_count == 0 {
         Output::success(&format!("Command completed in {} repo(s)", success_count));
     } else {
-        Output::warning(&format!("{} succeeded, {} failed", success_count, error_count));
+        Output::warning(&format!(
+            "{} succeeded, {} failed",
+            success_count, error_count
+        ));
     }
 
     Ok(())
@@ -930,7 +1084,8 @@ mod tests {
             let sig = repo.signature().unwrap();
             let tree_id = index.write_tree().unwrap();
             let tree = repo.find_tree(tree_id).unwrap();
-            repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[]).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
+                .unwrap();
         }
 
         repo_path
@@ -1000,15 +1155,24 @@ mod tests {
     fn test_try_parse_git_command_branch() {
         assert!(matches!(
             try_parse_git_command("git branch"),
-            Some(GitCommand::ListBranches { all: false, remotes: false })
+            Some(GitCommand::ListBranches {
+                all: false,
+                remotes: false
+            })
         ));
         assert!(matches!(
             try_parse_git_command("git branch -a"),
-            Some(GitCommand::ListBranches { all: true, remotes: false })
+            Some(GitCommand::ListBranches {
+                all: true,
+                remotes: false
+            })
         ));
         assert!(matches!(
             try_parse_git_command("git branch -r"),
-            Some(GitCommand::ListBranches { all: false, remotes: true })
+            Some(GitCommand::ListBranches {
+                all: false,
+                remotes: true
+            })
         ));
     }
 
@@ -1100,10 +1264,16 @@ mod tests {
     fn test_parse_command_redirects() {
         // Redirected commands should be parsed correctly
         let parsed = parse_command("git log --oneline > log.txt");
-        assert!(matches!(parsed, ParsedCommand::Redirect { append: false, .. }));
+        assert!(matches!(
+            parsed,
+            ParsedCommand::Redirect { append: false, .. }
+        ));
 
         let parsed = parse_command("git status >> status.txt");
-        assert!(matches!(parsed, ParsedCommand::Redirect { append: true, .. }));
+        assert!(matches!(
+            parsed,
+            ParsedCommand::Redirect { append: true, .. }
+        ));
     }
 
     #[test]
@@ -1130,7 +1300,13 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let repo_path = setup_test_repo(&temp);
 
-        let result = execute_git_command(&repo_path, &GitCommand::ListBranches { all: false, remotes: false });
+        let result = execute_git_command(
+            &repo_path,
+            &GitCommand::ListBranches {
+                all: false,
+                remotes: false,
+            },
+        );
         assert!(result.is_ok());
         let output = result.unwrap();
         // Should contain the default branch (master or main)
