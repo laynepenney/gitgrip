@@ -216,14 +216,52 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Some(Commands::Status { verbose }) => {
-            println!("Status command (verbose: {})", verbose);
-            println!("Not yet implemented - Phase 4");
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::status::run_status(&workspace_root, &manifest, verbose)?;
+        }
+        Some(Commands::Sync { force }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::sync::run_sync(&workspace_root, &manifest, force)?;
+        }
+        Some(Commands::Branch { name, delete, include_manifest: _ }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::branch::run_branch(
+                &workspace_root,
+                &manifest,
+                name.as_deref(),
+                delete,
+                None,
+            )?;
+        }
+        Some(Commands::Checkout { name }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::checkout::run_checkout(&workspace_root, &manifest, &name)?;
+        }
+        Some(Commands::Add { files }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::add::run_add(&workspace_root, &manifest, &files)?;
+        }
+        Some(Commands::Diff { staged }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::diff::run_diff(&workspace_root, &manifest, staged)?;
+        }
+        Some(Commands::Commit { message, amend }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            let msg = message.unwrap_or_else(|| {
+                eprintln!("Error: commit message required (-m)");
+                std::process::exit(1);
+            });
+            gitgrip::cli::commands::commit::run_commit(&workspace_root, &manifest, &msg, amend)?;
+        }
+        Some(Commands::Push { set_upstream, force }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::push::run_push(&workspace_root, &manifest, set_upstream, force)?;
         }
         Some(Commands::Bench { name, iterations }) => {
             run_benchmarks(name.as_deref(), iterations).await?;
         }
         Some(_) => {
-            println!("Command not yet implemented");
+            println!("Command not yet implemented - coming in Phase 5-6");
         }
         None => {
             println!("gitgrip - Multi-repo workflow tool");
@@ -232,6 +270,30 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Load the workspace manifest
+fn load_workspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manifest::Manifest)> {
+    // Find workspace root by looking for .gitgrip directory
+    let mut current = std::env::current_dir()?;
+    loop {
+        let gitgrip_dir = current.join(".gitgrip");
+        if gitgrip_dir.exists() {
+            let manifest_path = gitgrip_dir.join("manifests").join("manifest.yaml");
+            if manifest_path.exists() {
+                let content = std::fs::read_to_string(&manifest_path)?;
+                let manifest = gitgrip::core::manifest::Manifest::parse(&content)?;
+                return Ok((current, manifest));
+            }
+        }
+
+        match current.parent() {
+            Some(parent) => current = parent.to_path_buf(),
+            None => {
+                anyhow::bail!("Not in a gitgrip workspace (no .gitgrip directory found)");
+            }
+        }
+    }
 }
 
 async fn run_benchmarks(name: Option<&str>, iterations: u32) -> anyhow::Result<()> {
