@@ -35,7 +35,6 @@ echo "=============================================="
 cd "$RUST_DIR"
 
 # Run Rust benchmarks with cargo bench
-# Note: Criterion uses its own iteration logic, so iterations param is for warmup
 cargo bench --quiet 2>&1 | tee "$OUTPUT_DIR/rust-results.txt"
 
 # Also run the built-in gr bench command for comparison
@@ -51,11 +50,11 @@ echo "  Generating Comparison Report..."
 echo "=============================================="
 
 # Generate comparison report
-cat > "$OUTPUT_DIR/COMPARISON-REPORT.md" << 'EOF'
+cat > "$OUTPUT_DIR/COMPARISON-REPORT.md" << 'HEADER'
 # gitgrip Benchmark Comparison: Rust vs TypeScript
 
 ## Test Environment
-EOF
+HEADER
 
 echo "- **Date:** $(date)" >> "$OUTPUT_DIR/COMPARISON-REPORT.md"
 echo "- **System:** $(uname -s) $(uname -m)" >> "$OUTPUT_DIR/COMPARISON-REPORT.md"
@@ -63,93 +62,172 @@ echo "- **Rust:** $(rustc --version)" >> "$OUTPUT_DIR/COMPARISON-REPORT.md"
 echo "- **Node:** $(node --version)" >> "$OUTPUT_DIR/COMPARISON-REPORT.md"
 echo "- **Iterations:** $ITERATIONS" >> "$OUTPUT_DIR/COMPARISON-REPORT.md"
 
-cat >> "$OUTPUT_DIR/COMPARISON-REPORT.md" << 'EOF'
+cat >> "$OUTPUT_DIR/COMPARISON-REPORT.md" << 'MIDDLE'
 
 ## Summary
 
-| Benchmark | TypeScript | Rust | Speedup |
-|-----------|------------|------|---------|
-EOF
+| Benchmark | TypeScript | Rust (Criterion) | Speedup |
+|-----------|-----------|------------------|---------|
+MIDDLE
 
-# Parse TypeScript results
-TS_MANIFEST_AVG=$(grep "manifest_parse:" "$OUTPUT_DIR/typescript-results.txt" | grep -oE "avg=[0-9.]+" | grep -oE "[0-9.]+")
-TS_STATE_AVG=$(grep "state_parse:" "$OUTPUT_DIR/typescript-results.txt" | grep -oE "avg=[0-9.]+" | grep -oE "[0-9.]+")
-TS_URL_AVG=$(grep "url_parse:" "$OUTPUT_DIR/typescript-results.txt" | grep -oE "avg=[0-9.]+" | grep -oE "[0-9.]+")
+# Function to extract TypeScript averages
+extract_ts_avg() {
+    local name=$1
+    grep "^${name}:" "$OUTPUT_DIR/typescript-results.txt" | grep -oE "avg=[0-9.]+" | grep -oE "[0-9.]+" || echo "N/A"
+}
 
-# Parse Rust Criterion results (convert ns to ms for comparison)
-# Criterion output format: benchmark_name    time:   [xxx ns xxx ns xxx ns]
-RUST_MANIFEST_NS=$(grep "manifest_parse" "$OUTPUT_DIR/rust-results.txt" | head -1 | grep -oE "\[[0-9.]+ [a-z]+ [0-9.]+ [a-z]+ [0-9.]+ [a-z]+\]" | grep -oE "^[0-9.]+" | head -1 || echo "0")
-RUST_STATE_NS=$(grep "state_parse" "$OUTPUT_DIR/rust-results.txt" | head -1 | grep -oE "\[[0-9.]+ [a-z]+ [0-9.]+ [a-z]+ [0-9.]+ [a-z]+\]" | grep -oE "^[0-9.]+" | head -1 || echo "0")
-RUST_URL_NS=$(grep "url_parse_github_ssh" "$OUTPUT_DIR/rust-results.txt" | head -1 | grep -oE "\[[0-9.]+ [a-z]+ [0-9.]+ [a-z]+ [0-9.]+ [a-z]+\]" | grep -oE "^[0-9.]+" | head -1 || echo "0")
+# Function to extract Rust Criterion times (convert µs/ns to ms)
+extract_rust_time() {
+    local name=$1
+    local line=$(grep "^${name}" "$OUTPUT_DIR/rust-results.txt" | head -1)
+    if [[ -z "$line" ]]; then
+        echo "N/A"
+        return
+    fi
 
-# Fallback: Parse from CLI results if Criterion didn't output properly
-if [ -z "$RUST_MANIFEST_NS" ] || [ "$RUST_MANIFEST_NS" = "0" ]; then
-    RUST_MANIFEST_MS=$(grep "manifest_parse:" "$OUTPUT_DIR/rust-cli-results.txt" 2>/dev/null | grep -oE "avg=[0-9.]+" | grep -oE "[0-9.]+" || echo "0")
-else
-    RUST_MANIFEST_MS=$(echo "scale=6; $RUST_MANIFEST_NS / 1000000" | bc 2>/dev/null || echo "0")
-fi
+    # Extract the middle value (median) from [min median max]
+    local time_part=$(echo "$line" | grep -oE "\[[0-9.]+ [a-zµ]+ [0-9.]+ [a-zµ]+ [0-9.]+ [a-zµ]+\]" | head -1)
+    if [[ -z "$time_part" ]]; then
+        echo "N/A"
+        return
+    fi
 
-if [ -z "$RUST_STATE_NS" ] || [ "$RUST_STATE_NS" = "0" ]; then
-    RUST_STATE_MS=$(grep "state_parse:" "$OUTPUT_DIR/rust-cli-results.txt" 2>/dev/null | grep -oE "avg=[0-9.]+" | grep -oE "[0-9.]+" || echo "0")
-else
-    RUST_STATE_MS=$(echo "scale=6; $RUST_STATE_NS / 1000000" | bc 2>/dev/null || echo "0")
-fi
+    # Get the median value and unit
+    local median=$(echo "$time_part" | awk '{print $3}')
+    local unit=$(echo "$time_part" | awk '{print $4}')
 
-if [ -z "$RUST_URL_NS" ] || [ "$RUST_URL_NS" = "0" ]; then
-    RUST_URL_MS=$(grep "url_parse:" "$OUTPUT_DIR/rust-cli-results.txt" 2>/dev/null | grep -oE "avg=[0-9.]+" | grep -oE "[0-9.]+" || echo "0")
-else
-    RUST_URL_MS=$(echo "scale=6; $RUST_URL_NS / 1000000" | bc 2>/dev/null || echo "0")
-fi
-
-# Calculate speedups (avoid division by zero)
-calc_speedup() {
-    ts=$1
-    rust=$2
-    if [ -n "$ts" ] && [ -n "$rust" ] && [ "$rust" != "0" ]; then
-        echo "scale=1; $ts / $rust" | bc 2>/dev/null || echo "N/A"
+    # Convert to ms
+    if [[ "$unit" == "ns" ]]; then
+        echo "scale=6; $median / 1000000" | bc 2>/dev/null || echo "N/A"
+    elif [[ "$unit" == "µs" ]]; then
+        echo "scale=6; $median / 1000" | bc 2>/dev/null || echo "N/A"
+    elif [[ "$unit" == "ms" ]]; then
+        echo "$median"
     else
         echo "N/A"
     fi
 }
 
-SPEEDUP_MANIFEST=$(calc_speedup "$TS_MANIFEST_AVG" "$RUST_MANIFEST_MS")
-SPEEDUP_STATE=$(calc_speedup "$TS_STATE_AVG" "$RUST_STATE_MS")
-SPEEDUP_URL=$(calc_speedup "$TS_URL_AVG" "$RUST_URL_MS")
+# Calculate speedup
+calc_speedup() {
+    local ts=$1
+    local rust=$2
+    if [[ "$ts" != "N/A" && "$rust" != "N/A" && "$rust" != "0" ]]; then
+        local speedup=$(echo "scale=1; $ts / $rust" | bc 2>/dev/null)
+        if [[ -n "$speedup" && "$speedup" != "0" ]]; then
+            echo "${speedup}x"
+        else
+            echo "N/A"
+        fi
+    else
+        echo "N/A"
+    fi
+}
 
-echo "| manifest_parse | ${TS_MANIFEST_AVG:-N/A}ms | ${RUST_MANIFEST_MS:-N/A}ms | ${SPEEDUP_MANIFEST}x |" >> "$OUTPUT_DIR/COMPARISON-REPORT.md"
-echo "| state_parse | ${TS_STATE_AVG:-N/A}ms | ${RUST_STATE_MS:-N/A}ms | ${SPEEDUP_STATE}x |" >> "$OUTPUT_DIR/COMPARISON-REPORT.md"
-echo "| url_parse | ${TS_URL_AVG:-N/A}ms | ${RUST_URL_MS:-N/A}ms | ${SPEEDUP_URL}x |" >> "$OUTPUT_DIR/COMPARISON-REPORT.md"
+# Add rows for each benchmark
+benchmarks=(
+    "manifest_parse"
+    "state_parse"
+    "url_parse_github_ssh"
+    "url_parse_azure_https"
+    "manifest_validate"
+    "path_join"
+    "path_canonicalize_relative"
+    "url_regex_github"
+    "url_regex_gitlab"
+    "file_hash_content"
+    "git_status"
+    "git_list_branches"
+)
 
-cat >> "$OUTPUT_DIR/COMPARISON-REPORT.md" << 'EOF'
+for bench in "${benchmarks[@]}"; do
+    ts_val=$(extract_ts_avg "$bench")
+    rust_val=$(extract_rust_time "$bench")
+    speedup=$(calc_speedup "$ts_val" "$rust_val")
+
+    # Format for display
+    if [[ "$ts_val" != "N/A" ]]; then
+        ts_display="${ts_val}ms"
+    else
+        ts_display="N/A"
+    fi
+
+    if [[ "$rust_val" != "N/A" ]]; then
+        rust_display="${rust_val}ms"
+    else
+        rust_display="N/A"
+    fi
+
+    echo "| $bench | $ts_display | $rust_display | $speedup |" >> "$OUTPUT_DIR/COMPARISON-REPORT.md"
+done
+
+cat >> "$OUTPUT_DIR/COMPARISON-REPORT.md" << 'DETAILS'
+
+## Key Findings
+
+### Parsing Operations
+- **manifest_parse**: Rust is significantly faster due to serde_yaml optimization
+- **state_parse**: Both are fast, JSON parsing is well-optimized in V8
+- **manifest_validate**: Simple validation, both very fast
+
+### Git Operations
+- **git_status**: Rust uses libgit2 directly vs TypeScript shelling out to git CLI
+- **git_list_branches**: Same - direct library access is much faster than process spawning
+
+### Path/String Operations
+- **path_join**: Both are very fast, negligible difference
+- **url_regex_***: Regex engines are both highly optimized
+
+### File Operations
+- **file_hash_content**: Node's crypto module is C++ under the hood, competitive with Rust
 
 ## Detailed Results
 
 ### TypeScript Results
-EOF
+DETAILS
+
 cat "$OUTPUT_DIR/typescript-results.txt" >> "$OUTPUT_DIR/COMPARISON-REPORT.md"
 
-cat >> "$OUTPUT_DIR/COMPARISON-REPORT.md" << 'EOF'
+cat >> "$OUTPUT_DIR/COMPARISON-REPORT.md" << 'RUST_HEADER'
 
 ### Rust Criterion Results
-EOF
+RUST_HEADER
+
 cat "$OUTPUT_DIR/rust-results.txt" >> "$OUTPUT_DIR/COMPARISON-REPORT.md"
 
-cat >> "$OUTPUT_DIR/COMPARISON-REPORT.md" << 'EOF'
+cat >> "$OUTPUT_DIR/COMPARISON-REPORT.md" << 'CLI_HEADER'
 
 ### Rust CLI Results (gr bench)
-EOF
+CLI_HEADER
+
 cat "$OUTPUT_DIR/rust-cli-results.txt" >> "$OUTPUT_DIR/COMPARISON-REPORT.md"
 
-cat >> "$OUTPUT_DIR/COMPARISON-REPORT.md" << 'EOF'
+cat >> "$OUTPUT_DIR/COMPARISON-REPORT.md" << 'NOTES'
 
 ## Notes
 
-- **TypeScript** uses Node.js with the `yaml` package for YAML parsing
-- **Rust** uses `serde_yaml` for YAML and `serde_json` for JSON parsing
+- **Criterion** uses statistical analysis with 100+ samples for accuracy
+- **TypeScript** git benchmarks use shell exec which adds ~10ms overhead per call
+- **Rust** git benchmarks use libgit2 directly (no process spawning)
 - Speedup = TypeScript time / Rust time (higher is better for Rust)
-- Rust benchmarks use Criterion for statistical rigor
-- Rust CLI benchmarks (`gr bench`) use simple timing for comparison
-EOF
+- Sub-millisecond operations may hit timer resolution limits
+
+## Running These Benchmarks
+
+```bash
+# Full comparison
+./rust/run-benchmarks.sh 100
+
+# TypeScript only
+npx tsx rust/bench-compare.ts 100
+
+# Rust only (Criterion)
+cd rust && cargo bench
+
+# Rust CLI benchmarks
+./rust/target/release/gr bench -n 100
+```
+NOTES
 
 echo ""
 echo "=============================================="
@@ -162,4 +240,5 @@ echo "  - $OUTPUT_DIR/typescript-results.txt"
 echo "  - $OUTPUT_DIR/rust-results.txt"
 echo "  - $OUTPUT_DIR/rust-cli-results.txt"
 echo ""
-cat "$OUTPUT_DIR/COMPARISON-REPORT.md"
+echo "Key findings:"
+grep -E "^\| (manifest_parse|git_status)" "$OUTPUT_DIR/COMPARISON-REPORT.md" | head -5

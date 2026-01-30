@@ -1,7 +1,8 @@
 
-running 71 tests
-iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii
-test result: ok. 0 passed; 0 failed; 71 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 87 tests
+iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii 87/87
+
+test result: ok. 0 passed; 0 failed; 87 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 
 running 0 tests
@@ -16,10 +17,10 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 Gnuplot not found, using plotters backend
 Benchmarking manifest_parse
 Benchmarking manifest_parse: Warming up for 3.0000 s
-Benchmarking manifest_parse: Collecting 100 samples in estimated 5.1003 s (217k iterations)
+Benchmarking manifest_parse: Collecting 100 samples in estimated 5.0444 s (212k iterations)
 Benchmarking manifest_parse: Analyzing
-manifest_parse          time:   [23.232 µs 23.290 µs 23.350 µs]
-                        change: [-59.940% -57.033% -54.029%] (p = 0.00 < 0.05)
+manifest_parse          time:   [23.702 µs 23.768 µs 23.837 µs]
+                        change: [-7.4103% -5.4503% -3.6555%] (p = 0.00 < 0.05)
                         Performance has improved.
 Found 5 outliers among 100 measurements (5.00%)
   1 (1.00%) low mild
@@ -28,50 +29,110 @@ Found 5 outliers among 100 measurements (5.00%)
 
 Benchmarking state_parse
 Benchmarking state_parse: Warming up for 3.0000 s
-Benchmarking state_parse: Collecting 100 samples in estimated 5.0008 s (3.8M iterations)
+Benchmarking state_parse: Collecting 100 samples in estimated 5.0015 s (3.7M iterations)
 Benchmarking state_parse: Analyzing
-state_parse             time:   [1.3114 µs 1.3186 µs 1.3263 µs]
-                        change: [-47.673% -47.487% -47.273%] (p = 0.00 < 0.05)
+state_parse             time:   [1.3457 µs 1.3492 µs 1.3525 µs]
+                        change: [-5.1620% -4.0750% -3.0585%] (p = 0.00 < 0.05)
                         Performance has improved.
-Found 6 outliers among 100 measurements (6.00%)
-  6 (6.00%) high mild
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
 
 Benchmarking url_parse_github_ssh
 Benchmarking url_parse_github_ssh: Warming up for 3.0000 s
-Benchmarking url_parse_github_ssh: Collecting 100 samples in estimated 5.0010 s (10M iterations)
+Benchmarking url_parse_github_ssh: Collecting 100 samples in estimated 5.0012 s (9.9M iterations)
 Benchmarking url_parse_github_ssh: Analyzing
-url_parse_github_ssh    time:   [494.31 ns 495.75 ns 497.38 ns]
-                        change: [-60.915% -58.218% -55.699%] (p = 0.00 < 0.05)
+url_parse_github_ssh    time:   [493.44 ns 496.23 ns 499.65 ns]
+                        change: [-13.310% -12.045% -10.873%] (p = 0.00 < 0.05)
                         Performance has improved.
-Found 1 outliers among 100 measurements (1.00%)
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) high mild
   1 (1.00%) high severe
 
 Benchmarking url_parse_azure_https
 Benchmarking url_parse_azure_https: Warming up for 3.0000 s
-Benchmarking url_parse_azure_https: Collecting 100 samples in estimated 5.0020 s (9.0M iterations)
+Benchmarking url_parse_azure_https: Collecting 100 samples in estimated 5.0021 s (9.1M iterations)
 Benchmarking url_parse_azure_https: Analyzing
-url_parse_azure_https   time:   [547.68 ns 549.17 ns 550.90 ns]
-                        change: [-37.858% -36.744% -35.597%] (p = 0.00 < 0.05)
-                        Performance has improved.
-Found 1 outliers among 100 measurements (1.00%)
-  1 (1.00%) high mild
+url_parse_azure_https   time:   [551.31 ns 553.14 ns 554.94 ns]
+                        change: [+0.2279% +0.6470% +1.0476%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 3 outliers among 100 measurements (3.00%)
+  3 (3.00%) high mild
 
 Benchmarking manifest_validate
 Benchmarking manifest_validate: Warming up for 3.0000 s
-Benchmarking manifest_validate: Collecting 100 samples in estimated 5.0001 s (19M iterations)
+Benchmarking manifest_validate: Collecting 100 samples in estimated 5.0006 s (19M iterations)
 Benchmarking manifest_validate: Analyzing
-manifest_validate       time:   [276.13 ns 276.91 ns 277.77 ns]
-Found 12 outliers among 100 measurements (12.00%)
-  6 (6.00%) low mild
-  1 (1.00%) high mild
-  5 (5.00%) high severe
+manifest_validate       time:   [286.20 ns 289.98 ns 293.36 ns]
+                        change: [+3.9347% +5.0604% +6.3260%] (p = 0.00 < 0.05)
+                        Performance has regressed.
 
 Benchmarking git_status
 Benchmarking git_status: Warming up for 3.0000 s
-Benchmarking git_status: Collecting 100 samples in estimated 5.3377 s (25k iterations)
+Benchmarking git_status: Collecting 100 samples in estimated 5.6544 s (25k iterations)
 Benchmarking git_status: Analyzing
-git_status              time:   [210.62 µs 211.94 µs 213.40 µs]
-Found 8 outliers among 100 measurements (8.00%)
-  5 (5.00%) high mild
-  3 (3.00%) high severe
+git_status              time:   [207.04 µs 213.64 µs 226.95 µs]
+                        change: [+0.6700% +2.3305% +5.1939%] (p = 0.02 < 0.05)
+                        Change within noise threshold.
+Found 11 outliers among 100 measurements (11.00%)
+  7 (7.00%) high mild
+  4 (4.00%) high severe
+
+Benchmarking git_list_branches
+Benchmarking git_list_branches: Warming up for 3.0000 s
+Benchmarking git_list_branches: Collecting 100 samples in estimated 6.0840 s (25k iterations)
+Benchmarking git_list_branches: Analyzing
+git_list_branches       time:   [245.30 µs 251.86 µs 261.41 µs]
+                        change: [+17.668% +48.644% +94.175%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 20 outliers among 100 measurements (20.00%)
+  3 (3.00%) high mild
+  17 (17.00%) high severe
+
+Benchmarking file_hash_content
+Benchmarking file_hash_content: Warming up for 3.0000 s
+Benchmarking file_hash_content: Collecting 100 samples in estimated 5.0020 s (4.3M iterations)
+Benchmarking file_hash_content: Analyzing
+file_hash_content       time:   [1.1546 µs 1.1574 µs 1.1608 µs]
+                        change: [+2.7029% +3.0399% +3.3910%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 5 outliers among 100 measurements (5.00%)
+  4 (4.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking path_join
+Benchmarking path_join: Warming up for 3.0000 s
+Benchmarking path_join: Collecting 100 samples in estimated 5.0003 s (56M iterations)
+Benchmarking path_join: Analyzing
+path_join               time:   [89.422 ns 90.091 ns 90.819 ns]
+                        change: [+4.1320% +4.7712% +5.4731%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking path_canonicalize_relative
+Benchmarking path_canonicalize_relative: Warming up for 3.0000 s
+Benchmarking path_canonicalize_relative: Collecting 100 samples in estimated 5.0001 s (58M iterations)
+Benchmarking path_canonicalize_relative: Analyzing
+path_canonicalize_relative
+                        time:   [88.481 ns 88.869 ns 89.274 ns]
+                        change: [+4.4006% +4.9297% +5.4272%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 100 measurements (3.00%)
+  3 (3.00%) high mild
+
+Benchmarking url_regex_github
+Benchmarking url_regex_github: Warming up for 3.0000 s
+Benchmarking url_regex_github: Collecting 100 samples in estimated 5.0000 s (15M iterations)
+Benchmarking url_regex_github: Analyzing
+url_regex_github        time:   [363.38 ns 368.93 ns 373.84 ns]
+                        change: [+7.8217% +9.0516% +10.501%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking url_regex_gitlab
+Benchmarking url_regex_gitlab: Warming up for 3.0000 s
+Benchmarking url_regex_gitlab: Collecting 100 samples in estimated 5.0010 s (11M iterations)
+Benchmarking url_regex_gitlab: Analyzing
+url_regex_gitlab        time:   [429.15 ns 430.50 ns 431.91 ns]
+                        change: [+1.7590% +2.1264% +2.4797%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
 
