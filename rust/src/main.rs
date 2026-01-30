@@ -134,13 +134,7 @@ enum Commands {
     /// Show environment variables
     Env,
     /// Run benchmarks
-    Bench {
-        /// Specific benchmark to run
-        name: Option<String>,
-        /// Number of iterations
-        #[arg(short, long, default_value = "10")]
-        iterations: u32,
-    },
+    Bench(gitgrip::cli::commands::bench::BenchArgs),
     /// Repository operations
     Repo {
         #[command(subcommand)]
@@ -403,8 +397,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Some(Commands::Bench { name, iterations }) => {
-            run_benchmarks(name.as_deref(), iterations).await?;
+        Some(Commands::Bench(args)) => {
+            gitgrip::cli::commands::bench::run(args).await?;
         }
         None => {
             println!("gitgrip - Multi-repo workflow tool");
@@ -439,78 +433,3 @@ fn load_workspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manife
     }
 }
 
-async fn run_benchmarks(name: Option<&str>, iterations: u32) -> anyhow::Result<()> {
-    use gitgrip::util::timing::{benchmark, BenchmarkResult};
-
-    println!("Running benchmarks (iterations: {})...\n", iterations);
-
-    let mut results: Vec<BenchmarkResult> = Vec::new();
-
-    // Benchmark: Manifest parsing
-    if name.is_none() || name == Some("manifest") {
-        let yaml = r#"
-version: 1
-repos:
-  app:
-    url: git@github.com:user/app.git
-    path: app
-    default_branch: main
-  lib:
-    url: git@github.com:user/lib.git
-    path: lib
-settings:
-  pr_prefix: "[multi-repo]"
-  merge_strategy: all-or-nothing
-"#;
-        let result = benchmark("manifest_parse", iterations, || {
-            let _ = gitgrip::core::manifest::Manifest::parse(yaml);
-        });
-        result.print();
-        results.push(result);
-    }
-
-    // Benchmark: State file parsing
-    if name.is_none() || name == Some("state") {
-        let json = r#"{
-            "currentManifestPr": 42,
-            "branchToPr": {"feat/test": 42},
-            "prLinks": {"42": []}
-        }"#;
-        let result = benchmark("state_parse", iterations, || {
-            let _ = gitgrip::core::state::StateFile::parse(json);
-        });
-        result.print();
-        results.push(result);
-    }
-
-    // Benchmark: URL parsing
-    if name.is_none() || name == Some("url") {
-        use gitgrip::core::manifest::RepoConfig;
-        use gitgrip::core::repo::RepoInfo;
-        use std::path::PathBuf;
-
-        let config = RepoConfig {
-            url: "git@github.com:user/repo.git".to_string(),
-            path: "repo".to_string(),
-            default_branch: "main".to_string(),
-            copyfile: None,
-            linkfile: None,
-            platform: None,
-        };
-        let workspace = PathBuf::from("/workspace");
-
-        let result = benchmark("url_parse", iterations, || {
-            let _ = RepoInfo::from_config("repo", &config, &workspace);
-        });
-        result.print();
-        results.push(result);
-    }
-
-    // Summary
-    println!("\n=== Summary ===");
-    for result in &results {
-        println!("{}", result.to_comparison_string());
-    }
-
-    Ok(())
-}

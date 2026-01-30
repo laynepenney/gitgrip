@@ -3,6 +3,7 @@
 //! Each command is implemented in its own module.
 
 pub mod add;
+pub mod bench;
 pub mod branch;
 pub mod checkout;
 pub mod commit;
