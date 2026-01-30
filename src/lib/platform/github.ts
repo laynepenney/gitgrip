@@ -3,6 +3,7 @@
  */
 import { Octokit } from '@octokit/rest';
 import { execSync } from 'child_process';
+import { withRetry } from '../retry.js';
 import type {
   HostingPlatform,
   PlatformType,
@@ -84,15 +85,17 @@ export class GitHubPlatform implements HostingPlatform {
     draft = false
   ): Promise<PRCreateResult> {
     const octokit = await this.getOctokit();
-    const response = await octokit.pulls.create({
-      owner,
-      repo,
-      head,
-      base,
-      title,
-      body,
-      draft,
-    });
+    const response = await withRetry(() =>
+      octokit.pulls.create({
+        owner,
+        repo,
+        head,
+        base,
+        title,
+        body,
+        draft,
+      })
+    );
 
     return {
       number: response.data.number,
@@ -109,11 +112,13 @@ export class GitHubPlatform implements HostingPlatform {
     pullNumber: number
   ): Promise<PullRequest> {
     const octokit = await this.getOctokit();
-    const response = await octokit.pulls.get({
-      owner,
-      repo,
-      pull_number: pullNumber,
-    });
+    const response = await withRetry(() =>
+      octokit.pulls.get({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      })
+    );
 
     return {
       number: response.data.number,
@@ -143,12 +148,14 @@ export class GitHubPlatform implements HostingPlatform {
     body: string
   ): Promise<void> {
     const octokit = await this.getOctokit();
-    await octokit.pulls.update({
-      owner,
-      repo,
-      pull_number: pullNumber,
-      body,
-    });
+    await withRetry(() =>
+      octokit.pulls.update({
+        owner,
+        repo,
+        pull_number: pullNumber,
+        body,
+      })
+    );
   }
 
   /**
@@ -164,22 +171,26 @@ export class GitHubPlatform implements HostingPlatform {
     const mergeMethod = options.method ?? 'merge';
 
     try {
-      await octokit.pulls.merge({
-        owner,
-        repo,
-        pull_number: pullNumber,
-        merge_method: mergeMethod,
-      });
+      await withRetry(() =>
+        octokit.pulls.merge({
+          owner,
+          repo,
+          pull_number: pullNumber,
+          merge_method: mergeMethod,
+        })
+      );
 
       // Delete branch if requested
       if (options.deleteBranch) {
         const pr = await this.getPullRequest(owner, repo, pullNumber);
         try {
-          await octokit.git.deleteRef({
-            owner,
-            repo,
-            ref: `heads/${pr.head.ref}`,
-          });
+          await withRetry(() =>
+            octokit.git.deleteRef({
+              owner,
+              repo,
+              ref: `heads/${pr.head.ref}`,
+            })
+          );
         } catch {
           // Branch deletion failure is not critical
         }
@@ -200,12 +211,14 @@ export class GitHubPlatform implements HostingPlatform {
     branch: string
   ): Promise<PRCreateResult | null> {
     const octokit = await this.getOctokit();
-    const response = await octokit.pulls.list({
-      owner,
-      repo,
-      head: `${owner}:${branch}`,
-      state: 'open',
-    });
+    const response = await withRetry(() =>
+      octokit.pulls.list({
+        owner,
+        repo,
+        head: `${owner}:${branch}`,
+        state: 'open',
+      })
+    );
 
     if (response.data.length > 0) {
       return {
@@ -240,11 +253,13 @@ export class GitHubPlatform implements HostingPlatform {
     pullNumber: number
   ): Promise<PRReview[]> {
     const octokit = await this.getOctokit();
-    const response = await octokit.pulls.listReviews({
-      owner,
-      repo,
-      pull_number: pullNumber,
-    });
+    const response = await withRetry(() =>
+      octokit.pulls.listReviews({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      })
+    );
 
     return response.data.map((review) => ({
       state: review.state,
@@ -264,20 +279,24 @@ export class GitHubPlatform implements HostingPlatform {
     const octokit = await this.getOctokit();
 
     // Get legacy status checks
-    const statusResponse = await octokit.repos.getCombinedStatusForRef({
-      owner,
-      repo,
-      ref,
-    });
+    const statusResponse = await withRetry(() =>
+      octokit.repos.getCombinedStatusForRef({
+        owner,
+        repo,
+        ref,
+      })
+    );
 
     // Get modern check runs (GitHub Actions)
     let checkRuns: { name: string; conclusion: string | null; status: string }[] = [];
     try {
-      const checksResponse = await octokit.checks.listForRef({
-        owner,
-        repo,
-        ref,
-      });
+      const checksResponse = await withRetry(() =>
+        octokit.checks.listForRef({
+          owner,
+          repo,
+          ref,
+        })
+      );
       checkRuns = checksResponse.data.check_runs.map((run) => ({
         name: run.name,
         conclusion: run.conclusion,
@@ -338,7 +357,7 @@ export class GitHubPlatform implements HostingPlatform {
     repo: string
   ): Promise<AllowedMergeMethods> {
     const octokit = await this.getOctokit();
-    const response = await octokit.repos.get({ owner, repo });
+    const response = await withRetry(() => octokit.repos.get({ owner, repo }));
 
     return {
       merge: response.data.allow_merge_commit ?? true,
@@ -356,14 +375,16 @@ export class GitHubPlatform implements HostingPlatform {
     pullNumber: number
   ): Promise<string> {
     const octokit = await this.getOctokit();
-    const response = await octokit.pulls.get({
-      owner,
-      repo,
-      pull_number: pullNumber,
-      mediaType: {
-        format: 'diff',
-      },
-    });
+    const response = await withRetry(() =>
+      octokit.pulls.get({
+        owner,
+        repo,
+        pull_number: pullNumber,
+        mediaType: {
+          format: 'diff',
+        },
+      })
+    );
     // The response is a string when format is 'diff'
     return response.data as unknown as string;
   }
