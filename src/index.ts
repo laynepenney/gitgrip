@@ -266,11 +266,15 @@ program
   .description('Commit staged changes across all repositories')
   .option('-m, --message <message>', 'Commit message')
   .option('-a, --all', 'Stage all changes before committing')
+  .option('--amend', 'Amend the most recent commit')
+  .option('--no-edit', 'Amend without changing the commit message')
   .action(async (options) => {
     try {
       await commit({
         message: options.message,
         all: options.all,
+        amend: options.amend,
+        noEdit: !options.edit, // Commander uses --no-edit as options.edit = false
       });
     } catch (error) {
       console.error(chalk.red(error instanceof Error ? error.message : String(error)));
