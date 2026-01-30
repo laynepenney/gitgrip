@@ -7,7 +7,7 @@ import { sync } from './commands/sync.js';
 import { status } from './commands/status.js';
 import { branch, listBranches } from './commands/branch.js';
 import { checkout } from './commands/checkout.js';
-import { createPR, prStatus, mergePRs, prChecks } from './commands/pr/index.js';
+import { createPR, prStatus, mergePRs, prChecks, prDiff } from './commands/pr/index.js';
 import { link } from './commands/link.js';
 import { run } from './commands/run.js';
 import { env } from './commands/env.js';
@@ -244,6 +244,18 @@ pr.command('checks')
   .action(async (options) => {
     try {
       await prChecks(options);
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exit(1);
+    }
+  });
+
+pr.command('diff')
+  .description('Show diff for PRs across all repositories')
+  .option('--stat', 'Show diff stat summary only')
+  .action(async (options) => {
+    try {
+      await prDiff(options);
     } catch (error) {
       console.error(chalk.red(error instanceof Error ? error.message : String(error)));
       process.exit(1);

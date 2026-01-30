@@ -346,6 +346,27 @@ export class GitHubPlatform implements HostingPlatform {
   }
 
   /**
+   * Get the diff for a pull request
+   */
+  async getPullRequestDiff(
+    owner: string,
+    repo: string,
+    pullNumber: number
+  ): Promise<string> {
+    const octokit = await this.getOctokit();
+    const response = await octokit.pulls.get({
+      owner,
+      repo,
+      pull_number: pullNumber,
+      mediaType: {
+        format: 'diff',
+      },
+    });
+    // The response is a string when format is 'diff'
+    return response.data as unknown as string;
+  }
+
+  /**
    * Parse GitHub URL to extract owner/repo
    */
   parseRepoUrl(url: string): ParsedRepoInfo | null {

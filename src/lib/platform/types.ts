@@ -199,6 +199,15 @@ export interface HostingPlatform {
     repo: string
   ): Promise<AllowedMergeMethods>;
 
+  /**
+   * Get the diff for a pull request
+   */
+  getPullRequestDiff?(
+    owner: string,
+    repo: string,
+    pullNumber: number
+  ): Promise<string>;
+
   // URL Parsing
   /**
    * Parse a git URL to extract owner/repo information
