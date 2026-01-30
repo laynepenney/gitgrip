@@ -13,6 +13,7 @@ import type {
   PRMergeOptions,
   PRReview,
   StatusCheckResult,
+  AllowedMergeMethods,
 } from './types.js';
 
 /**
@@ -272,6 +273,23 @@ export class GitHubPlatform implements HostingPlatform {
         context: s.context,
         state: s.state,
       })),
+    };
+  }
+
+  /**
+   * Get allowed merge methods for a repository
+   */
+  async getAllowedMergeMethods(
+    owner: string,
+    repo: string
+  ): Promise<AllowedMergeMethods> {
+    const octokit = await this.getOctokit();
+    const response = await octokit.repos.get({ owner, repo });
+
+    return {
+      merge: response.data.allow_merge_commit ?? true,
+      squash: response.data.allow_squash_merge ?? true,
+      rebase: response.data.allow_rebase_merge ?? true,
     };
   }
 

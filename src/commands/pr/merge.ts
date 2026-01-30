@@ -154,14 +154,57 @@ export async function mergePRs(options: MergeOptions = {}): Promise<void> {
 
       try {
         const platform = getPlatformAdapter(entry.repo.platformType, entry.repo.platform);
-        const success = await platform.mergePullRequest(entry.pr.owner, entry.pr.repo, entry.pr.number, mergeOptions);
+        let success = false;
+        let usedMethod = mergeOptions.method ?? 'merge';
+        let lastError = '';
+
+        // Try the requested method first
+        try {
+          success = await platform.mergePullRequest(entry.pr.owner, entry.pr.repo, entry.pr.number, mergeOptions);
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          lastError = errorMsg;
+
+          // If merge method not allowed (405), try fallback methods
+          if (errorMsg.includes('405') || errorMsg.includes('not allowed') || errorMsg.includes('merge_method')) {
+            // Get allowed methods if platform supports it
+            const fallbackMethods: Array<'merge' | 'squash' | 'rebase'> = ['squash', 'rebase', 'merge'];
+            const allowedMethods = platform.getAllowedMergeMethods
+              ? await platform.getAllowedMergeMethods(entry.pr.owner, entry.pr.repo)
+              : null;
+
+            for (const method of fallbackMethods) {
+              if (method === usedMethod) continue; // Skip the method we already tried
+              if (allowedMethods && !allowedMethods[method]) continue; // Skip disallowed methods
+
+              prSpinner.text = `${entry.pr.repoName}${platformLabel} #${entry.pr.number}: trying ${method}...`;
+
+              try {
+                success = await platform.mergePullRequest(entry.pr.owner, entry.pr.repo, entry.pr.number, {
+                  ...mergeOptions,
+                  method,
+                });
+                if (success) {
+                  usedMethod = method;
+                  break;
+                }
+              } catch {
+                // Continue to next fallback method
+              }
+            }
+          }
+        }
 
         if (success) {
-          prSpinner.succeed(`${entry.pr.repoName}${platformLabel} #${entry.pr.number}: merged`);
+          const methodNote = usedMethod !== (mergeOptions.method ?? 'merge') ? ` (${usedMethod})` : '';
+          prSpinner.succeed(`${entry.pr.repoName}${platformLabel} #${entry.pr.number}: merged${methodNote}`);
           results.push({ entry, success: true });
         } else {
-          prSpinner.fail(`${entry.pr.repoName}${platformLabel} #${entry.pr.number}: merge failed`);
-          results.push({ entry, success: false, error: 'Merge API call failed' });
+          const suggestion = lastError.includes('405')
+            ? ' (try --method squash or --method rebase)'
+            : '';
+          prSpinner.fail(`${entry.pr.repoName}${platformLabel} #${entry.pr.number}: merge failed${suggestion}`);
+          results.push({ entry, success: false, error: lastError || 'Merge API call failed' });
 
           // Stop on first failure for all-or-nothing
           if (manifest.settings.merge_strategy === 'all-or-nothing') {

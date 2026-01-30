@@ -86,6 +86,15 @@ export interface StatusCheckResult {
 }
 
 /**
+ * Allowed merge methods for a repository
+ */
+export interface AllowedMergeMethods {
+  merge: boolean;
+  squash: boolean;
+  rebase: boolean;
+}
+
+/**
  * Interface for hosting platform adapters
  * Each platform (GitHub, GitLab, Azure DevOps) implements this interface
  */
@@ -180,6 +189,15 @@ export interface HostingPlatform {
     repo: string,
     ref: string
   ): Promise<StatusCheckResult>;
+
+  /**
+   * Get allowed merge methods for a repository
+   * Used to determine fallback methods when merge fails
+   */
+  getAllowedMergeMethods?(
+    owner: string,
+    repo: string
+  ): Promise<AllowedMergeMethods>;
 
   // URL Parsing
   /**
