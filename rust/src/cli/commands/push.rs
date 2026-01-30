@@ -4,7 +4,7 @@ use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::{get_current_branch, open_repo, path_exists};
-use crate::git::remote::push_branch;
+use crate::git::remote::{force_push_branch, push_branch};
 use git2::Repository;
 use std::path::PathBuf;
 
@@ -13,9 +13,13 @@ pub fn run_push(
     workspace_root: &PathBuf,
     manifest: &Manifest,
     set_upstream: bool,
-    _force: bool, // TODO: Implement force push support
+    force: bool,
 ) -> anyhow::Result<()> {
-    Output::header("Pushing changes...");
+    if force {
+        Output::header("Force pushing changes...");
+    } else {
+        Output::header("Pushing changes...");
+    }
     println!();
 
     let repos: Vec<RepoInfo> = manifest
@@ -52,18 +56,25 @@ pub fn run_push(
                     continue;
                 }
 
-                let spinner = Output::spinner(&format!("Pushing {}...", repo.name));
+                let action = if force { "Force pushing" } else { "Pushing" };
+                let spinner = Output::spinner(&format!("{} {}...", action, repo.name));
 
-                match push_branch(&git_repo, &branch, "origin", set_upstream) {
+                let result = if force {
+                    force_push_branch(&git_repo, &branch, "origin")
+                } else {
+                    push_branch(&git_repo, &branch, "origin", set_upstream)
+                };
+
+                match result {
                     Ok(()) => {
-                        if set_upstream {
-                            spinner.finish_with_message(format!(
-                                "{}: pushed and set upstream",
-                                repo.name
-                            ));
+                        let msg = if force {
+                            format!("{}: force pushed", repo.name)
+                        } else if set_upstream {
+                            format!("{}: pushed and set upstream", repo.name)
                         } else {
-                            spinner.finish_with_message(format!("{}: pushed", repo.name));
-                        }
+                            format!("{}: pushed", repo.name)
+                        };
+                        spinner.finish_with_message(msg);
                         success_count += 1;
                     }
                     Err(e) => {
@@ -80,10 +91,12 @@ pub fn run_push(
     }
 
     println!();
+    let action = if force { "Force pushed" } else { "Pushed" };
     if error_count == 0 {
         if success_count > 0 {
             Output::success(&format!(
-                "Pushed {} repo(s){}.",
+                "{} {} repo(s){}.",
+                action,
                 success_count,
                 if skip_count > 0 {
                     format!(", {} had nothing to push", skip_count)
@@ -96,8 +109,8 @@ pub fn run_push(
         }
     } else {
         Output::warning(&format!(
-            "{} pushed, {} failed, {} skipped",
-            success_count, error_count, skip_count
+            "{} {}, {} failed, {} skipped",
+            success_count, action.to_lowercase(), error_count, skip_count
         ));
     }
 
