@@ -157,10 +157,7 @@ fn test_local_branch_creation() {
         .output()
         .expect("Failed to execute gr branch");
 
-    assert!(
-        output.status.success(),
-        "gr branch should succeed"
-    );
+    assert!(output.status.success(), "gr branch should succeed");
 }
 
 /// Test add and commit in a local workspace
@@ -191,8 +188,5 @@ fn test_local_add_commit() {
         .output()
         .expect("Failed to commit");
 
-    assert!(
-        output.status.success(),
-        "gr commit should succeed"
-    );
+    assert!(output.status.success(), "gr commit should succeed");
 }
