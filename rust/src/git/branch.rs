@@ -1,56 +1,78 @@
 //! Git branch operations
 
-use git2::{BranchType, Repository};
+use git2::Repository;
+use std::process::Command;
 
 use super::{get_current_branch, GitError};
 
 /// Create a new local branch and check it out
 pub fn create_and_checkout_branch(repo: &Repository, branch_name: &str) -> Result<(), GitError> {
-    let head = repo.head()?;
-    let commit = head.peel_to_commit()?;
+    let repo_path = repo.path().parent().unwrap_or(repo.path());
 
-    // Create branch
-    repo.branch(branch_name, &commit, false)?;
+    let output = Command::new("git")
+        .args(["checkout", "-b", branch_name])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
-    // Checkout the new branch
-    let refname = format!("refs/heads/{}", branch_name);
-    let obj = repo.revparse_single(&refname)?;
-    repo.checkout_tree(&obj, None)?;
-    repo.set_head(&refname)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::OperationFailed(stderr.to_string()));
+    }
 
     Ok(())
 }
 
 /// Checkout an existing branch
 pub fn checkout_branch(repo: &Repository, branch_name: &str) -> Result<(), GitError> {
-    let refname = format!("refs/heads/{}", branch_name);
+    let repo_path = repo.path().parent().unwrap_or(repo.path());
 
     // Check if branch exists
-    if repo.find_reference(&refname).is_err() {
+    if !branch_exists(repo, branch_name) {
         return Err(GitError::BranchNotFound(branch_name.to_string()));
     }
 
-    let obj = repo.revparse_single(&refname)?;
-    repo.checkout_tree(&obj, None)?;
-    repo.set_head(&refname)?;
+    let output = Command::new("git")
+        .args(["checkout", branch_name])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::OperationFailed(stderr.to_string()));
+    }
 
     Ok(())
 }
 
 /// Check if a local branch exists
 pub fn branch_exists(repo: &Repository, branch_name: &str) -> bool {
-    repo.find_branch(branch_name, BranchType::Local).is_ok()
+    let repo_path = repo.path().parent().unwrap_or(repo.path());
+
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", &format!("refs/heads/{}", branch_name)])
+        .current_dir(repo_path)
+        .output();
+
+    output.map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// Check if a remote branch exists
 pub fn remote_branch_exists(repo: &Repository, branch_name: &str, remote: &str) -> bool {
-    let remote_ref = format!("{}/{}", remote, branch_name);
-    repo.find_branch(&remote_ref, BranchType::Remote).is_ok()
+    let repo_path = repo.path().parent().unwrap_or(repo.path());
+
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", &format!("refs/remotes/{}/{}", remote, branch_name)])
+        .current_dir(repo_path)
+        .output();
+
+    output.map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// Delete a local branch
 pub fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Result<(), GitError> {
-    let mut branch = repo.find_branch(branch_name, BranchType::Local)?;
+    let repo_path = repo.path().parent().unwrap_or(repo.path());
 
     // Check if it's the current branch
     let current = get_current_branch(repo)?;
@@ -60,22 +82,22 @@ pub fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) ->
         ));
     }
 
-    if force {
-        branch.delete()?;
-    } else {
-        // Check if branch is merged before deleting
-        let head_commit = repo.head()?.peel_to_commit()?;
-        let branch_commit = branch.get().peel_to_commit()?;
+    let flag = if force { "-D" } else { "-d" };
+    let output = Command::new("git")
+        .args(["branch", flag, branch_name])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
-        let merge_base = repo.merge_base(head_commit.id(), branch_commit.id())?;
-        if merge_base != branch_commit.id() {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("not fully merged") {
             return Err(GitError::OperationFailed(format!(
                 "Branch '{}' is not fully merged. Use force to delete anyway.",
                 branch_name
             )));
         }
-
-        branch.delete()?;
+        return Err(GitError::OperationFailed(stderr.to_string()));
     }
 
     Ok(())
@@ -87,49 +109,49 @@ pub fn is_branch_merged(
     branch_name: &str,
     target_branch: &str,
 ) -> Result<bool, GitError> {
-    let branch = repo.find_branch(branch_name, BranchType::Local)?;
-    let target = repo.find_branch(target_branch, BranchType::Local)?;
+    let repo_path = repo.path().parent().unwrap_or(repo.path());
 
-    let branch_commit = branch.get().peel_to_commit()?;
-    let target_commit = target.get().peel_to_commit()?;
+    let output = Command::new("git")
+        .args(["branch", "--merged", target_branch])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
-    let merge_base = repo.merge_base(target_commit.id(), branch_commit.id())?;
-
-    // If merge base equals branch commit, branch is fully merged into target
-    Ok(merge_base == branch_commit.id())
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().any(|line| line.trim().trim_start_matches("* ") == branch_name))
 }
 
 /// Get list of local branches
 pub fn list_local_branches(repo: &Repository) -> Result<Vec<String>, GitError> {
-    let branches = repo.branches(Some(BranchType::Local))?;
-    let mut names = Vec::new();
+    let repo_path = repo.path().parent().unwrap_or(repo.path());
 
-    for branch in branches {
-        let (branch, _) = branch?;
-        if let Some(name) = branch.name()? {
-            names.push(name.to_string());
-        }
-    }
+    let output = Command::new("git")
+        .args(["branch", "--format=%(refname:short)"])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
-    Ok(names)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().map(|s| s.to_string()).collect())
 }
 
 /// Get list of remote branches
 pub fn list_remote_branches(repo: &Repository, remote: &str) -> Result<Vec<String>, GitError> {
-    let branches = repo.branches(Some(BranchType::Remote))?;
-    let mut names = Vec::new();
+    let repo_path = repo.path().parent().unwrap_or(repo.path());
     let prefix = format!("{}/", remote);
 
-    for branch in branches {
-        let (branch, _) = branch?;
-        if let Some(name) = branch.name()? {
-            if name.starts_with(&prefix) {
-                names.push(name[prefix.len()..].to_string());
-            }
-        }
-    }
+    let output = Command::new("git")
+        .args(["branch", "-r", "--format=%(refname:short)"])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
-    Ok(names)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout
+        .lines()
+        .filter(|line| line.starts_with(&prefix))
+        .map(|line| line[prefix.len()..].to_string())
+        .collect())
 }
 
 /// Get commits between current branch and base branch
@@ -138,27 +160,22 @@ pub fn get_commits_between(
     base_branch: &str,
     head_branch: Option<&str>,
 ) -> Result<Vec<String>, GitError> {
+    let repo_path = repo.path().parent().unwrap_or(repo.path());
+
     let head_name = match head_branch {
         Some(name) => name.to_string(),
         None => get_current_branch(repo)?,
     };
 
-    let base_ref = format!("refs/heads/{}", base_branch);
-    let head_ref = format!("refs/heads/{}", head_name);
+    let range = format!("{}..{}", base_branch, head_name);
+    let output = Command::new("git")
+        .args(["rev-list", &range])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
-    let base_oid = repo.revparse_single(&base_ref)?.id();
-    let head_oid = repo.revparse_single(&head_ref)?.id();
-
-    let mut revwalk = repo.revwalk()?;
-    revwalk.push(head_oid)?;
-    revwalk.hide(base_oid)?;
-
-    let mut commits = Vec::new();
-    for oid in revwalk {
-        commits.push(oid?.to_string());
-    }
-
-    Ok(commits)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().map(|s| s.to_string()).collect())
 }
 
 /// Check if branch has commits not in base
@@ -170,34 +187,46 @@ pub fn has_commits_ahead(repo: &Repository, base_branch: &str) -> Result<bool, G
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::open_repo;
     use std::fs;
+    use std::process::Command;
     use tempfile::TempDir;
 
     fn setup_test_repo() -> (TempDir, Repository) {
         let temp = TempDir::new().unwrap();
-        let repo = Repository::init(temp.path()).unwrap();
 
-        // Configure git user for commits
-        {
-            let mut config = repo.config().unwrap();
-            config.set_str("user.name", "Test User").unwrap();
-            config.set_str("user.email", "test@example.com").unwrap();
-        }
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
 
         // Create initial commit
         fs::write(temp.path().join("README.md"), "# Test").unwrap();
-        {
-            let mut index = repo.index().unwrap();
-            index.add_path(std::path::Path::new("README.md")).unwrap();
-            index.write().unwrap();
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
 
-            let sig = repo.signature().unwrap();
-            let tree_id = index.write_tree().unwrap();
-            let tree = repo.find_tree(tree_id).unwrap();
-            repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
-                .unwrap();
-        }
-
+        let repo = open_repo(temp.path()).unwrap();
         (temp, repo)
     }
 
@@ -209,8 +238,6 @@ mod tests {
 
         let current = get_current_branch(&repo).unwrap();
         assert_eq!(current, "feature");
-
-        drop(temp);
     }
 
     #[test]
@@ -221,8 +248,6 @@ mod tests {
 
         create_and_checkout_branch(&repo, "feature").unwrap();
         assert!(branch_exists(&repo, "feature"));
-
-        drop(temp);
     }
 
     #[test]
@@ -242,8 +267,6 @@ mod tests {
 
         let current = get_current_branch(&repo).unwrap();
         assert_eq!(current, default);
-
-        drop(temp);
     }
 
     #[test]
@@ -256,7 +279,5 @@ mod tests {
         let branches = list_local_branches(&repo).unwrap();
         assert!(branches.contains(&"feature1".to_string()));
         assert!(branches.contains(&"feature2".to_string()));
-
-        drop(temp);
     }
 }

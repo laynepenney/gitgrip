@@ -7,6 +7,7 @@ use crate::git::{open_repo, path_exists};
 use crate::git::cache::invalidate_status_cache;
 use git2::Repository;
 use std::path::PathBuf;
+use std::process::Command;
 
 /// Run the add command
 pub fn run_add(
@@ -58,52 +59,54 @@ pub fn run_add(
     Ok(())
 }
 
-/// Stage files in a repository
-fn stage_files(repo: &Repository, repo_path: &PathBuf, files: &[String]) -> anyhow::Result<usize> {
-    let mut index = repo.index()?;
-    let mut staged_count = 0;
+/// Stage files in a repository using git CLI
+fn stage_files(repo: &Repository, _repo_path: &PathBuf, files: &[String]) -> anyhow::Result<usize> {
+    let repo_dir = repo.path().parent().unwrap_or(repo.path());
 
-    // If files is ["."], add all changes
+    // Get count of changes before staging
+    let before_output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(repo_dir)
+        .output()?;
+    let before_count = String::from_utf8_lossy(&before_output.stdout)
+        .lines()
+        .filter(|l| !l.starts_with("??") || files.contains(&".".to_string()))
+        .count();
+
+    if before_count == 0 {
+        return Ok(0);
+    }
+
+    // Build git add command
+    let mut args = vec!["add"];
+
     if files.len() == 1 && files[0] == "." {
-        // Get all modified/untracked files
-        let statuses = repo.statuses(None)?;
-
-        for entry in statuses.iter() {
-            let status = entry.status();
-            if let Some(path) = entry.path() {
-                // Stage modified, new, and deleted files
-                if status.is_wt_modified()
-                    || status.is_wt_new()
-                    || status.is_wt_deleted()
-                    || status.is_wt_renamed()
-                    || status.is_wt_typechange()
-                {
-                    let file_path = repo_path.join(path);
-                    if file_path.exists() {
-                        index.add_path(std::path::Path::new(path))?;
-                    } else {
-                        // File was deleted
-                        index.remove_path(std::path::Path::new(path))?;
-                    }
-                    staged_count += 1;
-                }
-            }
-        }
+        args.push("-A"); // Add all changes including deletions
     } else {
-        // Add specific files
         for file in files {
-            let path = std::path::Path::new(file);
-            if repo_path.join(path).exists() {
-                index.add_path(path)?;
-                staged_count += 1;
-            } else {
-                // Try to remove (file might be deleted)
-                let _ = index.remove_path(path);
-                staged_count += 1;
-            }
+            args.push(file);
         }
     }
 
-    index.write()?;
+    let output = Command::new("git")
+        .args(&args)
+        .current_dir(repo_dir)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git add failed: {}", stderr);
+    }
+
+    // Count what was actually staged
+    let after_output = Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(repo_dir)
+        .output()?;
+
+    let staged_count = String::from_utf8_lossy(&after_output.stdout)
+        .lines()
+        .count();
+
     Ok(staged_count)
 }

@@ -5,6 +5,7 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::git::remote::push_branch;
+use git2::Repository;
 use std::path::PathBuf;
 
 /// Run the push command
@@ -104,7 +105,7 @@ pub fn run_push(
 }
 
 /// Check if branch has commits that aren't on the remote
-fn has_commits_to_push(repo: &git2::Repository, branch: &str) -> anyhow::Result<bool> {
+fn has_commits_to_push(repo: &Repository, branch: &str) -> anyhow::Result<bool> {
     // Try to find the remote tracking branch
     let remote_ref = format!("refs/remotes/origin/{}", branch);
 
@@ -137,7 +138,6 @@ fn has_commits_to_push(repo: &git2::Repository, branch: &str) -> anyhow::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use git2::Repository;
     use tempfile::TempDir;
     use std::fs;
 

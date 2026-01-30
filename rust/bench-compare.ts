@@ -374,12 +374,101 @@ async function main() {
 
     // Benchmark: Git list branches
     const gitBranchResult = benchmark('git_list_branches', Math.min(iterations, 50), () => {
-      execSync('git branch --list', { cwd: testRepoPath, stdio: 'pipe' });
+      execSync('git branch --format="%(refname:short)"', { cwd: testRepoPath, stdio: 'pipe' });
     });
     printResult(gitBranchResult);
     results.push(gitBranchResult);
+
+    // Benchmark: Get current branch (equivalent to Rust get_current_branch)
+    const getCurrentBranchResult = benchmark('get_current_branch', Math.min(iterations, 50), () => {
+      execSync('git rev-parse --abbrev-ref HEAD', { cwd: testRepoPath, stdio: 'pipe' });
+    });
+    printResult(getCurrentBranchResult);
+    results.push(getCurrentBranchResult);
+
+    // Benchmark: Repo "open" equivalent - just verify it's a git repo
+    const repoOpenResult = benchmark('repo_open', Math.min(iterations, 50), () => {
+      execSync('git rev-parse --git-dir', { cwd: testRepoPath, stdio: 'pipe' });
+    });
+    printResult(repoOpenResult);
+    results.push(repoOpenResult);
   } finally {
     cleanupTestRepo(testRepoPath);
+  }
+
+  // ============================================
+  // Multi-repo simulation (forall-like operations)
+  // ============================================
+
+  console.log('\nSetting up multi-repo workspace simulation...');
+
+  // Create additional test repos to simulate a 5-repo workspace
+  const multiRepoTemp = fs.mkdtempSync(path.join(tmpdir(), 'bench-multi-'));
+  const repoNames = ['frontend', 'backend', 'shared-lib', 'api', 'docs'];
+  const repoPaths: string[] = [];
+
+  for (const name of repoNames) {
+    const repoPath = path.join(multiRepoTemp, name);
+    fs.mkdirSync(repoPath, { recursive: true });
+
+    execSync('git init', { cwd: repoPath, stdio: 'pipe' });
+    execSync('git config user.name "Bench User"', { cwd: repoPath, stdio: 'pipe' });
+    execSync('git config user.email "bench@example.com"', { cwd: repoPath, stdio: 'pipe' });
+
+    fs.writeFileSync(path.join(repoPath, 'README.md'), `# ${name}`);
+    execSync('git add README.md', { cwd: repoPath, stdio: 'pipe' });
+    execSync('git commit -m "Initial commit"', { cwd: repoPath, stdio: 'pipe' });
+
+    // Add some untracked files
+    for (let i = 0; i < 3; i++) {
+      fs.writeFileSync(path.join(repoPath, `file${i}.txt`), `Content ${i}`);
+    }
+
+    repoPaths.push(repoPath);
+  }
+
+  try {
+    // Benchmark: Sequential forall (echo command)
+    const forallSeqResult = benchmark('forall_sequential_echo', Math.min(iterations, 30), () => {
+      for (const repoPath of repoPaths) {
+        execSync('echo $REPO_NAME', {
+          cwd: repoPath,
+          stdio: 'pipe',
+          env: { ...process.env, REPO_NAME: path.basename(repoPath) }
+        });
+      }
+    });
+    printResult(forallSeqResult);
+    results.push(forallSeqResult);
+
+    // Benchmark: Sequential git status across repos (what TypeScript gr does)
+    const forallStatusResult = benchmark('forall_sequential_git_status', Math.min(iterations, 30), () => {
+      for (const repoPath of repoPaths) {
+        execSync('git status --porcelain', { cwd: repoPath, stdio: 'pipe' });
+      }
+    });
+    printResult(forallStatusResult);
+    results.push(forallStatusResult);
+
+    // Benchmark: Full status check (branch + status) like gr status
+    const multiRepoStatusResult = benchmark('multi_repo_full_status', Math.min(iterations, 30), () => {
+      const results: { branch: string; hasChanges: boolean }[] = [];
+      for (const repoPath of repoPaths) {
+        const branchOutput = execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoPath, stdio: 'pipe' });
+        const branch = branchOutput.toString().trim();
+
+        const statusOutput = execSync('git status --porcelain', { cwd: repoPath, stdio: 'pipe' });
+        const hasChanges = statusOutput.toString().length > 0;
+
+        results.push({ branch, hasChanges });
+      }
+      return results;
+    });
+    printResult(multiRepoStatusResult);
+    results.push(multiRepoStatusResult);
+
+  } finally {
+    fs.rmSync(multiRepoTemp, { recursive: true, force: true });
   }
 
   // ============================================
