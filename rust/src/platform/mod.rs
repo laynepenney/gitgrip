@@ -4,6 +4,7 @@
 
 pub mod azure;
 pub mod github;
+pub mod gitlab;
 pub mod traits;
 pub mod types;
 
@@ -23,9 +24,8 @@ pub fn get_platform_adapter(
 ) -> Arc<dyn HostingPlatform> {
     match platform_type {
         PlatformType::GitHub => Arc::new(github::GitHubAdapter::new(base_url)),
+        PlatformType::GitLab => Arc::new(gitlab::GitLabAdapter::new(base_url)),
         PlatformType::AzureDevOps => Arc::new(azure::AzureDevOpsAdapter::new(base_url)),
-        // TODO: Implement GitLab adapter
-        PlatformType::GitLab => Arc::new(github::GitHubAdapter::new(base_url)), // Placeholder
     }
 }
 
