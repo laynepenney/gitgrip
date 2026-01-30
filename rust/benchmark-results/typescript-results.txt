@@ -1,0 +1,126 @@
+Running TypeScript benchmarks (iterations: 50)...
+
+
+--- Benchmark: manifest_parse ---
+Iterations: 50
+Min:    0.313ms
+Max:    1.246ms
+Avg:    0.585ms
+P50:    0.522ms
+P95:    1.008ms
+StdDev: 0.206ms
+
+--- Benchmark: state_parse ---
+Iterations: 50
+Min:    0.002ms
+Max:    0.004ms
+Avg:    0.002ms
+P50:    0.002ms
+P95:    0.002ms
+StdDev: 0.000ms
+
+--- Benchmark: url_parse_github_ssh ---
+Iterations: 50
+Min:    0.000ms
+Max:    0.005ms
+Avg:    0.001ms
+P50:    0.000ms
+P95:    0.001ms
+StdDev: 0.001ms
+
+--- Benchmark: url_parse_azure_https ---
+Iterations: 50
+Min:    0.001ms
+Max:    0.001ms
+Avg:    0.001ms
+P50:    0.001ms
+P95:    0.001ms
+StdDev: 0.000ms
+
+--- Benchmark: manifest_validate ---
+Iterations: 50
+Min:    0.000ms
+Max:    0.009ms
+Avg:    0.001ms
+P50:    0.001ms
+P95:    0.001ms
+StdDev: 0.001ms
+
+--- Benchmark: path_join ---
+Iterations: 50
+Min:    0.001ms
+Max:    0.001ms
+Avg:    0.001ms
+P50:    0.001ms
+P95:    0.001ms
+StdDev: 0.000ms
+
+--- Benchmark: path_canonicalize_relative ---
+Iterations: 50
+Min:    0.000ms
+Max:    0.002ms
+Avg:    0.000ms
+P50:    0.000ms
+P95:    0.001ms
+StdDev: 0.000ms
+
+--- Benchmark: url_regex_github ---
+Iterations: 50
+Min:    0.000ms
+Max:    0.001ms
+Avg:    0.000ms
+P50:    0.000ms
+P95:    0.001ms
+StdDev: 0.000ms
+
+--- Benchmark: url_regex_gitlab ---
+Iterations: 50
+Min:    0.000ms
+Max:    0.000ms
+Avg:    0.000ms
+P50:    0.000ms
+P95:    0.000ms
+StdDev: 0.000ms
+
+--- Benchmark: file_hash_content ---
+Iterations: 50
+Min:    0.003ms
+Max:    0.119ms
+Avg:    0.005ms
+P50:    0.003ms
+P95:    0.005ms
+StdDev: 0.016ms
+
+Setting up test git repository...
+
+--- Benchmark: git_status ---
+Iterations: 50
+Min:    13.349ms
+Max:    16.804ms
+Avg:    14.771ms
+P50:    14.713ms
+P95:    15.830ms
+StdDev: 0.760ms
+
+--- Benchmark: git_list_branches ---
+Iterations: 50
+Min:    13.015ms
+Max:    15.477ms
+Avg:    14.330ms
+P50:    14.225ms
+P95:    15.364ms
+StdDev: 0.614ms
+
+=== Summary ===
+manifest_parse: avg=0.585ms, p50=0.522ms, p95=1.008ms (n=50)
+state_parse: avg=0.002ms, p50=0.002ms, p95=0.002ms (n=50)
+url_parse_github_ssh: avg=0.001ms, p50=0.000ms, p95=0.001ms (n=50)
+url_parse_azure_https: avg=0.001ms, p50=0.001ms, p95=0.001ms (n=50)
+manifest_validate: avg=0.001ms, p50=0.001ms, p95=0.001ms (n=50)
+path_join: avg=0.001ms, p50=0.001ms, p95=0.001ms (n=50)
+path_canonicalize_relative: avg=0.000ms, p50=0.000ms, p95=0.001ms (n=50)
+url_regex_github: avg=0.000ms, p50=0.000ms, p95=0.001ms (n=50)
+url_regex_gitlab: avg=0.000ms, p50=0.000ms, p95=0.000ms (n=50)
+file_hash_content: avg=0.005ms, p50=0.003ms, p95=0.005ms (n=50)
+git_status: avg=14.771ms, p50=14.713ms, p95=15.830ms (n=50)
+git_list_branches: avg=14.330ms, p50=14.225ms, p95=15.364ms (n=50)

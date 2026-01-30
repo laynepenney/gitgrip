@@ -2,12 +2,17 @@
 /**
  * TypeScript benchmarks for comparison with Rust version
  *
- * Run with: npx tsx rust/bench-compare.ts
+ * Run with: npx tsx rust/bench-compare.ts [iterations]
+ *
+ * These benchmarks mirror the Rust Criterion benchmarks in benches/benchmarks.rs
  */
 
 import * as fs from 'fs';
-import * as yaml from 'yaml';
 import * as path from 'path';
+import * as yaml from 'yaml';
+import * as crypto from 'crypto';
+import { execSync } from 'child_process';
+import { tmpdir } from 'os';
 
 interface BenchmarkResult {
   name: string;
@@ -171,11 +176,101 @@ function parseGitUrl(url: string): { owner: string; repo: string } | null {
   return null;
 }
 
+// Manifest validation (simplified)
+interface Manifest {
+  version: number;
+  repos: Record<string, { url: string; path: string; default_branch?: string }>;
+  settings?: { pr_prefix?: string; merge_strategy?: string };
+}
+
+function validateManifest(manifest: Manifest): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+
+  if (manifest.version !== 1) {
+    errors.push('Invalid version');
+  }
+
+  if (!manifest.repos || Object.keys(manifest.repos).length === 0) {
+    errors.push('No repos defined');
+  }
+
+  for (const [name, config] of Object.entries(manifest.repos || {})) {
+    if (!config.url) {
+      errors.push(`Repo ${name} missing URL`);
+    }
+    if (!config.path) {
+      errors.push(`Repo ${name} missing path`);
+    }
+    // Check for path traversal
+    if (config.path?.includes('..')) {
+      errors.push(`Repo ${name} has invalid path`);
+    }
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+// Regex-based URL parsing (matches Rust version)
+const githubRegex = /github\.com[:/]([^/]+)\/([^/.]+)/;
+const gitlabRegex = /gitlab\.com[:/](.+)\/([^/.]+)/;
+const azureRegex = /dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/.]+)/;
+
+function parseUrlWithRegex(url: string, regex: RegExp): RegExpMatchArray | null {
+  return url.match(regex);
+}
+
+// Path operations
+function pathJoin(workspace: string, repoPath: string): string {
+  return path.join(workspace, repoPath);
+}
+
+function pathComponents(fullPath: string): string[] {
+  return fullPath.split(path.sep).filter(Boolean);
+}
+
+// File hashing
+function hashContent(content: string): string {
+  return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+// Setup a test git repo for git benchmarks
+function setupTestRepo(): string {
+  const tempDir = fs.mkdtempSync(path.join(tmpdir(), 'bench-repo-'));
+  execSync('git init', { cwd: tempDir, stdio: 'pipe' });
+  execSync('git config user.name "Bench User"', { cwd: tempDir, stdio: 'pipe' });
+  execSync('git config user.email "bench@example.com"', { cwd: tempDir, stdio: 'pipe' });
+
+  // Create initial commit
+  fs.writeFileSync(path.join(tempDir, 'README.md'), '# Benchmark Repo');
+  execSync('git add README.md', { cwd: tempDir, stdio: 'pipe' });
+  execSync('git commit -m "Initial commit"', { cwd: tempDir, stdio: 'pipe' });
+
+  // Create some branches
+  for (let i = 0; i < 10; i++) {
+    execSync(`git branch branch-${i}`, { cwd: tempDir, stdio: 'pipe' });
+  }
+
+  // Add some files
+  for (let i = 0; i < 10; i++) {
+    fs.writeFileSync(path.join(tempDir, `file${i}.txt`), `Content ${i}`);
+  }
+
+  return tempDir;
+}
+
+function cleanupTestRepo(repoPath: string) {
+  fs.rmSync(repoPath, { recursive: true, force: true });
+}
+
 async function main() {
-  const iterations = parseInt(process.argv[2] || '10');
+  const iterations = parseInt(process.argv[2] || '100');
   console.log(`Running TypeScript benchmarks (iterations: ${iterations})...\n`);
 
   const results: BenchmarkResult[] = [];
+
+  // ============================================
+  // Core Parsing Benchmarks (match Rust)
+  // ============================================
 
   // Benchmark: Manifest parsing
   const manifestResult = benchmark('manifest_parse', iterations, () => {
@@ -191,14 +286,195 @@ async function main() {
   printResult(stateResult);
   results.push(stateResult);
 
-  // Benchmark: URL parsing
-  const urlResult = benchmark('url_parse', iterations, () => {
+  // Benchmark: URL parsing (GitHub SSH)
+  const urlResult = benchmark('url_parse_github_ssh', iterations, () => {
     parseGitUrl('git@github.com:organization/repository-name.git');
   });
   printResult(urlResult);
   results.push(urlResult);
 
+  // Benchmark: URL parsing (Azure HTTPS)
+  const urlAzureResult = benchmark('url_parse_azure_https', iterations, () => {
+    parseGitUrl('https://dev.azure.com/organization/project/_git/repository');
+  });
+  printResult(urlAzureResult);
+  results.push(urlAzureResult);
+
+  // Benchmark: Manifest validation
+  const parsedManifest = yaml.parse(manifestYaml) as Manifest;
+  const validateResult = benchmark('manifest_validate', iterations, () => {
+    validateManifest(parsedManifest);
+  });
+  printResult(validateResult);
+  results.push(validateResult);
+
+  // ============================================
+  // Path Operation Benchmarks (match Rust)
+  // ============================================
+
+  const workspace = '/home/user/workspace';
+  const repoPath = 'packages/my-awesome-repo';
+
+  const pathJoinResult = benchmark('path_join', iterations, () => {
+    pathJoin(workspace, repoPath);
+  });
+  printResult(pathJoinResult);
+  results.push(pathJoinResult);
+
+  const fullPath = path.join(workspace, repoPath);
+  const pathComponentsResult = benchmark('path_canonicalize_relative', iterations, () => {
+    pathComponents(fullPath);
+  });
+  printResult(pathComponentsResult);
+  results.push(pathComponentsResult);
+
+  // ============================================
+  // Regex URL Parsing Benchmarks (match Rust)
+  // ============================================
+
+  const githubUrl = 'git@github.com:organization/repository-name.git';
+  const regexGithubResult = benchmark('url_regex_github', iterations, () => {
+    parseUrlWithRegex(githubUrl, githubRegex);
+  });
+  printResult(regexGithubResult);
+  results.push(regexGithubResult);
+
+  const gitlabUrl = 'git@gitlab.com:group/subgroup/repo.git';
+  const regexGitlabResult = benchmark('url_regex_gitlab', iterations, () => {
+    parseUrlWithRegex(gitlabUrl, gitlabRegex);
+  });
+  printResult(regexGitlabResult);
+  results.push(regexGitlabResult);
+
+  // ============================================
+  // File Hashing Benchmark (match Rust)
+  // ============================================
+
+  const testContent = 'This is some test content for hashing\n'.repeat(100);
+  const hashResult = benchmark('file_hash_content', iterations, () => {
+    hashContent(testContent);
+  });
+  printResult(hashResult);
+  results.push(hashResult);
+
+  // ============================================
+  // Git Operation Benchmarks (match Rust)
+  // ============================================
+
+  console.log('\nSetting up test git repository...');
+  const testRepoPath = setupTestRepo();
+
+  try {
+    // Benchmark: Git status
+    const gitStatusResult = benchmark('git_status', Math.min(iterations, 50), () => {
+      execSync('git status --porcelain', { cwd: testRepoPath, stdio: 'pipe' });
+    });
+    printResult(gitStatusResult);
+    results.push(gitStatusResult);
+
+    // Benchmark: Git list branches
+    const gitBranchResult = benchmark('git_list_branches', Math.min(iterations, 50), () => {
+      execSync('git branch --format="%(refname:short)"', { cwd: testRepoPath, stdio: 'pipe' });
+    });
+    printResult(gitBranchResult);
+    results.push(gitBranchResult);
+
+    // Benchmark: Get current branch (equivalent to Rust get_current_branch)
+    const getCurrentBranchResult = benchmark('get_current_branch', Math.min(iterations, 50), () => {
+      execSync('git rev-parse --abbrev-ref HEAD', { cwd: testRepoPath, stdio: 'pipe' });
+    });
+    printResult(getCurrentBranchResult);
+    results.push(getCurrentBranchResult);
+
+    // Benchmark: Repo "open" equivalent - just verify it's a git repo
+    const repoOpenResult = benchmark('repo_open', Math.min(iterations, 50), () => {
+      execSync('git rev-parse --git-dir', { cwd: testRepoPath, stdio: 'pipe' });
+    });
+    printResult(repoOpenResult);
+    results.push(repoOpenResult);
+  } finally {
+    cleanupTestRepo(testRepoPath);
+  }
+
+  // ============================================
+  // Multi-repo simulation (forall-like operations)
+  // ============================================
+
+  console.log('\nSetting up multi-repo workspace simulation...');
+
+  // Create additional test repos to simulate a 5-repo workspace
+  const multiRepoTemp = fs.mkdtempSync(path.join(tmpdir(), 'bench-multi-'));
+  const repoNames = ['frontend', 'backend', 'shared-lib', 'api', 'docs'];
+  const repoPaths: string[] = [];
+
+  for (const name of repoNames) {
+    const repoPath = path.join(multiRepoTemp, name);
+    fs.mkdirSync(repoPath, { recursive: true });
+
+    execSync('git init', { cwd: repoPath, stdio: 'pipe' });
+    execSync('git config user.name "Bench User"', { cwd: repoPath, stdio: 'pipe' });
+    execSync('git config user.email "bench@example.com"', { cwd: repoPath, stdio: 'pipe' });
+
+    fs.writeFileSync(path.join(repoPath, 'README.md'), `# ${name}`);
+    execSync('git add README.md', { cwd: repoPath, stdio: 'pipe' });
+    execSync('git commit -m "Initial commit"', { cwd: repoPath, stdio: 'pipe' });
+
+    // Add some untracked files
+    for (let i = 0; i < 3; i++) {
+      fs.writeFileSync(path.join(repoPath, `file${i}.txt`), `Content ${i}`);
+    }
+
+    repoPaths.push(repoPath);
+  }
+
+  try {
+    // Benchmark: Sequential forall (echo command)
+    const forallSeqResult = benchmark('forall_sequential_echo', Math.min(iterations, 30), () => {
+      for (const repoPath of repoPaths) {
+        execSync('echo $REPO_NAME', {
+          cwd: repoPath,
+          stdio: 'pipe',
+          env: { ...process.env, REPO_NAME: path.basename(repoPath) }
+        });
+      }
+    });
+    printResult(forallSeqResult);
+    results.push(forallSeqResult);
+
+    // Benchmark: Sequential git status across repos (what TypeScript gr does)
+    const forallStatusResult = benchmark('forall_sequential_git_status', Math.min(iterations, 30), () => {
+      for (const repoPath of repoPaths) {
+        execSync('git status --porcelain', { cwd: repoPath, stdio: 'pipe' });
+      }
+    });
+    printResult(forallStatusResult);
+    results.push(forallStatusResult);
+
+    // Benchmark: Full status check (branch + status) like gr status
+    const multiRepoStatusResult = benchmark('multi_repo_full_status', Math.min(iterations, 30), () => {
+      const results: { branch: string; hasChanges: boolean }[] = [];
+      for (const repoPath of repoPaths) {
+        const branchOutput = execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoPath, stdio: 'pipe' });
+        const branch = branchOutput.toString().trim();
+
+        const statusOutput = execSync('git status --porcelain', { cwd: repoPath, stdio: 'pipe' });
+        const hasChanges = statusOutput.toString().length > 0;
+
+        results.push({ branch, hasChanges });
+      }
+      return results;
+    });
+    printResult(multiRepoStatusResult);
+    results.push(multiRepoStatusResult);
+
+  } finally {
+    fs.rmSync(multiRepoTemp, { recursive: true, force: true });
+  }
+
+  // ============================================
   // Summary
+  // ============================================
+
   console.log('\n=== Summary ===');
   for (const result of results) {
     console.log(`${result.name}: avg=${result.avg.toFixed(3)}ms, p50=${result.p50.toFixed(3)}ms, p95=${result.p95.toFixed(3)}ms (n=${result.iterations})`);

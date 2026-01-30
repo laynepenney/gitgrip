@@ -85,15 +85,22 @@ impl Default for TimingReport {
 pub struct Timer {
     start: Instant,
     label: String,
+    checkpoints: Vec<(String, Duration)>,
 }
 
 impl Timer {
-    /// Start a new timer
-    pub fn start(label: &str) -> Self {
+    /// Create and start a new timer
+    pub fn new(label: &str) -> Self {
         Self {
             start: Instant::now(),
             label: label.to_string(),
+            checkpoints: Vec::new(),
         }
+    }
+
+    /// Start a new timer (alias for new)
+    pub fn start(label: &str) -> Self {
+        Self::new(label)
     }
 
     /// Get elapsed time without stopping
@@ -106,14 +113,35 @@ impl Timer {
         self.start.elapsed().as_secs_f64() * 1000.0
     }
 
+    /// Record a checkpoint with the current elapsed time
+    pub fn checkpoint(&mut self, label: &str) {
+        self.checkpoints.push((label.to_string(), self.start.elapsed()));
+    }
+
     /// Stop and return a timing entry
     pub fn stop(self) -> TimingEntry {
-        TimingEntry::new(&self.label, self.start.elapsed())
+        let mut entry = TimingEntry::new(&self.label, self.start.elapsed());
+        let mut prev_time = Duration::ZERO;
+        for (label, time) in &self.checkpoints {
+            let delta = *time - prev_time;
+            entry.add_child(TimingEntry::new(label, delta));
+            prev_time = *time;
+        }
+        entry
     }
 
     /// Stop and print the duration
     pub fn stop_and_print(self) {
         println!("{}: {:.2}ms", self.label, self.elapsed_ms());
+        if !self.checkpoints.is_empty() {
+            let mut prev_time = Duration::ZERO;
+            for (label, time) in &self.checkpoints {
+                let delta = *time - prev_time;
+                let delta_ms = delta.as_secs_f64() * 1000.0;
+                println!("  {}: {:.2}ms", label, delta_ms);
+                prev_time = *time;
+            }
+        }
     }
 }
 

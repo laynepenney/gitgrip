@@ -267,7 +267,7 @@ pub fn run_tree_unlock(workspace_root: &PathBuf, branch: &str) -> anyhow::Result
     Ok(())
 }
 
-/// Create a git worktree
+/// Create a git worktree using git2
 fn create_worktree(repo_path: &PathBuf, worktree_path: &PathBuf, branch: &str) -> anyhow::Result<()> {
     let repo = open_repo(repo_path)?;
 

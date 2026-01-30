@@ -1,6 +1,8 @@
 //! Git operations wrapper
 //!
-//! Provides a unified interface for git operations using git2.
+//! Provides a unified interface for git operations.
+//! Uses git2 (libgit2 bindings) by default.
+//! Can optionally use gitoxide (gix) with the "gitoxide" feature flag.
 
 pub mod branch;
 pub mod cache;
@@ -14,6 +16,7 @@ pub use status::*;
 
 use git2::Repository;
 use std::path::Path;
+use std::process::Command;
 use thiserror::Error;
 
 /// Errors that can occur during git operations
@@ -36,16 +39,18 @@ pub enum GitError {
 
     #[error("Operation failed: {0}")]
     OperationFailed(String),
+
+    #[error("Reference error: {0}")]
+    Reference(String),
+
+    #[error("Object error: {0}")]
+    Object(String),
 }
 
 /// Open a git repository at the given path
 pub fn open_repo<P: AsRef<Path>>(path: P) -> Result<Repository, GitError> {
     Repository::open(path.as_ref()).map_err(|e| {
-        if e.code() == git2::ErrorCode::NotFound {
-            GitError::NotARepo(path.as_ref().display().to_string())
-        } else {
-            GitError::Git(e)
-        }
+        GitError::NotARepo(format!("{}: {}", path.as_ref().display(), e))
     })
 }
 
@@ -60,32 +65,44 @@ pub fn path_exists<P: AsRef<Path>>(path: P) -> bool {
 }
 
 /// Clone a repository
-pub fn clone_repo(url: &str, path: &Path, branch: Option<&str>) -> Result<Repository, GitError> {
-    let mut builder = git2::build::RepoBuilder::new();
+pub fn clone_repo<P: AsRef<Path>>(url: &str, path: P, branch: Option<&str>) -> Result<Repository, GitError> {
+    let path = path.as_ref();
 
-    if let Some(branch_name) = branch {
-        builder.branch(branch_name);
+    let mut args = vec!["clone"];
+    if let Some(b) = branch {
+        args.push("-b");
+        args.push(b);
+    }
+    args.push(url);
+    args.push(path.to_str().unwrap_or("."));
+
+    let output = Command::new("git")
+        .args(&args)
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::OperationFailed(format!("git clone failed: {}", stderr)));
     }
 
-    builder.clone(url, path).map_err(GitError::Git)
+    open_repo(path)
 }
 
 /// Get the current branch name
 pub fn get_current_branch(repo: &Repository) -> Result<String, GitError> {
-    let head = repo.head()?;
+    let head = repo.head().map_err(|e| GitError::Reference(e.to_string()))?;
 
     if head.is_branch() {
-        if let Some(name) = head.shorthand() {
-            return Ok(name.to_string());
-        }
+        let name = head.shorthand().unwrap_or("HEAD");
+        Ok(name.to_string())
+    } else {
+        // Detached HEAD
+        let oid = head.target().ok_or_else(|| {
+            GitError::Reference("HEAD has no target".to_string())
+        })?;
+        Ok(format!("(HEAD detached at {})", &oid.to_string()[..7]))
     }
-
-    // Detached HEAD - return short hash
-    if let Some(target) = head.target() {
-        return Ok(format!("(HEAD detached at {})", &target.to_string()[..7]));
-    }
-
-    Ok("HEAD".to_string())
 }
 
 #[cfg(test)]

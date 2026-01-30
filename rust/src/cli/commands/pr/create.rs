@@ -6,6 +6,7 @@ use crate::core::repo::RepoInfo;
 use crate::core::state::StateFile;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::{detect_platform, get_platform_adapter};
+use git2::Repository;
 use std::path::PathBuf;
 
 /// Run the PR create command
@@ -173,7 +174,7 @@ pub async fn run_pr_create(
 
 /// Check if a branch has commits ahead of another branch
 fn has_commits_ahead(
-    repo: &git2::Repository,
+    repo: &Repository,
     branch: &str,
     base: &str,
 ) -> anyhow::Result<bool> {

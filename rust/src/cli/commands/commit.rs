@@ -5,8 +5,9 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::{open_repo, path_exists};
 use crate::git::cache::invalidate_status_cache;
-use git2::{Repository, Signature};
+use git2::Repository;
 use std::path::PathBuf;
+use std::process::Command;
 
 /// Run the commit command
 pub fn run_commit(
@@ -76,91 +77,79 @@ pub fn run_commit(
     Ok(())
 }
 
-/// Check if a repository has staged changes
+/// Check if a repository has staged changes using git CLI
 fn has_staged_changes(repo: &Repository) -> anyhow::Result<bool> {
-    let head = match repo.head() {
-        Ok(head) => Some(head.peel_to_tree()?),
-        Err(_) => None, // No HEAD yet (empty repo)
-    };
+    let repo_path = repo.path().parent().unwrap_or(repo.path());
 
-    let diff = repo.diff_tree_to_index(head.as_ref(), None, None)?;
-    Ok(diff.deltas().count() > 0)
+    let output = Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .current_dir(repo_path)
+        .output()?;
+
+    // Exit code 0 means no diff (no staged changes)
+    // Exit code 1 means there are changes
+    Ok(!output.status.success())
 }
 
-/// Create a commit in the repository
+/// Create a commit in the repository using git CLI
 fn create_commit(repo: &Repository, message: &str, amend: bool) -> anyhow::Result<String> {
-    let signature = get_signature(repo)?;
-    let mut index = repo.index()?;
-    let tree_id = index.write_tree()?;
-    let tree = repo.find_tree(tree_id)?;
+    let repo_path = repo.path().parent().unwrap_or(repo.path());
 
-    let commit_id = if amend {
-        // Amend the current HEAD commit using the amend method
-        let head = repo.head()?;
-        let head_commit = head.peel_to_commit()?;
-
-        head_commit.amend(
-            Some("HEAD"),
-            Some(&signature),
-            Some(&signature),
-            None, // encoding
-            Some(message),
-            Some(&tree),
-        )?
-    } else {
-        // Create a new commit
-        let parent = match repo.head() {
-            Ok(head) => Some(head.peel_to_commit()?),
-            Err(_) => None, // Initial commit
-        };
-
-        let parents: Vec<&git2::Commit> = parent.iter().collect();
-
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            message,
-            &tree,
-            &parents,
-        )?
-    };
-
-    Ok(commit_id.to_string())
-}
-
-/// Get the signature for commits
-fn get_signature(repo: &Repository) -> anyhow::Result<Signature<'static>> {
-    // Try to get from git config
-    match repo.signature() {
-        Ok(sig) => Ok(Signature::now(sig.name().unwrap_or("Unknown"), sig.email().unwrap_or("unknown@example.com"))?),
-        Err(_) => {
-            // Fall back to environment variables
-            let name = std::env::var("GIT_AUTHOR_NAME")
-                .or_else(|_| std::env::var("USER"))
-                .unwrap_or_else(|_| "Unknown".to_string());
-            let email = std::env::var("GIT_AUTHOR_EMAIL")
-                .unwrap_or_else(|_| "unknown@example.com".to_string());
-            Ok(Signature::now(&name, &email)?)
-        }
+    let mut args = vec!["commit", "-m", message];
+    if amend {
+        args.push("--amend");
     }
+
+    let output = Command::new("git")
+        .args(&args)
+        .current_dir(repo_path)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git commit failed: {}", stderr);
+    }
+
+    // Get the commit hash
+    let hash_output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo_path)
+        .output()?;
+
+    let commit_id = String::from_utf8_lossy(&hash_output.stdout).trim().to_string();
+    Ok(commit_id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::open_repo;
     use tempfile::TempDir;
     use std::fs;
+    use std::process::Command as StdCommand;
 
     fn setup_test_repo() -> (TempDir, Repository) {
         let temp_dir = TempDir::new().unwrap();
-        let repo = Repository::init(temp_dir.path()).unwrap();
 
-        // Configure user for commits
-        let mut config = repo.config().unwrap();
-        config.set_str("user.name", "Test User").unwrap();
-        config.set_str("user.email", "test@example.com").unwrap();
+        StdCommand::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
 
+        StdCommand::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+
+        StdCommand::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+
+        let repo = open_repo(temp_dir.path()).unwrap();
         (temp_dir, repo)
     }
 
@@ -178,11 +167,11 @@ mod tests {
         let file_path = temp_dir.path().join("test.txt");
         fs::write(&file_path, "content").unwrap();
 
-        {
-            let mut index = repo.index().unwrap();
-            index.add_path(std::path::Path::new("test.txt")).unwrap();
-            index.write().unwrap();
-        }
+        StdCommand::new("git")
+            .args(["add", "test.txt"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
 
         assert!(has_staged_changes(&repo).unwrap());
     }
@@ -195,19 +184,23 @@ mod tests {
         let file_path = temp_dir.path().join("test.txt");
         fs::write(&file_path, "content").unwrap();
 
-        {
-            let mut index = repo.index().unwrap();
-            index.add_path(std::path::Path::new("test.txt")).unwrap();
-            index.write().unwrap();
-        }
+        StdCommand::new("git")
+            .args(["add", "test.txt"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
 
         let commit_id = create_commit(&repo, "Test commit", false).unwrap();
         assert!(!commit_id.is_empty());
 
         // Verify commit was created
-        let head = repo.head().unwrap();
-        let commit = head.peel_to_commit().unwrap();
-        assert_eq!(commit.message().unwrap(), "Test commit");
+        let output = StdCommand::new("git")
+            .args(["log", "-1", "--format=%s"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+        let message = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(message, "Test commit");
     }
 
     #[test]
@@ -218,34 +211,42 @@ mod tests {
         let file_path = temp_dir.path().join("test.txt");
         fs::write(&file_path, "initial").unwrap();
 
-        {
-            let mut index = repo.index().unwrap();
-            index.add_path(std::path::Path::new("test.txt")).unwrap();
-            index.write().unwrap();
-        }
+        StdCommand::new("git")
+            .args(["add", "test.txt"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
 
         create_commit(&repo, "Initial commit", false).unwrap();
 
         // Modify and stage
         fs::write(&file_path, "amended").unwrap();
 
-        {
-            let mut index = repo.index().unwrap();
-            index.add_path(std::path::Path::new("test.txt")).unwrap();
-            index.write().unwrap();
-        }
+        StdCommand::new("git")
+            .args(["add", "test.txt"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
 
         // Amend
         create_commit(&repo, "Amended commit", true).unwrap();
 
         // Verify only one commit exists
-        let mut revwalk = repo.revwalk().unwrap();
-        revwalk.push_head().unwrap();
-        assert_eq!(revwalk.count(), 1);
+        let output = StdCommand::new("git")
+            .args(["rev-list", "--count", "HEAD"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+        let count: usize = String::from_utf8_lossy(&output.stdout).trim().parse().unwrap();
+        assert_eq!(count, 1);
 
         // Verify message was updated
-        let head = repo.head().unwrap();
-        let commit = head.peel_to_commit().unwrap();
-        assert_eq!(commit.message().unwrap(), "Amended commit");
+        let output = StdCommand::new("git")
+            .args(["log", "-1", "--format=%s"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+        let message = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(message, "Amended commit");
     }
 }

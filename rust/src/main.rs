@@ -99,6 +99,9 @@ enum Commands {
         /// Only run in repos with changes
         #[arg(long)]
         changed: bool,
+        /// Disable git command interception (use CLI for all commands)
+        #[arg(long)]
+        no_intercept: bool,
     },
     /// Rebase branches across repos
     Rebase {
@@ -366,9 +369,9 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Some(Commands::Forall { command, parallel, changed }) => {
+        Some(Commands::Forall { command, parallel, changed, no_intercept }) => {
             let (workspace_root, manifest) = load_workspace()?;
-            gitgrip::cli::commands::forall::run_forall(&workspace_root, &manifest, &command, parallel, changed)?;
+            gitgrip::cli::commands::forall::run_forall(&workspace_root, &manifest, &command, parallel, changed, no_intercept)?;
         }
         Some(Commands::Rebase { onto, abort, continue_rebase }) => {
             let (workspace_root, manifest) = load_workspace()?;

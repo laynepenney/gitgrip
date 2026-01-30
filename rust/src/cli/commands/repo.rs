@@ -193,3 +193,62 @@ fn extract_repo_name(url: &str) -> Option<String> {
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_repo_name_ssh() {
+        assert_eq!(
+            extract_repo_name("git@github.com:owner/my-repo.git"),
+            Some("my-repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_name_https() {
+        assert_eq!(
+            extract_repo_name("https://github.com/owner/my-repo.git"),
+            Some("my-repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_name_no_extension() {
+        assert_eq!(
+            extract_repo_name("https://github.com/owner/my-repo"),
+            Some("my-repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_name_gitlab() {
+        assert_eq!(
+            extract_repo_name("git@gitlab.com:group/subgroup/repo.git"),
+            Some("repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_name_azure_devops() {
+        assert_eq!(
+            extract_repo_name("https://dev.azure.com/org/project/_git/my-repo"),
+            Some("my-repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_name_invalid() {
+        assert_eq!(extract_repo_name("not-a-url"), None);
+    }
+
+    #[test]
+    fn test_extract_repo_name_nested_path() {
+        // Nested paths work correctly - splits on '/' and strips .git
+        assert_eq!(
+            extract_repo_name("git@github.com:org/nested/repo.git"),
+            Some("repo".to_string())
+        );
+    }
+}

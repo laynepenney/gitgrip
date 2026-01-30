@@ -1,7 +1,8 @@
 //! Git status operations
 
-use git2::{Repository, StatusOptions};
+use git2::Repository;
 use std::path::PathBuf;
+use std::process::Command;
 
 use super::cache::STATUS_CACHE;
 use super::{get_current_branch, open_repo, path_exists, GitError};
@@ -49,47 +50,53 @@ pub struct RepoStatus {
     pub exists: bool,
 }
 
-/// Get detailed status for a repository
+/// Get detailed status for a repository using git2
 pub fn get_status_info(repo: &Repository) -> Result<RepoStatusInfo, GitError> {
-    let mut opts = StatusOptions::new();
-    opts.include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .include_ignored(false)
-        .include_unmodified(false);
+    let current_branch = get_current_branch(repo)?;
 
-    let statuses = repo.statuses(Some(&mut opts))?;
+    // Use git porcelain status for reliable parsing
+    let repo_path = repo.path().parent().unwrap_or(repo.path());
+
+    let output = Command::new("git")
+        .args(["status", "--porcelain=v1"])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
 
     let mut staged = Vec::new();
     let mut modified = Vec::new();
     let mut untracked = Vec::new();
 
-    for entry in statuses.iter() {
-        let path = entry.path().unwrap_or("").to_string();
-        let status = entry.status();
+    for line in stdout.lines() {
+        if line.len() < 3 {
+            continue;
+        }
+        let index_status = line.chars().next().unwrap_or(' ');
+        let worktree_status = line.chars().nth(1).unwrap_or(' ');
+        let path = line[3..].to_string();
 
-        if status.is_index_new()
-            || status.is_index_modified()
-            || status.is_index_deleted()
-            || status.is_index_renamed()
-            || status.is_index_typechange()
-        {
+        // Staged changes (index)
+        if matches!(index_status, 'A' | 'M' | 'D' | 'R' | 'C') {
             staged.push(path.clone());
         }
 
-        if status.is_wt_modified() || status.is_wt_deleted() || status.is_wt_typechange() {
+        // Worktree changes
+        if matches!(worktree_status, 'M' | 'D') {
             modified.push(path.clone());
         }
 
-        if status.is_wt_new() {
+        // Untracked
+        if index_status == '?' && worktree_status == '?' {
             untracked.push(path);
         }
     }
 
-    let current_branch = get_current_branch(repo)?;
     let is_clean = staged.is_empty() && modified.is_empty() && untracked.is_empty();
 
     // Get ahead/behind counts
-    let (ahead, behind) = get_ahead_behind(repo).unwrap_or((0, 0));
+    let (ahead, behind) = get_ahead_behind_git(repo_path).unwrap_or((0, 0));
 
     Ok(RepoStatusInfo {
         current_branch,
@@ -116,23 +123,28 @@ pub fn get_cached_status(repo_path: &PathBuf) -> Result<RepoStatusInfo, GitError
     Ok(status)
 }
 
-/// Get ahead/behind counts relative to upstream
-fn get_ahead_behind(repo: &Repository) -> Option<(usize, usize)> {
-    let head = repo.head().ok()?;
-    if !head.is_branch() {
+/// Get ahead/behind counts using git rev-list
+fn get_ahead_behind_git(repo_path: &std::path::Path) -> Option<(usize, usize)> {
+    let output = Command::new("git")
+        .args(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
         return Some((0, 0));
     }
 
-    let branch_name = head.shorthand()?;
-    let local_oid = head.target()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parts: Vec<&str> = stdout.trim().split('\t').collect();
 
-    // Try to get upstream
-    let branch = repo.find_branch(branch_name, git2::BranchType::Local).ok()?;
-    let upstream = branch.upstream().ok()?;
-    let upstream_oid = upstream.get().target()?;
-
-    let (ahead, behind) = repo.graph_ahead_behind(local_oid, upstream_oid).ok()?;
-    Some((ahead, behind))
+    if parts.len() == 2 {
+        let behind = parts[0].parse().unwrap_or(0);
+        let ahead = parts[1].parse().unwrap_or(0);
+        Some((ahead, behind))
+    } else {
+        Some((0, 0))
+    }
 }
 
 /// Get repository status
@@ -201,17 +213,31 @@ pub fn has_uncommitted_changes(repo: &Repository) -> Result<bool, GitError> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::process::Command;
     use tempfile::TempDir;
 
     fn setup_test_repo() -> (TempDir, Repository) {
         let temp = TempDir::new().unwrap();
-        let repo = Repository::init(temp.path()).unwrap();
 
-        // Configure git user for commits
-        let mut config = repo.config().unwrap();
-        config.set_str("user.name", "Test User").unwrap();
-        config.set_str("user.email", "test@example.com").unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
 
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let repo = open_repo(temp.path()).unwrap();
         (temp, repo)
     }
 
@@ -220,10 +246,16 @@ mod tests {
         let (temp, repo) = setup_test_repo();
 
         // Create initial commit
-        let sig = repo.signature().unwrap();
-        let tree_id = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
+        fs::write(temp.path().join("README.md"), "# Test").unwrap();
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(temp.path())
+            .output()
             .unwrap();
 
         let status = get_status_info(&repo).unwrap();
@@ -231,26 +263,24 @@ mod tests {
         assert!(status.staged.is_empty());
         assert!(status.modified.is_empty());
         assert!(status.untracked.is_empty());
-
-        drop(temp);
     }
 
     #[test]
     fn test_untracked_file() {
         let (temp, repo) = setup_test_repo();
 
-        // Create initial commit first (needed for HEAD to exist)
-        {
-            fs::write(temp.path().join("README.md"), "# Test").unwrap();
-            let mut index = repo.index().unwrap();
-            index.add_path(std::path::Path::new("README.md")).unwrap();
-            index.write().unwrap();
-            let sig = repo.signature().unwrap();
-            let tree_id = index.write_tree().unwrap();
-            let tree = repo.find_tree(tree_id).unwrap();
-            repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
-                .unwrap();
-        }
+        // Create initial commit first
+        fs::write(temp.path().join("README.md"), "# Test").unwrap();
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
 
         // Create an untracked file
         fs::write(temp.path().join("new_file.txt"), "content").unwrap();
@@ -261,38 +291,36 @@ mod tests {
         assert!(status.modified.is_empty());
         assert_eq!(status.untracked.len(), 1);
         assert!(status.untracked.contains(&"new_file.txt".to_string()));
-
-        drop(temp);
     }
 
     #[test]
     fn test_staged_file() {
         let (temp, repo) = setup_test_repo();
 
-        // Create initial commit first (needed for HEAD to exist)
-        {
-            fs::write(temp.path().join("README.md"), "# Test").unwrap();
-            let mut index = repo.index().unwrap();
-            index.add_path(std::path::Path::new("README.md")).unwrap();
-            index.write().unwrap();
-            let sig = repo.signature().unwrap();
-            let tree_id = index.write_tree().unwrap();
-            let tree = repo.find_tree(tree_id).unwrap();
-            repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
-                .unwrap();
-        }
+        // Create initial commit first
+        fs::write(temp.path().join("README.md"), "# Test").unwrap();
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
 
         // Create and stage a file
         fs::write(temp.path().join("staged.txt"), "content").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_path(std::path::Path::new("staged.txt")).unwrap();
-        index.write().unwrap();
+        Command::new("git")
+            .args(["add", "staged.txt"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
 
         let status = get_status_info(&repo).unwrap();
         assert!(!status.is_clean);
         assert_eq!(status.staged.len(), 1);
         assert!(status.staged.contains(&"staged.txt".to_string()));
-
-        drop(temp);
     }
 }

@@ -21,6 +21,11 @@ path = "src/main.rs"
 name = "gitgrip"
 path = "src/lib.rs"
 
+[features]
+default = []
+# Use gitoxide (gix) instead of git2 for git operations (experimental)
+gitoxide = ["gix"]
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -40,8 +45,10 @@ serde_yaml = "0.9"
 # HTTP client
 reqwest = { version = "0.12", features = ["json"] }
 
-# Git operations - using git2 for maturity
+# Git operations - git2 is the default (stable, mature)
 git2 = "0.19"
+# gitoxide (gix) - pure Rust, async-capable (optional, experimental)
+gix = { version = "0.68", default-features = false, features = ["blocking-network-client", "blocking-http-transport-reqwest-rust-tls"], optional = true }
 
 # GitHub API
 octocrab = "0.41"
