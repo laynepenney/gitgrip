@@ -5,7 +5,46 @@ import { loadManifest, getAllRepoInfo, getManifestRepoInfo } from '../../lib/man
 import { pathExists, getCurrentBranch, isGitRepo } from '../../lib/git.js';
 import { getPlatformAdapter } from '../../lib/platform/index.js';
 import { getLinkedPRInfo } from '../../lib/linker.js';
-import type { LinkedPR, PRMergeOptions, RepoInfo } from '../../types.js';
+import type { LinkedPR, PRMergeOptions, RepoInfo, CheckStatusDetails } from '../../types.js';
+
+/**
+ * Format check status details for display
+ */
+function formatCheckStatus(details?: CheckStatusDetails): string {
+  if (!details) {
+    return 'checks not passing';
+  }
+
+  if (details.total === 0) {
+    return 'no checks';
+  }
+
+  // If all checks are skipped, indicate that
+  if (details.skipped === details.total) {
+    return 'checks skipped';
+  }
+
+  // Build a summary
+  const parts: string[] = [];
+  if (details.failed > 0) {
+    parts.push(`${details.failed} failed`);
+  }
+  if (details.pending > 0) {
+    parts.push(`${details.pending} pending`);
+  }
+  if (details.skipped > 0) {
+    parts.push(`${details.skipped} skipped`);
+  }
+  if (details.passed > 0 && parts.length > 0) {
+    parts.push(`${details.passed} passed`);
+  }
+
+  if (parts.length === 0) {
+    return details.state === 'success' ? 'checks passed' : 'checks not passing';
+  }
+
+  return parts.join(', ');
+}
 
 interface MergeOptions {
   method?: 'merge' | 'squash' | 'rebase';
@@ -101,7 +140,7 @@ export async function mergePRs(options: MergeOptions = {}): Promise<void> {
         const issues: string[] = [];
         if (entry.pr.state !== 'open') issues.push(`state: ${entry.pr.state}`);
         if (!entry.pr.approved) issues.push('not approved');
-        if (!entry.pr.checksPass) issues.push('checks not passing');
+        if (!entry.pr.checksPass) issues.push(formatCheckStatus(entry.pr.checkDetails));
         if (!entry.pr.mergeable) issues.push('not mergeable');
 
         const platformLabel = entry.pr.platformType && entry.pr.platformType !== 'github' ? ` (${entry.pr.platformType})` : '';

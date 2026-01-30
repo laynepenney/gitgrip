@@ -1,4 +1,4 @@
-import type { LinkedPR, ManifestPR, RepoInfo } from '../types.js';
+import type { LinkedPR, ManifestPR, RepoInfo, CheckStatusDetails } from '../types.js';
 import { getPlatformAdapter } from './platform/index.js';
 import { loadState, saveState, getAllRepoInfo } from './manifest.js';
 import type { Manifest } from '../types.js';
@@ -71,6 +71,28 @@ export async function getLinkedPRInfo(
     state = pr.state;
   }
 
+  // Calculate detailed check status
+  const checkDetails: CheckStatusDetails = {
+    state: checks.state,
+    passed: 0,
+    failed: 0,
+    pending: 0,
+    skipped: 0,
+    total: checks.statuses.length,
+  };
+
+  for (const status of checks.statuses) {
+    if (status.state === 'success') {
+      checkDetails.passed++;
+    } else if (status.state === 'failure') {
+      checkDetails.failed++;
+    } else if (status.state === 'pending') {
+      checkDetails.pending++;
+    } else if (status.state === 'skipped') {
+      checkDetails.skipped++;
+    }
+  }
+
   return {
     repoName: repoInfo.name,
     owner: repoInfo.owner,
@@ -82,6 +104,7 @@ export async function getLinkedPRInfo(
     checksPass: checks.state === 'success',
     mergeable: pr.mergeable ?? false,
     platformType: repoInfo.platformType,
+    checkDetails,
   };
 }
 

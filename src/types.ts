@@ -190,6 +190,24 @@ export interface RepoStatus {
 }
 
 /**
+ * Detailed check status information
+ */
+export interface CheckStatusDetails {
+  /** Overall state: success, failure, pending */
+  state: 'success' | 'failure' | 'pending';
+  /** Number of passed checks */
+  passed: number;
+  /** Number of failed checks */
+  failed: number;
+  /** Number of pending checks */
+  pending: number;
+  /** Number of skipped checks */
+  skipped: number;
+  /** Total number of checks */
+  total: number;
+}
+
+/**
  * A linked PR in a child repository
  */
 export interface LinkedPR {
@@ -213,6 +231,8 @@ export interface LinkedPR {
   mergeable: boolean;
   /** Hosting platform type */
   platformType?: PlatformType;
+  /** Detailed check status (optional for backward compatibility) */
+  checkDetails?: CheckStatusDetails;
 }
 
 /**

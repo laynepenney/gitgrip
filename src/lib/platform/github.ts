@@ -298,8 +298,10 @@ export class GitHubPlatform implements HostingPlatform {
       let state: string;
       if (run.status !== 'completed') {
         state = 'pending';
-      } else if (run.conclusion === 'success' || run.conclusion === 'skipped') {
+      } else if (run.conclusion === 'success') {
         state = 'success';
+      } else if (run.conclusion === 'skipped') {
+        state = 'skipped';
       } else if (run.conclusion === 'failure' || run.conclusion === 'timed_out' || run.conclusion === 'cancelled') {
         state = 'failure';
       } else {
@@ -324,7 +326,7 @@ export class GitHubPlatform implements HostingPlatform {
       return { state: 'pending', statuses };
     }
 
-    // All checks passed
+    // All checks passed (including skipped)
     return { state: 'success', statuses };
   }
 
