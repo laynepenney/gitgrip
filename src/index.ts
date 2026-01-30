@@ -378,11 +378,14 @@ program
 // Forall command - run command in all repos (like AOSP repo forall)
 program
   .command('forall')
-  .description('Run a command in each repository (like AOSP repo forall)')
+  .description('Run a command in repositories with changes (use --all for all repos)')
   .requiredOption('-c, --command <command>', 'Command to run in each repo')
   .option('-r, --repo <repos...>', 'Only run in specific repositories')
   .option('--include-manifest', 'Include manifest repo')
   .option('--continue-on-error', 'Continue running in other repos if command fails')
+  .option('--all', 'Run in ALL repos, not just those with changes')
+  .option('--staged', 'Run only in repos with staged changes')
+  .option('--ahead', 'Run only in repos with commits ahead of remote')
   .action(async (options) => {
     try {
       await forall({
@@ -390,6 +393,9 @@ program
         repo: options.repo,
         includeManifest: options.includeManifest,
         continueOnError: options.continueOnError,
+        all: options.all,
+        staged: options.staged,
+        ahead: options.ahead,
       });
     } catch (error) {
       console.error(chalk.red(error instanceof Error ? error.message : String(error)));
