@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 300">
   <defs>
     <linearGradient id="cmdGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#10B981"/>
-      <stop offset="100%" style="stop-color:#059669"/>
+      <stop offset="0%" style="stop-color:#9A3412"/>
+      <stop offset="100%" style="stop-color:#7C2D12"/>
     </linearGradient>
     <filter id="glow">
       <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
@@ -21,42 +21,42 @@
 
   <!-- Step 1: Create -->
   <g transform="translate(60, 70)">
-    <rect x="0" y="0" width="180" height="90" rx="10" fill="#1E293B" stroke="#10B981" stroke-width="2"/>
-    <text x="90" y="25" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="bold" fill="#10B981" text-anchor="middle">1. Create</text>
+    <rect x="0" y="0" width="180" height="90" rx="10" fill="#1E293B" stroke="#FB923C" stroke-width="2"/>
+    <text x="90" y="25" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="bold" fill="#FB923C" text-anchor="middle">1. Create</text>
     <text x="90" y="50" font-family="monospace" font-size="11" fill="#94A3B8" text-anchor="middle">gr tree add</text>
-    <text x="90" y="68" font-family="monospace" font-size="11" fill="#60A5FA" text-anchor="middle">feat/my-feature</text>
+    <text x="90" y="68" font-family="monospace" font-size="11" fill="#FDBA74" text-anchor="middle">feat/my-feature</text>
   </g>
 
   <!-- Arrow 1 -->
-  <path d="M 250 115 L 300 115" stroke="#10B981" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M 250 115 L 300 115" stroke="#FB923C" stroke-width="2" marker-end="url(#arrow)"/>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 Z" fill="#10B981"/>
+      <path d="M 0 0 L 10 5 L 0 10 Z" fill="#FB923C"/>
     </marker>
   </defs>
 
   <!-- Step 2: Work -->
   <g transform="translate(310, 70)">
-    <rect x="0" y="0" width="180" height="90" rx="10" fill="#1E293B" stroke="#3B82F6" stroke-width="2"/>
-    <text x="90" y="25" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="bold" fill="#3B82F6" text-anchor="middle">2. Work</text>
+    <rect x="0" y="0" width="180" height="90" rx="10" fill="#1E293B" stroke="#FDBA74" stroke-width="2"/>
+    <text x="90" y="25" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="bold" fill="#FDBA74" text-anchor="middle">2. Work</text>
     <text x="90" y="50" font-family="monospace" font-size="11" fill="#94A3B8" text-anchor="middle">cd ../feat-my-feature</text>
     <text x="90" y="68" font-family="monospace" font-size="11" fill="#94A3B8" text-anchor="middle">gr status / commit / push</text>
   </g>
 
   <!-- Arrow 2 -->
-  <path d="M 500 115 L 550 115" stroke="#3B82F6" stroke-width="2" marker-end="url(#arrow2)"/>
+  <path d="M 500 115 L 550 115" stroke="#FDBA74" stroke-width="2" marker-end="url(#arrow2)"/>
   <defs>
     <marker id="arrow2" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 Z" fill="#3B82F6"/>
+      <path d="M 0 0 L 10 5 L 0 10 Z" fill="#FDBA74"/>
     </marker>
   </defs>
 
   <!-- Step 3: Remove -->
   <g transform="translate(560, 70)">
-    <rect x="0" y="0" width="180" height="90" rx="10" fill="#1E293B" stroke="#F59E0B" stroke-width="2"/>
-    <text x="90" y="25" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="bold" fill="#F59E0B" text-anchor="middle">3. Cleanup</text>
+    <rect x="0" y="0" width="180" height="90" rx="10" fill="#1E293B" stroke="#7C2D12" stroke-width="2"/>
+    <text x="90" y="25" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="bold" fill="#7C2D12" text-anchor="middle">3. Cleanup</text>
     <text x="90" y="50" font-family="monospace" font-size="11" fill="#94A3B8" text-anchor="middle">gr tree remove</text>
-    <text x="90" y="68" font-family="monospace" font-size="11" fill="#60A5FA" text-anchor="middle">feat/my-feature</text>
+    <text x="90" y="68" font-family="monospace" font-size="11" fill="#FDBA74" text-anchor="middle">feat/my-feature</text>
   </g>
 
   <!-- Commands reference -->
@@ -64,16 +64,16 @@
     <rect x="0" y="0" width="680" height="90" rx="8" fill="#1E293B"/>
     <text x="20" y="25" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="bold" fill="#F8FAFC">Quick Reference:</text>
 
-    <text x="20" y="50" font-family="monospace" font-size="11" fill="#10B981">gr tree add &lt;branch&gt;</text>
+    <text x="20" y="50" font-family="monospace" font-size="11" fill="#FB923C">gr tree add &lt;branch&gt;</text>
     <text x="200" y="50" font-family="system-ui, sans-serif" font-size="11" fill="#6B7280">Create parallel workspace</text>
 
-    <text x="20" y="70" font-family="monospace" font-size="11" fill="#10B981">gr tree list</text>
+    <text x="20" y="70" font-family="monospace" font-size="11" fill="#FB923C">gr tree list</text>
     <text x="200" y="70" font-family="system-ui, sans-serif" font-size="11" fill="#6B7280">Show all griptrees</text>
 
-    <text x="380" y="50" font-family="monospace" font-size="11" fill="#10B981">gr tree lock &lt;branch&gt;</text>
+    <text x="380" y="50" font-family="monospace" font-size="11" fill="#FB923C">gr tree lock &lt;branch&gt;</text>
     <text x="560" y="50" font-family="system-ui, sans-serif" font-size="11" fill="#6B7280">Protect from removal</text>
 
-    <text x="380" y="70" font-family="monospace" font-size="11" fill="#10B981">gr tree remove &lt;branch&gt;</text>
+    <text x="380" y="70" font-family="monospace" font-size="11" fill="#FB923C">gr tree remove &lt;branch&gt;</text>
     <text x="590" y="70" font-family="system-ui, sans-serif" font-size="11" fill="#6B7280">Remove griptree</text>
   </g>
 </svg>

@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500">
   <defs>
     <linearGradient id="mainGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#10B981;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#059669;stop-opacity:1" />
+      <stop offset="0%" style="stop-color:#9A3412;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#7C2D12;stop-opacity:1" />
     </linearGradient>
     <linearGradient id="treeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#3B82F6;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#1D4ED8;stop-opacity:1" />
+      <stop offset="0%" style="stop-color:#7C2D12;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#431407;stop-opacity:1" />
     </linearGradient>
     <linearGradient id="repoGrad" x1="0%" y1="0%" x2="0%" y2="100%">
       <stop offset="0%" style="stop-color:#374151;stop-opacity:1" />
@@ -28,22 +28,22 @@
   <g transform="translate(50, 110)">
     <rect x="0" y="0" width="220" height="280" rx="12" fill="url(#mainGrad)" filter="url(#shadow)"/>
     <text x="110" y="30" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="bold" fill="white" text-anchor="middle">Main Workspace</text>
-    <text x="110" y="50" font-family="monospace" font-size="12" fill="#D1FAE5" text-anchor="middle">branch: main</text>
+    <text x="110" y="50" font-family="monospace" font-size="12" fill="#FDBA74" text-anchor="middle">branch: main</text>
 
     <!-- Repos in main -->
     <g transform="translate(20, 70)">
       <rect x="0" y="0" width="180" height="45" rx="6" fill="url(#repoGrad)"/>
-      <text x="15" y="20" font-family="monospace" font-size="11" fill="#10B981">frontend/</text>
+      <text x="15" y="20" font-family="monospace" font-size="11" fill="#FB923C">frontend/</text>
       <text x="15" y="35" font-family="monospace" font-size="10" fill="#6B7280">.git/objects (shared)</text>
     </g>
     <g transform="translate(20, 125)">
       <rect x="0" y="0" width="180" height="45" rx="6" fill="url(#repoGrad)"/>
-      <text x="15" y="20" font-family="monospace" font-size="11" fill="#10B981">backend/</text>
+      <text x="15" y="20" font-family="monospace" font-size="11" fill="#FB923C">backend/</text>
       <text x="15" y="35" font-family="monospace" font-size="10" fill="#6B7280">.git/objects (shared)</text>
     </g>
     <g transform="translate(20, 180)">
       <rect x="0" y="0" width="180" height="45" rx="6" fill="url(#repoGrad)"/>
-      <text x="15" y="20" font-family="monospace" font-size="11" fill="#10B981">shared/</text>
+      <text x="15" y="20" font-family="monospace" font-size="11" fill="#FB923C">shared/</text>
       <text x="15" y="35" font-family="monospace" font-size="10" fill="#6B7280">.git/objects (shared)</text>
     </g>
   </g>
@@ -52,22 +52,22 @@
   <g transform="translate(290, 110)">
     <rect x="0" y="0" width="220" height="280" rx="12" fill="url(#treeGrad)" filter="url(#shadow)"/>
     <text x="110" y="30" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="bold" fill="white" text-anchor="middle">Griptree: feat/auth</text>
-    <text x="110" y="50" font-family="monospace" font-size="12" fill="#BFDBFE" text-anchor="middle">branch: feat/auth</text>
+    <text x="110" y="50" font-family="monospace" font-size="12" fill="#FDBA74" text-anchor="middle">branch: feat/auth</text>
 
     <!-- Repos as worktrees -->
     <g transform="translate(20, 70)">
       <rect x="0" y="0" width="180" height="45" rx="6" fill="url(#repoGrad)"/>
-      <text x="15" y="20" font-family="monospace" font-size="11" fill="#60A5FA">frontend/</text>
+      <text x="15" y="20" font-family="monospace" font-size="11" fill="#FDBA74">frontend/</text>
       <text x="15" y="35" font-family="monospace" font-size="10" fill="#6B7280">worktree (instant)</text>
     </g>
     <g transform="translate(20, 125)">
       <rect x="0" y="0" width="180" height="45" rx="6" fill="url(#repoGrad)"/>
-      <text x="15" y="20" font-family="monospace" font-size="11" fill="#60A5FA">backend/</text>
+      <text x="15" y="20" font-family="monospace" font-size="11" fill="#FDBA74">backend/</text>
       <text x="15" y="35" font-family="monospace" font-size="10" fill="#6B7280">worktree (instant)</text>
     </g>
     <g transform="translate(20, 180)">
       <rect x="0" y="0" width="180" height="45" rx="6" fill="url(#repoGrad)"/>
-      <text x="15" y="20" font-family="monospace" font-size="11" fill="#60A5FA">shared/</text>
+      <text x="15" y="20" font-family="monospace" font-size="11" fill="#FDBA74">shared/</text>
       <text x="15" y="35" font-family="monospace" font-size="10" fill="#6B7280">worktree (instant)</text>
     </g>
   </g>
@@ -76,22 +76,22 @@
   <g transform="translate(530, 110)">
     <rect x="0" y="0" width="220" height="280" rx="12" fill="url(#treeGrad)" filter="url(#shadow)"/>
     <text x="110" y="30" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="bold" fill="white" text-anchor="middle">Griptree: feat/api</text>
-    <text x="110" y="50" font-family="monospace" font-size="12" fill="#BFDBFE" text-anchor="middle">branch: feat/api</text>
+    <text x="110" y="50" font-family="monospace" font-size="12" fill="#FDBA74" text-anchor="middle">branch: feat/api</text>
 
     <!-- Repos as worktrees -->
     <g transform="translate(20, 70)">
       <rect x="0" y="0" width="180" height="45" rx="6" fill="url(#repoGrad)"/>
-      <text x="15" y="20" font-family="monospace" font-size="11" fill="#60A5FA">frontend/</text>
+      <text x="15" y="20" font-family="monospace" font-size="11" fill="#FDBA74">frontend/</text>
       <text x="15" y="35" font-family="monospace" font-size="10" fill="#6B7280">worktree (instant)</text>
     </g>
     <g transform="translate(20, 125)">
       <rect x="0" y="0" width="180" height="45" rx="6" fill="url(#repoGrad)"/>
-      <text x="15" y="20" font-family="monospace" font-size="11" fill="#60A5FA">backend/</text>
+      <text x="15" y="20" font-family="monospace" font-size="11" fill="#FDBA74">backend/</text>
       <text x="15" y="35" font-family="monospace" font-size="10" fill="#6B7280">worktree (instant)</text>
     </g>
     <g transform="translate(20, 180)">
       <rect x="0" y="0" width="180" height="45" rx="6" fill="url(#repoGrad)"/>
-      <text x="15" y="20" font-family="monospace" font-size="11" fill="#60A5FA">shared/</text>
+      <text x="15" y="20" font-family="monospace" font-size="11" fill="#FDBA74">shared/</text>
       <text x="15" y="35" font-family="monospace" font-size="10" fill="#6B7280">worktree (instant)</text>
     </g>
   </g>
@@ -99,13 +99,13 @@
   <!-- Connecting arrows showing shared objects -->
   <defs>
     <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#10B981"/>
+      <polygon points="0 0, 10 3.5, 0 7" fill="#FB923C"/>
     </marker>
   </defs>
 
   <!-- Curved lines from main to griptrees -->
-  <path d="M 270 250 Q 280 200 290 250" stroke="#10B981" stroke-width="2" fill="none" stroke-dasharray="5,5"/>
-  <path d="M 270 250 Q 400 150 530 250" stroke="#10B981" stroke-width="2" fill="none" stroke-dasharray="5,5"/>
+  <path d="M 270 250 Q 280 200 290 250" stroke="#FB923C" stroke-width="2" fill="none" stroke-dasharray="5,5"/>
+  <path d="M 270 250 Q 400 150 530 250" stroke="#FB923C" stroke-width="2" fill="none" stroke-dasharray="5,5"/>
 
   <!-- Legend -->
   <g transform="translate(50, 420)">
