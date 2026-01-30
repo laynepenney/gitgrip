@@ -254,6 +254,7 @@ export class GitHubPlatform implements HostingPlatform {
 
   /**
    * Get status checks for a commit
+   * Combines both legacy status API and modern Check Runs API (GitHub Actions)
    */
   async getStatusChecks(
     owner: string,
@@ -261,19 +262,70 @@ export class GitHubPlatform implements HostingPlatform {
     ref: string
   ): Promise<StatusCheckResult> {
     const octokit = await this.getOctokit();
-    const response = await octokit.repos.getCombinedStatusForRef({
+
+    // Get legacy status checks
+    const statusResponse = await octokit.repos.getCombinedStatusForRef({
       owner,
       repo,
       ref,
     });
 
-    return {
-      state: response.data.state as 'success' | 'failure' | 'pending',
-      statuses: response.data.statuses.map((s) => ({
-        context: s.context,
-        state: s.state,
-      })),
-    };
+    // Get modern check runs (GitHub Actions)
+    let checkRuns: { name: string; conclusion: string | null; status: string }[] = [];
+    try {
+      const checksResponse = await octokit.checks.listForRef({
+        owner,
+        repo,
+        ref,
+      });
+      checkRuns = checksResponse.data.check_runs.map((run) => ({
+        name: run.name,
+        conclusion: run.conclusion,
+        status: run.status,
+      }));
+    } catch {
+      // Check runs API might not be available, ignore error
+    }
+
+    // Combine statuses from both APIs
+    const statuses = statusResponse.data.statuses.map((s) => ({
+      context: s.context,
+      state: s.state,
+    }));
+
+    // Add check runs to statuses
+    for (const run of checkRuns) {
+      let state: string;
+      if (run.status !== 'completed') {
+        state = 'pending';
+      } else if (run.conclusion === 'success' || run.conclusion === 'skipped') {
+        state = 'success';
+      } else if (run.conclusion === 'failure' || run.conclusion === 'timed_out' || run.conclusion === 'cancelled') {
+        state = 'failure';
+      } else {
+        state = 'pending';
+      }
+      statuses.push({ context: run.name, state });
+    }
+
+    // Determine overall state
+    // If there are no checks at all, consider it success (no checks required)
+    if (statuses.length === 0) {
+      return { state: 'success', statuses: [] };
+    }
+
+    // If any check failed, overall is failure
+    if (statuses.some((s) => s.state === 'failure')) {
+      return { state: 'failure', statuses };
+    }
+
+    // If any check is pending, overall is pending
+    if (statuses.some((s) => s.state === 'pending')) {
+      return { state: 'pending', statuses };
+    }
+
+    // All checks passed
+    return { state: 'success', statuses };
   }
 
   /**
