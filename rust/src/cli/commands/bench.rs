@@ -224,11 +224,7 @@ fn run_benchmark_operation(name: &str) -> Result<()> {
 }
 
 /// Run a single benchmark with warmup and iterations
-fn run_single_benchmark(
-    name: &str,
-    iterations: usize,
-    warmup: usize,
-) -> Result<BenchmarkResult> {
+fn run_single_benchmark(name: &str, iterations: usize, warmup: usize) -> Result<BenchmarkResult> {
     let mut durations = Vec::with_capacity(iterations);
 
     // Warmup runs
@@ -260,15 +256,14 @@ fn run_single_benchmark(
 
 /// Format benchmark results as a table
 fn format_results(results: &[BenchmarkResult]) -> String {
-    let mut lines = Vec::new();
-
-    lines.push("Benchmark Results".to_string());
-    lines.push("═════════════════".to_string());
-    lines.push(String::new());
-
-    // Header
-    lines.push("Operation        │ Iter │      Min │      Max │      Avg │      P95".to_string());
-    lines.push("─────────────────┼──────┼──────────┼──────────┼──────────┼──────────".to_string());
+    let mut lines = vec![
+        "Benchmark Results".to_string(),
+        "═════════════════".to_string(),
+        String::new(),
+        // Header
+        "Operation        │ Iter │      Min │      Max │      Avg │      P95".to_string(),
+        "─────────────────┼──────┼──────────┼──────────┼──────────┼──────────".to_string(),
+    ];
 
     // Rows
     for result in results {

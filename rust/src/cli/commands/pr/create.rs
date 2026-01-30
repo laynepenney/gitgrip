@@ -82,8 +82,7 @@ pub async fn run_pr_create(
             .trim_start_matches("feat/")
             .trim_start_matches("fix/")
             .trim_start_matches("chore/")
-            .replace('-', " ")
-            .replace('_', " ");
+            .replace(['-', '_'], " ");
         let mut chars = title.chars();
         match chars.next() {
             None => title,
@@ -99,7 +98,9 @@ pub async fn run_pr_create(
                 let spinner = Output::spinner(&format!("Pushing {}...", repo.name));
                 match crate::git::remote::push_branch(&git_repo, &branch, "origin", true) {
                     Ok(()) => spinner.finish_with_message(format!("{}: pushed", repo.name)),
-                    Err(e) => spinner.finish_with_message(format!("{}: push failed - {}", repo.name, e)),
+                    Err(e) => {
+                        spinner.finish_with_message(format!("{}: push failed - {}", repo.name, e))
+                    }
                 }
             }
         }
@@ -115,21 +116,22 @@ pub async fn run_pr_create(
 
         let spinner = Output::spinner(&format!("Creating PR for {}...", repo.name));
 
-        match platform.create_pull_request(
-            &repo.owner,
-            &repo.repo,
-            &branch,
-            &repo.default_branch,
-            &pr_title,
-            None,
-            draft,
-        ).await {
+        match platform
+            .create_pull_request(
+                &repo.owner,
+                &repo.repo,
+                &branch,
+                &repo.default_branch,
+                &pr_title,
+                None,
+                draft,
+            )
+            .await
+        {
             Ok(pr) => {
                 spinner.finish_with_message(format!(
                     "{}: created PR #{} - {}",
-                    repo.name,
-                    pr.number,
-                    pr.url
+                    repo.name, pr.number, pr.url
                 ));
                 created_prs.push((repo.name.clone(), pr.number, pr.url.clone()));
             }
@@ -173,11 +175,7 @@ pub async fn run_pr_create(
 }
 
 /// Check if a branch has commits ahead of another branch
-fn has_commits_ahead(
-    repo: &Repository,
-    branch: &str,
-    base: &str,
-) -> anyhow::Result<bool> {
+fn has_commits_ahead(repo: &Repository, branch: &str, base: &str) -> anyhow::Result<bool> {
     let local_ref = format!("refs/heads/{}", branch);
     let base_ref = format!("refs/remotes/origin/{}", base);
 
@@ -197,8 +195,12 @@ fn has_commits_ahead(
         }
     };
 
-    let local_oid = local.target().ok_or_else(|| anyhow::anyhow!("No local target"))?;
-    let base_oid = base_branch.target().ok_or_else(|| anyhow::anyhow!("No base target"))?;
+    let local_oid = local
+        .target()
+        .ok_or_else(|| anyhow::anyhow!("No local target"))?;
+    let base_oid = base_branch
+        .target()
+        .ok_or_else(|| anyhow::anyhow!("No base target"))?;
 
     let (ahead, _behind) = repo.graph_ahead_behind(local_oid, base_oid)?;
     Ok(ahead > 0)
@@ -208,15 +210,10 @@ fn has_commits_ahead(
 #[allow(dead_code)]
 pub fn get_token_for_platform(platform: &PlatformType) -> Option<String> {
     match platform {
-        PlatformType::GitHub => {
-            std::env::var("GITHUB_TOKEN").ok()
-                .or_else(|| std::env::var("GH_TOKEN").ok())
-        }
-        PlatformType::GitLab => {
-            std::env::var("GITLAB_TOKEN").ok()
-        }
-        PlatformType::AzureDevOps => {
-            std::env::var("AZURE_DEVOPS_TOKEN").ok()
-        }
+        PlatformType::GitHub => std::env::var("GITHUB_TOKEN")
+            .ok()
+            .or_else(|| std::env::var("GH_TOKEN").ok()),
+        PlatformType::GitLab => std::env::var("GITLAB_TOKEN").ok(),
+        PlatformType::AzureDevOps => std::env::var("AZURE_DEVOPS_TOKEN").ok(),
     }
 }

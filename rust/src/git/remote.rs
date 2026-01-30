@@ -122,7 +122,11 @@ pub fn push_branch(
 }
 
 /// Force push branch to remote
-pub fn force_push_branch(repo: &Repository, branch_name: &str, remote: &str) -> Result<(), GitError> {
+pub fn force_push_branch(
+    repo: &Repository,
+    branch_name: &str,
+    remote: &str,
+) -> Result<(), GitError> {
     let repo_path = repo.path().parent().unwrap_or(repo.path());
 
     let output = Command::new("git")
@@ -140,7 +144,11 @@ pub fn force_push_branch(repo: &Repository, branch_name: &str, remote: &str) -> 
 }
 
 /// Delete a remote branch
-pub fn delete_remote_branch(repo: &Repository, branch_name: &str, remote: &str) -> Result<(), GitError> {
+pub fn delete_remote_branch(
+    repo: &Repository,
+    branch_name: &str,
+    remote: &str,
+) -> Result<(), GitError> {
     let repo_path = repo.path().parent().unwrap_or(repo.path());
 
     let output = Command::new("git")
@@ -158,7 +166,10 @@ pub fn delete_remote_branch(repo: &Repository, branch_name: &str, remote: &str) 
 }
 
 /// Get upstream tracking branch name
-pub fn get_upstream_branch(repo: &Repository, branch_name: Option<&str>) -> Result<Option<String>, GitError> {
+pub fn get_upstream_branch(
+    repo: &Repository,
+    branch_name: Option<&str>,
+) -> Result<Option<String>, GitError> {
     let repo_path = repo.path().parent().unwrap_or(repo.path());
 
     let branch = match branch_name {
@@ -167,7 +178,11 @@ pub fn get_upstream_branch(repo: &Repository, branch_name: Option<&str>) -> Resu
     };
 
     let output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", &format!("{}@{{upstream}}", branch)])
+        .args([
+            "rev-parse",
+            "--abbrev-ref",
+            &format!("{}@{{upstream}}", branch),
+        ])
         .current_dir(repo_path)
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
@@ -185,8 +200,12 @@ pub fn upstream_branch_exists(repo: &Repository, remote: &str) -> Result<bool, G
     let upstream = get_upstream_branch(repo, None)?;
     match upstream {
         Some(name) => {
-            let branch_name = name.split('/').last().unwrap_or(&name);
-            Ok(super::branch::remote_branch_exists(repo, branch_name, remote))
+            let branch_name = name.split('/').next_back().unwrap_or(&name);
+            Ok(super::branch::remote_branch_exists(
+                repo,
+                branch_name,
+                remote,
+            ))
         }
         None => Ok(false),
     }
@@ -198,7 +217,11 @@ pub fn set_upstream_branch(repo: &Repository, remote: &str) -> Result<(), GitErr
     let branch_name = get_current_branch(repo)?;
 
     let output = Command::new("git")
-        .args(["branch", "--set-upstream-to", &format!("{}/{}", remote, branch_name)])
+        .args([
+            "branch",
+            "--set-upstream-to",
+            &format!("{}/{}", remote, branch_name),
+        ])
         .current_dir(repo_path)
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
@@ -380,7 +403,12 @@ mod tests {
 
         // Add remote
         Command::new("git")
-            .args(["remote", "add", "origin", "https://github.com/test/repo.git"])
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/test/repo.git",
+            ])
             .current_dir(temp.path())
             .output()
             .unwrap();

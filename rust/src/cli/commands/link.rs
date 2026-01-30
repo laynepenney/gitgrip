@@ -48,7 +48,8 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
         if let Some(ref copyfiles) = config.copyfile {
             for copyfile in copyfiles {
                 total_links += 1;
-                let source = repo.map(|r| r.absolute_path.join(&copyfile.src))
+                let source = repo
+                    .map(|r| r.absolute_path.join(&copyfile.src))
                     .unwrap_or_else(|| workspace_root.join(&config.path).join(&copyfile.src));
                 let dest = workspace_root.join(&copyfile.dest);
 
@@ -71,7 +72,8 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
         if let Some(ref linkfiles) = config.linkfile {
             for linkfile in linkfiles {
                 total_links += 1;
-                let source = repo.map(|r| r.absolute_path.join(&linkfile.src))
+                let source = repo
+                    .map(|r| r.absolute_path.join(&linkfile.src))
                     .unwrap_or_else(|| workspace_root.join(&config.path).join(&linkfile.src));
                 let dest = workspace_root.join(&linkfile.dest);
 
@@ -134,7 +136,8 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
         // Apply copyfiles
         if let Some(ref copyfiles) = config.copyfile {
             for copyfile in copyfiles {
-                let source = repo.map(|r| r.absolute_path.join(&copyfile.src))
+                let source = repo
+                    .map(|r| r.absolute_path.join(&copyfile.src))
                     .unwrap_or_else(|| workspace_root.join(&config.path).join(&copyfile.src));
                 let dest = workspace_root.join(&copyfile.dest);
 
@@ -165,7 +168,8 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
         // Apply linkfiles
         if let Some(ref linkfiles) = config.linkfile {
             for linkfile in linkfiles {
-                let source = repo.map(|r| r.absolute_path.join(&linkfile.src))
+                let source = repo
+                    .map(|r| r.absolute_path.join(&linkfile.src))
                     .unwrap_or_else(|| workspace_root.join(&config.path).join(&linkfile.src));
                 let dest = workspace_root.join(&linkfile.dest);
 
@@ -189,7 +193,10 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                 {
                     match std::os::unix::fs::symlink(&source, &dest) {
                         Ok(_) => {
-                            Output::success(&format!("[link] {} -> {}", linkfile.src, linkfile.dest));
+                            Output::success(&format!(
+                                "[link] {} -> {}",
+                                linkfile.src, linkfile.dest
+                            ));
                             applied += 1;
                         }
                         Err(e) => {
@@ -205,7 +212,10 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                     if source.is_dir() {
                         match std::os::windows::fs::symlink_dir(&source, &dest) {
                             Ok(_) => {
-                                Output::success(&format!("[link] {} -> {}", linkfile.src, linkfile.dest));
+                                Output::success(&format!(
+                                    "[link] {} -> {}",
+                                    linkfile.src, linkfile.dest
+                                ));
                                 applied += 1;
                             }
                             Err(e) => {
@@ -216,7 +226,10 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                     } else {
                         match std::os::windows::fs::symlink_file(&source, &dest) {
                             Ok(_) => {
-                                Output::success(&format!("[link] {} -> {}", linkfile.src, linkfile.dest));
+                                Output::success(&format!(
+                                    "[link] {} -> {}",
+                                    linkfile.src, linkfile.dest
+                                ));
                                 applied += 1;
                             }
                             Err(e) => {
@@ -243,20 +256,28 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::manifest::{
+        CopyFileConfig, LinkFileConfig, ManifestSettings, MergeStrategy, RepoConfig,
+    };
     use std::collections::HashMap;
     use tempfile::TempDir;
-    use crate::core::manifest::{RepoConfig, CopyFileConfig, LinkFileConfig, ManifestSettings, MergeStrategy};
 
-    fn create_test_manifest(copyfiles: Option<Vec<CopyFileConfig>>, linkfiles: Option<Vec<LinkFileConfig>>) -> Manifest {
+    fn create_test_manifest(
+        copyfiles: Option<Vec<CopyFileConfig>>,
+        linkfiles: Option<Vec<LinkFileConfig>>,
+    ) -> Manifest {
         let mut repos = HashMap::new();
-        repos.insert("test-repo".to_string(), RepoConfig {
-            url: "git@github.com:user/test-repo.git".to_string(),
-            path: "test-repo".to_string(),
-            default_branch: "main".to_string(),
-            copyfile: copyfiles,
-            linkfile: linkfiles,
-            platform: None,
-        });
+        repos.insert(
+            "test-repo".to_string(),
+            RepoConfig {
+                url: "git@github.com:user/test-repo.git".to_string(),
+                path: "test-repo".to_string(),
+                default_branch: "main".to_string(),
+                copyfile: copyfiles,
+                linkfile: linkfiles,
+                platform: None,
+            },
+        );
 
         Manifest {
             version: 1,

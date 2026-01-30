@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use thiserror::Error;
 
-use crate::platform::types::{CheckStatusDetails, PlatformType, PRState};
+use crate::platform::types::{CheckStatusDetails, PRState, PlatformType};
 
 /// Errors that can occur when loading or saving state
 #[derive(Error, Debug)]

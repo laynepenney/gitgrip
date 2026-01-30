@@ -67,15 +67,22 @@ pub async fn run_pr_checks(
         let platform = get_platform_adapter(platform_type, None);
 
         // Find PR number (optional, for display)
-        let pr_number = match platform.find_pr_by_branch(&repo.owner, &repo.repo, &branch).await {
+        let pr_number = match platform
+            .find_pr_by_branch(&repo.owner, &repo.repo, &branch)
+            .await
+        {
             Ok(Some(pr)) => Some(pr.number),
             _ => None,
         };
 
         // Get status checks for the branch
-        match platform.get_status_checks(&repo.owner, &repo.repo, &branch).await {
+        match platform
+            .get_status_checks(&repo.owner, &repo.repo, &branch)
+            .await
+        {
             Ok(status_result) => {
-                let check_infos: Vec<CheckInfo> = status_result.statuses
+                let check_infos: Vec<CheckInfo> = status_result
+                    .statuses
                     .iter()
                     .map(|s| {
                         let state = s.state.to_lowercase();

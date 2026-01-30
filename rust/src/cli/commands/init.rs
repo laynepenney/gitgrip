@@ -7,10 +7,7 @@ use crate::git::clone_repo;
 use std::path::PathBuf;
 
 /// Run the init command
-pub fn run_init(
-    url: Option<&str>,
-    path: Option<&str>,
-) -> anyhow::Result<()> {
+pub fn run_init(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()> {
     let manifest_url = match url {
         Some(u) => u.to_string(),
         None => {
@@ -23,8 +20,7 @@ pub fn run_init(
         Some(p) => PathBuf::from(p),
         None => {
             // Extract repo name from URL for directory name
-            let name = extract_repo_name(&manifest_url)
-                .unwrap_or_else(|| "workspace".to_string());
+            let name = extract_repo_name(&manifest_url).unwrap_or_else(|| "workspace".to_string());
             std::env::current_dir()?.join(name)
         }
     };

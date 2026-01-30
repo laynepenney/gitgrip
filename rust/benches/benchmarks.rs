@@ -9,9 +9,9 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use gitgrip::core::manifest::{Manifest, RepoConfig};
 use gitgrip::core::repo::RepoInfo;
 use gitgrip::core::state::StateFile;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::fs;
 
 /// Benchmark manifest YAML parsing
 fn bench_manifest_parse(c: &mut Criterion) {
@@ -218,7 +218,11 @@ fn setup_test_repo() -> tempfile::TempDir {
 
     // Add some untracked files to make status more realistic
     for i in 0..10 {
-        fs::write(temp.path().join(format!("file{}.txt", i)), format!("Content {}", i)).unwrap();
+        fs::write(
+            temp.path().join(format!("file{}.txt", i)),
+            format!("Content {}", i),
+        )
+        .unwrap();
     }
 
     // Create branches
@@ -295,7 +299,8 @@ fn bench_git_list_branches_comparison(c: &mut Criterion) {
         let repo = git2::Repository::open(temp.path()).unwrap();
         group.bench_function("git2", |b| {
             b.iter(|| {
-                let branches: Vec<_> = repo.branches(Some(git2::BranchType::Local))
+                let branches: Vec<_> = repo
+                    .branches(Some(git2::BranchType::Local))
                     .unwrap()
                     .collect();
                 black_box(branches.len())
@@ -417,8 +422,8 @@ fn bench_get_current_branch_comparison(c: &mut Criterion) {
 
 /// Benchmark file hashing (useful for change detection)
 fn bench_file_hash(c: &mut Criterion) {
-    use std::hash::{Hash, Hasher};
     use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
 
     let content = "This is some test content for hashing\n".repeat(100);
 
@@ -462,16 +467,12 @@ fn bench_url_regex_parse(c: &mut Criterion) {
     let url = "git@github.com:organization/repository-name.git";
 
     c.bench_function("url_regex_github", |b| {
-        b.iter(|| {
-            github_regex.captures(black_box(url))
-        })
+        b.iter(|| github_regex.captures(black_box(url)))
     });
 
     let gitlab_url = "git@gitlab.com:group/subgroup/repo.git";
     c.bench_function("url_regex_gitlab", |b| {
-        b.iter(|| {
-            gitlab_regex.captures(black_box(gitlab_url))
-        })
+        b.iter(|| gitlab_regex.captures(black_box(gitlab_url)))
     });
 }
 
@@ -521,7 +522,11 @@ fn setup_multi_repo_workspace() -> (tempfile::TempDir, Vec<PathBuf>) {
 
         // Add some files
         for i in 0..3 {
-            fs::write(repo_path.join(format!("file{}.txt", i)), format!("Content {}", i)).unwrap();
+            fs::write(
+                repo_path.join(format!("file{}.txt", i)),
+                format!("Content {}", i),
+            )
+            .unwrap();
         }
 
         repo_paths.push(repo_path);
@@ -624,15 +629,25 @@ fn bench_forall_command(c: &mut Criterion) {
                         let status = entry.status();
                         let filepath = entry.path().unwrap_or("?");
 
-                        let idx = if status.is_index_new() { 'A' }
-                            else if status.is_index_modified() { 'M' }
-                            else if status.is_index_deleted() { 'D' }
-                            else { ' ' };
+                        let idx = if status.is_index_new() {
+                            'A'
+                        } else if status.is_index_modified() {
+                            'M'
+                        } else if status.is_index_deleted() {
+                            'D'
+                        } else {
+                            ' '
+                        };
 
-                        let wt = if status.is_wt_new() { '?' }
-                            else if status.is_wt_modified() { 'M' }
-                            else if status.is_wt_deleted() { 'D' }
-                            else { ' ' };
+                        let wt = if status.is_wt_new() {
+                            '?'
+                        } else if status.is_wt_modified() {
+                            'M'
+                        } else if status.is_wt_deleted() {
+                            'D'
+                        } else {
+                            ' '
+                        };
 
                         output.push_str(&format!("{}{} {}\n", idx, wt, filepath));
                     }
@@ -727,7 +742,9 @@ fn bench_multi_repo_status(c: &mut Criterion) {
                         .current_dir(path)
                         .output()
                         .unwrap();
-                    let branch = String::from_utf8_lossy(&branch_output.stdout).trim().to_string();
+                    let branch = String::from_utf8_lossy(&branch_output.stdout)
+                        .trim()
+                        .to_string();
 
                     // Get status
                     let status_output = Command::new("git")
@@ -753,7 +770,9 @@ fn bench_multi_repo_status(c: &mut Criterion) {
                 for path in &paths {
                     let repo = gix::open(path).unwrap();
                     let head = repo.head_name().unwrap();
-                    let branch = head.map(|n| n.shorten().to_string()).unwrap_or_else(|| "HEAD".to_string());
+                    let branch = head
+                        .map(|n| n.shorten().to_string())
+                        .unwrap_or_else(|| "HEAD".to_string());
                     results.push(branch);
                 }
                 black_box(results)
@@ -773,7 +792,9 @@ fn bench_multi_repo_status(c: &mut Criterion) {
 
                     // Get current branch
                     let head = repo.head_name().unwrap();
-                    let branch = head.map(|n| n.shorten().to_string()).unwrap_or_else(|| "HEAD".to_string());
+                    let branch = head
+                        .map(|n| n.shorten().to_string())
+                        .unwrap_or_else(|| "HEAD".to_string());
 
                     // gix status API is still maturing - use head_id check as proxy
                     // In real usage, would use repo.status() when stable
@@ -860,7 +881,9 @@ workspace:
         let workspace = PathBuf::from("/home/user/workspace");
 
         b.iter(|| {
-            let repos: Vec<_> = manifest.repos.iter()
+            let repos: Vec<_> = manifest
+                .repos
+                .iter()
                 .filter_map(|(name, config)| {
                     RepoInfo::from_config(name, config, black_box(&workspace))
                 })

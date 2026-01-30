@@ -105,8 +105,8 @@ fn parse_git_url(url: &str) -> Option<ParsedUrl> {
             .trim_start_matches("https://")
             .trim_start_matches("http://");
         let path = url_without_proto
-            .splitn(2, '/')
-            .nth(1)?
+            .split_once('/')?
+            .1
             .trim_end_matches(".git");
 
         // Handle Azure DevOps HTTPS: https://dev.azure.com/org/project/_git/repo

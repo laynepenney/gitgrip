@@ -51,7 +51,11 @@ pub fn branch_exists(repo: &Repository, branch_name: &str) -> bool {
     let repo_path = repo.path().parent().unwrap_or(repo.path());
 
     let output = Command::new("git")
-        .args(["rev-parse", "--verify", &format!("refs/heads/{}", branch_name)])
+        .args([
+            "rev-parse",
+            "--verify",
+            &format!("refs/heads/{}", branch_name),
+        ])
         .current_dir(repo_path)
         .output();
 
@@ -63,7 +67,11 @@ pub fn remote_branch_exists(repo: &Repository, branch_name: &str, remote: &str) 
     let repo_path = repo.path().parent().unwrap_or(repo.path());
 
     let output = Command::new("git")
-        .args(["rev-parse", "--verify", &format!("refs/remotes/{}/{}", remote, branch_name)])
+        .args([
+            "rev-parse",
+            "--verify",
+            &format!("refs/remotes/{}/{}", remote, branch_name),
+        ])
         .current_dir(repo_path)
         .output();
 
@@ -71,7 +79,11 @@ pub fn remote_branch_exists(repo: &Repository, branch_name: &str, remote: &str) 
 }
 
 /// Delete a local branch
-pub fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Result<(), GitError> {
+pub fn delete_local_branch(
+    repo: &Repository,
+    branch_name: &str,
+    force: bool,
+) -> Result<(), GitError> {
     let repo_path = repo.path().parent().unwrap_or(repo.path());
 
     // Check if it's the current branch
@@ -118,7 +130,9 @@ pub fn is_branch_merged(
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.lines().any(|line| line.trim().trim_start_matches("* ") == branch_name))
+    Ok(stdout
+        .lines()
+        .any(|line| line.trim().trim_start_matches("* ") == branch_name))
 }
 
 /// Get list of local branches

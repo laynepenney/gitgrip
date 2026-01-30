@@ -3,16 +3,12 @@
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
-use crate::git::{clone_repo, open_repo, path_exists};
 use crate::git::remote::safe_pull_latest;
+use crate::git::{clone_repo, open_repo, path_exists};
 use std::path::PathBuf;
 
 /// Run the sync command
-pub fn run_sync(
-    workspace_root: &PathBuf,
-    manifest: &Manifest,
-    force: bool,
-) -> anyhow::Result<()> {
+pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> anyhow::Result<()> {
     Output::header(&format!("Syncing {} repositories...", manifest.repos.len()));
     println!();
 
@@ -65,7 +61,10 @@ pub fn run_sync(
                             success_count += 1;
                         } else if let Some(msg) = pull_result.message {
                             if force {
-                                spinner.finish_with_message(format!("{}: skipped - {}", repo.name, msg));
+                                spinner.finish_with_message(format!(
+                                    "{}: skipped - {}",
+                                    repo.name, msg
+                                ));
                             } else {
                                 spinner.finish_with_message(format!("{}: {}", repo.name, msg));
                             }
@@ -90,12 +89,12 @@ pub fn run_sync(
 
     println!();
     if error_count == 0 {
-        Output::success(&format!("All {} repositories synced successfully.", success_count));
-    } else {
-        Output::warning(&format!(
-            "{} synced, {} failed",
-            success_count, error_count
+        Output::success(&format!(
+            "All {} repositories synced successfully.",
+            success_count
         ));
+    } else {
+        Output::warning(&format!("{} synced, {} failed", success_count, error_count));
     }
 
     Ok(())

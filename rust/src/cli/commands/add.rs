@@ -3,8 +3,8 @@
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
-use crate::git::{open_repo, path_exists};
 use crate::git::cache::invalidate_status_cache;
+use crate::git::{open_repo, path_exists};
 use git2::Repository;
 use std::path::PathBuf;
 use std::process::Command;

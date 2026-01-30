@@ -270,7 +270,11 @@ impl Manifest {
 
         // Validate manifest repo config if present
         if let Some(ref manifest_config) = self.manifest {
-            self.validate_file_configs("manifest", &manifest_config.copyfile, &manifest_config.linkfile)?;
+            self.validate_file_configs(
+                "manifest",
+                &manifest_config.copyfile,
+                &manifest_config.linkfile,
+            )?;
         }
 
         // Validate workspace scripts

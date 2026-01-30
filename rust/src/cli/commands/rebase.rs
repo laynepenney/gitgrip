@@ -81,7 +81,10 @@ pub fn run_rebase(
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("CONFLICT") {
-                spinner.finish_with_message(format!("{}: conflicts - resolve and run 'gr rebase --continue'", repo.name));
+                spinner.finish_with_message(format!(
+                    "{}: conflicts - resolve and run 'gr rebase --continue'",
+                    repo.name
+                ));
             } else {
                 spinner.finish_with_message(format!("{}: failed", repo.name));
             }
@@ -94,7 +97,11 @@ pub fn run_rebase(
         Output::success(&format!(
             "Rebased {} repo(s){}",
             success_count,
-            if skip_count > 0 { format!(", {} skipped", skip_count) } else { String::new() }
+            if skip_count > 0 {
+                format!(", {} skipped", skip_count)
+            } else {
+                String::new()
+            }
         ));
     } else {
         Output::warning(&format!(
