@@ -18,6 +18,7 @@ import { add } from './commands/add.js';
 import { diff } from './commands/diff.js';
 import { forall } from './commands/forall.js';
 import { repoAdd } from './commands/repo.js';
+import { rebase } from './commands/rebase.js';
 import { treeAdd, treeList, treeRemove, treeLock, treeUnlock } from './commands/tree.js';
 import { TimingContext, formatTimingReport, setTimingContext, getTimingContext } from './lib/timing.js';
 
@@ -134,6 +135,20 @@ program
   .action(async (branchName, options) => {
     try {
       await checkout(branchName, { create: options.b, noHooks: !options.hooks });
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exit(1);
+    }
+  });
+
+// Rebase command
+program
+  .command('rebase [target]')
+  .description('Rebase current branch onto target across all repositories')
+  .option('--push', 'Force push after successful rebase')
+  .action(async (target, options) => {
+    try {
+      await rebase(target, { push: options.push });
     } catch (error) {
       console.error(chalk.red(error instanceof Error ? error.message : String(error)));
       process.exit(1);
