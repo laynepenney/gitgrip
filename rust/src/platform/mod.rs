@@ -2,6 +2,7 @@
 //!
 //! Provides a unified interface for GitHub, GitLab, and Azure DevOps.
 
+pub mod azure;
 pub mod github;
 pub mod traits;
 pub mod types;
@@ -22,9 +23,9 @@ pub fn get_platform_adapter(
 ) -> Arc<dyn HostingPlatform> {
     match platform_type {
         PlatformType::GitHub => Arc::new(github::GitHubAdapter::new(base_url)),
-        // TODO: Implement GitLab and Azure DevOps adapters
+        PlatformType::AzureDevOps => Arc::new(azure::AzureDevOpsAdapter::new(base_url)),
+        // TODO: Implement GitLab adapter
         PlatformType::GitLab => Arc::new(github::GitHubAdapter::new(base_url)), // Placeholder
-        PlatformType::AzureDevOps => Arc::new(github::GitHubAdapter::new(base_url)), // Placeholder
     }
 }
 
