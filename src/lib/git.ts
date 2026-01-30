@@ -206,6 +206,35 @@ export async function remoteBranchExists(repoPath: string, branchName: string, r
 }
 
 /**
+ * Delete a local branch
+ */
+export async function deleteLocalBranch(repoPath: string, branchName: string, force = false): Promise<void> {
+  const git = getGitInstance(repoPath);
+  await git.deleteLocalBranch(branchName, force);
+}
+
+/**
+ * Delete a remote branch
+ */
+export async function deleteRemoteBranch(repoPath: string, branchName: string, remote = 'origin'): Promise<void> {
+  const git = getGitInstance(repoPath);
+  await git.push(remote, `:${branchName}`);
+}
+
+/**
+ * Check if a branch has been merged to another branch
+ */
+export async function isBranchMerged(repoPath: string, branchName: string, targetBranch: string): Promise<boolean> {
+  const git = getGitInstance(repoPath);
+  try {
+    const mergedBranches = await git.branch(['--merged', targetBranch]);
+    return mergedBranches.all.some((b) => b === branchName || b.trim() === branchName);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Pull latest changes from remote
  */
 export async function pullLatest(repoPath: string, remote = 'origin'): Promise<void> {

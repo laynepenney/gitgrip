@@ -98,12 +98,24 @@ program
   .command('branch [name]')
   .description('Create or list branches across all repositories')
   .option('-c, --create', 'Create a new branch')
+  .option('-d, --delete', 'Delete a branch (local and remote)')
+  .option('--local', 'Delete local branch only (with -d)')
+  .option('--remote', 'Delete remote branch only (with -d)')
+  .option('-f, --force', 'Force delete even if unmerged (with -d)')
   .option('-r, --repo <repos...>', 'Only operate on specific repositories')
   .option('--include-manifest', 'Include manifest repo in branch operation')
   .action(async (name, options) => {
     try {
       if (name) {
-        await branch(name, { create: options.create, repo: options.repo, includeManifest: options.includeManifest });
+        await branch(name, {
+          create: options.create,
+          delete: options.delete,
+          local: options.local,
+          remote: options.remote,
+          force: options.force,
+          repo: options.repo,
+          includeManifest: options.includeManifest,
+        });
       } else {
         await listBranches();
       }
