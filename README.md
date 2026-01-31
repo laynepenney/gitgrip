@@ -159,6 +159,7 @@ gr sync
 | `gr run <script>` | Run workspace scripts |
 | `gr env` | Show environment variables |
 | `gr bench` | Run performance benchmarks |
+| `gr completions <shell>` | Generate shell completions |
 
 ### Command Details
 
@@ -403,6 +404,30 @@ gr branch feature/foo
 ```
 
 The long form `gitgrip` also works.
+
+## Shell Completions
+
+Generate shell completions for tab completion:
+
+```bash
+# Bash
+gr completions bash > ~/.local/share/bash-completion/completions/gr
+# Or add to ~/.bashrc:
+eval "$(gr completions bash)"
+
+# Zsh
+gr completions zsh > ~/.zfunc/_gr
+# Or add to ~/.zshrc:
+eval "$(gr completions zsh)"
+
+# Fish
+gr completions fish > ~/.config/fish/completions/gr.fish
+
+# PowerShell
+gr completions powershell >> $PROFILE
+```
+
+Supported shells: `bash`, `zsh`, `fish`, `elvish`, `powershell`
 
 ## Requirements
 

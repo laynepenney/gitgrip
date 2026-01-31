@@ -224,6 +224,7 @@ All commands use `gr` (or `gitgrip`):
 - `gr forall -c "cmd"` - Run command in each repo
 - `gr tree add/list/remove` - Manage griptrees (worktree-based multi-branch workspaces)
 - `gr rebase` - Rebase across repos
+- `gr completions <shell>` - Generate shell completions (bash, zsh, fish, elvish, powershell)
 
 ### Griptrees (Multi-Branch Workspaces)
 

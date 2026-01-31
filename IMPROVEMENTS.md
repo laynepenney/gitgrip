@@ -58,6 +58,18 @@ Added `gr completions <shell>` command using clap_complete crate.
 
 ---
 
+### Fix: Griptree worktree operations ✓
+
+**Completed**: 2026-01-31
+
+- Fixed "fatal: this operation must be run in a work tree" errors in griptrees
+- Changed all git CLI calls to use `repo.workdir()` instead of `repo.path().parent()`
+- `repo.path()` returns `.git/worktrees/<name>` for worktrees, which broke git commands
+- `repo.workdir()` correctly returns the actual working directory for both regular repos and worktrees
+- Affected commands: `gr sync`, `gr add`, `gr commit`, `gr push`, `gr status`, etc.
+
+---
+
 ## Pending Review
 
 ### Missing: Single-repo branch creation from existing commit
