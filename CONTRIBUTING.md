@@ -10,13 +10,13 @@ Thank you for your interest in contributing to gitgrip!
    git clone git@github.com:yourusername/gitgrip.git
    cd gitgrip
    ```
-3. Install dependencies:
+3. Build the project:
    ```bash
-   pnpm install
+   cargo build
    ```
-4. Build the project:
+4. Run tests:
    ```bash
-   pnpm build
+   cargo test
    ```
 
 ## Project Structure
@@ -24,35 +24,59 @@ Thank you for your interest in contributing to gitgrip!
 ```
 gitgrip/
 ├── src/
-│   ├── index.ts          # CLI entry point
-│   ├── types.ts          # TypeScript interfaces
-│   ├── commands/         # CLI commands
-│   └── lib/              # Core libraries
-├── dist/                 # Compiled output
-├── docs/                 # Documentation
-└── tests/                # Test files
+│   ├── main.rs           # CLI entry point (clap)
+│   ├── lib.rs            # Library exports
+│   ├── cli/              # CLI command implementations
+│   │   └── commands/     # Individual commands (init, sync, status, etc.)
+│   ├── core/             # Core library (manifest, workspace, config)
+│   ├── git/              # Git operations (git2 bindings)
+│   ├── platform/         # Multi-platform support (GitHub, GitLab, Azure)
+│   └── util/             # Utilities (output, timing)
+├── tests/                # Integration tests
+├── benches/              # Benchmarks
+└── typescript-legacy/    # Legacy TypeScript version (deprecated)
 ```
 
 ## Development Workflow
 
-1. Create a feature branch
+1. Create a feature branch:
+   ```bash
+   git checkout -b feat/my-feature
+   ```
 2. Make your changes
-3. Run tests: `pnpm test`
-4. Run linting: `pnpm lint`
-5. Submit a pull request
+3. Run tests: `cargo test`
+4. Run linting: `cargo clippy`
+5. Format code: `cargo fmt`
+6. Submit a pull request
 
 ## Code Style
 
-- TypeScript strict mode
-- Async/await for I/O
-- Use `chalk` for colored output
-- Use `ora` for spinners
+- Follow Rust idioms and conventions
+- Use `anyhow` for error handling in binaries
+- Use `thiserror` for library error types
+- Use `colored` for terminal colors
+- Use `indicatif` for progress bars and spinners
+- Add tests for new functionality
 
 ## Testing
 
 ```bash
-pnpm test              # Run all tests
-pnpm test:watch        # Watch mode
+cargo test                 # Run all tests
+cargo test <name>          # Run specific test
+cargo test -- --nocapture  # Show output
+```
+
+## Benchmarks
+
+```bash
+cargo bench                # Run benchmarks
+```
+
+## Building
+
+```bash
+cargo build                # Debug build
+cargo build --release      # Release build
 ```
 
 ## Questions?
