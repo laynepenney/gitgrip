@@ -19,6 +19,15 @@ enum Commands {
         /// Target directory
         #[arg(short, long)]
         path: Option<String>,
+        /// Create workspace from existing local directories
+        #[arg(long, conflicts_with = "url")]
+        from_dirs: bool,
+        /// Specific directories to scan (requires --from-dirs)
+        #[arg(long, requires = "from_dirs")]
+        dirs: Vec<String>,
+        /// Interactive mode - preview and confirm before writing
+        #[arg(short, long)]
+        interactive: bool,
     },
     /// Sync all repositories
     Sync {
@@ -342,8 +351,20 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Some(Commands::Init { url, path }) => {
-            gitgrip::cli::commands::init::run_init(url.as_deref(), path.as_deref())?;
+        Some(Commands::Init {
+            url,
+            path,
+            from_dirs,
+            dirs,
+            interactive,
+        }) => {
+            gitgrip::cli::commands::init::run_init(
+                url.as_deref(),
+                path.as_deref(),
+                from_dirs,
+                &dirs,
+                interactive,
+            )?;
         }
         Some(Commands::Tree { action }) => {
             let (workspace_root, manifest) = load_workspace()?;
