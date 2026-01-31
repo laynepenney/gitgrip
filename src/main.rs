@@ -1,6 +1,7 @@
 //! gitgrip CLI entry point
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell};
 
 #[derive(Parser)]
 #[command(name = "gr")]
@@ -157,6 +158,12 @@ enum Commands {
     Repo {
         #[command(subcommand)]
         action: RepoCommands,
+    },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
     },
 }
 
@@ -478,6 +485,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Bench(args)) => {
             gitgrip::cli::commands::bench::run(args).await?;
+        }
+        Some(Commands::Completions { shell }) => {
+            let mut cmd = Cli::command();
+            generate(shell, &mut cmd, "gr", &mut std::io::stdout());
         }
         None => {
             println!("gitgrip - Multi-repo workflow tool");
