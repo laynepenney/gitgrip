@@ -21,11 +21,9 @@ jobs:
             os: ubuntu-latest
             name: linux-x86_64
           # NOTE: aarch64-linux disabled - OpenSSL cross-compilation issues
-          # TODO: Re-enable with vendored OpenSSL or custom cross image
-          # macOS - use native runners to avoid cross-compilation OpenSSL issues
-          - target: x86_64-apple-darwin
-            os: macos-15        # Intel runner (x86_64) - macos-13 retired Jan 2025
-            name: macos-x86_64
+          # NOTE: x86_64-apple-darwin disabled - macOS 15 runners are Apple Silicon only
+          # TODO: Re-enable with vendored OpenSSL
+          # macOS - only Apple Silicon available natively
           - target: aarch64-apple-darwin
             os: macos-latest    # Apple Silicon runner (aarch64)
             name: macos-aarch64
@@ -115,9 +113,10 @@ jobs:
             | Platform | Architecture | Download |
             |----------|--------------|----------|
             | Linux | x86_64 | [gitgrip-linux-x86_64.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/gitgrip-linux-x86_64.tar.gz) |
-            | macOS | x86_64 (Intel) | [gitgrip-macos-x86_64.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/gitgrip-macos-x86_64.tar.gz) |
             | macOS | aarch64 (Apple Silicon) | [gitgrip-macos-aarch64.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/gitgrip-macos-aarch64.tar.gz) |
             | Windows | x86_64 | [gitgrip-windows-x86_64.zip](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/gitgrip-windows-x86_64.zip) |
+
+            > **Note:** Intel Mac users can install via `cargo install gitgrip` or use Rosetta 2 with the Apple Silicon binary.
 
             ### From crates.io
 
