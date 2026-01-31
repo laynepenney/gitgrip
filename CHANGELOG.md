@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `gr init --from-dirs` command to create workspace from existing local directories
+  - Auto-scans current directory for git repositories
+  - `--dirs` flag to scan specific directories only
+  - `--interactive` flag for YAML preview and editing before save
+  - Discovers remote URLs and default branches automatically
+  - Handles duplicate names with auto-suffixing
+  - Initializes manifest directory as git repo with initial commit
+
 ## [0.4.2] - 2026-01-29
 
 ### Fixed

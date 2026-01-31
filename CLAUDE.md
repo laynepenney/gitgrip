@@ -206,7 +206,8 @@ Workspace configuration in `.gitgrip/manifests/manifest.yaml`:
 
 ### Commands
 All commands use `gr` (or `gitgrip`):
-- `gr init <url>` - Initialize workspace from manifest
+- `gr init <url>` - Initialize workspace from manifest URL
+- `gr init --from-dirs` - Initialize workspace from existing local directories
 - `gr sync` - Pull all repos + process links + run hooks
 - `gr status` - Show repo and manifest status
 - `gr branch/checkout` - Branch operations across all repos

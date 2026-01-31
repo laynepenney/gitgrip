@@ -93,12 +93,24 @@ settings:
 
 ### 2. Initialize a workspace
 
+**From a manifest URL:**
 ```bash
-mkdir my-workspace && cd my-workspace
 gr init git@github.com:your-org/my-workspace.git
 ```
 
-This clones the manifest repo into `.gitgrip/manifests/` and all defined repositories.
+**From existing local directories:**
+```bash
+# Auto-scan current directory for git repos
+gr init --from-dirs
+
+# Scan specific directories
+gr init --from-dirs --dirs ./frontend ./backend
+
+# Interactive mode - preview and edit manifest before saving
+gr init --from-dirs --interactive
+```
+
+This creates `.gitgrip/manifests/` with the manifest configuration.
 
 ### 3. Start working
 
@@ -121,6 +133,7 @@ gr sync
 | Command | Description |
 |---------|-------------|
 | `gr init <url>` | Initialize workspace from manifest repo |
+| `gr init --from-dirs` | Initialize workspace from existing local directories |
 | `gr sync` | Pull latest from all repos |
 | `gr status` | Show status of all repos |
 | `gr branch [name]` | Create or list branches |
@@ -152,6 +165,22 @@ gr sync
 #### `gr init <manifest-url>`
 
 Initialize a new workspace by cloning the manifest repository and all defined repos.
+
+#### `gr init --from-dirs`
+
+Initialize a workspace from existing local git repositories. Discovers repos, extracts remote URLs and default branches, and generates a manifest.
+
+| Option | Description |
+|--------|-------------|
+| `--from-dirs` | Create workspace from existing directories |
+| `--dirs <paths>` | Specific directories to scan (default: all subdirs) |
+| `-i, --interactive` | Preview manifest and confirm before writing |
+
+**Features:**
+- Auto-detects remote URLs and default branches
+- Handles duplicate directory names with auto-suffixing
+- Initializes manifest as a git repository with initial commit
+- In interactive mode, edit the generated YAML before saving
 
 #### `gr sync [options]`
 
