@@ -23,7 +23,7 @@ fn test_version() {
     cmd.arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("0.5.0"));
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
 }
 
 /// Test that `gr status` fails gracefully outside a workspace

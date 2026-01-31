@@ -137,6 +137,36 @@ pub trait HostingPlatform: Send + Sync {
     /// Check if a URL belongs to this platform
     fn matches_url(&self, url: &str) -> bool;
 
+    /// Create a new repository on the platform
+    ///
+    /// This is an optional operation - platforms may not support it or the user
+    /// may not have permission. Returns the clone URL of the created repository.
+    async fn create_repository(
+        &self,
+        owner: &str,
+        name: &str,
+        description: Option<&str>,
+        private: bool,
+    ) -> Result<String, PlatformError> {
+        // Default implementation returns an error
+        let _ = (owner, name, description, private);
+        Err(PlatformError::ApiError(
+            "Repository creation not supported on this platform".to_string(),
+        ))
+    }
+
+    /// Delete a repository from the platform
+    ///
+    /// This is a destructive operation and should be used with caution.
+    /// Mainly useful for testing cleanup.
+    async fn delete_repository(&self, owner: &str, name: &str) -> Result<(), PlatformError> {
+        // Default implementation returns an error
+        let _ = (owner, name);
+        Err(PlatformError::ApiError(
+            "Repository deletion not supported on this platform".to_string(),
+        ))
+    }
+
     /// Generate HTML comment for linked PR tracking
     fn generate_linked_pr_comment(&self, links: &[LinkedPRRef]) -> String {
         if links.is_empty() {

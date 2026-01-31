@@ -334,3 +334,39 @@ _Items that have been implemented. Keep for historical reference._
 Created: 2025-12-05
 Updated: 2026-01-31
 
+
+---
+
+### Missing: Auto-discovery of legacy griptrees
+
+**Discovered**: 2026-01-31 during Rust migration testing
+
+**Problem**: The Rust implementation stores griptrees in `.gitgrip/griptrees.json`, but the TypeScript version stored a `.griptree` marker file in each griptree directory. Existing griptrees from the TypeScript version don't show up in `gr tree list`.
+
+**Current behavior**:
+- `gr tree list` only reads from `.gitgrip/griptrees.json`
+- Existing griptrees with `.griptree` marker files are invisible
+
+**Expected behavior**:
+- `gr tree list` should scan sibling directories for `.griptree` marker files
+- Discovered griptrees should be automatically registered in `griptrees.json`
+- Or at minimum, show a message like "Found unregistered griptree: codi-dev"
+
+**Workaround**:
+Manually create `.gitgrip/griptrees.json`:
+```json
+{
+  "griptrees": {
+    "codi-dev": {
+      "path": "/Users/layne/Development/codi-dev",
+      "branch": "codi-dev",
+      "locked": false,
+      "lock_reason": null
+    }
+  }
+}
+```
+
+**Suggested implementation**:
+Add a `gr tree discover` command or auto-discovery in `gr tree list`.
+

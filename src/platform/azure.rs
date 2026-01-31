@@ -754,6 +754,102 @@ impl HostingPlatform for AzureDevOpsAdapter {
             || url.contains("ssh.dev.azure.com")
     }
 
+    async fn create_repository(
+        &self,
+        owner: &str,
+        name: &str,
+        _description: Option<&str>,
+        _private: bool,
+    ) -> Result<String, PlatformError> {
+        // Azure DevOps owner format: org/project
+        let ctx = self.parse_context(owner, name);
+
+        #[derive(Serialize)]
+        struct CreateRepoRequest {
+            name: String,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct CreateRepoResponse {
+            ssh_url: Option<String>,
+            remote_url: Option<String>,
+        }
+
+        let response: CreateRepoResponse = self
+            .api_request(
+                reqwest::Method::POST,
+                &ctx,
+                "/git/repositories",
+                Some(CreateRepoRequest {
+                    name: name.to_string(),
+                }),
+            )
+            .await?;
+
+        // Prefer SSH URL, fall back to HTTPS
+        let clone_url = response.ssh_url.or(response.remote_url).ok_or_else(|| {
+            PlatformError::ParseError("No clone URL returned from Azure DevOps".to_string())
+        })?;
+
+        Ok(clone_url)
+    }
+
+    async fn delete_repository(&self, owner: &str, name: &str) -> Result<(), PlatformError> {
+        let ctx = self.parse_context(owner, name);
+        let token = self.get_token().await?;
+
+        // First, get the repository ID
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RepoInfo {
+            id: String,
+        }
+
+        let repo_info: RepoInfo = self
+            .api_request(
+                reqwest::Method::GET,
+                &ctx,
+                &format!("/git/repositories/{}", ctx.repository),
+                None::<()>,
+            )
+            .await?;
+
+        // Delete the repository by ID
+        let url = format!(
+            "{}/{}/{}/_apis/git/repositories/{}?api-version=7.0",
+            self.base_url, ctx.organization, ctx.project, repo_info.id
+        );
+
+        let auth = STANDARD.encode(format!(":{}", token));
+
+        let response = self
+            .http_client
+            .delete(&url)
+            .header("Authorization", format!("Basic {}", auth))
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        if response.status() == 404 {
+            return Err(PlatformError::NotFound(format!(
+                "Repository {} not found",
+                name
+            )));
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(PlatformError::ApiError(format!(
+                "Failed to delete repository ({}): {}",
+                status, error_text
+            )));
+        }
+
+        Ok(())
+    }
+
     fn generate_linked_pr_comment(&self, links: &[LinkedPRRef]) -> String {
         if links.is_empty() {
             return String::new();

@@ -106,6 +106,8 @@ impl GriptreeConfig {
 }
 
 /// Pointer file stored in the griptree directory (.griptree)
+/// This file indicates that the current directory is a griptree and points
+/// back to the main workspace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GriptreePointer {
@@ -113,6 +115,39 @@ pub struct GriptreePointer {
     pub main_workspace: String,
     /// Branch name
     pub branch: String,
+    /// Whether the griptree is locked (optional for backwards compat)
+    #[serde(default)]
+    pub locked: bool,
+    /// When the griptree was created (optional for backwards compat)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+impl GriptreePointer {
+    /// Load pointer from a .griptree file
+    pub fn load(path: &std::path::Path) -> Result<Self, GriptreeError> {
+        let content = std::fs::read_to_string(path)?;
+        let pointer: GriptreePointer = serde_json::from_str(&content)?;
+        Ok(pointer)
+    }
+
+    /// Find a .griptree pointer file by searching current and parent directories
+    pub fn find_in_ancestors(start: &std::path::Path) -> Option<(std::path::PathBuf, Self)> {
+        let mut current = start.to_path_buf();
+        loop {
+            let pointer_path = current.join(".griptree");
+            if pointer_path.exists() {
+                if let Ok(pointer) = Self::load(&pointer_path) {
+                    return Some((current, pointer));
+                }
+            }
+
+            match current.parent() {
+                Some(parent) => current = parent.to_path_buf(),
+                None => return None,
+            }
+        }
+    }
 }
 
 /// Per-repo worktree info

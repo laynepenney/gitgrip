@@ -67,6 +67,43 @@ impl GitLabAdapter {
         urlencoding::encode(&format!("{}/{}", owner, repo)).into_owned()
     }
 
+    /// Get the namespace (group) ID for the given owner/path
+    async fn get_namespace_id(&self, owner: &str) -> Result<Option<u64>, PlatformError> {
+        let token = self.get_token().await?;
+        let encoded_owner = urlencoding::encode(owner);
+        let url = format!("{}/api/v4/namespaces/{}", self.base_url, encoded_owner);
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("PRIVATE-TOKEN", &token)
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        if response.status() == 404 {
+            // Namespace not found - might be the user's personal namespace
+            return Ok(None);
+        }
+
+        if !response.status().is_success() {
+            // Just return None if we can't find it - GitLab will use the user's namespace
+            return Ok(None);
+        }
+
+        #[derive(Deserialize)]
+        struct Namespace {
+            id: u64,
+        }
+
+        let namespace: Namespace = response
+            .json()
+            .await
+            .map_err(|e| PlatformError::ParseError(e.to_string()))?;
+
+        Ok(Some(namespace.id))
+    }
+
     /// Make authenticated API request
     async fn api_request<T: for<'de> Deserialize<'de>>(
         &self,
@@ -599,6 +636,105 @@ impl HostingPlatform for GitLabAdapter {
         }
 
         false
+    }
+
+    async fn create_repository(
+        &self,
+        owner: &str,
+        name: &str,
+        description: Option<&str>,
+        private: bool,
+    ) -> Result<String, PlatformError> {
+        let token = self.get_token().await?;
+        let url = format!("{}/api/v4/projects", self.base_url);
+
+        // GitLab visibility levels: private, internal, public
+        let visibility = if private { "private" } else { "public" };
+
+        #[derive(Serialize)]
+        struct CreateProjectRequest {
+            name: String,
+            path: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            namespace_id: Option<u64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            description: Option<String>,
+            visibility: String,
+            initialize_with_readme: bool,
+        }
+
+        // Try to get the namespace (group) ID for the owner
+        let namespace_id = self.get_namespace_id(owner).await?;
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("PRIVATE-TOKEN", &token)
+            .header("Content-Type", "application/json")
+            .json(&CreateProjectRequest {
+                name: name.to_string(),
+                path: name.to_string(),
+                namespace_id,
+                description: description.map(|s| s.to_string()),
+                visibility: visibility.to_string(),
+                initialize_with_readme: true,
+            })
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(PlatformError::ApiError(format!(
+                "Failed to create project ({}): {}",
+                status, error_text
+            )));
+        }
+
+        #[derive(Deserialize)]
+        struct ProjectResponse {
+            ssh_url_to_repo: String,
+        }
+
+        let project: ProjectResponse = response
+            .json()
+            .await
+            .map_err(|e| PlatformError::ParseError(e.to_string()))?;
+
+        Ok(project.ssh_url_to_repo)
+    }
+
+    async fn delete_repository(&self, owner: &str, name: &str) -> Result<(), PlatformError> {
+        let token = self.get_token().await?;
+        let project_id = self.encode_project(owner, name);
+        let url = format!("{}/api/v4/projects/{}", self.base_url, project_id);
+
+        let response = self
+            .http_client
+            .delete(&url)
+            .header("PRIVATE-TOKEN", &token)
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        if response.status() == 404 {
+            return Err(PlatformError::NotFound(format!(
+                "Project {}/{} not found",
+                owner, name
+            )));
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(PlatformError::ApiError(format!(
+                "Failed to delete project ({}): {}",
+                status, error_text
+            )));
+        }
+
+        Ok(())
     }
 
     fn generate_linked_pr_comment(&self, links: &[LinkedPRRef]) -> String {

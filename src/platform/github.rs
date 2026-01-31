@@ -443,6 +443,127 @@ impl HostingPlatform for GitHubAdapter {
         url.contains("github.com")
     }
 
+    async fn create_repository(
+        &self,
+        owner: &str,
+        name: &str,
+        description: Option<&str>,
+        private: bool,
+    ) -> Result<String, PlatformError> {
+        let token = self.get_token().await?;
+        let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
+
+        // Check if owner is the authenticated user or an org
+        // First, get the authenticated user
+        let http_client = reqwest::Client::new();
+
+        let user_response = http_client
+            .get(&format!("{}/user", base_url))
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        #[derive(serde::Deserialize)]
+        struct User {
+            login: String,
+        }
+
+        let current_user: User = user_response
+            .json()
+            .await
+            .map_err(|e| PlatformError::ParseError(e.to_string()))?;
+
+        // Determine the API endpoint based on whether owner is the user or an org
+        let url = if owner.eq_ignore_ascii_case(&current_user.login) {
+            format!("{}/user/repos", base_url)
+        } else {
+            format!("{}/orgs/{}/repos", base_url, owner)
+        };
+
+        #[derive(serde::Serialize)]
+        struct CreateRepoRequest {
+            name: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            description: Option<String>,
+            private: bool,
+            auto_init: bool,
+        }
+
+        let response = http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .json(&CreateRepoRequest {
+                name: name.to_string(),
+                description: description.map(|s| s.to_string()),
+                private,
+                auto_init: true, // Initialize with a README so there's a default branch
+            })
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(PlatformError::ApiError(format!(
+                "Failed to create repository ({}): {}",
+                status, error_text
+            )));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct RepoResponse {
+            ssh_url: String,
+        }
+
+        let repo: RepoResponse = response
+            .json()
+            .await
+            .map_err(|e| PlatformError::ParseError(e.to_string()))?;
+
+        Ok(repo.ssh_url)
+    }
+
+    async fn delete_repository(&self, owner: &str, name: &str) -> Result<(), PlatformError> {
+        let token = self.get_token().await?;
+        let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
+
+        let http_client = reqwest::Client::new();
+        let url = format!("{}/repos/{}/{}", base_url, owner, name);
+
+        let response = http_client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        if response.status() == 404 {
+            return Err(PlatformError::NotFound(format!(
+                "Repository {}/{} not found",
+                owner, name
+            )));
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(PlatformError::ApiError(format!(
+                "Failed to delete repository ({}): {}",
+                status, error_text
+            )));
+        }
+
+        Ok(())
+    }
+
     fn generate_linked_pr_comment(&self, links: &[LinkedPRRef]) -> String {
         if links.is_empty() {
             return String::new();

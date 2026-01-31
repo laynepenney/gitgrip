@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-01-31
+
+### Fixed
+- `gr` commands now work from griptree directories by detecting `.griptree` marker file
+  - Reads `mainWorkspace` field from `.griptree` and delegates to parent workspace
+  - Fixes "fatal: this operation must be run in a work tree" errors when running from griptrees
+
 ## [0.5.0] - 2026-01-31
 
 ### Added

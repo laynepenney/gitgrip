@@ -6,8 +6,9 @@
 //! - Existing local directories (--from-dirs)
 
 use crate::cli::output::Output;
-use crate::core::manifest::{Manifest, RepoConfig};
+use crate::core::manifest::{Manifest, PlatformType, RepoConfig};
 use crate::git::clone_repo;
+use crate::platform;
 use dialoguer::{theme::ColorfulTheme, Editor, Select};
 use git2::Repository;
 use std::collections::HashMap;
@@ -30,15 +31,18 @@ pub struct DiscoveredRepo {
 }
 
 /// Run the init command
-pub fn run_init(
+pub async fn run_init(
     url: Option<&str>,
     path: Option<&str>,
     from_dirs: bool,
     dirs: &[String],
     interactive: bool,
+    create_manifest: bool,
+    manifest_name: Option<&str>,
+    private: bool,
 ) -> anyhow::Result<()> {
     if from_dirs {
-        run_init_from_dirs(path, dirs, interactive)
+        run_init_from_dirs(path, dirs, interactive, create_manifest, manifest_name, private).await
     } else {
         run_init_from_url(url, path)
     }
@@ -113,10 +117,13 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
 }
 
 /// Initialize workspace from existing local directories
-fn run_init_from_dirs(
+async fn run_init_from_dirs(
     path: Option<&str>,
     dirs: &[String],
     interactive: bool,
+    create_manifest: bool,
+    manifest_name: Option<&str>,
+    private: bool,
 ) -> anyhow::Result<()> {
     // Determine workspace root
     let workspace_root = match path {
@@ -189,16 +196,108 @@ fn run_init_from_dirs(
     // Initialize manifest as git repo
     init_manifest_repo(&manifests_dir)?;
 
+    // Handle manifest repo creation on detected platform
+    let mut manifest_remote_url = None;
+    if create_manifest {
+        if let Some(detected) = detect_common_platform(&discovered) {
+            let repo_name = manifest_name.unwrap_or("workspace-manifest");
+
+            println!();
+            Output::info(&format!(
+                "Detected platform: {} (owner: {}, confidence: {:.0}%)",
+                detected.platform, detected.owner, detected.confidence * 100.0
+            ));
+
+            let suggested_url = suggest_manifest_url(detected.platform, &detected.owner, repo_name);
+            Output::info(&format!("Creating manifest repo: {}", suggested_url));
+
+            // Create the repository
+            let adapter = platform::get_platform_adapter(detected.platform, None);
+            match adapter
+                .create_repository(&detected.owner, repo_name, Some("Workspace manifest repository for gitgrip"), private)
+                .await
+            {
+                Ok(clone_url) => {
+                    Output::success(&format!("Created repository: {}", clone_url));
+
+                    // Add remote to manifest repo
+                    let output = Command::new("git")
+                        .args(["remote", "add", "origin", &clone_url])
+                        .current_dir(&manifests_dir)
+                        .output()?;
+
+                    if output.status.success() {
+                        Output::success("Added remote 'origin' to manifest repo");
+                        manifest_remote_url = Some(clone_url);
+
+                        // Push initial commit
+                        let push_output = Command::new("git")
+                            .args(["push", "-u", "origin", "main"])
+                            .current_dir(&manifests_dir)
+                            .output()?;
+
+                        if push_output.status.success() {
+                            Output::success("Pushed initial commit to remote");
+                        } else {
+                            // Try with master branch
+                            let push_output = Command::new("git")
+                                .args(["push", "-u", "origin", "master"])
+                                .current_dir(&manifests_dir)
+                                .output()?;
+
+                            if push_output.status.success() {
+                                Output::success("Pushed initial commit to remote");
+                            } else {
+                                let stderr = String::from_utf8_lossy(&push_output.stderr);
+                                Output::warning(&format!(
+                                    "Could not push: {}. You may need to push manually.",
+                                    stderr.trim()
+                                ));
+                            }
+                        }
+                    } else {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        Output::warning(&format!(
+                            "Could not add remote: {}. You may need to add it manually.",
+                            stderr.trim()
+                        ));
+                    }
+                }
+                Err(e) => {
+                    Output::warning(&format!(
+                        "Could not create repository on {}: {}",
+                        detected.platform, e
+                    ));
+                    Output::info("You can create the repository manually and add it as a remote.");
+                }
+            }
+        } else {
+            Output::warning(
+                "Could not detect platform from repositories. No remote URLs found.",
+            );
+            Output::info("You can create the manifest repository manually and add it as a remote.");
+        }
+    }
+
     println!();
     Output::success("Workspace initialized successfully!");
     println!();
     println!("Manifest created at: {}", manifest_path.display());
     println!();
-    println!("Next steps:");
-    println!("  1. Review the manifest: cat .gitgrip/manifests/manifest.yaml");
-    println!("  2. Add a remote to the manifest repo:");
-    println!("     cd .gitgrip/manifests && git remote add origin <your-manifest-url>");
-    println!("  3. Run 'gr status' to verify your workspace");
+
+    if let Some(url) = manifest_remote_url {
+        println!("Manifest remote: {}", url);
+        println!();
+        println!("Next steps:");
+        println!("  1. Review the manifest: cat .gitgrip/manifests/manifest.yaml");
+        println!("  2. Run 'gr status' to verify your workspace");
+    } else {
+        println!("Next steps:");
+        println!("  1. Review the manifest: cat .gitgrip/manifests/manifest.yaml");
+        println!("  2. Add a remote to the manifest repo:");
+        println!("     cd .gitgrip/manifests && git remote add origin <your-manifest-url>");
+        println!("  3. Run 'gr status' to verify your workspace");
+    }
 
     Ok(())
 }
@@ -593,6 +692,105 @@ fn extract_repo_name(url: &str) -> Option<String> {
     None
 }
 
+/// Result of platform detection from discovered repos
+#[derive(Debug, Clone)]
+pub struct DetectedPlatform {
+    /// The detected platform type
+    pub platform: PlatformType,
+    /// The owner/organization on that platform
+    pub owner: String,
+    /// Confidence level (number of repos with this platform / total repos with remotes)
+    pub confidence: f32,
+}
+
+/// Analyze discovered repos and detect their common platform
+///
+/// Returns the most common platform among repos with remotes, along with
+/// the detected owner/organization. Returns None if no repos have remotes
+/// or if there's no clear majority platform.
+pub fn detect_common_platform(repos: &[DiscoveredRepo]) -> Option<DetectedPlatform> {
+    // Filter to repos with URLs
+    let repos_with_urls: Vec<_> = repos.iter().filter_map(|r| r.url.as_ref()).collect();
+
+    if repos_with_urls.is_empty() {
+        return None;
+    }
+
+    // Count platforms and collect owners
+    let mut platform_counts: HashMap<PlatformType, Vec<String>> = HashMap::new();
+
+    for url in &repos_with_urls {
+        let detected_platform = platform::detect_platform(url);
+        let adapter = platform::get_platform_adapter(detected_platform, None);
+
+        if let Some(info) = adapter.parse_repo_url(url) {
+            platform_counts
+                .entry(detected_platform)
+                .or_default()
+                .push(info.owner);
+        } else {
+            // URL matches platform but couldn't be parsed - still count it
+            platform_counts.entry(detected_platform).or_default();
+        }
+    }
+
+    // Find the platform with the most repos
+    let (platform, owners) = platform_counts
+        .into_iter()
+        .max_by_key(|(_, owners)| owners.len())?;
+
+    // Find the most common owner for this platform
+    let mut owner_counts: HashMap<String, usize> = HashMap::new();
+    for owner in &owners {
+        *owner_counts.entry(owner.clone()).or_insert(0) += 1;
+    }
+
+    let (owner, _) = owner_counts.into_iter().max_by_key(|(_, count)| *count)?;
+
+    let confidence = owners.len() as f32 / repos_with_urls.len() as f32;
+
+    Some(DetectedPlatform {
+        platform,
+        owner,
+        confidence,
+    })
+}
+
+/// Generate a suggested manifest repo URL based on the detected platform
+pub fn suggest_manifest_url(platform: PlatformType, owner: &str, name: &str) -> String {
+    match platform {
+        PlatformType::GitHub => format!("git@github.com:{}/{}.git", owner, name),
+        PlatformType::GitLab => format!("git@gitlab.com:{}/{}.git", owner, name),
+        PlatformType::AzureDevOps => {
+            // Azure DevOps owner format: org/project
+            // SSH URL format: git@ssh.dev.azure.com:v3/org/project/repo
+            format!("git@ssh.dev.azure.com:v3/{}/{}.git", owner, name)
+        }
+    }
+}
+
+/// Generate an HTTPS URL for the manifest repo based on the detected platform
+pub fn suggest_manifest_https_url(platform: PlatformType, owner: &str, name: &str) -> String {
+    match platform {
+        PlatformType::GitHub => format!("https://github.com/{}/{}.git", owner, name),
+        PlatformType::GitLab => format!("https://gitlab.com/{}/{}.git", owner, name),
+        PlatformType::AzureDevOps => {
+            // Azure DevOps owner format: org/project
+            // HTTPS URL format: https://dev.azure.com/org/project/_git/repo
+            let parts: Vec<&str> = owner.split('/').collect();
+            if parts.len() >= 2 {
+                format!(
+                    "https://dev.azure.com/{}/{}/_git/{}",
+                    parts[0], parts[1], name
+                )
+            } else {
+                // Fallback: use owner as both org and project
+                format!("https://dev.azure.com/{}/{}/_git/{}", owner, owner, name)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -746,5 +944,187 @@ mod tests {
         assert!(yaml.contains("repos:"));
         assert!(yaml.contains("test:"));
         assert!(yaml.contains("git@github.com:org/test.git"));
+    }
+
+    #[test]
+    fn test_detect_github_platform() {
+        let repos = vec![
+            DiscoveredRepo {
+                name: "frontend".to_string(),
+                path: "./frontend".to_string(),
+                absolute_path: PathBuf::from("/tmp/frontend"),
+                url: Some("git@github.com:myorg/frontend.git".to_string()),
+                default_branch: "main".to_string(),
+            },
+            DiscoveredRepo {
+                name: "backend".to_string(),
+                path: "./backend".to_string(),
+                absolute_path: PathBuf::from("/tmp/backend"),
+                url: Some("git@github.com:myorg/backend.git".to_string()),
+                default_branch: "main".to_string(),
+            },
+        ];
+
+        let result = detect_common_platform(&repos);
+        assert!(result.is_some());
+        let detected = result.unwrap();
+        assert_eq!(detected.platform, PlatformType::GitHub);
+        assert_eq!(detected.owner, "myorg");
+        assert_eq!(detected.confidence, 1.0);
+    }
+
+    #[test]
+    fn test_detect_azure_platform() {
+        let repos = vec![
+            DiscoveredRepo {
+                name: "app".to_string(),
+                path: "./app".to_string(),
+                absolute_path: PathBuf::from("/tmp/app"),
+                url: Some("git@ssh.dev.azure.com:v3/myorg/myproject/app".to_string()),
+                default_branch: "main".to_string(),
+            },
+            DiscoveredRepo {
+                name: "lib".to_string(),
+                path: "./lib".to_string(),
+                absolute_path: PathBuf::from("/tmp/lib"),
+                url: Some("https://dev.azure.com/myorg/myproject/_git/lib".to_string()),
+                default_branch: "main".to_string(),
+            },
+        ];
+
+        let result = detect_common_platform(&repos);
+        assert!(result.is_some());
+        let detected = result.unwrap();
+        assert_eq!(detected.platform, PlatformType::AzureDevOps);
+        assert_eq!(detected.owner, "myorg/myproject");
+    }
+
+    #[test]
+    fn test_detect_gitlab_platform() {
+        let repos = vec![
+            DiscoveredRepo {
+                name: "frontend".to_string(),
+                path: "./frontend".to_string(),
+                absolute_path: PathBuf::from("/tmp/frontend"),
+                url: Some("git@gitlab.com:mygroup/frontend.git".to_string()),
+                default_branch: "main".to_string(),
+            },
+            DiscoveredRepo {
+                name: "backend".to_string(),
+                path: "./backend".to_string(),
+                absolute_path: PathBuf::from("/tmp/backend"),
+                url: Some("https://gitlab.com/mygroup/backend.git".to_string()),
+                default_branch: "main".to_string(),
+            },
+        ];
+
+        let result = detect_common_platform(&repos);
+        assert!(result.is_some());
+        let detected = result.unwrap();
+        assert_eq!(detected.platform, PlatformType::GitLab);
+        assert_eq!(detected.owner, "mygroup");
+    }
+
+    #[test]
+    fn test_detect_no_remotes() {
+        let repos = vec![
+            DiscoveredRepo {
+                name: "local1".to_string(),
+                path: "./local1".to_string(),
+                absolute_path: PathBuf::from("/tmp/local1"),
+                url: None,
+                default_branch: "main".to_string(),
+            },
+            DiscoveredRepo {
+                name: "local2".to_string(),
+                path: "./local2".to_string(),
+                absolute_path: PathBuf::from("/tmp/local2"),
+                url: None,
+                default_branch: "main".to_string(),
+            },
+        ];
+
+        let result = detect_common_platform(&repos);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_detect_mixed_platforms() {
+        let repos = vec![
+            DiscoveredRepo {
+                name: "gh1".to_string(),
+                path: "./gh1".to_string(),
+                absolute_path: PathBuf::from("/tmp/gh1"),
+                url: Some("git@github.com:org1/gh1.git".to_string()),
+                default_branch: "main".to_string(),
+            },
+            DiscoveredRepo {
+                name: "gh2".to_string(),
+                path: "./gh2".to_string(),
+                absolute_path: PathBuf::from("/tmp/gh2"),
+                url: Some("git@github.com:org1/gh2.git".to_string()),
+                default_branch: "main".to_string(),
+            },
+            DiscoveredRepo {
+                name: "gl1".to_string(),
+                path: "./gl1".to_string(),
+                absolute_path: PathBuf::from("/tmp/gl1"),
+                url: Some("git@gitlab.com:org2/gl1.git".to_string()),
+                default_branch: "main".to_string(),
+            },
+        ];
+
+        let result = detect_common_platform(&repos);
+        assert!(result.is_some());
+        let detected = result.unwrap();
+        // GitHub should win (2 vs 1)
+        assert_eq!(detected.platform, PlatformType::GitHub);
+        assert_eq!(detected.owner, "org1");
+        // Confidence should be 2/3
+        assert!((detected.confidence - 0.666).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_suggest_manifest_url_github() {
+        let url = suggest_manifest_url(PlatformType::GitHub, "myorg", "workspace-manifest");
+        assert_eq!(url, "git@github.com:myorg/workspace-manifest.git");
+    }
+
+    #[test]
+    fn test_suggest_manifest_url_gitlab() {
+        let url = suggest_manifest_url(PlatformType::GitLab, "mygroup", "workspace-manifest");
+        assert_eq!(url, "git@gitlab.com:mygroup/workspace-manifest.git");
+    }
+
+    #[test]
+    fn test_suggest_manifest_url_azure() {
+        let url = suggest_manifest_url(
+            PlatformType::AzureDevOps,
+            "myorg/myproject",
+            "workspace-manifest",
+        );
+        assert_eq!(
+            url,
+            "git@ssh.dev.azure.com:v3/myorg/myproject/workspace-manifest.git"
+        );
+    }
+
+    #[test]
+    fn test_suggest_manifest_https_url_github() {
+        let url = suggest_manifest_https_url(PlatformType::GitHub, "myorg", "workspace-manifest");
+        assert_eq!(url, "https://github.com/myorg/workspace-manifest.git");
+    }
+
+    #[test]
+    fn test_suggest_manifest_https_url_azure() {
+        let url = suggest_manifest_https_url(
+            PlatformType::AzureDevOps,
+            "myorg/myproject",
+            "workspace-manifest",
+        );
+        assert_eq!(
+            url,
+            "https://dev.azure.com/myorg/myproject/_git/workspace-manifest"
+        );
     }
 }

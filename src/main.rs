@@ -28,6 +28,15 @@ enum Commands {
         /// Interactive mode - preview and confirm before writing
         #[arg(short, long)]
         interactive: bool,
+        /// Create manifest repository on detected platform (requires --from-dirs)
+        #[arg(long, requires = "from_dirs")]
+        create_manifest: bool,
+        /// Name for manifest repository (default: workspace-manifest)
+        #[arg(long, requires = "create_manifest")]
+        manifest_name: Option<String>,
+        /// Make manifest repository private (default: false)
+        #[arg(long, requires = "create_manifest")]
+        private: bool,
     },
     /// Sync all repositories
     Sync {
@@ -357,6 +366,9 @@ async fn main() -> anyhow::Result<()> {
             from_dirs,
             dirs,
             interactive,
+            create_manifest,
+            manifest_name,
+            private,
         }) => {
             gitgrip::cli::commands::init::run_init(
                 url.as_deref(),
@@ -364,7 +376,11 @@ async fn main() -> anyhow::Result<()> {
                 from_dirs,
                 &dirs,
                 interactive,
-            )?;
+                create_manifest,
+                manifest_name.as_deref(),
+                private,
+            )
+            .await?;
         }
         Some(Commands::Tree { action }) => {
             let (workspace_root, manifest) = load_workspace()?;
@@ -474,21 +490,47 @@ async fn main() -> anyhow::Result<()> {
 
 /// Load the workspace manifest
 fn load_workspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manifest::Manifest)> {
-    // Find workspace root by looking for .gitgrip directory
-    let mut current = std::env::current_dir()?;
+    let current = std::env::current_dir()?;
+
+    // First, check if we're in a griptree (has .griptree pointer file)
+    if let Some((_griptree_path, pointer)) =
+        gitgrip::core::griptree::GriptreePointer::find_in_ancestors(&current)
+    {
+        // We're in a griptree - use the main workspace path
+        let main_workspace = std::path::PathBuf::from(&pointer.main_workspace);
+        let manifest_path = main_workspace
+            .join(".gitgrip")
+            .join("manifests")
+            .join("manifest.yaml");
+
+        if manifest_path.exists() {
+            let content = std::fs::read_to_string(&manifest_path)?;
+            let manifest = gitgrip::core::manifest::Manifest::parse(&content)?;
+            return Ok((main_workspace, manifest));
+        } else {
+            anyhow::bail!(
+                "Griptree points to main workspace '{}' but manifest not found at '{}'",
+                pointer.main_workspace,
+                manifest_path.display()
+            );
+        }
+    }
+
+    // Not in a griptree - find workspace root by looking for .gitgrip directory
+    let mut search_path = current;
     loop {
-        let gitgrip_dir = current.join(".gitgrip");
+        let gitgrip_dir = search_path.join(".gitgrip");
         if gitgrip_dir.exists() {
             let manifest_path = gitgrip_dir.join("manifests").join("manifest.yaml");
             if manifest_path.exists() {
                 let content = std::fs::read_to_string(&manifest_path)?;
                 let manifest = gitgrip::core::manifest::Manifest::parse(&content)?;
-                return Ok((current, manifest));
+                return Ok((search_path, manifest));
             }
         }
 
-        match current.parent() {
-            Some(parent) => current = parent.to_path_buf(),
+        match search_path.parent() {
+            Some(parent) => search_path = parent.to_path_buf(),
             None => {
                 anyhow::bail!("Not in a gitgrip workspace (no .gitgrip directory found)");
             }

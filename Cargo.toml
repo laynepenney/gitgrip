@@ -1,6 +1,6 @@
 [package]
 name = "gitgrip"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 rust-version = "1.80"
 description = "Multi-repo workflow tool - manage multiple git repositories as one"
@@ -29,6 +29,9 @@ path = "src/lib.rs"
 default = []
 # Use gitoxide (gix) instead of git2 for git operations (experimental)
 gitoxide = ["gix"]
+# Enable integration tests that require platform authentication
+# Run with: cargo test --features integration-tests -- --ignored
+integration-tests = []
 
 [dependencies]
 # Async runtime
