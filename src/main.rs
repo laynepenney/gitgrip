@@ -504,10 +504,10 @@ fn load_workspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manife
     let current = std::env::current_dir()?;
 
     // First, check if we're in a griptree (has .griptree pointer file)
-    if let Some((_griptree_path, pointer)) =
+    if let Some((griptree_path, pointer)) =
         gitgrip::core::griptree::GriptreePointer::find_in_ancestors(&current)
     {
-        // We're in a griptree - use the main workspace path
+        // We're in a griptree - read manifest from main workspace but use griptree as workspace root
         let main_workspace = std::path::PathBuf::from(&pointer.main_workspace);
         let manifest_path = main_workspace
             .join(".gitgrip")
@@ -517,7 +517,8 @@ fn load_workspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manife
         if manifest_path.exists() {
             let content = std::fs::read_to_string(&manifest_path)?;
             let manifest = gitgrip::core::manifest::Manifest::parse(&content)?;
-            return Ok((main_workspace, manifest));
+            // Return griptree path as workspace root - repos are located here, not in main workspace
+            return Ok((griptree_path, manifest));
         } else {
             anyhow::bail!(
                 "Griptree points to main workspace '{}' but manifest not found at '{}'",
