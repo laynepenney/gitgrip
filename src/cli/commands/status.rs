@@ -23,22 +23,28 @@ pub fn run_status(
         .collect();
 
     // Get status for all repos
-    let statuses: Vec<RepoStatus> = repos.iter().map(get_repo_status).collect();
+    let statuses: Vec<(RepoStatus, &RepoInfo)> = repos
+        .iter()
+        .map(|repo| (get_repo_status(repo), repo))
+        .collect();
 
     // Count stats
     let total = statuses.len();
-    let cloned = statuses.iter().filter(|s| s.exists).count();
-    let with_changes = statuses.iter().filter(|s| !s.clean).count();
+    let cloned = statuses.iter().filter(|(s, _)| s.exists).count();
+    let with_changes = statuses.iter().filter(|(s, _)| !s.clean).count();
+    let ahead_count = statuses.iter().filter(|(s, _)| s.ahead_main > 0).count();
 
     // Display table
-    let mut table = Table::new(vec!["Repo", "Branch", "Status"]);
+    let mut table = Table::new(vec!["Repo", "Branch", "Status", "vs main"]);
 
-    for status in &statuses {
+    for (status, repo) in &statuses {
         let status_str = format_status(status, verbose);
+        let main_str = format_main_comparison(status, &repo.default_branch);
         table.add_row(vec![
             &Output::repo_name(&status.name),
             &Output::branch_name(&status.branch),
             &status_str,
+            &main_str,
         ]);
     }
 
@@ -46,12 +52,38 @@ pub fn run_status(
 
     // Summary
     println!();
+    let ahead_suffix = if ahead_count > 0 {
+        format!(" | {} ahead of main", ahead_count)
+    } else {
+        String::new()
+    };
     println!(
-        "  {}/{} cloned | {} with changes",
-        cloned, total, with_changes
+        "  {}/{} cloned | {} with changes{}",
+        cloned, total, with_changes, ahead_suffix
     );
 
     Ok(())
+}
+
+/// Format the vs main comparison column
+fn format_main_comparison(status: &RepoStatus, default_branch: &str) -> String {
+    // On default branch - no comparison needed
+    if status.branch == default_branch {
+        return "-".to_string();
+    }
+
+    if status.ahead_main == 0 && status.behind_main == 0 {
+        return "\u{2713}".to_string(); // checkmark
+    }
+
+    let mut parts = Vec::new();
+    if status.ahead_main > 0 {
+        parts.push(format!("\u{2191}{}", status.ahead_main)); // up arrow
+    }
+    if status.behind_main > 0 {
+        parts.push(format!("\u{2193}{}", status.behind_main)); // down arrow
+    }
+    parts.join(" ")
 }
 
 /// Format status for display
@@ -103,6 +135,8 @@ mod tests {
             untracked: 0,
             ahead: 0,
             behind: 0,
+            ahead_main: 0,
+            behind_main: 0,
             exists: true,
         };
         assert_eq!(format_status(&status, false), "✓");
@@ -119,6 +153,8 @@ mod tests {
             untracked: 1,
             ahead: 0,
             behind: 0,
+            ahead_main: 0,
+            behind_main: 0,
             exists: true,
         };
         assert_eq!(format_status(&status, false), "+2 ~3 ?1");
@@ -135,8 +171,100 @@ mod tests {
             untracked: 0,
             ahead: 3,
             behind: 1,
+            ahead_main: 0,
+            behind_main: 0,
             exists: true,
         };
         assert_eq!(format_status(&status, true), "+1 ↑3 ↓1");
+    }
+
+    #[test]
+    fn test_format_main_comparison_on_main() {
+        let status = RepoStatus {
+            name: "test".to_string(),
+            branch: "main".to_string(),
+            clean: true,
+            staged: 0,
+            modified: 0,
+            untracked: 0,
+            ahead: 0,
+            behind: 0,
+            ahead_main: 0,
+            behind_main: 0,
+            exists: true,
+        };
+        assert_eq!(format_main_comparison(&status, "main"), "-");
+    }
+
+    #[test]
+    fn test_format_main_comparison_ahead() {
+        let status = RepoStatus {
+            name: "test".to_string(),
+            branch: "feat/test".to_string(),
+            clean: true,
+            staged: 0,
+            modified: 0,
+            untracked: 0,
+            ahead: 0,
+            behind: 0,
+            ahead_main: 5,
+            behind_main: 0,
+            exists: true,
+        };
+        assert_eq!(format_main_comparison(&status, "main"), "↑5");
+    }
+
+    #[test]
+    fn test_format_main_comparison_behind() {
+        let status = RepoStatus {
+            name: "test".to_string(),
+            branch: "feat/test".to_string(),
+            clean: true,
+            staged: 0,
+            modified: 0,
+            untracked: 0,
+            ahead: 0,
+            behind: 0,
+            ahead_main: 0,
+            behind_main: 3,
+            exists: true,
+        };
+        assert_eq!(format_main_comparison(&status, "main"), "↓3");
+    }
+
+    #[test]
+    fn test_format_main_comparison_both() {
+        let status = RepoStatus {
+            name: "test".to_string(),
+            branch: "feat/test".to_string(),
+            clean: true,
+            staged: 0,
+            modified: 0,
+            untracked: 0,
+            ahead: 0,
+            behind: 0,
+            ahead_main: 2,
+            behind_main: 5,
+            exists: true,
+        };
+        assert_eq!(format_main_comparison(&status, "main"), "↑2 ↓5");
+    }
+
+    #[test]
+    fn test_format_main_comparison_in_sync() {
+        let status = RepoStatus {
+            name: "test".to_string(),
+            branch: "feat/test".to_string(),
+            clean: true,
+            staged: 0,
+            modified: 0,
+            untracked: 0,
+            ahead: 0,
+            behind: 0,
+            ahead_main: 0,
+            behind_main: 0,
+            exists: true,
+        };
+        assert_eq!(format_main_comparison(&status, "main"), "✓");
     }
 }

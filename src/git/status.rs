@@ -42,10 +42,14 @@ pub struct RepoStatus {
     pub modified: usize,
     /// Untracked file count
     pub untracked: usize,
-    /// Commits ahead
+    /// Commits ahead of upstream
     pub ahead: usize,
-    /// Commits behind
+    /// Commits behind upstream
     pub behind: usize,
+    /// Commits ahead of default branch (main)
+    pub ahead_main: usize,
+    /// Commits behind default branch (main)
+    pub behind_main: usize,
     /// Whether repo exists
     pub exists: bool,
 }
@@ -135,7 +139,53 @@ fn get_ahead_behind_git(repo_path: &std::path::Path) -> Option<(usize, usize)> {
         return Some((0, 0));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_ahead_behind(&output.stdout)
+}
+
+/// Get commits ahead/behind a specific branch (e.g., main)
+fn get_ahead_behind_branch(
+    repo_path: &std::path::Path,
+    base_branch: &str,
+) -> Option<(usize, usize)> {
+    // Try remote first: origin/{base_branch}
+    let remote_ref = format!("origin/{}", base_branch);
+
+    let output = Command::new("git")
+        .args([
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("{}...HEAD", remote_ref),
+        ])
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        // Fallback to local branch
+        let output = Command::new("git")
+            .args([
+                "rev-list",
+                "--left-right",
+                "--count",
+                &format!("{}...HEAD", base_branch),
+            ])
+            .current_dir(repo_path)
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return Some((0, 0));
+        }
+        return parse_ahead_behind(&output.stdout);
+    }
+
+    parse_ahead_behind(&output.stdout)
+}
+
+/// Parse ahead/behind counts from git rev-list output
+fn parse_ahead_behind(stdout: &[u8]) -> Option<(usize, usize)> {
+    let stdout = String::from_utf8_lossy(stdout);
     let parts: Vec<&str> = stdout.trim().split('\t').collect();
 
     if parts.len() == 2 {
@@ -159,22 +209,33 @@ pub fn get_repo_status(repo_info: &RepoInfo) -> RepoStatus {
             untracked: 0,
             ahead: 0,
             behind: 0,
+            ahead_main: 0,
+            behind_main: 0,
             exists: false,
         };
     }
 
     match get_cached_status(&repo_info.absolute_path) {
-        Ok(status) => RepoStatus {
-            name: repo_info.name.clone(),
-            branch: status.current_branch,
-            clean: status.is_clean,
-            staged: status.staged.len(),
-            modified: status.modified.len(),
-            untracked: status.untracked.len(),
-            ahead: status.ahead,
-            behind: status.behind,
-            exists: true,
-        },
+        Ok(status) => {
+            // Get ahead/behind counts vs default branch
+            let (ahead_main, behind_main) =
+                get_ahead_behind_branch(&repo_info.absolute_path, &repo_info.default_branch)
+                    .unwrap_or((0, 0));
+
+            RepoStatus {
+                name: repo_info.name.clone(),
+                branch: status.current_branch,
+                clean: status.is_clean,
+                staged: status.staged.len(),
+                modified: status.modified.len(),
+                untracked: status.untracked.len(),
+                ahead: status.ahead,
+                behind: status.behind,
+                ahead_main,
+                behind_main,
+                exists: true,
+            }
+        }
         Err(_) => RepoStatus {
             name: repo_info.name.clone(),
             branch: "error".to_string(),
@@ -184,6 +245,8 @@ pub fn get_repo_status(repo_info: &RepoInfo) -> RepoStatus {
             untracked: 0,
             ahead: 0,
             behind: 0,
+            ahead_main: 0,
+            behind_main: 0,
             exists: true,
         },
     }
