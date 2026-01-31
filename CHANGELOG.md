@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-01-31
+
+### Fixed
+- Git operations now work correctly in griptree worktrees
+  - Changed all git CLI calls to use `repo.workdir()` instead of `repo.path().parent()`
+  - Fixes "fatal: this operation must be run in a work tree" errors for `gr sync`, `gr add`, `gr commit`, etc.
+- Release workflow now uses `--allow-dirty` for crates.io publish to handle Cargo.lock changes
+
+### Added
+- Shell completions via `gr completions <shell>` (bash, zsh, fish, elvish, powershell)
+- GitLab E2E PR workflow tests with Bearer token authentication
+- `get_workdir()` helper function for worktree-compatible path resolution
+
 ## [0.5.1] - 2026-01-31
 
 ### Fixed
