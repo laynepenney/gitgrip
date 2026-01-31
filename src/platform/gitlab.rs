@@ -76,7 +76,7 @@ impl GitLabAdapter {
         let response = self
             .http_client
             .get(&url)
-            .header("PRIVATE-TOKEN", &token)
+            .header("Authorization", format!("Bearer {}", token))
             .send()
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
@@ -117,7 +117,7 @@ impl GitLabAdapter {
         let mut request = self
             .http_client
             .request(method, &url)
-            .header("PRIVATE-TOKEN", &token)
+            .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "application/json");
 
         if let Some(b) = body {
@@ -156,7 +156,7 @@ impl GitLabAdapter {
         let mut request = self
             .http_client
             .put(&url)
-            .header("PRIVATE-TOKEN", &token)
+            .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "application/json");
 
         if let Some(b) = body {
@@ -204,10 +204,11 @@ impl HostingPlatform for GitLabAdapter {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let combined = format!("{}{}", stdout, stderr);
 
-            // Parse token from glab output: "Token: glpat-..."
-            if let Some(token_match) = combined.lines().find(|l| l.contains("Token:")) {
+            // Parse token from glab output: "✓ Token found: glpat-..." or "Token: glpat-..."
+            if let Some(token_match) = combined.lines().find(|l| l.contains("Token")) {
                 if let Some(token) = token_match.split_whitespace().last() {
-                    if !token.is_empty() && token != "Token:" {
+                    // Token should start with glpat- or be a hex string
+                    if !token.is_empty() && token != "Token:" && token != "Token" && token != "found:" {
                         return Ok(token.to_string());
                     }
                 }
@@ -546,7 +547,7 @@ impl HostingPlatform for GitLabAdapter {
         let response = self
             .http_client
             .get(&url)
-            .header("PRIVATE-TOKEN", &token)
+            .header("Authorization", format!("Bearer {}", token))
             .send()
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
@@ -669,7 +670,7 @@ impl HostingPlatform for GitLabAdapter {
         let response = self
             .http_client
             .post(&url)
-            .header("PRIVATE-TOKEN", &token)
+            .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "application/json")
             .json(&CreateProjectRequest {
                 name: name.to_string(),
@@ -713,7 +714,7 @@ impl HostingPlatform for GitLabAdapter {
         let response = self
             .http_client
             .delete(&url)
-            .header("PRIVATE-TOKEN", &token)
+            .header("Authorization", format!("Bearer {}", token))
             .send()
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;

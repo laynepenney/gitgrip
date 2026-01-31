@@ -404,6 +404,138 @@ mod gitlab_tests {
             &workspace.join("repo1"),
         );
     }
+
+    #[test]
+    #[ignore = "Requires GitLab SSH and API access"]
+    fn test_gitlab_full_pr_workflow() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path();
+        let branch_name = format!("test/e2e-{}", random_suffix());
+
+        // Clone test repos
+        clone_repo(test_repos::gitlab::REPO1, "repo1", workspace);
+        clone_repo(test_repos::gitlab::REPO2, "repo2", workspace);
+
+        // Initialize workspace
+        let output = run_gr(&["init", "--from-dirs", "-p", workspace.to_str().unwrap()], workspace);
+        assert!(output.status.success(), "init failed: {}", String::from_utf8_lossy(&output.stderr));
+        println!("Init output: {}", String::from_utf8_lossy(&output.stdout));
+
+        // Read and print the manifest
+        let manifest_path = workspace.join(".gitgrip/manifests/manifest.yaml");
+        if manifest_path.exists() {
+            let manifest_content = fs::read_to_string(&manifest_path).unwrap();
+            println!("Manifest content:\n{}", manifest_content);
+        } else {
+            println!("WARNING: Manifest file does not exist at {:?}", manifest_path);
+        }
+
+        // Check initial status
+        let output = run_gr_in_dir(&["status"], workspace);
+        println!("Initial status: {}", String::from_utf8_lossy(&output.stdout));
+
+        // Create branch
+        let output = run_gr_in_dir(&["branch", &branch_name], workspace);
+        assert!(
+            output.status.success(),
+            "branch failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        println!("Branch created: {}", String::from_utf8_lossy(&output.stdout));
+
+        // Make changes in both repos
+        create_test_file(&workspace.join("repo1"), "test-file.txt");
+        create_test_file(&workspace.join("repo2"), "test-file.txt");
+
+        // Check status after changes
+        let output = run_gr_in_dir(&["status"], workspace);
+        println!("Status after changes: {}", String::from_utf8_lossy(&output.stdout));
+
+        // Stage and commit
+        let output = run_gr_in_dir(&["add", "."], workspace);
+        assert!(output.status.success(), "add failed: {}", String::from_utf8_lossy(&output.stderr));
+        println!("Add output: {}", String::from_utf8_lossy(&output.stdout));
+
+        let output = run_gr_in_dir(&["commit", "-m", "test: gitlab e2e PR test"], workspace);
+        assert!(
+            output.status.success(),
+            "commit failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        println!("Commit output: {}", String::from_utf8_lossy(&output.stdout));
+
+        // Check status after commit
+        let output = run_gr_in_dir(&["status"], workspace);
+        println!("Status after commit: {}", String::from_utf8_lossy(&output.stdout));
+
+        // Push
+        let output = run_gr_in_dir(&["push", "-u"], workspace);
+        assert!(
+            output.status.success(),
+            "push failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        println!("Push output: {}", String::from_utf8_lossy(&output.stdout));
+
+        // Check status after push
+        let output = run_gr_in_dir(&["status"], workspace);
+        println!("Status after push: {}", String::from_utf8_lossy(&output.stdout));
+
+        // Debug: Check git references in repo1
+        let output = git_in_repo(&["branch", "-a"], &workspace.join("repo1"));
+        println!("Git branches in repo1: {}", String::from_utf8_lossy(&output.stdout));
+
+        let output = git_in_repo(&["log", "--oneline", "-5"], &workspace.join("repo1"));
+        println!("Git log in repo1: {}", String::from_utf8_lossy(&output.stdout));
+
+        let output = git_in_repo(&["log", "--oneline", "-5", "origin/main"], &workspace.join("repo1"));
+        println!("Git log origin/main in repo1: {}", String::from_utf8_lossy(&output.stdout));
+
+        // Create PR (merge request on GitLab)
+        let output = run_gr_in_dir(
+            &["pr", "create", "-t", "test: GitLab E2E test MR"],
+            workspace,
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!("PR create stdout: {}", stdout);
+        println!("PR create stderr: {}", stderr);
+
+        assert!(
+            output.status.success(),
+            "pr create failed: stdout={}, stderr={}",
+            stdout, stderr
+        );
+
+        // Verify PRs were created (check for actual creation, not just "PR" text)
+        assert!(
+            stdout.contains("Created") && stdout.contains("#"),
+            "Expected PR creation with number in output, got: {}",
+            stdout
+        );
+
+        // Check PR status
+        let output = run_gr_in_dir(&["pr", "status"], workspace);
+        assert!(
+            output.status.success(),
+            "pr status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        println!("PR status output: {}", stdout);
+
+        // Cleanup: delete remote branches (this will auto-close the MRs on GitLab)
+        git_in_repo(
+            &["push", "origin", "--delete", &branch_name],
+            &workspace.join("repo1"),
+        );
+        git_in_repo(
+            &["push", "origin", "--delete", &branch_name],
+            &workspace.join("repo2"),
+        );
+    }
 }
 
 // ==================== Azure DevOps Tests ====================
@@ -512,6 +644,99 @@ mod azure_tests {
         git_in_repo(
             &["push", "origin", "--delete", &branch_name],
             &workspace.join("repo1"),
+        );
+    }
+
+    #[test]
+    #[ignore = "Requires Azure DevOps SSH and API access"]
+    fn test_azure_full_pr_workflow() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path();
+        let branch_name = format!("test/e2e-{}", random_suffix());
+
+        // Clone test repos
+        clone_repo(test_repos::azure::REPO1, "repo1", workspace);
+        clone_repo(test_repos::azure::REPO2, "repo2", workspace);
+
+        // Initialize workspace
+        let output = run_gr(&["init", "--from-dirs", "-p", workspace.to_str().unwrap()], workspace);
+        assert!(output.status.success(), "init failed");
+
+        // Create branch
+        let output = run_gr_in_dir(&["branch", &branch_name], workspace);
+        assert!(
+            output.status.success(),
+            "branch failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // Make changes in both repos
+        create_test_file(&workspace.join("repo1"), "test-file.txt");
+        create_test_file(&workspace.join("repo2"), "test-file.txt");
+
+        // Stage and commit
+        let output = run_gr_in_dir(&["add", "."], workspace);
+        assert!(output.status.success(), "add failed");
+
+        let output = run_gr_in_dir(&["commit", "-m", "test: azure e2e PR test"], workspace);
+        assert!(
+            output.status.success(),
+            "commit failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // Push
+        let output = run_gr_in_dir(&["push", "-u"], workspace);
+        assert!(
+            output.status.success(),
+            "push failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // Create PR
+        let output = run_gr_in_dir(
+            &["pr", "create", "-t", "test: Azure DevOps E2E test PR"],
+            workspace,
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!("PR create stdout: {}", stdout);
+        println!("PR create stderr: {}", stderr);
+
+        assert!(
+            output.status.success(),
+            "pr create failed: stdout={}, stderr={}",
+            stdout, stderr
+        );
+
+        // Verify PRs were created (check for actual creation, not just "PR" text)
+        assert!(
+            stdout.contains("Created") && stdout.contains("#"),
+            "Expected PR creation with number in output, got: {}",
+            stdout
+        );
+
+        // Check PR status
+        let output = run_gr_in_dir(&["pr", "status"], workspace);
+        assert!(
+            output.status.success(),
+            "pr status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        println!("PR status output: {}", stdout);
+
+        // Cleanup: delete remote branches
+        // Note: On Azure DevOps, deleting the source branch will abandon the PR
+        git_in_repo(
+            &["push", "origin", "--delete", &branch_name],
+            &workspace.join("repo1"),
+        );
+        git_in_repo(
+            &["push", "origin", "--delete", &branch_name],
+            &workspace.join("repo2"),
         );
     }
 }
