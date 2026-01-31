@@ -15,6 +15,17 @@ You are working in a multi-repository workspace managed by **gitgrip** (alias: `
 gr status                    # Always check status before operations
 ```
 
+### Initializing Workspaces
+```bash
+# From manifest URL
+gr init <manifest-url>               # Clone manifest and all repos
+
+# From existing local directories
+gr init --from-dirs                  # Auto-scan current dir for git repos
+gr init --from-dirs --dirs ./a ./b   # Scan specific directories only
+gr init --from-dirs --interactive    # Preview YAML and edit before saving
+```
+
 ### Syncing
 ```bash
 gr sync                      # Pull latest from all repos + process links + run hooks
