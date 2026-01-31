@@ -329,6 +329,8 @@ _Items that have been implemented. Keep for historical reference._
 | #61 | feat: gr forall should default to changed repos only |
 | #62 | feat: add single-repo branch creation for fixing commits |
 | #63 | fix: gr pr create command times out |
+| #99 | fix: gr pr merge doesn't recognize passing checks |
 
 Created: 2025-12-05
+Updated: 2026-01-31
 
