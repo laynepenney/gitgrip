@@ -143,12 +143,20 @@ fn get_ahead_behind_git(repo_path: &std::path::Path) -> Option<(usize, usize)> {
 }
 
 /// Get commits ahead/behind a specific branch (e.g., main)
-fn get_ahead_behind_branch(repo_path: &std::path::Path, base_branch: &str) -> Option<(usize, usize)> {
+fn get_ahead_behind_branch(
+    repo_path: &std::path::Path,
+    base_branch: &str,
+) -> Option<(usize, usize)> {
     // Try remote first: origin/{base_branch}
     let remote_ref = format!("origin/{}", base_branch);
 
     let output = Command::new("git")
-        .args(["rev-list", "--left-right", "--count", &format!("{}...HEAD", remote_ref)])
+        .args([
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("{}...HEAD", remote_ref),
+        ])
         .current_dir(repo_path)
         .output()
         .ok()?;
@@ -156,7 +164,12 @@ fn get_ahead_behind_branch(repo_path: &std::path::Path, base_branch: &str) -> Op
     if !output.status.success() {
         // Fallback to local branch
         let output = Command::new("git")
-            .args(["rev-list", "--left-right", "--count", &format!("{}...HEAD", base_branch)])
+            .args([
+                "rev-list",
+                "--left-right",
+                "--count",
+                &format!("{}...HEAD", base_branch),
+            ])
             .current_dir(repo_path)
             .output()
             .ok()?;
@@ -205,11 +218,9 @@ pub fn get_repo_status(repo_info: &RepoInfo) -> RepoStatus {
     match get_cached_status(&repo_info.absolute_path) {
         Ok(status) => {
             // Get ahead/behind counts vs default branch
-            let (ahead_main, behind_main) = get_ahead_behind_branch(
-                &repo_info.absolute_path,
-                &repo_info.default_branch,
-            )
-            .unwrap_or((0, 0));
+            let (ahead_main, behind_main) =
+                get_ahead_behind_branch(&repo_info.absolute_path, &repo_info.default_branch)
+                    .unwrap_or((0, 0));
 
             RepoStatus {
                 name: repo_info.name.clone(),
