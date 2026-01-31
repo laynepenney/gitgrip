@@ -3,9 +3,9 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/gitgrip"><img src="https://img.shields.io/npm/v/gitgrip.svg?style=flat-square&color=9A3412" alt="npm version"></a>
-  <a href="https://github.com/laynepenney/gitgrip/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/gitgrip.svg?style=flat-square&color=7C2D12" alt="license"></a>
-  <a href="https://www.npmjs.com/package/gitgrip"><img src="https://img.shields.io/npm/dm/gitgrip.svg?style=flat-square&color=431407" alt="downloads"></a>
+  <a href="https://crates.io/crates/gitgrip"><img src="https://img.shields.io/crates/v/gitgrip.svg?style=flat-square&color=9A3412" alt="crates.io version"></a>
+  <a href="https://github.com/laynepenney/gitgrip/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/gitgrip.svg?style=flat-square&color=7C2D12" alt="license"></a>
+  <a href="https://crates.io/crates/gitgrip"><img src="https://img.shields.io/crates/d/gitgrip.svg?style=flat-square&color=431407" alt="downloads"></a>
 </p>
 
 <p align="center">
@@ -36,10 +36,26 @@ brew tap laynepenney/tap
 brew install gitgrip
 ```
 
-### npm
+### From crates.io
 
 ```bash
-npm install -g gitgrip
+cargo install gitgrip
+```
+
+### From GitHub Releases
+
+Pre-built binaries for Linux, macOS (Intel & Apple Silicon), and Windows are available on the [releases page](https://github.com/laynepenney/gitgrip/releases).
+
+### From Source
+
+```bash
+git clone https://github.com/laynepenney/gitgrip.git
+cd gitgrip
+cargo build --release
+
+# Binary is at target/release/gr (or gr.exe on Windows)
+# Install to ~/.cargo/bin:
+cargo install --path .
 ```
 
 ## Quick Start
@@ -116,11 +132,20 @@ gr sync
 | `gr pr create` | Create linked PRs |
 | `gr pr status` | Show PR status |
 | `gr pr merge` | Merge all linked PRs |
+| `gr pr checks` | Show CI check status |
+| `gr pr diff` | Show PR diff |
 | `gr repo add <url>` | Add a new repository to workspace |
+| `gr repo list` | List all repositories |
+| `gr repo remove <name>` | Remove a repository |
 | `gr forall -c "cmd"` | Run command in each repo |
 | `gr tree add <branch>` | Create a worktree-based workspace |
 | `gr tree list` | List all griptrees |
 | `gr tree remove <branch>` | Remove a griptree |
+| `gr rebase` | Rebase across repos |
+| `gr link` | Manage file links |
+| `gr run <script>` | Run workspace scripts |
+| `gr env` | Show environment variables |
+| `gr bench` | Run performance benchmarks |
 
 ### Command Details
 
@@ -352,12 +377,15 @@ The long form `gitgrip` also works.
 
 ## Requirements
 
-- Node.js >= 18.0.0
 - Git
 - Platform CLI (optional, for token auth fallback):
   - GitHub: `gh` CLI
   - GitLab: `glab` CLI
   - Azure DevOps: `az` CLI
+
+## Legacy TypeScript Version
+
+The original TypeScript implementation is available in the `typescript-legacy/` directory and on npm as `gitgrip`. The Rust version is now the primary implementation with better performance and additional features.
 
 ## License
 

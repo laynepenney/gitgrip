@@ -1,14 +1,16 @@
 # gitgrip Development Guide
 
-**git a grip** - Multi-repo workflow tool
+**git a grip** - Multi-repo workflow tool (Rust implementation)
 
 ## Build & Test
 
 ```bash
-pnpm install          # Install dependencies
-pnpm build            # Compile TypeScript
-pnpm test             # Run tests
-pnpm lint             # Lint code
+cargo build                # Build debug binary
+cargo build --release      # Build release binary
+cargo test                 # Run tests
+cargo clippy               # Lint code
+cargo fmt                  # Format code
+cargo bench                # Run benchmarks
 ```
 
 ## Git Workflow
@@ -73,7 +75,7 @@ All git operations must go through `gr`. There is no exception.
 
 **For AI agents (Claude, Codi, etc.):** Do NOT immediately merge after creating a PR. Always:
 1. Create the PR with `gr pr create -t "title"`
-2. Run `pnpm build && pnpm test` to verify nothing is broken
+2. Run `cargo build && cargo test` to verify nothing is broken
 3. Check PR status with `gr pr status`
 4. **Wait for GitHub checks to pass** - use `gh pr checks <number>` to verify
 5. Review the diff with `gh pr diff <number>` (for each repo with changes)
@@ -83,20 +85,20 @@ All git operations must go through `gr`. There is no exception.
 **CRITICAL: GitHub checks must pass before merging.** If checks are pending, wait. If checks fail, fix the issues first.
 
 **Feature completeness checklist:**
-- [ ] New command registered in `src/index.ts`
-- [ ] Types added to `src/types.ts` if needed
+- [ ] New command registered in `src/main.rs`
+- [ ] Types added to appropriate module if needed
 - [ ] Tests added for new functionality
 
 **CRITICAL: Run benchmarks for performance-related changes:**
 
-When modifying `push.ts`, `sync.ts`, `commit.ts`, `add.ts`, `diff.ts`, or `git.ts`:
+When modifying core git operations or command implementations:
 
 ```bash
+# Run benchmarks
+cargo bench
+
 # Run workspace benchmarks (requires gitgrip workspace)
 gr bench -n 10
-
-# Run isolated microbenchmarks (runs in CI)
-pnpm bench
 ```
 
 Compare results before/after your changes. Document significant improvements or regressions in the PR description.
@@ -115,8 +117,7 @@ Forgetting to update docs creates drift between code and documentation. Always c
 When creating a new release:
 
 1. **Update version numbers:**
-   - [ ] `package.json` - version field
-   - [ ] `src/index.ts` - `.version()` in Commander setup
+   - [ ] `Cargo.toml` - version field
    - [ ] `CHANGELOG.md` - Change `[Unreleased]` to `[x.y.z] - YYYY-MM-DD`
 
 2. **Create and merge release PR:**
@@ -132,7 +133,10 @@ When creating a new release:
    ```bash
    gh release create vX.Y.Z --title "vX.Y.Z" --notes "..."
    ```
-   This triggers GitHub Actions to automatically publish to npm.
+   This triggers GitHub Actions to automatically:
+   - Build binaries for all platforms
+   - Publish to crates.io
+   - Create GitHub release with binaries
 
 4. **CRITICAL: Update Homebrew formula:**
    - [ ] Update `homebrew-tap/Formula/gitgrip.rb` with new version and SHA256
@@ -145,45 +149,49 @@ Forgetting to update Homebrew means users on `brew upgrade` won't get the new ve
 
 ```
 src/
-├── index.ts              # CLI entry point (Commander.js)
-├── types.ts              # TypeScript interfaces
-├── commands/             # CLI command implementations
-│   ├── init.ts           # gr init
-│   ├── migrate.ts        # gr migrate
-│   ├── sync.ts           # gr sync
-│   ├── status.ts         # gr status
-│   ├── branch.ts         # gr branch
-│   ├── checkout.ts       # gr checkout
-│   ├── add.ts            # gr add
-│   ├── diff.ts           # gr diff
-│   ├── commit.ts         # gr commit
-│   ├── push.ts           # gr push
-│   ├── link.ts           # gr link
-│   ├── run.ts            # gr run
-│   ├── env.ts            # gr env
-│   ├── bench.ts          # gr bench
-│   ├── forall.ts         # gr forall
-│   ├── tree.ts           # gr tree (griptrees - worktree-based workspaces)
+├── main.rs               # CLI entry point (clap)
+├── lib.rs                # Library exports
+├── cli/                  # CLI command implementations
+│   ├── mod.rs            # CLI module exports
+│   ├── init.rs           # gr init
+│   ├── sync.rs           # gr sync
+│   ├── status.rs         # gr status
+│   ├── branch.rs         # gr branch
+│   ├── checkout.rs       # gr checkout
+│   ├── add.rs            # gr add
+│   ├── diff.rs           # gr diff
+│   ├── commit.rs         # gr commit
+│   ├── push.rs           # gr push
+│   ├── forall.rs         # gr forall
+│   ├── tree.rs           # gr tree (griptrees)
 │   └── pr/               # PR subcommands
-│       ├── index.ts
-│       ├── create.ts
-│       ├── status.ts
-│       └── merge.ts
-└── lib/                  # Core libraries
-    ├── manifest.ts       # Manifest parsing and validation
-    ├── git.ts            # Git operations
-    ├── github.ts         # GitHub backward compatibility (deprecated)
-    ├── linker.ts         # PR-to-manifest linking
-    ├── files.ts          # copyfile/linkfile operations
-    ├── hooks.ts          # Post-sync/checkout hooks
-    ├── scripts.ts        # Workspace script runner
-    ├── timing.ts         # Benchmarking & timing utilities
-    └── platform/         # Multi-platform hosting support
-        ├── types.ts      # Platform interfaces (HostingPlatform, etc.)
-        ├── index.ts      # Platform detection and factory
-        ├── github.ts     # GitHub adapter
-        ├── gitlab.ts     # GitLab adapter
-        └── azure-devops.ts # Azure DevOps adapter
+│       ├── mod.rs
+│       ├── create.rs
+│       ├── status.rs
+│       ├── merge.rs
+│       ├── checks.rs
+│       └── diff.rs
+├── core/                 # Core library
+│   ├── mod.rs
+│   ├── manifest.rs       # Manifest parsing
+│   ├── workspace.rs      # Workspace operations
+│   └── config.rs         # Configuration
+├── git/                  # Git operations
+│   ├── mod.rs
+│   ├── repo.rs           # Repository operations
+│   ├── branch.rs         # Branch operations
+│   └── worktree.rs       # Worktree operations
+├── platform/             # Multi-platform hosting support
+│   ├── mod.rs
+│   ├── github.rs         # GitHub adapter
+│   ├── gitlab.rs         # GitLab adapter
+│   └── azure_devops.rs   # Azure DevOps adapter
+├── files/                # File operations
+│   └── mod.rs            # copyfile/linkfile
+└── util/                 # Utilities
+    ├── mod.rs
+    ├── output.rs         # Colored output
+    └── timing.rs         # Benchmarking
 ```
 
 ## Key Concepts
@@ -206,14 +214,15 @@ All commands use `gr` (or `gitgrip`):
 - `gr diff` - Show diff across all repos
 - `gr commit` - Commit staged changes across all repos
 - `gr push` - Push current branch in all repos
-- `gr pr create/status/merge` - Linked PR workflow
-- `gr repo add <url>` - Add a new repository to workspace
+- `gr pr create/status/merge/checks/diff` - Linked PR workflow
+- `gr repo add/list/remove` - Manage repositories
 - `gr link` - Manage copyfile/linkfile entries
 - `gr run` - Execute workspace scripts
 - `gr env` - Show workspace environment variables
 - `gr bench` - Run benchmarks
 - `gr forall -c "cmd"` - Run command in each repo
 - `gr tree add/list/remove` - Manage griptrees (worktree-based multi-branch workspaces)
+- `gr rebase` - Rebase across repos
 
 ### Griptrees (Multi-Branch Workspaces)
 
@@ -246,7 +255,7 @@ gr tree remove feat/auth
 
 **Limitations:**
 - Branch exclusivity - can't checkout same branch in two worktrees
-- Separate node_modules - each worktree needs own dependencies
+- Separate dependencies - each worktree needs own dependencies
 
 ### File Linking
 - `copyfile`: Copy file from repo to workspace
@@ -279,41 +288,39 @@ repos:
 ```
 
 **Platform Architecture:**
-- `HostingPlatform` interface defines all platform operations
-- Each platform has an adapter in `src/lib/platform/`
-- Use `getPlatformAdapter(type, config)` to get platform instance
+- `Platform` trait defines all platform operations
+- Each platform has an adapter in `src/platform/`
 - Platform adapters handle: PR create/merge/status, reviews, status checks, URL parsing
 
 **Adding a New Platform:**
-1. Create adapter in `src/lib/platform/newplatform.ts`
-2. Implement `HostingPlatform` interface
-3. Add detection logic in `src/lib/platform/index.ts`
-4. Add tests in `src/lib/__tests__/platform.test.ts`
+1. Create adapter in `src/platform/newplatform.rs`
+2. Implement `Platform` trait
+3. Add detection logic in `src/platform/mod.rs`
+4. Add tests
 
 ## Testing
 
 ```bash
-pnpm test              # Run all tests
-pnpm test:watch        # Watch mode
-pnpm test -- --grep "manifest"  # Filter tests
+cargo test                      # Run all tests
+cargo test -- --nocapture       # Show output
+cargo test manifest             # Filter by name
 ```
 
-Test files are in `src/lib/__tests__/`.
+Test files are alongside the modules they test or in `tests/`.
 
 ## Adding a New Command
 
-1. Create `src/commands/mycommand.ts`
-2. Export the handler function
-3. Register in `src/index.ts` with Commander
-4. Add types to `src/types.ts` if needed
+1. Create `src/cli/mycommand.rs`
+2. Add command to CLI in `src/main.rs`
+3. Implement the command handler
+4. Add tests
 
 ## Code Style
 
-- TypeScript strict mode
-- Async/await for all I/O
-- Use `chalk` for colored output
-- Use `ora` for spinners
-- Validate manifest schema in `lib/manifest.ts`
+- Follow Rust idioms
+- Use `anyhow` for error handling
+- Use `colored` for colored output
+- Validate manifest schema in `core/manifest.rs`
 
 ## Continuous Improvement
 
@@ -336,3 +343,14 @@ gitgrip is self-improving. When using `gr` commands, capture any friction or ide
 2. Tell the user about the friction point
 
 This is mandatory. Every workaround reveals a gap in `gr` that should be fixed.
+
+## Legacy TypeScript Version
+
+The original TypeScript implementation is in `typescript-legacy/`. It is no longer actively developed but kept for reference and npm users.
+
+```bash
+cd typescript-legacy
+pnpm install
+pnpm build
+pnpm test
+```
