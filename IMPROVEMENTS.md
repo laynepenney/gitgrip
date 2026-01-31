@@ -72,6 +72,49 @@ Added `gr completions <shell>` command using clap_complete crate.
 
 ## Pending Review
 
+### Feature: `gr status` should show ahead/behind main
+
+**Discovered**: 2026-01-31
+
+**Problem**: `gr status` shows local uncommitted changes but doesn't show how the current branch compares to main/upstream. This makes it hard to know if you need to rebase before creating a PR or if main has moved ahead.
+
+**Current behavior**:
+```
+Repo          Branch           Status
+------------  ---------------  ------
+tooling       feat/new-api     ~3
+frontend      feat/new-api     ✓
+```
+
+**Suggested behavior**:
+```
+Repo          Branch           Status  Ahead/Behind
+------------  ---------------  ------  ------------
+tooling       feat/new-api     ~3      ↑2 ↓5
+frontend      feat/new-api     ✓       ↑4
+backend       main             ✓       -
+
+  3/3 cloned | 1 with changes | 2 ahead of main
+```
+
+**What it would show**:
+- `↑2` = 2 commits ahead of default branch (your changes)
+- `↓5` = 5 commits behind default branch (need to rebase/merge)
+- `-` = on default branch, no comparison needed
+
+**Options**:
+- `--ahead` or `-a` flag to enable (if too slow by default)
+- `--diff-stat` to show file change summary vs main
+- Could be default behavior since it's fast to compute with `git rev-list`
+
+**Implementation**:
+```rust
+// For each repo not on default branch:
+let (ahead, behind) = repo.graph_ahead_behind(head_oid, main_oid)?;
+```
+
+---
+
 ### Missing: Single-repo branch creation from existing commit
 
 **Discovered**: 2026-01-29 during centralized griptree metadata implementation
