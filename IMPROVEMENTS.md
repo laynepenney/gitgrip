@@ -36,6 +36,83 @@ cd codi && gh pr create --title "docs: clarify codi/codi-private setup" --body "
 
 ## Pending Review
 
+### Feature: Shell autocompletions
+
+**Discovered**: 2026-01-31
+
+**Problem**: `gr` commands don't have shell autocompletion. Users must remember all command names and flags.
+
+**Expected behavior**:
+- Tab completion for commands: `gr pr <TAB>` → `create`, `status`, `merge`, `checks`, `diff`
+- Tab completion for flags: `gr branch --<TAB>` → `--repo`, `--include-manifest`
+- Tab completion for branch names where applicable
+
+**Implementation approach**:
+- Use `clap`'s built-in completion generation via `clap_complete` crate
+- Add `gr completions <shell>` command that outputs completion script
+- Support bash, zsh, fish, powershell
+
+**Example usage**:
+```bash
+# Generate and install completions
+gr completions bash > ~/.local/share/bash-completion/completions/gr
+gr completions zsh > ~/.zfunc/_gr
+gr completions fish > ~/.config/fish/completions/gr.fish
+
+# Or eval directly
+eval "$(gr completions bash)"
+```
+
+**Reference**: clap_complete docs: https://docs.rs/clap_complete/latest/clap_complete/
+
+---
+
+### Feature: E2E PR testing on Azure DevOps and GitLab
+
+**Discovered**: 2026-01-31
+
+**Problem**: The e2e test suite (`tests/multi_provider_e2e.rs`) tests init, branch, push, and sync operations across GitHub, GitLab, and Azure DevOps, but does not test PR operations (create, status, merge, checks).
+
+**Current state**:
+- TypeScript version has PR e2e tests
+- Rust version only tests basic operations
+- PR operations are platform-specific and need verification on each platform
+
+**Expected behavior**:
+E2E tests should verify the full PR workflow on all platforms:
+1. `gr pr create` - creates PR with correct title, body, base branch
+2. `gr pr status` - shows PR state, checks, mergeable status
+3. `gr pr checks` - shows CI check status
+4. `gr pr merge` - merges PR (with cleanup of test branches after)
+
+**Implementation approach**:
+1. Add PR test functions to `tests/multi_provider_e2e.rs`
+2. Create test branch, push changes, create PR
+3. Verify PR appears in `gr pr status`
+4. Merge PR and verify cleanup
+5. Use unique branch names with random suffix for isolation
+
+**Test structure** (similar to TypeScript):
+```rust
+#[tokio::test]
+#[ignore = "Requires GITHUB_TOKEN"]
+async fn test_github_pr_workflow() {
+    // Create branch, push, create PR, check status, merge
+}
+
+#[tokio::test]
+#[ignore = "Requires GITLAB_TOKEN"]
+async fn test_gitlab_pr_workflow() { ... }
+
+#[tokio::test]
+#[ignore = "Requires AZURE_DEVOPS_TOKEN"]
+async fn test_azure_pr_workflow() { ... }
+```
+
+**Cleanup**: Tests must clean up branches and PRs after running to avoid polluting test repos.
+
+---
+
 ### Missing: Single-repo branch creation from existing commit
 
 **Discovered**: 2026-01-29 during centralized griptree metadata implementation
