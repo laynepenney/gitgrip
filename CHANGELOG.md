@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - 2026-02-01
+
+### Added
+- Reference repos feature - mark repos as read-only with `reference: true` in manifest
+  - Reference repos are excluded from `gr branch`, `gr checkout`, `gr push`, and PR operations
+  - Reference repos still sync with `gr sync` and appear in `gr status` with `[ref]` indicator
+  - Useful for upstream dependencies, reference implementations, or docs you only read
+- `gr status` now shows `[ref]` suffix for reference repos
+
 ## [0.5.3] - 2026-01-31
 
 ### Added
