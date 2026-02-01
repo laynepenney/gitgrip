@@ -55,6 +55,8 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
                                     repo.name,
                                     pull_result.message.unwrap_or_else(|| "pulled".to_string())
                                 ));
+                            } else if let Some(msg) = &pull_result.message {
+                                spinner.finish_with_message(format!("{}: {}", repo.name, msg));
                             } else {
                                 spinner.finish_with_message(format!("{}: pulled", repo.name));
                             }
