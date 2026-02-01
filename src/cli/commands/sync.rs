@@ -20,6 +20,7 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
 
     let mut success_count = 0;
     let mut error_count = 0;
+    let mut failed_repos: Vec<(String, String)> = Vec::new();  // (repo_name, error_message)
 
     for repo in &repos {
         let spinner = Output::spinner(&format!("Pulling {}...", repo.name));
@@ -35,6 +36,7 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
                 }
                 Err(e) => {
                     spinner.finish_with_message(format!("{}: clone failed - {}", repo.name, e));
+                    failed_repos.push((repo.name.clone(), format!("Clone failed: {}", e)));
                     error_count += 1;
                 }
             }
@@ -69,6 +71,7 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
                                 spinner.finish_with_message(format!("{}: {}", repo.name, msg));
                             }
                             error_count += 1;
+                            failed_repos.push((repo.name.clone(), format!("Error: {}", e)));
                         } else {
                             spinner.finish_with_message(format!("{}: up to date", repo.name));
                             success_count += 1;
@@ -77,12 +80,14 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
                     Err(e) => {
                         spinner.finish_with_message(format!("{}: error - {}", repo.name, e));
                         error_count += 1;
+                        failed_repos.push((repo.name.clone(), format!("Error: {}", e)));
                     }
                 }
             }
             Err(e) => {
                 spinner.finish_with_message(format!("{}: error - {}", repo.name, e));
                 error_count += 1;
+                failed_repos.push((repo.name.clone(), format!("Error: {}", e)));
             }
         }
     }
@@ -95,6 +100,14 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
         ));
     } else {
         Output::warning(&format!("{} synced, {} failed", success_count, error_count));
+        
+        // Show which repos failed and why
+        if !failed_repos.is_empty() {
+            println!();
+            for (repo_name, error_msg) in &failed_repos {
+                println!("  ✗ {}: {}", repo_name, error_msg);
+            }
+        }
     }
 
     Ok(())
