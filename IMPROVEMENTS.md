@@ -72,6 +72,59 @@ Added `gr completions <shell>` command using clap_complete crate.
 
 ## Pending Review
 
+### Feature: Reference repos (read-only repos excluded from branch/PR operations) → Issue #113
+
+**Discovered**: 2026-02-01 during Rust migration planning
+
+**Problem**: When adding reference implementations to a workspace (e.g., `opencode`, `codex`, `crush`), these repos are only for reading/learning - we never plan to edit them or create PRs. Currently, `gr branch` creates branches across ALL repos, and `gr pr create` would try to create PRs in all repos with the branch.
+
+**Current behavior**:
+```bash
+gr branch feat/my-feature  # Creates branch in ALL repos including references
+gr pr create -t "title"    # Would try to create PRs in reference repos too
+```
+
+**Suggested behavior**:
+Add a `reference: true` flag in manifest to mark repos as read-only:
+
+```yaml
+repos:
+  # Normal repos - participate in branch/PR operations
+  public:
+    url: git@github.com:org/public.git
+    path: ./public
+
+  # Reference repos - excluded from branch/PR operations
+  opencode:
+    url: https://github.com/anomalyco/opencode.git
+    path: ./ref/opencode
+    reference: true  # <-- NEW FLAG
+
+  codex:
+    url: https://github.com/openai/codex.git
+    path: ./ref/codex
+    reference: true
+```
+
+**Behavior changes for reference repos**:
+- `gr branch` - Skip (don't create branches)
+- `gr checkout` - Skip (stay on default branch)
+- `gr pr create` - Skip (no PRs)
+- `gr pr merge` - Skip
+- `gr sync` - Still sync (pull latest from upstream)
+- `gr status` - Still show (maybe with `[ref]` indicator)
+- `gr forall` - Include by default, or add `--no-ref` flag
+
+**Alternative**: Could use path convention instead of flag:
+- Any repo with `path: ./ref/*` is automatically treated as reference
+
+**Use cases**:
+1. Reference implementations for learning/comparison
+2. Upstream dependencies you track but don't modify
+3. Documentation repos you only read
+
+---
+
 ### Feature: `gr status` should show ahead/behind main
 
 **Discovered**: 2026-01-31
@@ -409,10 +462,57 @@ _Items that have been implemented. Keep for historical reference._
 | #62 | feat: add single-repo branch creation for fixing commits |
 | #63 | fix: gr pr create command times out |
 | #99 | fix: gr pr merge doesn't recognize passing checks |
+| #112 | fix: gr repo add corrupts manifest YAML structure |
+| #113 | feat: add reference repos (read-only repos excluded from branch/PR operations) |
 
 Created: 2025-12-05
-Updated: 2026-01-31
+Updated: 2026-02-01
 
+
+---
+
+### Bug: `gr repo add` corrupts manifest YAML structure → Issue #112
+
+**Discovered**: 2026-02-01 during reference repo addition
+
+**Problem**: `gr repo add` placed the new repo entry between `version:` and `manifest:` sections instead of under `repos:`. This caused manifest parsing to fail with error: `version: invalid type: string "1\n\nopencode", expected u32`
+
+**Reproduction**:
+```bash
+gr repo add https://github.com/opencode-ai/opencode.git --path ./ref/opencode
+```
+
+**What happened**:
+```yaml
+version: 1
+
+  opencode:                              # <-- WRONG! Placed here
+    url: https://github.com/opencode-ai/opencode.git
+    path: ./ref/opencode
+    default_branch: main
+manifest:
+  url: ...
+```
+
+**What should happen**:
+```yaml
+version: 1
+
+manifest:
+  url: ...
+
+repos:
+  # ... existing repos ...
+
+  opencode:                              # <-- Should be here under repos:
+    url: https://github.com/opencode-ai/opencode.git
+    path: ./ref/opencode
+    default_branch: main
+```
+
+**Workaround**: Manually edit manifest.yaml to move the repo entry under `repos:` section.
+
+**Root cause**: The YAML insertion logic in `gr repo add` is not correctly identifying the `repos:` section location.
 
 ---
 
