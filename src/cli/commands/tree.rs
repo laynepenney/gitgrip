@@ -3,10 +3,11 @@
 //! Manages griptrees (worktree-based parallel workspaces).
 
 use crate::cli::output::Output;
-use crate::core::griptree::GriptreeConfig;
+use crate::core::griptree::{GriptreeConfig, GriptreePointer};
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::{open_repo, path_exists};
+use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -100,6 +101,18 @@ pub fn run_tree_add(
     let griptree_config = GriptreeConfig::new(branch, &tree_path.to_string_lossy());
     let griptree_config_path = tree_gitgrip.join("griptree.json");
     griptree_config.save(&griptree_config_path)?;
+
+    // Create .griptree pointer file at root of griptree
+    // This allows `gr status` to detect when running from within a griptree
+    let pointer = GriptreePointer {
+        main_workspace: workspace_root.to_string_lossy().to_string(),
+        branch: branch.to_string(),
+        locked: false,
+        created_at: Some(Utc::now()),
+    };
+    let pointer_path = tree_path.join(".griptree");
+    let pointer_json = serde_json::to_string_pretty(&pointer)?;
+    std::fs::write(&pointer_path, pointer_json)?;
 
     // Add to griptrees list
     griptrees.griptrees.insert(
@@ -243,9 +256,20 @@ pub fn run_tree_lock(
 
     entry.locked = true;
     entry.lock_reason = reason.map(|s| s.to_string());
+    let entry_path = entry.path.clone();
 
     let config_json = serde_json::to_string_pretty(&griptrees)?;
     std::fs::write(&config_path, config_json)?;
+
+    // Update .griptree pointer file if it exists
+    let pointer_path = PathBuf::from(&entry_path).join(".griptree");
+    if pointer_path.exists() {
+        if let Ok(mut pointer) = GriptreePointer::load(&pointer_path) {
+            pointer.locked = true;
+            let pointer_json = serde_json::to_string_pretty(&pointer)?;
+            std::fs::write(&pointer_path, pointer_json)?;
+        }
+    }
 
     Output::success(&format!("Griptree '{}' locked", branch));
     Ok(())
@@ -268,9 +292,20 @@ pub fn run_tree_unlock(workspace_root: &PathBuf, branch: &str) -> anyhow::Result
 
     entry.locked = false;
     entry.lock_reason = None;
+    let entry_path = entry.path.clone();
 
     let config_json = serde_json::to_string_pretty(&griptrees)?;
     std::fs::write(&config_path, config_json)?;
+
+    // Update .griptree pointer file if it exists
+    let pointer_path = PathBuf::from(&entry_path).join(".griptree");
+    if pointer_path.exists() {
+        if let Ok(mut pointer) = GriptreePointer::load(&pointer_path) {
+            pointer.locked = false;
+            let pointer_json = serde_json::to_string_pretty(&pointer)?;
+            std::fs::write(&pointer_path, pointer_json)?;
+        }
+    }
 
     Output::success(&format!("Griptree '{}' unlocked", branch));
     Ok(())
