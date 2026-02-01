@@ -71,7 +71,12 @@ pub fn fetch_remote(repo: &Repository, remote: &str) -> Result<(), GitError> {
     {
         let duration = start.elapsed();
         GLOBAL_METRICS.record_git("fetch", duration, success);
-        debug!(remote, success, duration_ms = duration.as_millis() as u64, "Git fetch complete");
+        debug!(
+            remote,
+            success,
+            duration_ms = duration.as_millis() as u64,
+            "Git fetch complete"
+        );
     }
 
     if !success {
@@ -102,7 +107,12 @@ pub fn pull_latest(repo: &Repository, remote: &str) -> Result<(), GitError> {
     {
         let duration = start.elapsed();
         GLOBAL_METRICS.record_git("pull", duration, success);
-        debug!(remote, success, duration_ms = duration.as_millis() as u64, "Git pull complete");
+        debug!(
+            remote,
+            success,
+            duration_ms = duration.as_millis() as u64,
+            "Git pull complete"
+        );
     }
 
     if !success {
@@ -127,7 +137,10 @@ pub fn pull_latest(repo: &Repository, remote: &str) -> Result<(), GitError> {
 }
 
 /// Push branch to remote
-#[cfg_attr(feature = "telemetry", instrument(skip(repo), fields(branch_name, remote, set_upstream, success)))]
+#[cfg_attr(
+    feature = "telemetry",
+    instrument(skip(repo), fields(branch_name, remote, set_upstream, success))
+)]
 pub fn push_branch(
     repo: &Repository,
     branch_name: &str,
@@ -156,7 +169,14 @@ pub fn push_branch(
     {
         let duration = start.elapsed();
         GLOBAL_METRICS.record_git("push", duration, success);
-        debug!(branch_name, remote, set_upstream, success, duration_ms = duration.as_millis() as u64, "Git push complete");
+        debug!(
+            branch_name,
+            remote,
+            set_upstream,
+            success,
+            duration_ms = duration.as_millis() as u64,
+            "Git push complete"
+        );
     }
 
     if !success {

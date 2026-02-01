@@ -108,10 +108,20 @@ impl HostingPlatform for GitHubAdapter {
             let duration = start.elapsed();
             let success = result.is_ok();
             GLOBAL_METRICS.record_platform("github", "create_pr", duration, success);
-            debug!(owner, repo, head, base, draft, success, duration_ms = duration.as_millis() as u64, "GitHub create PR complete");
+            debug!(
+                owner,
+                repo,
+                head,
+                base,
+                draft,
+                success,
+                duration_ms = duration.as_millis() as u64,
+                "GitHub create PR complete"
+            );
         }
 
-        let pr = result.map_err(|e| PlatformError::ApiError(format!("Failed to create PR: {}", e)))?;
+        let pr =
+            result.map_err(|e| PlatformError::ApiError(format!("Failed to create PR: {}", e)))?;
 
         Ok(PRCreateResult {
             number: pr.number,
@@ -218,7 +228,14 @@ impl HostingPlatform for GitHubAdapter {
             let duration = start.elapsed();
             let success = result.is_ok();
             GLOBAL_METRICS.record_platform("github", "merge_pr", duration, success);
-            debug!(owner, repo, pull_number, success, duration_ms = duration.as_millis() as u64, "GitHub merge PR complete");
+            debug!(
+                owner,
+                repo,
+                pull_number,
+                success,
+                duration_ms = duration.as_millis() as u64,
+                "GitHub merge PR complete"
+            );
         }
 
         match result {

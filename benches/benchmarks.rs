@@ -943,11 +943,13 @@ fn bench_telemetry_overhead(c: &mut Criterion) {
     group.bench_function("metrics_snapshot", |b| {
         // Add some metrics first
         for i in 0..10 {
-            GLOBAL_METRICS.record_git(&format!("op{}", i), Duration::from_millis(i as u64 * 10), true);
+            GLOBAL_METRICS.record_git(
+                &format!("op{}", i),
+                Duration::from_millis(i as u64 * 10),
+                true,
+            );
         }
-        b.iter(|| {
-            black_box(GLOBAL_METRICS.snapshot())
-        })
+        b.iter(|| black_box(GLOBAL_METRICS.snapshot()))
     });
 
     group.finish();

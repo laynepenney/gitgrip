@@ -11,6 +11,7 @@ pub struct GitSpan;
 impl GitSpan {
     /// Create a span for a git operation.
     #[cfg(feature = "telemetry")]
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(operation: &str, repo_path: &str) -> Span {
         tracing::info_span!(
             "git_operation",
@@ -22,6 +23,7 @@ impl GitSpan {
     }
 
     #[cfg(not(feature = "telemetry"))]
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(_operation: &str, _repo_path: &str) -> NoOpSpan {
         NoOpSpan
     }
@@ -33,6 +35,7 @@ pub struct PlatformSpan;
 impl PlatformSpan {
     /// Create a span for a platform API operation.
     #[cfg(feature = "telemetry")]
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(platform: &str, operation: &str, owner: &str, repo: &str) -> Span {
         tracing::info_span!(
             "platform_api",
@@ -46,6 +49,7 @@ impl PlatformSpan {
     }
 
     #[cfg(not(feature = "telemetry"))]
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(_platform: &str, _operation: &str, _owner: &str, _repo: &str) -> NoOpSpan {
         NoOpSpan
     }

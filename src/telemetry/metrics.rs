@@ -30,9 +30,7 @@ impl Metrics {
     /// Record a git operation.
     pub fn record_git(&self, operation: &str, duration: Duration, success: bool) {
         let mut metrics = self.git_metrics.lock().unwrap();
-        let entry = metrics
-            .entry(operation.to_string())
-            .or_insert_with(GitMetrics::new);
+        let entry = metrics.entry(operation.to_string()).or_default();
         entry.record(duration, success);
     }
 
@@ -46,26 +44,20 @@ impl Metrics {
     ) {
         let key = format!("{platform}:{operation}");
         let mut metrics = self.platform_metrics.lock().unwrap();
-        let entry = metrics.entry(key).or_insert_with(PlatformMetrics::new);
+        let entry = metrics.entry(key).or_default();
         entry.record(duration, success);
     }
 
     /// Record a generic operation.
     pub fn record_operation(&self, name: &str, duration: Duration) {
         let mut metrics = self.operation_metrics.lock().unwrap();
-        let entry = metrics
-            .entry(name.to_string())
-            .or_insert_with(OperationMetrics::new);
+        let entry = metrics.entry(name.to_string()).or_default();
         entry.record(duration);
     }
 
     /// Record a cache hit/miss for git status cache.
     pub fn record_cache(&self, hit: bool) {
-        let name = if hit {
-            "cache_hit"
-        } else {
-            "cache_miss"
-        };
+        let name = if hit { "cache_hit" } else { "cache_miss" };
         self.record_operation(name, Duration::ZERO);
     }
 
