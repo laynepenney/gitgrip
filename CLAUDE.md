@@ -118,32 +118,59 @@ When creating a new release:
 
 1. **Update version numbers:**
    - [ ] `Cargo.toml` - version field
-   - [ ] `CHANGELOG.md` - Change `[Unreleased]` to `[x.y.z] - YYYY-MM-DD`
+   - [ ] `CHANGELOG.md` - Add new version section with date
 
 2. **Create and merge release PR:**
    ```bash
    gr branch release/vX.Y.Z
-   # Make version changes
+   # Update Cargo.toml version and CHANGELOG.md
+   cargo build --release  # Updates Cargo.lock
    gr add . && gr commit -m "chore: release vX.Y.Z"
    gr push -u && gr pr create -t "chore: release vX.Y.Z"
-   gr pr merge
+   # Wait for CI, then merge
+   gr pr merge --force
+   gr checkout main && gr sync
    ```
 
 3. **Create GitHub release:**
    ```bash
-   gh release create vX.Y.Z --title "vX.Y.Z" --notes "..."
+   gh release create vX.Y.Z --repo laynepenney/gitgrip --title "vX.Y.Z" --notes "Release notes..."
    ```
    This triggers GitHub Actions to automatically:
    - Build binaries for all platforms
    - Publish to crates.io
    - Create GitHub release with binaries
 
-4. **CRITICAL: Update Homebrew formula:**
-   - [ ] Update `homebrew-tap/Formula/gitgrip.rb` with new version and SHA256
-   - [ ] Test with `brew install --build-from-source ./Formula/gitgrip.rb`
-   - [ ] Commit and push to homebrew-tap repo
+4. **CRITICAL: Update Homebrew formula (MUST DO EVERY RELEASE):**
 
-Forgetting to update Homebrew means users on `brew upgrade` won't get the new version.
+   The `homebrew-tap` repo is part of the gitgrip workspace. Update it using `gr` commands:
+
+   ```bash
+   # Get SHA256 of the new release tarball
+   curl -sL https://github.com/laynepenney/gitgrip/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
+
+   # Update the formula
+   # Edit homebrew-tap/Formula/gitgrip.rb:
+   #   - Update url to new version tag
+   #   - Update sha256 to new hash
+
+   # Commit and merge via gr
+   gr branch chore/bump-gitgrip-X.Y.Z
+   gr add . && gr commit -m "chore: bump gitgrip to vX.Y.Z"
+   gr push -u && gr pr create -t "chore: bump gitgrip to vX.Y.Z"
+   gr pr merge --force
+   gr checkout main && gr sync
+   ```
+
+   **Forgetting to update Homebrew means users on `brew upgrade` won't get the new version.**
+
+   Verify the update worked:
+   ```bash
+   brew update
+   brew outdated  # Should show gitgrip if you have old version
+   brew upgrade gitgrip
+   gr --version   # Should show new version
+   ```
 
 ## Project Structure
 
