@@ -96,6 +96,9 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-features
+        env:
+          # Windows: link advapi32 for libgit2-sys security/registry functions
+          RUSTFLAGS: ${{ matrix.os == 'windows-latest' && '-C link-arg=advapi32.lib' || '' }}
 
   build:
     name: Build Release
