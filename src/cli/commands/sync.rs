@@ -72,7 +72,6 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
                             } else {
                                 spinner.finish_with_message(format!("{}: {}", repo.name, msg));
                             }
-                            error_count += 1;
                         } else {
                             spinner.finish_with_message(format!("{}: up to date", repo.name));
                             success_count += 1;
