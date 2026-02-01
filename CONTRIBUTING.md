@@ -1,84 +1,217 @@
 # Contributing to gitgrip
 
-Thank you for your interest in contributing to gitgrip!
+Thank you for your interest in contributing to gitgrip! This document provides guidelines for contributing.
 
 ## Getting Started
 
-1. Fork the repository
-2. Clone your fork:
-   ```bash
-   git clone git@github.com:yourusername/gitgrip.git
-   cd gitgrip
-   ```
-3. Build the project:
-   ```bash
-   cargo build
-   ```
-4. Run tests:
-   ```bash
-   cargo test
-   ```
+### Prerequisites
+- Rust toolchain (rustc, cargo)
+- Just command runner (`cargo install just`)
+- Justworks configuration (`~/.config/just/just.conf` with `gitgrip` tool)
 
-## Project Structure
+### Setting Up the Development Environment
 
-```
-gitgrip/
-├── src/
-│   ├── main.rs           # CLI entry point (clap)
-│   ├── lib.rs            # Library exports
-│   ├── cli/              # CLI command implementations
-│   │   └── commands/     # Individual commands (init, sync, status, etc.)
-│   ├── core/             # Core library (manifest, workspace, config)
-│   ├── git/              # Git operations (git2 bindings)
-│   ├── platform/         # Multi-platform support (GitHub, GitLab, Azure)
-│   └── util/             # Utilities (output, timing)
-├── tests/                # Integration tests
-├── benches/              # Benchmarks
-└── typescript-legacy/    # Legacy TypeScript version (deprecated)
+```bash
+# Clone the repository
+git clone git@github.com:laynepenney/gitgrip.git
+cd gitgrip
+
+# Install additional tooling
+cargo install cargo-watch  # For development
+cargo install cargo-expand # For macro debugging (optional)
+
+# Build the project
+cargo build
+
+# Run tests
+cargo test
 ```
 
 ## Development Workflow
 
-1. Create a feature branch:
-   ```bash
-   git checkout -b feat/my-feature
-   ```
-2. Make your changes
-3. Run tests: `cargo test`
-4. Run linting: `cargo clippy`
-5. Format code: `cargo fmt`
-6. Submit a pull request
+### 1. Create a Feature Branch
+Always create a new branch for your changes. Never work directly on `main`.
 
-## Code Style
+```bash
+# Ensure you're on latest main
+git checkout main
+git pull origin main
 
-- Follow Rust idioms and conventions
-- Use `anyhow` for error handling in binaries
-- Use `thiserror` for library error types
-- Use `colored` for terminal colors
-- Use `indicatif` for progress bars and spinners
+# Create your feature branch
+git checkout -b feat/your-feature-name
+# or
+git checkout -b fix/your-bugfix-name
+# or
+git checkout -b docs/your-docs-change-name
+```
+
+### 2. Make Changes
+Make your changes to the codebase. Follow Rust conventions:
+
+- Use `cargo clippy` to check for linting issues
+- Use `cargo fmt` to format code
 - Add tests for new functionality
+- Update documentation as needed
 
-## Testing
-
-```bash
-cargo test                 # Run all tests
-cargo test <name>          # Run specific test
-cargo test -- --nocapture  # Show output
-```
-
-## Benchmarks
+### 3. Commit Your Changes
+Write descriptive commit messages following [conventional commits](https://www.conventionalcommits.org/):
 
 ```bash
-cargo bench                # Run benchmarks
+# Format your code first
+cargo fmt
+
+# Run linting
+cargo clippy
+
+# Stage and commit
+git add <files>
+git commit -m "feat: add new command for xyz"
+
+# Or for fixes:
+git commit -m "fix: resolve issue with xyz"
+
+# Or for documentation:
+git commit -m "docs: improve readme section"
 ```
 
-## Building
-
+### 4. Push Your Branch and Create a PR
 ```bash
-cargo build                # Debug build
-cargo build --release      # Release build
+git push origin feat/your-feature-name
+gh pr create --title "feat: your feature description" --body "..."
 ```
+
+### 5. Code Review
+- Wait for CI checks to pass
+- Address any review feedback
+- Don't merge until all checks pass
+
+### 6. Merge
+Once approved and CI passes, merge the PR via GitHub's interface.
+
+## Pull Request Guidelines
+
+### What to Include
+- Clear title describing the change
+- Detailed description of the problem and solution
+- Steps to test the changes
+- Screenshots or GIFs for UI changes
+- References to related issues
+
+### Testing
+- Run `cargo test` before pushing
+- Add unit tests for new functionality
+- Integration tests for user-facing commands
+
+### Code Quality
+- Run `cargo fmt` before committing
+- Fix any `cargo clippy` warnings
+- Document public APIs with doc comments
+
+## Git Workflow
+
+### Branch Strategy
+
+**Main Branch (`main`)**
+- Production-ready code only
+- Protected with PR requirements and CI checks
+- All PRs must target `main`
+- Never force push to `main` ❌
+
+**Feature Branches**
+- All development happens here
+- Short-lived, deleted after merge
+- Clean merge history when merged properly
+
+### Merge vs Rebase
+
+**✅ Use REBASE** (correct):
+```bash
+git rebase origin/main           # Keeps history linear
+git push --force-with-lease      # Safe force-push after rebase (feature branches only!)
+```
+
+**❌ DO NOT Use MERGE** (incorrect):
+```bash
+git merge origin/main            # Creates unnecessary merge commits
+```
+
+**❌ DO NOT Force Push to Main** (NEVER!):
+```bash
+git push --force origin main     # ABSOLUTELY FORBIDDEN
+```
+
+### Why Force Pushing to Main is Forbidden
+
+1. **Destroys history**: Rewrites shared history, breaking anyone who pulled
+2. **Lose work**: Others' commits may be erased
+3. **Breaks CI/CD**: GitHub Actions and deploys may fail
+4. **Trust issues**: Team members can't trust what they pulled
+
+### Correct PR Process
+
+1. Create feature branch from latest main
+2. Make changes and commit
+3. Push branch and create PR
+4. Get reviewed and approved
+5. Merge via GitHub button
+6. Delete feature branch
+
+### If You Accidentally Force Pushed to Main
+
+1. **Stop immediately** - Don't do anything else
+2. **Contact team** - Alert everyone who might have pulled
+3. **Restore from backup** - Use reflog or team members' clones
+4. **Redo properly** - Cherry-pick commits to a new branch and create proper PR
+
+## Code of Conduct
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
 
 ## Questions?
 
-Open an issue or discussion on GitHub.
+Open an issue for discussion or reach out to the maintainers.
+
+## Git Workflow for the Workspace
+
+This section applies when using gitgrip to manage the workspace itself.
+
+### Creating Changes in the Workspace
+
+When working with the gitgrip workspace:
+
+```bash
+# Make changes in the tooling repo (where gitgrip source lives)
+cd tooling/src/cli/commands/repo.rs
+# ... edit file ...
+
+# Stage and commit (runs gr commit across all workspaces)
+git add .
+git commit -m "fix: ..."
+
+# Push (runs gr push across all workspaces)
+git push
+```
+
+### Creating a PR for gitgrip Itself
+
+1. Make changes to gitgrip code in the `tooling` repo
+2. The commit/push operations automatically apply to all workspace repos
+3. When creating a PR, only ONE GitHub PR is needed (for the tooling repo)
+4. GitHub Actions and CI run from the tooling repo
+5. Merging the PR updates only the tooling repo's history
+
+### Important: PR for gitgrip Goes to the gitgrip Repo
+
+The PR for gitgrip changes should be created from the `tooling` repo's perspective:
+```bash
+gh pr create  # From the tooling directory
+```
+This creates the PR for `github.com/laynepenney/gitgrip`, not the workspace manifest.
+
+## Documentation
+
+- **CLAUDE.md** - AI assistant context for this repository
+- **CODEBASE_REVIEW.md** - Architecture and code review notes
+- **CONTRIBUTING.md** - This file
+- **docs/** - Additional documentation
+
