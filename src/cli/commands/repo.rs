@@ -79,16 +79,22 @@ pub fn run_repo_add(
 
     // Check if repos section exists and append
     let updated_content = if content.contains("repos:") {
-        // Find the end of repos section and insert before next top-level key
+        // Find where to insert - after repos: and before next top-level key
         let mut lines: Vec<&str> = content.lines().collect();
+        let mut after_repos = false;
         let mut insert_index = lines.len();
 
-        // Find where to insert (before settings, workspace, or at end)
         for (i, line) in lines.iter().enumerate() {
-            if (line.starts_with("settings:")
-                || line.starts_with("workspace:")
-                || line.starts_with("manifest:"))
-                && i > 0
+            if line.starts_with("repos:") {
+                after_repos = true;
+                continue;
+            }
+
+            // If we're after repos: section and hit a new top-level key, insert here
+            if after_repos
+                && (line == "settings:"
+                    || line == "workspace:"
+                    || line == "manifest:")
             {
                 insert_index = i;
                 break;
