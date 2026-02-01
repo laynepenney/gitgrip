@@ -26,12 +26,18 @@ name = "gitgrip"
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["telemetry"]
 # Use gitoxide (gix) instead of git2 for git operations (experimental)
 gitoxide = ["gix"]
 # Enable integration tests that require platform authentication
 # Run with: cargo test --features integration-tests -- --ignored
 integration-tests = []
+# Telemetry and tracing support
+telemetry = []
+# Strip debug/trace logs at compile time for production
+release-logs = ["tracing/release_max_level_info"]
+# Maximum performance - disable all tracing overhead
+max-perf = ["tracing/max_level_off"]
 
 [dependencies]
 # Async runtime

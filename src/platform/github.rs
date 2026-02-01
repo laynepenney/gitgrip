@@ -8,6 +8,13 @@ use super::traits::{HostingPlatform, LinkedPRRef, PlatformError};
 use super::types::*;
 use crate::core::manifest::PlatformType;
 
+#[cfg(feature = "telemetry")]
+use crate::telemetry::metrics::GLOBAL_METRICS;
+#[cfg(feature = "telemetry")]
+use std::time::Instant;
+#[cfg(feature = "telemetry")]
+use tracing::debug;
+
 /// GitHub API adapter
 pub struct GitHubAdapter {
     base_url: Option<String>,
@@ -83,16 +90,38 @@ impl HostingPlatform for GitHubAdapter {
         body: Option<&str>,
         draft: bool,
     ) -> Result<PRCreateResult, PlatformError> {
+        #[cfg(feature = "telemetry")]
+        let start = Instant::now();
+
         let client = self.get_client().await?;
 
-        let pr = client
+        let result = client
             .pulls(owner, repo)
             .create(title, head, base)
             .body(body.unwrap_or(""))
             .draft(draft)
             .send()
-            .await
-            .map_err(|e| PlatformError::ApiError(format!("Failed to create PR: {}", e)))?;
+            .await;
+
+        #[cfg(feature = "telemetry")]
+        {
+            let duration = start.elapsed();
+            let success = result.is_ok();
+            GLOBAL_METRICS.record_platform("github", "create_pr", duration, success);
+            debug!(
+                owner,
+                repo,
+                head,
+                base,
+                draft,
+                success,
+                duration_ms = duration.as_millis() as u64,
+                "GitHub create PR complete"
+            );
+        }
+
+        let pr =
+            result.map_err(|e| PlatformError::ApiError(format!("Failed to create PR: {}", e)))?;
 
         Ok(PRCreateResult {
             number: pr.number,
@@ -176,6 +205,9 @@ impl HostingPlatform for GitHubAdapter {
         method: Option<MergeMethod>,
         _delete_branch: bool,
     ) -> Result<bool, PlatformError> {
+        #[cfg(feature = "telemetry")]
+        let start = Instant::now();
+
         let client = self.get_client().await?;
 
         let merge_method = match method.unwrap_or(MergeMethod::Merge) {
@@ -190,6 +222,21 @@ impl HostingPlatform for GitHubAdapter {
             .method(merge_method)
             .send()
             .await;
+
+        #[cfg(feature = "telemetry")]
+        {
+            let duration = start.elapsed();
+            let success = result.is_ok();
+            GLOBAL_METRICS.record_platform("github", "merge_pr", duration, success);
+            debug!(
+                owner,
+                repo,
+                pull_number,
+                success,
+                duration_ms = duration.as_millis() as u64,
+                "GitHub merge PR complete"
+            );
+        }
 
         match result {
             Ok(merge) => Ok(merge.merged),
