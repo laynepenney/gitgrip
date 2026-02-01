@@ -73,7 +73,6 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
                                 spinner.finish_with_message(format!("{}: {}", repo.name, msg));
                             }
                             error_count += 1;
-                            failed_repos.push((repo.name.clone(), format!("Error: {}", e)));
                         } else {
                             spinner.finish_with_message(format!("{}: up to date", repo.name));
                             success_count += 1;
