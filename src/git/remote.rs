@@ -351,13 +351,13 @@ pub fn safe_pull_latest(
 
     if !upstream_exists {
         if !has_upstream {
+            // No upstream configured - just fetch to update refs
+            // This is normal for local branches that haven't been pushed yet
+            fetch_remote(repo, remote)?;
             return Ok(SafePullResult {
-                pulled: false,
+                pulled: true, // Fetch succeeded, consider it a success
                 recovered: false,
-                message: Some(format!(
-                    "Branch '{}' has no upstream configured. Push with 'gr push -u' first, or checkout '{}' manually.",
-                    current_branch, default_branch
-                )),
+                message: Some("fetched (no upstream)".to_string()),
             });
         }
 
