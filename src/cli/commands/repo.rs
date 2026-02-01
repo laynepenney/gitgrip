@@ -91,11 +91,7 @@ pub fn run_repo_add(
             }
 
             // If we're after repos: section and hit a new top-level key, insert here
-            if after_repos
-                && (line == "settings:"
-                    || line == "workspace:"
-                    || line == "manifest:")
-            {
+            if after_repos && (line == "settings:" || line == "workspace:" || line == "manifest:") {
                 insert_index = i;
                 break;
             }
@@ -260,7 +256,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod yaml_insertion_tests {
     use super::*;
@@ -284,9 +279,7 @@ mod yaml_insertion_tests {
                 }
 
                 if after_repos
-                    && (line == "settings:"
-                        || line == "workspace:"
-                        || line == "manifest:")
+                    && (line == "settings:" || line == "workspace:" || line == "manifest:")
                 {
                     insert_index = i;
                     break;
@@ -301,12 +294,16 @@ mod yaml_insertion_tests {
     }
 
     fn normalize(s: &str) -> String {
-        s.lines().map(|l| l.trim_end()).collect::<Vec<_>>().join("\n")
+        s.lines()
+            .map(|l| l.trim_end())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
     fn test_insert_repo_before_settings_section() {
-        let manifest = normalize(r#"
+        let manifest = normalize(
+            r#"
 version: 1
 
 manifest:
@@ -319,26 +316,30 @@ repos:
     default_branch: main
 
 settings:
-  merge_strategy: all-or-nothing"#);
+  merge_strategy: all-or-nothing"#,
+        );
 
         let new_repo = "  newrepo:\n    url: https://github.com/example/new.git\n    path: ./new\n    default_branch: main";
-        
+
         let result = test_insert_yaml(&manifest, new_repo);
-        
+
         // Verify newrepo is AFTER repos: and BEFORE settings:
         assert!(result.contains("newrepo:"), "Result should contain newrepo");
-        
+
         let repos_pos = result.find("repos:").unwrap();
         let newrepo_pos = result.find("newrepo:").unwrap();
         let settings_pos = result.find("settings:").unwrap();
-        
-        assert!(repos_pos < newrepo_pos && newrepo_pos < settings_pos,
-            "Order should be: repos: < newrepo: < settings:");
+
+        assert!(
+            repos_pos < newrepo_pos && newrepo_pos < settings_pos,
+            "Order should be: repos: < newrepo: < settings:"
+        );
     }
 
     #[test]
     fn test_insert_repo_with_workspace_section() {
-        let manifest = normalize(r#"
+        let manifest = normalize(
+            r#"
 version: 1
 
 manifest:
@@ -349,24 +350,28 @@ repos:
     url: https://github.com/example/repo.git
 
 workspace:
-  root: ."#);
+  root: ."#,
+        );
 
         let new_repo = "  newrepo:\n    url: https://github.com/example/new.git\n    path: ./new";
-        
+
         let result = test_insert_yaml(&manifest, new_repo);
-        
+
         let repos_pos = result.find("repos:").unwrap();
         let newrepo_pos = result.find("newrepo:").unwrap();
         let workspace_pos = result.find("workspace:").unwrap();
-        
-        assert!(repos_pos < newrepo_pos && newrepo_pos < workspace_pos,
-            "Order should be: repos: < newrepo: < workspace:");
+
+        assert!(
+            repos_pos < newrepo_pos && newrepo_pos < workspace_pos,
+            "Order should be: repos: < newrepo: < workspace:"
+        );
     }
 
     #[test]
     fn test_insert_repo_with_manifest_after_repos() {
         // Edge case: manifest section appears AFTER repos (unusual but valid)
-        let manifest = normalize(r#"
+        let manifest = normalize(
+            r#"
 version: 1
 
 repos:
@@ -374,24 +379,28 @@ repos:
     url: https://github.com/example/repo.git
 
 manifest:
-  url: https://github.com/example/different.git"#);
+  url: https://github.com/example/different.git"#,
+        );
 
         let new_repo = "  newrepo:\n    url: https://github.com/example/new.git";
-        
+
         let result = test_insert_yaml(&manifest, new_repo);
-        
+
         let repos_pos = result.find("repos:").unwrap();
         let newrepo_pos = result.find("newrepo:").unwrap();
         let manifest_pos = result.find("manifest:").unwrap();
-        
-        assert!(repos_pos < newrepo_pos && newrepo_pos < manifest_pos,
-            "Order should be: repos: < newrepo: < manifest:");
+
+        assert!(
+            repos_pos < newrepo_pos && newrepo_pos < manifest_pos,
+            "Order should be: repos: < newrepo: < manifest:"
+        );
     }
 
     #[test]
     fn test_insert_repo_no_section_after_repos() {
         // repos is the last section in the file
-        let manifest = normalize(r#"
+        let manifest = normalize(
+            r#"
 version: 1
 
 manifest:
@@ -399,18 +408,19 @@ manifest:
 
 repos:
   existing:
-    url: https://github.com/example/repo.git"#);
+    url: https://github.com/example/repo.git"#,
+        );
 
         let new_repo = "  newrepo:\n    url: https://github.com/example/new.git";
-        
+
         let result = test_insert_yaml(&manifest, new_repo);
-        
+
         let repos_pos = result.find("repos:").unwrap();
         let newrepo_pos = result.find("newrepo:").unwrap();
-        
+
         // newrepo should exist and be after repos
         assert!(newrepo_pos > repos_pos, "newrepo: should be after repos:");
-        
+
         // Count occurrences - should have 2 repos now
         let repo_count = result.matches("repos:").count() + result.matches("newrepo:").count();
         assert!(repo_count >= 2, "Should have at least 2 repo entries");
@@ -419,7 +429,8 @@ repos:
     #[test]
     fn test_insert_repo_correct_indentation() {
         // Verify new repo entry has correct 2-space indentation
-        let manifest = normalize(r#"
+        let manifest = normalize(
+            r#"
 version: 1
 
 manifest:
@@ -429,74 +440,89 @@ repos:
   existing:
     url: https://github.com/example/repo.git
     path: ./repo
-settings: {}"#);
+settings: {}"#,
+        );
 
         let new_repo = "  newrepo:\n    url: https://github.com/example/new.git\n    path: ./new";
-        
+
         let result = test_insert_yaml(&manifest, new_repo);
-        
+
         // Find the newrepo line and verify indentation
-        let newrepo_line = result.lines().find(|l| l.trim_start().starts_with("newrepo:"))
+        let newrepo_line = result
+            .lines()
+            .find(|l| l.trim_start().starts_with("newrepo:"))
             .expect("Should find newrepo: line");
-        
+
         let leading_spaces = newrepo_line.len() - newrepo_line.trim_start().len();
-        assert_eq!(leading_spaces, 2, "newrepo: should have exactly 2-space indent");
+        assert_eq!(
+            leading_spaces, 2,
+            "newrepo: should have exactly 2-space indent"
+        );
     }
 
     #[test]
     fn test_insert_multiple_repos_sequential() {
         // Test adding multiple repos in sequence
-        let manifest = normalize(r#"
+        let manifest = normalize(
+            r#"
 version: 1
 
 repos:
   repo_a:
     url: https://github.com/example/a.git
-settings: {}"#);
+settings: {}"#,
+        );
 
         let new_repo_b = "  repo_b:\n    url: https://github.com/example/b.git";
         let new_repo_c = "  repo_c:\n    url: https://github.com/example/c.git";
-        
+
         let after_b = test_insert_yaml(&manifest, new_repo_b);
         let after_c = test_insert_yaml(&after_b, new_repo_c);
-        
+
         let a_pos = after_c.find("repo_a:").unwrap();
         let b_pos = after_c.find("repo_b:").unwrap();
         let c_pos = after_c.find("repo_c:").unwrap();
-        
-        assert!(a_pos < b_pos && b_pos < c_pos,
-            "Repos should be in order: a, b, c");
+
+        assert!(
+            a_pos < b_pos && b_pos < c_pos,
+            "Repos should be in order: a, b, c"
+        );
     }
 
     #[test]
     fn test_insert_repo_with_empty_repos_section() {
         // Insert into empty repos section
-        let manifest = normalize(r#"
+        let manifest = normalize(
+            r#"
 version: 1
 
 manifest:
   url: https://github.com/example/workspace.git
 
 repos:
-settings: {}"#);
+settings: {}"#,
+        );
 
         let new_repo = "  newrepo:\n    url: https://github.com/example/new.git\n    path: ./new";
-        
+
         let result = test_insert_yaml(&manifest, new_repo);
-        
+
         // Verify newrepo is between repos: and settings:
         let repos_pos = result.find("repos:").unwrap();
         let newrepo_pos = result.find("newrepo:").unwrap();
         let settings_pos = result.find("settings:").unwrap();
-        
-        assert!(repos_pos < newrepo_pos && newrepo_pos < settings_pos,
-            "newrepo should be between repos: and settings:");
+
+        assert!(
+            repos_pos < newrepo_pos && newrepo_pos < settings_pos,
+            "newrepo should be between repos: and settings:"
+        );
     }
 
     #[test]
     fn test_insert_repo_does_not_corrupt_manifest() {
         // Ensure we don't break the overall structure
-        let manifest = normalize(r#"
+        let manifest = normalize(
+            r#"
 version: 1
 
 manifest:
@@ -516,18 +542,26 @@ repos:
 
 settings:
   pr_prefix: "[cross-repo]"
-  merge_strategy: all-or-nothing"#);
+  merge_strategy: all-or-nothing"#,
+        );
 
         let new_repo = "  newtool:\n    url: https://github.com/example/newtool.git\n    path: ./newtool\n    default_branch: main";
-        
+
         let result = test_insert_yaml(&manifest, new_repo);
-        
+
         // Verify structure is preserved
-        assert!(result.starts_with("version: 1"), "Should start with version");
-        assert!(result.contains("manifest:") && result.contains("linkfile:"), 
-            "Should preserve manifest section");
+        assert!(
+            result.starts_with("version: 1"),
+            "Should start with version"
+        );
+        assert!(
+            result.contains("manifest:") && result.contains("linkfile:"),
+            "Should preserve manifest section"
+        );
         assert!(result.contains("repos:"), "Should contain repos section");
-        assert!(result.contains("settings:") && result.contains("merge_strategy:"), 
-            "Should preserve settings section");
+        assert!(
+            result.contains("settings:") && result.contains("merge_strategy:"),
+            "Should preserve settings section"
+        );
     }
 }

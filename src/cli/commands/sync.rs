@@ -20,7 +20,7 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
 
     let mut success_count = 0;
     let mut error_count = 0;
-    let mut failed_repos: Vec<(String, String)> = Vec::new();  // (repo_name, error_message)
+    let mut failed_repos: Vec<(String, String)> = Vec::new(); // (repo_name, error_message)
 
     for repo in &repos {
         let spinner = Output::spinner(&format!("Pulling {}...", repo.name));
@@ -98,7 +98,7 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
         ));
     } else {
         Output::warning(&format!("{} synced, {} failed", success_count, error_count));
-        
+
         // Show which repos failed and why
         if !failed_repos.is_empty() {
             println!();
