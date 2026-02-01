@@ -895,6 +895,79 @@ workspace:
     });
 }
 
+/// Benchmark telemetry overhead
+///
+/// To compare telemetry vs no-telemetry, run:
+/// ```bash
+/// # With telemetry (default)
+/// cargo bench --bench benchmarks -- telemetry
+///
+/// # Without telemetry
+/// cargo bench --bench benchmarks --no-default-features -- telemetry
+/// ```
+#[cfg(feature = "telemetry")]
+fn bench_telemetry_overhead(c: &mut Criterion) {
+    use gitgrip::telemetry::metrics::GLOBAL_METRICS;
+    use std::time::Duration;
+
+    let mut group = c.benchmark_group("telemetry_overhead");
+
+    // Benchmark metrics recording (the hot path when telemetry is enabled)
+    group.bench_function("record_git_metric", |b| {
+        b.iter(|| {
+            GLOBAL_METRICS.record_git(
+                black_box("fetch"),
+                black_box(Duration::from_millis(100)),
+                black_box(true),
+            );
+        })
+    });
+
+    group.bench_function("record_platform_metric", |b| {
+        b.iter(|| {
+            GLOBAL_METRICS.record_platform(
+                black_box("github"),
+                black_box("create_pr"),
+                black_box(Duration::from_millis(500)),
+                black_box(true),
+            );
+        })
+    });
+
+    group.bench_function("record_cache_metric", |b| {
+        b.iter(|| {
+            GLOBAL_METRICS.record_cache(black_box(true));
+        })
+    });
+
+    group.bench_function("metrics_snapshot", |b| {
+        // Add some metrics first
+        for i in 0..10 {
+            GLOBAL_METRICS.record_git(&format!("op{}", i), Duration::from_millis(i as u64 * 10), true);
+        }
+        b.iter(|| {
+            black_box(GLOBAL_METRICS.snapshot())
+        })
+    });
+
+    group.finish();
+}
+
+#[cfg(not(feature = "telemetry"))]
+fn bench_telemetry_overhead(c: &mut Criterion) {
+    // When telemetry is disabled, we measure the baseline
+    let mut group = c.benchmark_group("telemetry_overhead");
+
+    group.bench_function("baseline_noop", |b| {
+        b.iter(|| {
+            // This measures the baseline when telemetry is compiled out
+            black_box(42)
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_manifest_parse,
@@ -913,6 +986,8 @@ criterion_group!(
     bench_forall_command,
     bench_multi_repo_status,
     bench_manifest_and_repos,
+    // Telemetry overhead benchmarks
+    bench_telemetry_overhead,
 );
 
 criterion_main!(benches);

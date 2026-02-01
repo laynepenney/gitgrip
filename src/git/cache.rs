@@ -10,6 +10,11 @@ use std::time::{Duration, Instant};
 
 use super::status::RepoStatusInfo;
 
+#[cfg(feature = "telemetry")]
+use crate::telemetry::metrics::GLOBAL_METRICS;
+#[cfg(feature = "telemetry")]
+use tracing::trace;
+
 /// Cache entry with status and timestamp
 struct CacheEntry {
     status: RepoStatusInfo,
@@ -41,8 +46,18 @@ impl GitStatusCache {
         let cache = self.cache.lock().unwrap();
         if let Some(entry) = cache.get(repo_path) {
             if !self.is_expired(entry) {
+                #[cfg(feature = "telemetry")]
+                {
+                    GLOBAL_METRICS.record_cache(true);
+                    trace!(path = %repo_path.display(), "Cache hit");
+                }
                 return Some(entry.status.clone());
             }
+        }
+        #[cfg(feature = "telemetry")]
+        {
+            GLOBAL_METRICS.record_cache(false);
+            trace!(path = %repo_path.display(), "Cache miss");
         }
         None
     }

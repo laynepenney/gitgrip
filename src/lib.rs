@@ -8,6 +8,7 @@ pub mod core;
 pub mod files;
 pub mod git;
 pub mod platform;
+pub mod telemetry;
 pub mod util;
 
 pub use core::manifest::Manifest;

@@ -6,6 +6,13 @@ use std::process::Command;
 use super::cache::invalidate_status_cache;
 use super::{get_current_branch, GitError};
 
+#[cfg(feature = "telemetry")]
+use crate::telemetry::metrics::GLOBAL_METRICS;
+#[cfg(feature = "telemetry")]
+use std::time::Instant;
+#[cfg(feature = "telemetry")]
+use tracing::{debug, instrument};
+
 /// Get the URL of a remote
 pub fn get_remote_url(repo: &Repository, remote: &str) -> Result<Option<String>, GitError> {
     let repo_path = super::get_workdir(repo);
@@ -45,8 +52,12 @@ pub fn set_remote_url(repo: &Repository, remote: &str, url: &str) -> Result<(), 
 }
 
 /// Fetch from remote
+#[cfg_attr(feature = "telemetry", instrument(skip(repo), fields(remote, success)))]
 pub fn fetch_remote(repo: &Repository, remote: &str) -> Result<(), GitError> {
     let repo_path = super::get_workdir(repo);
+
+    #[cfg(feature = "telemetry")]
+    let start = Instant::now();
 
     let output = Command::new("git")
         .args(["fetch", remote])
@@ -54,7 +65,16 @@ pub fn fetch_remote(repo: &Repository, remote: &str) -> Result<(), GitError> {
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
-    if !output.status.success() {
+    let success = output.status.success();
+
+    #[cfg(feature = "telemetry")]
+    {
+        let duration = start.elapsed();
+        GLOBAL_METRICS.record_git("fetch", duration, success);
+        debug!(remote, success, duration_ms = duration.as_millis() as u64, "Git fetch complete");
+    }
+
+    if !success {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(GitError::OperationFailed(stderr.to_string()));
     }
@@ -63,8 +83,12 @@ pub fn fetch_remote(repo: &Repository, remote: &str) -> Result<(), GitError> {
 }
 
 /// Pull latest changes (fetch + merge)
+#[cfg_attr(feature = "telemetry", instrument(skip(repo), fields(remote, success)))]
 pub fn pull_latest(repo: &Repository, remote: &str) -> Result<(), GitError> {
     let repo_path = super::get_workdir(repo);
+
+    #[cfg(feature = "telemetry")]
+    let start = Instant::now();
 
     let output = Command::new("git")
         .args(["pull", remote])
@@ -72,7 +96,16 @@ pub fn pull_latest(repo: &Repository, remote: &str) -> Result<(), GitError> {
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
-    if !output.status.success() {
+    let success = output.status.success();
+
+    #[cfg(feature = "telemetry")]
+    {
+        let duration = start.elapsed();
+        GLOBAL_METRICS.record_git("pull", duration, success);
+        debug!(remote, success, duration_ms = duration.as_millis() as u64, "Git pull complete");
+    }
+
+    if !success {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("CONFLICT") {
             return Err(GitError::OperationFailed(
@@ -94,6 +127,7 @@ pub fn pull_latest(repo: &Repository, remote: &str) -> Result<(), GitError> {
 }
 
 /// Push branch to remote
+#[cfg_attr(feature = "telemetry", instrument(skip(repo), fields(branch_name, remote, set_upstream, success)))]
 pub fn push_branch(
     repo: &Repository,
     branch_name: &str,
@@ -101,6 +135,9 @@ pub fn push_branch(
     set_upstream: bool,
 ) -> Result<(), GitError> {
     let repo_path = super::get_workdir(repo);
+
+    #[cfg(feature = "telemetry")]
+    let start = Instant::now();
 
     let mut args = vec!["push", remote, branch_name];
     if set_upstream {
@@ -113,7 +150,16 @@ pub fn push_branch(
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
-    if !output.status.success() {
+    let success = output.status.success();
+
+    #[cfg(feature = "telemetry")]
+    {
+        let duration = start.elapsed();
+        GLOBAL_METRICS.record_git("push", duration, success);
+        debug!(branch_name, remote, set_upstream, success, duration_ms = duration.as_millis() as u64, "Git push complete");
+    }
+
+    if !success {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(GitError::OperationFailed(stderr.to_string()));
     }
