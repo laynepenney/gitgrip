@@ -25,6 +25,8 @@ pub struct RepoInfo {
     pub platform_type: PlatformType,
     /// Project name (Azure DevOps only)
     pub project: Option<String>,
+    /// Reference repo (read-only, excluded from branch/PR operations)
+    pub reference: bool,
 }
 
 impl RepoInfo {
@@ -50,6 +52,7 @@ impl RepoInfo {
             repo: parsed.repo,
             platform_type,
             project: parsed.project,
+            reference: config.reference,
         })
     }
 

@@ -93,6 +93,9 @@ pub struct RepoConfig {
     /// Optional platform override
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<PlatformConfig>,
+    /// Reference repo (read-only, excluded from branch/PR operations)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reference: bool,
 }
 
 fn default_branch() -> String {
@@ -543,5 +546,40 @@ workspace:
         assert!(!path_escapes_boundary("foo"));
         assert!(!path_escapes_boundary("foo/bar"));
         assert!(!path_escapes_boundary("./foo"));
+    }
+
+    #[test]
+    fn test_reference_repos() {
+        let yaml = r#"
+repos:
+  main-repo:
+    url: git@github.com:user/main.git
+    path: main
+  ref-repo:
+    url: https://github.com/other/reference.git
+    path: ./ref/reference
+    reference: true
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        assert_eq!(manifest.repos.len(), 2);
+
+        let main_repo = manifest.repos.get("main-repo").unwrap();
+        assert!(!main_repo.reference);
+
+        let ref_repo = manifest.repos.get("ref-repo").unwrap();
+        assert!(ref_repo.reference);
+    }
+
+    #[test]
+    fn test_reference_default_false() {
+        let yaml = r#"
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        let repo = manifest.repos.get("myrepo").unwrap();
+        assert!(!repo.reference); // Should default to false
     }
 }

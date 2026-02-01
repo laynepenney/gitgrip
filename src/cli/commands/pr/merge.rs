@@ -22,6 +22,7 @@ pub async fn run_pr_merge(
         .repos
         .iter()
         .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter(|r| !r.reference) // Skip reference repos
         .collect();
 
     let merge_method = match method {

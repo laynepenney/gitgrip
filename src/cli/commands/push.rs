@@ -26,6 +26,7 @@ pub fn run_push(
         .repos
         .iter()
         .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter(|r| !r.reference) // Skip reference repos
         .collect();
 
     let mut success_count = 0;
