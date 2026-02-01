@@ -516,6 +516,57 @@ repos:
 
 ---
 
+### Bug: `gr push -u` shows failures for repos with no changes
+
+**Discovered**: 2026-02-01 during sync no-upstream fix
+
+**Problem**: When pushing a branch that only has commits in some repos, the repos without changes/commits show as "failed" instead of "skipped". This is misleading - there's nothing to push, so it's not really a failure.
+
+**Reproduction**:
+```bash
+gr branch fix/something
+# Make changes only in tooling repo
+gr add . && gr commit -m "fix: something"
+gr push -u
+# Output: "5 pushed, 3 failed, 0 skipped"
+```
+
+**Expected behavior**:
+```
+# Output should be: "1 pushed, 0 failed, 7 skipped (no changes)"
+```
+
+**Notes**: The "failed" repos are ones where the branch exists locally but has no commits to push. They should be counted as "skipped" or "nothing to push".
+
+---
+
+### Bug: `gr pr merge` reports "checks failing" when checks passed
+
+**Discovered**: 2026-02-01 during sync no-upstream fix (PR #127)
+
+**Problem**: `gr pr merge` reported "checks failing" and refused to merge, but when checking with `gh pr checks`, all checks had passed (including the CI summary job). Had to fall back to `gh pr merge --admin`.
+
+**Reproduction**:
+```bash
+gr pr merge
+# Output: "tooling PR #127: checks failing"
+# But: gh pr checks 127 --repo laynepenney/gitgrip shows all passing
+```
+
+**Workaround**:
+```bash
+gh pr merge 127 --repo laynepenney/gitgrip --squash --admin
+```
+
+**Possible causes**:
+- Stale check status caching
+- Not waiting for CI summary job to complete
+- Check status API query not matching GitHub's merge requirements
+
+**Related**: Issue #99 (gr pr merge doesn't recognize passing checks)
+
+---
+
 ### Missing: Auto-discovery of legacy griptrees
 
 **Discovered**: 2026-01-31 during Rust migration testing
