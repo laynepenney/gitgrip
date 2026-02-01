@@ -116,6 +116,7 @@ fn bench_url_parse(c: &mut Criterion) {
         copyfile: None,
         linkfile: None,
         platform: None,
+        reference: false,
     };
     let workspace = PathBuf::from("/home/user/workspace");
 
@@ -133,6 +134,7 @@ fn bench_url_parse_azure(c: &mut Criterion) {
         copyfile: None,
         linkfile: None,
         platform: None,
+        reference: false,
     };
     let workspace = PathBuf::from("/home/user/workspace");
 
