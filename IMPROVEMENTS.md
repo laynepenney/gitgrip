@@ -464,6 +464,8 @@ _Items that have been implemented. Keep for historical reference._
 | #99 | fix: gr pr merge doesn't recognize passing checks |
 | #112 | fix: gr repo add corrupts manifest YAML structure |
 | #113 | feat: add reference repos (read-only repos excluded from branch/PR operations) |
+| #129 | fix: gr push shows 'failed' for repos with no changes to push |
+| #130 | fix: gr pr merge reports 'checks failing' when checks actually passed |
 
 Created: 2025-12-05
 Updated: 2026-02-01
@@ -513,6 +515,57 @@ repos:
 **Workaround**: Manually edit manifest.yaml to move the repo entry under `repos:` section.
 
 **Root cause**: The YAML insertion logic in `gr repo add` is not correctly identifying the `repos:` section location.
+
+---
+
+### Bug: `gr push -u` shows failures for repos with no changes → Issue #129
+
+**Discovered**: 2026-02-01 during sync no-upstream fix
+
+**Problem**: When pushing a branch that only has commits in some repos, the repos without changes/commits show as "failed" instead of "skipped". This is misleading - there's nothing to push, so it's not really a failure.
+
+**Reproduction**:
+```bash
+gr branch fix/something
+# Make changes only in tooling repo
+gr add . && gr commit -m "fix: something"
+gr push -u
+# Output: "5 pushed, 3 failed, 0 skipped"
+```
+
+**Expected behavior**:
+```
+# Output should be: "1 pushed, 0 failed, 7 skipped (no changes)"
+```
+
+**Notes**: The "failed" repos are ones where the branch exists locally but has no commits to push. They should be counted as "skipped" or "nothing to push".
+
+---
+
+### Bug: `gr pr merge` reports "checks failing" when checks passed → Issue #130
+
+**Discovered**: 2026-02-01 during sync no-upstream fix (PR #127)
+
+**Problem**: `gr pr merge` reported "checks failing" and refused to merge, but when checking with `gh pr checks`, all checks had passed (including the CI summary job). Had to fall back to `gh pr merge --admin`.
+
+**Reproduction**:
+```bash
+gr pr merge
+# Output: "tooling PR #127: checks failing"
+# But: gh pr checks 127 --repo laynepenney/gitgrip shows all passing
+```
+
+**Workaround**:
+```bash
+gh pr merge 127 --repo laynepenney/gitgrip --squash --admin
+```
+
+**Possible causes**:
+- Stale check status caching
+- Not waiting for CI summary job to complete
+- Check status API query not matching GitHub's merge requirements
+
+**Related**: Issue #99 (gr pr merge doesn't recognize passing checks)
 
 ---
 
