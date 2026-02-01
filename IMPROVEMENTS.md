@@ -464,6 +464,8 @@ _Items that have been implemented. Keep for historical reference._
 | #99 | fix: gr pr merge doesn't recognize passing checks |
 | #112 | fix: gr repo add corrupts manifest YAML structure |
 | #113 | feat: add reference repos (read-only repos excluded from branch/PR operations) |
+| #129 | fix: gr push shows 'failed' for repos with no changes to push |
+| #130 | fix: gr pr merge reports 'checks failing' when checks actually passed |
 
 Created: 2025-12-05
 Updated: 2026-02-01
@@ -516,7 +518,7 @@ repos:
 
 ---
 
-### Bug: `gr push -u` shows failures for repos with no changes
+### Bug: `gr push -u` shows failures for repos with no changes → Issue #129
 
 **Discovered**: 2026-02-01 during sync no-upstream fix
 
@@ -540,7 +542,7 @@ gr push -u
 
 ---
 
-### Bug: `gr pr merge` reports "checks failing" when checks passed
+### Bug: `gr pr merge` reports "checks failing" when checks passed → Issue #130
 
 **Discovered**: 2026-02-01 during sync no-upstream fix (PR #127)
 
