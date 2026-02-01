@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.5] - 2026-02-01
+
+### Added
+- Telemetry, tracing, and benchmarks infrastructure for performance monitoring
+  - Optional telemetry feature flag
+  - Correlation IDs for request tracing
+  - Git operation metrics (fetch, pull, push timing)
+  - Platform API metrics
+- CI now triggers for markdown file changes (enables doc-only PRs)
+
+### Fixed
+- `gr sync` now succeeds when on a branch without upstream configured
+  - Fetches from origin to update refs instead of failing
+  - Reports "fetched (no upstream)" status
+- Windows CI: Fixed libgit2-sys linking by adding advapi32.lib via build.rs and RUSTFLAGS
+- `gr repo add` YAML insertion now correctly places repos under `repos:` section
+- Griptree creation now writes `.griptree` pointer file for workspace detection
+
+### Changed
+- CI summary job added for branch protection compatibility
+
 ## [0.5.4] - 2026-02-01
 
 ### Added
