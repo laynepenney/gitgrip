@@ -40,8 +40,14 @@ pub fn run_status(
     for (status, repo) in &statuses {
         let status_str = format_status(status, verbose);
         let main_str = format_main_comparison(status, &repo.default_branch);
+        // Add [ref] suffix for reference repos
+        let repo_display = if repo.reference {
+            format!("{} [ref]", Output::repo_name(&status.name))
+        } else {
+            Output::repo_name(&status.name)
+        };
         table.add_row(vec![
-            &Output::repo_name(&status.name),
+            &repo_display,
             &Output::branch_name(&status.branch),
             &status_str,
             &main_str,

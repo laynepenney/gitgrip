@@ -21,6 +21,7 @@ pub fn run_branch(
         .repos
         .iter()
         .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter(|r| !r.reference) // Skip reference repos
         .filter(|r| {
             repos_filter
                 .map(|filter| filter.iter().any(|f| f == &r.name))

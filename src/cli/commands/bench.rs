@@ -211,6 +211,7 @@ fn run_benchmark_operation(name: &str) -> Result<()> {
                 copyfile: None,
                 linkfile: None,
                 platform: None,
+                reference: false,
             };
             let workspace = std::path::PathBuf::from("/workspace");
             let _ = RepoInfo::from_config("repo", &config, &workspace);

@@ -494,6 +494,7 @@ fn generate_manifest(repos: &[DiscoveredRepo]) -> Manifest {
                 copyfile: None,
                 linkfile: None,
                 platform: None,
+                reference: false,
             },
         );
     }

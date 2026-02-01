@@ -276,6 +276,7 @@ mod tests {
                 copyfile: copyfiles,
                 linkfile: linkfiles,
                 platform: None,
+                reference: false,
             },
         );
 

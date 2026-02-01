@@ -24,6 +24,7 @@ pub async fn run_pr_create(
         .repos
         .iter()
         .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter(|r| !r.reference) // Skip reference repos
         .collect();
 
     // Get current branch for all repos and verify consistency
