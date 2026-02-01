@@ -72,7 +72,7 @@ Added `gr completions <shell>` command using clap_complete crate.
 
 ## Pending Review
 
-### Missing: `gr sync` shows which repos failed
+### Missing: `gr sync` shows which repos failed → Issue #119
 
 **Discovered**: 2026-02-01
 
@@ -97,7 +97,7 @@ Syncing 8 repositories...
 
 ---
 
-### Missing: `gr push` shows which repos failed
+### Missing: `gr push` shows which repos failed → Issue #120
 
 **Discovered**: 2026-02-01
 
@@ -543,6 +543,8 @@ _Items that have been implemented. Keep for historical reference._
 | #99 | fix: gr pr merge doesn't recognize passing checks |
 | #112 | fix: gr repo add corrupts manifest YAML structure |
 | #113 | feat: add reference repos (read-only repos excluded from branch/PR operations) |
+| #119 | feat: gr sync should show which repos failed |
+| #120 | feat: gr push should show which repos failed |
 
 Created: 2025-12-05
 Updated: 2026-02-01
