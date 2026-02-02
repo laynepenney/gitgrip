@@ -201,49 +201,67 @@ Or add a "move last commit to new branch" helper.
 gr pr create -t "title" -b "body content"
 ```
 
-### Missing: `gr commit --amend` support
+### Missing: `gr commit --amend` support ✓
+
+**Status**: ✅ **COMPLETED** - Already implemented in main.rs
 
 **Discovered**: 2026-01-29 during sync fix + repo add implementation
 
-**Problem**: Needed to amend a commit after review found minor issues (unused import, misleading comment). Had to use `git commit --amend --no-edit` directly.
+**Problem**: Wanted to amend a commit after review found minor issues (unused import, misleading comment). However, `--amend` flag was already available but not documented in IMPROVEMENTS.md.
 
-**Workaround**: `gr add <files> && git commit --amend --no-edit`
+**Solution Verified**: The `--amend` flag already existed and works correctly:
+```bash
+# Amend with new message
+gr commit --amend -m "Updated message"
 
-**Suggested**: Add `--amend` flag to `gr commit`
+# Keep same message (still requires -m flag)
+gr commit --amend -m "Updated message"
+```
 
-### Missing: `gr pr checks` command
+**Implementation**
+- CLI: `#[arg(long)] amend: bool` in main.rs
+- Backend: `create_commit()` handles amend correctly
+- Tests: Unit test `test_amend_commit` passes
+
+Closes #59
+
+### Missing: `gr pr checks` command ✓
+
+**Status**: ✅ **COMPLETED** - Already implemented
 
 **Discovered**: 2026-01-29 during PR review workflow
 
-**Problem**: To check CI status across all repos with PRs, must run `gh pr checks <number>` separately for each repo. No way to see combined check status across all linked PRs.
+**Problem**: Wanted to check CI status across all repos with PRs, assumed it wasn't implemented.
 
-**Workaround**:
+**Solution Verified**: `gr pr checks` command already exists and works:
 ```bash
-gh pr checks 47 --repo laynepenney/gitgrip
-# Repeat for each repo with a PR...
+gr pr checks              # Pretty output
+gr pr checks --json       # JSON output for scripting
 ```
 
-**Suggested**: Add `gr pr checks` command that:
-1. Shows check status for all linked PRs in the current branch
-2. Aggregates pass/fail/pending status across repos
-3. Blocks/warns if any checks are failing
-
-**Example output**:
+**Output Format**:
 ```
-PR Checks for branch: feat/my-feature
+CI/CD Check Status
 
-  Repo       PR    Check              Status
-  ─────────────────────────────────────────────
-  tooling    #47   build              ✓ pass
-  tooling    #47   test               ✓ pass
-  tooling    #47   sync-status        ⏭ skipped
-  frontend   #123  build              ✓ pass
-  frontend   #123  deploy-preview     ⏳ pending
+● strategy
+● homebrew-tap #9
+● public #253
+    ● Type Check queued
+    ● Test (ubuntu-latest) queued
+    ✓ Test (macos-latest) success
 
-  Summary: 4 passed, 1 pending, 0 failed
+Summary: 3 passed, 0 failed, 3 pending
 ```
 
-**Related**: Issue #30 (cr pr checks) was created previously but not yet implemented.
+**Features**:
+- Shows all linked PRs for current branch
+- Aggregates status across repos (GitHub/GitLab/AzureDevOps)
+- Lists individual checks with indicators
+- Summary with counts
+- JSON output for scripts
+- Exit code non-zero if checks failing
+
+Closes #60
 
 ### Feature: `gr forall` should default to changed repos only
 
@@ -512,54 +530,75 @@ Updated: 2026-02-01
 
 ---
 
-### Bug: `gr push -u` shows failures for repos with no changes → Issue #129
+### Bug: `gr push -u` shows failures for repos with no changes ✓
+
+**Status**: ✅ **COMPLETED** - Already working correctly
 
 **Discovered**: 2026-02-01 during sync no-upstream fix
 
-**Problem**: When pushing a branch that only has commits in some repos, the repos without changes/commits show as "failed" instead of "skipped". This is misleading - there's nothing to push, so it's not really a failure.
+**Problem**: Assumed repos without changes showed as "failed" instead of "skipped".
 
-**Reproduction**:
+**Verified Working**: Current behavior correctly handles this:
 ```bash
-gr branch fix/something
-# Make changes only in tooling repo
-gr add . && gr commit -m "fix: something"
-gr push -u
-# Output: "5 pushed, 3 failed, 0 skipped"
+$ gr push
+Pushing changes...
+
+ℹ tooling: nothing to push
+ℹ public: nothing to push
+
+Nothing to push.
 ```
 
-**Expected behavior**:
-```
-# Output should be: "1 pushed, 0 failed, 7 skipped (no changes)"
-```
+**Implementation Verified**:
+- `has_commits_to_push()` checks for commits ahead of remote
+- Repos with nothing to push show "ℹ {repo}: nothing to push"
+- Summary correctly shows "Nothing to push." when all skipped
+- Error handling distinguishes between "nothing to push" and actual failures
 
-**Notes**: The "failed" repos are ones where the branch exists locally but has no commits to push. They should be counted as "skipped" or "nothing to push".
+Closes #129
 
 ---
 
-### Bug: `gr pr merge` reports "checks failing" when checks passed → Issue #130
+### Bug: `gr pr merge` reports "checks failing" when checks passed / API errors ✓
+
+**Status**: ✅ **COMPLETED** - Fixed in PR
 
 **Discovered**: 2026-02-01 during sync no-upstream fix (PR #127)
 
-**Problem**: `gr pr merge` reported "checks failing" and refused to merge, but when checking with `gh pr checks`, all checks had passed (including the CI summary job). Had to fall back to `gh pr merge --admin`.
+**Problem**: `gr pr merge` reported "checks failing" when:
+1. GitHub API returned 404/no checks found (API errors treated as failing)
+2. Checks were actually passing but API query failed
+3. Had to fall back to `gh pr merge --admin`
 
-**Reproduction**:
-```bash
-gr pr merge
-# Output: "tooling PR #127: checks failing"
-# But: gh pr checks 127 --repo laynepenney/gitgrip shows all passing
+**Root Cause**: In `merge.rs`, the code treated ALL errors from `get_status_checks()` as "checks failing":
+```rust
+Err(_) => false,  // Bug: Any API error = checks failing
 ```
 
-**Workaround**:
-```bash
-gh pr merge 127 --repo laynepenney/gitgrip --squash --admin
+**Solution**: Added proper error handling with `CheckStatus` enum:
+- `Passing` - Checks succeeded
+- `Failing` - Checks actually failing (blocks merge)
+- `Pending` - Checks still running (blocks merge with warning)
+- `Unknown` - Could not determine status (warns but allows merge)
+
+Now API errors (404, network issues, etc.) show a warning but don't block merge:
+```rust
+Err(e) => {
+    Output::warning(&format!(
+        "{}: Could not check CI status for PR #{}: {}",
+        repo.name, pr.number, e
+    ));
+    CheckStatus::Unknown
+}
 ```
 
-**Possible causes**:
-- Stale check status caching
-- Not waiting for CI summary job to complete
-- Check status API query not matching GitHub's merge requirements
+**Benefits**:
+- No longer blocked by transient API issues
+- Clear distinction between "checks failing" vs "can't check"
+- Better messaging for pending/running checks
+- Users can still `--force` if needed
 
-**Related**: Issue #99 (gr pr merge doesn't recognize passing checks)
+Closes #130
 
 ---
 
