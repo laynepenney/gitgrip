@@ -5,6 +5,14 @@ Items here should be reviewed before creating GitHub issues.
 
 > **Note**: Historical entries may reference `cr` (the old command name). The current command is `gr`.
 
+> **Merge Conflicts**: When rebasing feature branches, you may encounter merge conflicts in this file when other PRs also add entries. This is expected behavior. To resolve:
+>
+> 1. Use `git rebase --skip` to skip documentation-only commits from other branches
+> 2. Or manually merge both sets of entries
+> 3. The alternative would be to use a dedicated documentation file, but we accept this tradeoff for now
+>
+> See issue #143 for context.
+
 ---
 
 ### PR Creation Timeout Issue
