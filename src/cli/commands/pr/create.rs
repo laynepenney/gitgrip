@@ -14,6 +14,7 @@ pub async fn run_pr_create(
     workspace_root: &PathBuf,
     manifest: &Manifest,
     title: Option<&str>,
+    body: Option<&str>,
     draft: bool,
     push_first: bool,
     dry_run: bool,
@@ -118,6 +119,9 @@ pub async fn run_pr_create(
     if dry_run {
         Output::info(&format!("Branch: {}", branch));
         Output::info(&format!("Title: {}", pr_title));
+        if let Some(pr_body) = body {
+            Output::info(&format!("Body: {}", pr_body));
+        }
         if draft {
             Output::info("Type: Draft PR");
         }
@@ -148,7 +152,7 @@ pub async fn run_pr_create(
                 &branch,
                 &repo.default_branch,
                 &pr_title,
-                None,
+                body,
                 draft,
             )
             .await

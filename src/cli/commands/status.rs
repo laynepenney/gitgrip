@@ -3,6 +3,7 @@
 use crate::cli::output::{Output, Table};
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
+use crate::git::path_exists;
 use crate::git::status::{get_repo_status, RepoStatus};
 use std::path::PathBuf;
 
@@ -55,6 +56,38 @@ pub fn run_status(
     }
 
     table.print();
+
+    // Show manifest worktree status if it exists
+    let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+    let manifests_git_dir = manifests_dir.join(".git");
+    if manifests_git_dir.exists() && path_exists(&manifests_dir) {
+        println!();
+        // Create a minimal RepoInfo for the manifest
+        let manifest_repo_info = RepoInfo {
+            name: "manifest".to_string(),
+            url: String::new(),
+            path: ".gitgrip/manifests".to_string(),
+            absolute_path: manifests_dir.clone(),
+            default_branch: "main".to_string(),
+            owner: String::new(),
+            repo: "manifests".to_string(),
+            platform_type: crate::core::manifest::PlatformType::GitHub,
+            project: None,
+            reference: false,
+        };
+
+        let status = get_repo_status(&manifest_repo_info);
+        let status_str = format_status(&status, verbose);
+        let main_str = format_main_comparison(&status, &manifest_repo_info.default_branch);
+        let mut manifest_table = Table::new(vec!["Repo", "Branch", "Status", "vs main"]);
+        manifest_table.add_row(vec![
+            &Output::repo_name("manifest"),
+            &Output::branch_name(&status.branch),
+            &status_str,
+            &main_str,
+        ]);
+        manifest_table.print();
+    }
 
     // Summary
     println!();

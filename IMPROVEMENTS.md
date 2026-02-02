@@ -80,19 +80,15 @@ Added `gr completions <shell>` command using clap_complete crate.
 
 ## Pending Review
 
-### Missing: `gr sync` shows which repos failed
+### Missing: `gr sync` shows which repos failed ✓
+
+**Status**: ✅ **COMPLETED** - Implemented in PR #131 (v0.5.6)
 
 **Discovered**: 2026-02-01
 
 **Problem**: `gr sync` reports "X failed" with no details about which repositories failed or why.
 
-**Reproduction**:
-```bash
-gr sync
-# Output: ⚠ 7 synced, 1 failed
-```
-
-**Expected**: Show which repositories failed and why:
+**Solution**: Now shows per-repo status with clear indicators:
 ```
 Syncing 8 repositories...
 ✓ tooling: synced
@@ -101,100 +97,62 @@ Syncing 8 repositories...
 ✗ private: failed - Failed to fetch: authentication required
 ```
 
-**Root cause**: Error aggregation code doesn't show per-repo details on failure.
-
 ---
 
-### Missing: `gr push` shows which repos failed
+### Missing: `gr push` shows which repos failed ✓
+
+**Status**: ✅ **COMPLETED** - Implemented in PR #141 (v0.5.6)
 
 **Discovered**: 2026-02-01
 
 **Problem**: `gr push` reports "X failed, Y skipped" with no details about which repositories failed or were skipped.
 
-**Reproduction**:
-```bash
-gr push
-# Output: ⚠ 5 pushed, 2 failed, 1 skipped
+**Solution**: Now shows detailed results with per-repo status:
 ```
-
-**Expected**: Show detailed results including which repos failed and why, and which were skipped.
-
-**Root cause**: Similar to `gr sync`, error aggregation code doesn't show per-repo details.
+Pushing 8 repositories...
+✓ tooling: pushed to feat/my-feature
+✓ codex: pushed to feat/my-feature  
+⚠ opencode: skipped (no changes)
+✗ private: failed - authentication required
+```
 
 ---
 
 
-### Feature: Reference repos (read-only repos excluded from branch/PR operations) → Issue #113
+### Feature: Reference repos (read-only repos excluded from branch/PR operations) ✓
+
+**Status**: ✅ **COMPLETED** - Implemented in PR for v0.5.4
 
 **Discovered**: 2026-02-01 during Rust migration planning
 
-**Problem**: When adding reference implementations to a workspace (e.g., `opencode`, `codex`, `crush`), these repos are only for reading/learning - we never plan to edit them or create PRs. Currently, `gr branch` creates branches across ALL repos, and `gr pr create` would try to create PRs in all repos with the branch.
+**Problem**: When adding reference implementations to a workspace (e.g., `opencode`, `codex`, `crush`), these repos are only for reading/learning - we never plan to edit them or create PRs. Previously `gr branch` created branches across all repos, and `gr pr create` would try to create PRs in all repos with the branch.
 
-**Current behavior**:
-```bash
-gr branch feat/my-feature  # Creates branch in ALL repos including references
-gr pr create -t "title"    # Would try to create PRs in reference repos too
-```
-
-**Suggested behavior**:
-Add a `reference: true` flag in manifest to mark repos as read-only:
+**Solution**: Added `reference: true` flag in manifest to mark repos as read-only:
 
 ```yaml
 repos:
-  # Normal repos - participate in branch/PR operations
-  public:
-    url: git@github.com:org/public.git
-    path: ./public
-
-  # Reference repos - excluded from branch/PR operations
   opencode:
     url: https://github.com/anomalyco/opencode.git
     path: ./ref/opencode
-    reference: true  # <-- NEW FLAG
-
-  codex:
-    url: https://github.com/openai/codex.git
-    path: ./ref/codex
-    reference: true
+    reference: true  # Excluded from branch/PR operations
 ```
 
-**Behavior changes for reference repos**:
-- `gr branch` - Skip (don't create branches)
-- `gr checkout` - Skip (stay on default branch)
-- `gr pr create` - Skip (no PRs)
-- `gr pr merge` - Skip
-- `gr sync` - Still sync (pull latest from upstream)
-- `gr status` - Still show (maybe with `[ref]` indicator)
-- `gr forall` - Include by default, or add `--no-ref` flag
-
-**Alternative**: Could use path convention instead of flag:
-- Any repo with `path: ./ref/*` is automatically treated as reference
-
-**Use cases**:
-1. Reference implementations for learning/comparison
-2. Upstream dependencies you track but don't modify
-3. Documentation repos you only read
+**Behavior**: Reference repos still sync and show in status (with `[ref]` indicator) but are skipped in branch/checkout and PR operations.
 
 ---
 
-### Feature: `gr status` should show ahead/behind main
+### Feature: `gr status` should show ahead/behind main ✓
+
+**Status**: ✅ **COMPLETED** - Implemented in PR for v0.5.3
 
 **Discovered**: 2026-01-31
 
-**Problem**: `gr status` shows local uncommitted changes but doesn't show how the current branch compares to main/upstream. This makes it hard to know if you need to rebase before creating a PR or if main has moved ahead.
+**Problem**: `gr status` showed local uncommitted changes but didn't show how the current branch compares to main/upstream. This made it hard to know if you need to rebase before creating a PR or if main has moved ahead.
 
-**Current behavior**:
+**Solution**: Added "vs main" column showing ahead/behind status:
 ```
-Repo          Branch           Status
-------------  ---------------  ------
-tooling       feat/new-api     ~3
-frontend      feat/new-api     ✓
-```
-
-**Suggested behavior**:
-```
-Repo          Branch           Status  Ahead/Behind
-------------  ---------------  ------  ------------
+Repo          Branch           Status  vs main
+------------  ---------------  ------  -------
 tooling       feat/new-api     ~3      ↑2 ↓5
 frontend      feat/new-api     ✓       ↑4
 backend       main             ✓       -
@@ -202,21 +160,10 @@ backend       main             ✓       -
   3/3 cloned | 1 with changes | 2 ahead of main
 ```
 
-**What it would show**:
-- `↑2` = 2 commits ahead of default branch (your changes)
-- `↓5` = 5 commits behind default branch (need to rebase/merge)
+- `↑N` = N commits ahead of default branch (your changes)
+- `↓N` = N commits behind default branch (need to rebase/merge)
 - `-` = on default branch, no comparison needed
-
-**Options**:
-- `--ahead` or `-a` flag to enable (if too slow by default)
-- `--diff-stat` to show file change summary vs main
-- Could be default behavior since it's fast to compute with `git rev-list`
-
-**Implementation**:
-```rust
-// For each repo not on default branch:
-let (ahead, behind) = repo.graph_ahead_behind(head_oid, main_oid)?;
-```
+- `↑N ↓M` = both ahead and behind (diverged)
 
 ---
 
@@ -241,25 +188,17 @@ gr branch feat/x --repo tooling  # Already supported, but doesn't handle "move c
 
 Or add a "move last commit to new branch" helper.
 
-### Missing: Non-interactive `gr pr create --body`
+### Missing: Non-interactive `gr pr create --body` ✓
+
+**Status**: ✅ **COMPLETED** - Implemented
 
 **Discovered**: 2026-01-29 during PR creation
 
-**Problem**: `gr pr create -t "title"` prompts interactively for the PR body. This blocks automation and requires falling back to raw `gh pr create` with `--body` flag.
+**Problem**: `gr pr create -t "title"` prompted interactively for the PR body. This blocked automation and required falling back to raw `gh pr create` with `--body` flag.
 
-**Workaround**:
-```bash
-gh pr create --title "title" --body "$(cat <<'EOF'
-body content
-EOF
-)"
-```
-
-**Suggested**: Add `--body` or `-b` flag to `gr pr create`:
+**Solution**: Added `-b/--body` flag to `gr pr create`:
 ```bash
 gr pr create -t "title" -b "body content"
-# Or read from stdin:
-echo "body" | gr pr create -t "title" --body-stdin
 ```
 
 ### Missing: `gr commit --amend` support
@@ -560,48 +499,16 @@ Updated: 2026-02-01
 
 ---
 
-### Bug: `gr repo add` corrupts manifest YAML structure → Issue #112
+### Bug: `gr repo add` corrupts manifest YAML structure ✓
+
+**Status**: ✅ **COMPLETED** - Fixed in PR for v0.5.6
 
 **Discovered**: 2026-02-01 during reference repo addition
 
-**Problem**: `gr repo add` placed the new repo entry between `version:` and `manifest:` sections instead of under `repos:`. This caused manifest parsing to fail with error: `version: invalid type: string "1\n\nopencode", expected u32`
+**Problem**: `gr repo add` placed the new repo entry between `version:` and `manifest:` sections instead of under `repos:`. This caused manifest parsing to fail.
 
-**Reproduction**:
-```bash
-gr repo add https://github.com/opencode-ai/opencode.git --path ./ref/opencode
-```
+**Solution**: YAML insertion logic now correctly places repos under `repos:` section.
 
-**What happened**:
-```yaml
-version: 1
-
-  opencode:                              # <-- WRONG! Placed here
-    url: https://github.com/opencode-ai/opencode.git
-    path: ./ref/opencode
-    default_branch: main
-manifest:
-  url: ...
-```
-
-**What should happen**:
-```yaml
-version: 1
-
-manifest:
-  url: ...
-
-repos:
-  # ... existing repos ...
-
-  opencode:                              # <-- Should be here under repos:
-    url: https://github.com/opencode-ai/opencode.git
-    path: ./ref/opencode
-    default_branch: main
-```
-
-**Workaround**: Manually edit manifest.yaml to move the repo entry under `repos:` section.
-
-**Root cause**: The YAML insertion logic in `gr repo add` is not correctly identifying the `repos:` section location.
 
 ---
 
