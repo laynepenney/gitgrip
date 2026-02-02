@@ -333,17 +333,91 @@ impl HostingPlatform for GitHubAdapter {
         repo: &str,
         ref_name: &str,
     ) -> Result<StatusCheckResult, PlatformError> {
-        // Get combined status using raw API call
         let token = self.get_token().await?;
         let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
-        let url = format!(
-            "{}/repos/{}/{}/commits/{}/status",
+
+        // Try Check Runs API first (newer GitHub Actions)
+        let check_runs_url = format!(
+            "{}/repos/{}/{}/commits/{}/check-runs",
             base_url, owner, repo, ref_name
         );
 
         let http_client = reqwest::Client::new();
         let response = http_client
-            .get(&url)
+            .get(&check_runs_url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        if response.status().is_success() {
+            #[derive(serde::Deserialize)]
+            struct CheckRunsResponse {
+                total_count: i64,
+                check_runs: Vec<CheckRun>,
+            }
+
+            #[derive(serde::Deserialize)]
+            struct CheckRun {
+                name: String,
+                status: String,
+                conclusion: Option<String>,
+            }
+
+            let check_runs: CheckRunsResponse = response
+                .json()
+                .await
+                .map_err(|e| PlatformError::ParseError(e.to_string()))?;
+
+            if check_runs.total_count > 0 {
+                // Determine overall state from check runs
+                let (aggregate_state, statuses): (CheckState, Vec<StatusCheck>) =
+                    check_runs.check_runs.into_iter().fold(
+                        (CheckState::Success, Vec::new()),
+                        |(aggregate_state, mut acc), cr| {
+                            let check_state = match cr.conclusion.as_deref() {
+                                Some("success") => CheckState::Success,
+                                Some("failure") | Some("timed_out") => CheckState::Failure,
+                                Some("cancelled") => CheckState::Failure,
+                                _ => CheckState::Pending, // "in_progress", "queued", "neutral", or null
+                            };
+
+                            // Aggregate: any failure = failure, any pending = pending
+                            let new_aggregate = match (aggregate_state, check_state) {
+                                (CheckState::Failure, _) => CheckState::Failure,
+                                (_, CheckState::Failure) => CheckState::Failure,
+                                (CheckState::Pending, _) | (_, CheckState::Pending) => {
+                                    CheckState::Pending
+                                }
+                                (CheckState::Success, CheckState::Success) => CheckState::Success,
+                            };
+
+                            acc.push(StatusCheck {
+                                context: cr.name.clone(),
+                                state: cr.conclusion.unwrap_or(cr.status),
+                            });
+
+                            (new_aggregate, acc)
+                        },
+                    );
+
+                return Ok(StatusCheckResult {
+                    state: aggregate_state,
+                    statuses,
+                });
+            }
+        }
+
+        // Fallback to legacy status checks API
+        let status_url = format!(
+            "{}/repos/{}/{}/commits/{}/status",
+            base_url, owner, repo, ref_name
+        );
+
+        let response = http_client
+            .get(&status_url)
             .header("Authorization", format!("Bearer {}", token))
             .header("Accept", "application/vnd.github.v3+json")
             .header("User-Agent", "gitgrip")

@@ -72,6 +72,50 @@ Added `gr completions <shell>` command using clap_complete crate.
 
 ## Pending Review
 
+### Missing: `gr sync` shows which repos failed
+
+**Discovered**: 2026-02-01
+
+**Problem**: `gr sync` reports "X failed" with no details about which repositories failed or why.
+
+**Reproduction**:
+```bash
+gr sync
+# Output: ⚠ 7 synced, 1 failed
+```
+
+**Expected**: Show which repositories failed and why:
+```
+Syncing 8 repositories...
+✓ tooling: synced
+✓ codex: synced
+⚠ opencode: not cloned
+✗ private: failed - Failed to fetch: authentication required
+```
+
+**Root cause**: Error aggregation code doesn't show per-repo details on failure.
+
+---
+
+### Missing: `gr push` shows which repos failed
+
+**Discovered**: 2026-02-01
+
+**Problem**: `gr push` reports "X failed, Y skipped" with no details about which repositories failed or were skipped.
+
+**Reproduction**:
+```bash
+gr push
+# Output: ⚠ 5 pushed, 2 failed, 1 skipped
+```
+
+**Expected**: Show detailed results including which repos failed and why, and which were skipped.
+
+**Root cause**: Similar to `gr sync`, error aggregation code doesn't show per-repo details.
+
+---
+
+
 ### Feature: Reference repos (read-only repos excluded from branch/PR operations) → Issue #113
 
 **Discovered**: 2026-02-01 during Rust migration planning
@@ -299,6 +343,41 @@ gr forall -c "pnpm lint" --ahead
 ---
 
 ## Session Reports
+
+### PR merge check runs fix (2026-02-01)
+
+**Task**: Fix #93 - gr pr merge doesn't recognize passing GitHub checks
+
+**Overall Assessment**: gr workflow was smooth, minor friction with PR creation body flag.
+
+#### What Worked Well ✅
+
+1. **`gr branch`** - Created feature branch across all repos seamlessly
+2. **`gr add`** - Staged changes correctly in tooling repo
+3. **`gr commit`** - Committed with descriptive message
+4. **`gr pr create`** (via gh) - Created PR successfully
+
+#### Issues Created
+
+| Issue | Title |
+|-------|-------|
+| #63 | fix: gr pr create command times out |
+
+#### Raw Commands Used (Friction Log)
+
+| Raw Command | Why `gr` Couldn't Handle It | Issue |
+|-------------|----------------------------|-------|
+| `gh pr create --body` | `gr pr create` lacks `--body` flag for PR body | #58 |
+
+#### Minor Friction (No Raw Commands Needed)
+
+| Observation | Notes |
+|-------------|-------|
+| `gr sync` - 1 failed | "7 synced, 1 failed" with no details on which repo failed | New friction point |
+| `gr push` - 2 failed | "5 pushed, 2 failed, 1 skipped" with no error details | New friction point |
+
+---
+
 
 ### Multi-Platform Support Implementation (2026-01-29)
 
