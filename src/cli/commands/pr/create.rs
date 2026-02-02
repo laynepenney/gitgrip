@@ -16,9 +16,15 @@ pub async fn run_pr_create(
     title: Option<&str>,
     draft: bool,
     push_first: bool,
+    dry_run: bool,
 ) -> anyhow::Result<()> {
-    Output::header("Creating pull requests...");
-    println!();
+    if dry_run {
+        Output::header("PR Preview");
+        println!();
+    } else {
+        Output::header("Creating pull requests...");
+        println!();
+    }
 
     let repos: Vec<RepoInfo> = manifest
         .repos
@@ -91,8 +97,8 @@ pub async fn run_pr_create(
         }
     });
 
-    // Push if requested
-    if push_first {
+    // Push if requested (skip for preview)
+    if push_first && !dry_run {
         Output::info("Pushing branches first...");
         for repo in &repos_with_changes {
             if let Ok(git_repo) = open_repo(&repo.absolute_path) {
@@ -106,6 +112,24 @@ pub async fn run_pr_create(
             }
         }
         println!();
+    }
+
+    // Preview mode: show what would be created
+    if dry_run {
+        Output::info(&format!("Branch: {}", branch));
+        Output::info(&format!("Title: {}", pr_title));
+        if draft {
+            Output::info("Type: Draft PR");
+        }
+        println!();
+
+        Output::subheader("Repositories that would create PRs:");
+        for repo in &repos_with_changes {
+            println!("  - {} ({}/{})", repo.name, repo.owner, repo.repo);
+        }
+        println!();
+        Output::warning("Run without --dry-run to actually create the PRs.");
+        return Ok(());
     }
 
     // Create PRs for each repo
