@@ -80,6 +80,46 @@ Added `gr completions <shell>` command using clap_complete crate.
 
 ## Pending Review
 
+### Missing: Better manifest commit/sync handling
+
+**Discovered**: 2026-02-02 during reference repo addition
+
+**Problem**: When using `gr add . && gr commit`, manifest changes (`.gitgrip/manifests/`) are NOT automatically staged or committed. Had to manually `cd .gitgrip/manifests && git add . && git commit && git push`.
+
+**Reproduction**:
+```bash
+# Edit manifest.yaml to add new repos
+vi .gitgrip/manifests/manifest.yaml
+
+# Stage and commit via gr
+gr add . && gr commit -m "feat: add reference repos"
+# Only commits strategy repo changes, NOT manifest changes!
+
+# Have to manually commit manifest
+cd .gitgrip/manifests && git add . && git commit -m "..." && git push
+```
+
+**Expected behavior**:
+- `gr add .` should include manifest changes when manifest files are modified
+- `gr commit` should commit manifest changes alongside repo changes
+- Or at minimum, `gr status` should prominently warn about uncommitted manifest changes
+
+**Current status tracking**:
+- `gr status` does show manifest changes in a separate section
+- But `gr add .` and `gr commit` don't act on them
+
+**Suggested fix options**:
+1. Auto-include manifest in `gr add .` when manifest has changes
+2. Add `--include-manifest` flag (similar to `gr branch --include-manifest`)
+3. Warn loudly when manifest has uncommitted changes during `gr push`
+
+**Workaround**: Manually commit manifest:
+```bash
+cd .gitgrip/manifests && git add . && git commit -m "message" && git push
+```
+
+---
+
 ### Missing: `gr sync` shows which repos failed
 
 **Discovered**: 2026-02-01
