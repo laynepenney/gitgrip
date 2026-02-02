@@ -681,3 +681,128 @@ Manually create `.gitgrip/griptrees.json`:
 **Suggested implementation**:
 Add a `gr tree discover` command or auto-discovery in `gr tree list`.
 
+
+---
+
+### Friction: Git worktree conflict prevents checking out main
+
+**Discovered**: 2026-02-02 during PR #118, #141 work
+
+**Problem**: When the gitgrip repository has an existing worktree (e.g., at codi-workspace), trying to check out `main` in another workspace fails with:
+```
+fatal: 'main' is already used by worktree at '/Users/layne/Development/codi-workspace/gitgrip'
+```
+
+**Reproduction**:
+```bash
+# In codi-workspace, worktree exists for another purpose
+gr branch fix/my-feature  # Creates branch in codi-workspace worktree
+
+# In codi-dev workspace
+git checkout main  # Fails!
+```
+
+**Workaround**: Create a new branch instead:
+```bash
+git checkout -b fix/my-feature
+gr branch fix/my-feature  # Works - creates new branch
+```
+
+**Expected behavior**: Either:
+- Show a helpful message explaining the worktree conflict
+- Offer to create/use the branch in the current workspace
+- Add a `gr worktree` command to manage worktrees
+
+**Suggested fix**: Add detection and helpful error message, or `gr worktree` management command.
+
+---
+
+### Friction: Repeated merge conflicts in IMPROVEMENTS.md
+
+**Discovered**: 2026-02-02 during multiple PR rebases
+
+**Problem**: When rebasing feature branches, kept hitting merge conflicts in IMPROVEMENTS.md because documentation commits from other PRs were also on main.
+
+**Reproduction**:
+```bash
+gr branch fix/pr-merge-check-runs
+# ... work on PR ...
+git fetch origin main && git rebase origin/main
+# CONFLICT in IMPROVEMENTS.md!
+```
+
+**Expected behavior**: Either:
+- Documentation changes don't cause merge conflicts during rebase
+- Better tooling to resolve such conflicts
+
+**Suggested fix**: Consider whether documentation should be kept in a separate file/location, or document this as expected behavior and provide conflict resolution helpers.
+
+---
+
+### Friction: CI blocking merge with unclear status
+
+**Discovered**: 2026-02-02 during PR #141 merge
+
+**Problem**: PR showed "Repository rule violations found - Required status check 'CI' is expected" even though tests were passing. Had to wait significantly longer for the CI check to actually complete.
+
+**Reproduction**:
+```bash
+gh pr checks 141
+# Shows: Check pass, Clippy pass, Tests pass...
+# But merge fails with: "Required status check 'CI' is expected"
+
+# Wait 2+ minutes...
+gh pr view 141 --json mergeStateStatus  # Still shows CLEAN, but CI pending
+```
+
+**Expected behavior**: Either:
+- Better visibility of which specific CI check is pending
+- Merge blocked with clearer message about what's pending
+- Auto-wait for CI to complete before reporting block
+
+**Suggested fix**: Improve status reporting in CLI to show pending CI jobs more prominently.
+
+---
+
+### Friction: Formatting required multiple passes
+
+**Discovered**: 2026-02-02 during PR #138, #140 work
+
+**Problem**: Had to run `cargo fmt` multiple times as formatting kept failing CI even though it passed locally once.
+
+**Reproduction**:
+```bash
+cargo fmt  # Passes locally
+gr push    # CI fails on Format check
+# Fix formatting locally again
+cargo fmt  # Now finds more issues
+```
+
+**Expected behavior**: `cargo fmt` should be deterministic and produce consistent results in CI.
+
+**Suggested fix**: Add pre-commit hook for formatting, or ensure CI uses same rust-toolchain as local.
+
+---
+
+### Friction: PR got contaminated with unrelated changes
+
+**Discovered**: 2026-02-02 during PR #140 → #141
+
+**Problem**: Created PR #140 with github.rs changes that belonged to PR #118. Had to close it and create a clean PR #141 with only push.rs changes.
+
+**Reproduction**:
+```bash
+# Working on two branches
+gr branch fix/push-nothing-to-push     # For push count fix
+gr branch fix/pr-merge-check-runs     # For check runs fix
+
+# Changes from fix/pr-merge-check-runs got committed to fix/push branch
+gh pr create  # PR #140 contains both fixes mixed together
+```
+
+**Expected behavior**: Either:
+- Branch isolation prevents cross-contamination
+- Clear visual indicator of which files changed in PR diff before creating
+
+**Suggested fix**: Better branch management, or PR preview before creation showing all modified files.
+
