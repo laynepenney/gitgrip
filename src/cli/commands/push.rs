@@ -32,6 +32,7 @@ pub fn run_push(
     let mut success_count = 0;
     let mut skip_count = 0;
     let mut error_count = 0;
+    let mut failed_repos: Vec<(String, String)> = Vec::new();  // (repo_name, error_message)
 
     for repo in &repos {
         if !path_exists(&repo.absolute_path) {
@@ -79,14 +80,28 @@ pub fn run_push(
                         success_count += 1;
                     }
                     Err(e) => {
-                        spinner.finish_with_message(format!("{}: failed - {}", repo.name, e));
-                        error_count += 1;
+                        // Check if this is a "nothing to push" situation
+                        let error_msg = e.to_string().to_lowercase();
+                        if error_msg.contains("everything up-to-date") 
+                            || error_msg.contains("nothing to commit")
+                            || error_msg.contains("nothing to push")
+                            || error_msg.contains("no changes")
+                            || error_msg.contains("already up to date")
+                        {
+                            spinner.finish_with_message(format!("{}: skipped (nothing to push)", repo.name));
+                            skip_count += 1;
+                        } else {
+                            spinner.finish_with_message(format!("{}: failed - {}", repo.name, e));
+                            error_count += 1;
+                            failed_repos.push((repo.name.clone(), format!("Error: {}", e)));
+                        }
                     }
                 }
             }
             Err(e) => {
                 Output::error(&format!("{}: {}", repo.name, e));
                 error_count += 1;
+                failed_repos.push((repo.name.clone(), format!("Error: {}", e)));
             }
         }
     }
@@ -116,6 +131,14 @@ pub fn run_push(
             error_count,
             skip_count
         ));
+
+        // Show which repos failed and why
+        if !failed_repos.is_empty() {
+            println!();
+            for (repo_name, error_msg) in &failed_repos {
+                println!("  ✗ {}: {}", repo_name, error_msg);
+            }
+        }
     }
 
     Ok(())
