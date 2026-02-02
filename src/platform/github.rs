@@ -373,24 +373,24 @@ impl HostingPlatform for GitHubAdapter {
 
             if check_runs.total_count > 0 {
                 // Determine overall state from check runs
-                let (aggregate_state, statuses): (CheckState, Vec<StatusCheck>) = check_runs
-                    .check_runs
-                    .into_iter()
-                    .fold(
+                let (aggregate_state, statuses): (CheckState, Vec<StatusCheck>) =
+                    check_runs.check_runs.into_iter().fold(
                         (CheckState::Success, Vec::new()),
                         |(aggregate_state, mut acc), cr| {
                             let check_state = match cr.conclusion.as_deref() {
                                 Some("success") => CheckState::Success,
                                 Some("failure") | Some("timed_out") => CheckState::Failure,
                                 Some("cancelled") => CheckState::Failure,
-                                _ => CheckState::Pending,  // "in_progress", "queued", "neutral", or null
+                                _ => CheckState::Pending, // "in_progress", "queued", "neutral", or null
                             };
 
                             // Aggregate: any failure = failure, any pending = pending
                             let new_aggregate = match (aggregate_state, check_state) {
                                 (CheckState::Failure, _) => CheckState::Failure,
                                 (_, CheckState::Failure) => CheckState::Failure,
-                                (CheckState::Pending, _) | (_, CheckState::Pending) => CheckState::Pending,
+                                (CheckState::Pending, _) | (_, CheckState::Pending) => {
+                                    CheckState::Pending
+                                }
                                 (CheckState::Success, CheckState::Success) => CheckState::Success,
                             };
 
@@ -400,10 +400,13 @@ impl HostingPlatform for GitHubAdapter {
                             });
 
                             (new_aggregate, acc)
-                        }
+                        },
                     );
 
-                return Ok(StatusCheckResult { state: aggregate_state, statuses });
+                return Ok(StatusCheckResult {
+                    state: aggregate_state,
+                    statuses,
+                });
             }
         }
 
