@@ -6,6 +6,7 @@ pub mod azure;
 pub mod bitbucket;
 pub mod github;
 pub mod gitlab;
+pub mod rate_limit;
 pub mod traits;
 pub mod types;
 
