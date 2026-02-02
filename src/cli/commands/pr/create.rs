@@ -240,5 +240,6 @@ pub fn get_token_for_platform(platform: &PlatformType) -> Option<String> {
             .or_else(|| std::env::var("GH_TOKEN").ok()),
         PlatformType::GitLab => std::env::var("GITLAB_TOKEN").ok(),
         PlatformType::AzureDevOps => std::env::var("AZURE_DEVOPS_TOKEN").ok(),
+        PlatformType::Bitbucket => std::env::var("BITBUCKET_TOKEN").ok(),
     }
 }

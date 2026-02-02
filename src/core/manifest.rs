@@ -34,6 +34,8 @@ pub enum PlatformType {
     GitLab,
     #[serde(rename = "azure-devops")]
     AzureDevOps,
+    #[serde(rename = "bitbucket")]
+    Bitbucket,
 }
 
 impl std::fmt::Display for PlatformType {
@@ -42,6 +44,7 @@ impl std::fmt::Display for PlatformType {
             PlatformType::GitHub => write!(f, "github"),
             PlatformType::GitLab => write!(f, "gitlab"),
             PlatformType::AzureDevOps => write!(f, "azure-devops"),
+            PlatformType::Bitbucket => write!(f, "bitbucket"),
         }
     }
 }

@@ -780,6 +780,7 @@ pub fn suggest_manifest_url(platform: PlatformType, owner: &str, name: &str) -> 
             // SSH URL format: git@ssh.dev.azure.com:v3/org/project/repo
             format!("git@ssh.dev.azure.com:v3/{}/{}.git", owner, name)
         }
+        PlatformType::Bitbucket => format!("git@bitbucket.org:{}/{}.git", owner, name),
     }
 }
 
@@ -802,6 +803,7 @@ pub fn suggest_manifest_https_url(platform: PlatformType, owner: &str, name: &st
                 format!("https://dev.azure.com/{}/{}/_git/{}", owner, owner, name)
             }
         }
+        PlatformType::Bitbucket => format!("https://bitbucket.org/{}/{}.git", owner, name),
     }
 }
 
