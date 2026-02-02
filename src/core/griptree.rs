@@ -121,6 +121,25 @@ pub struct GriptreePointer {
     /// When the griptree was created (optional for backwards compat)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<Utc>>,
+    /// Track original branch for each repo (for merge back to main)
+    #[serde(default)]
+    pub repos: Vec<GriptreeRepoInfo>,
+    /// Manifest branch for this griptree (optional for backwards compat)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest_branch: Option<String>,
+}
+
+
+/// Per-repo griptree info (tracked in pointer file)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GriptreeRepoInfo {
+    /// Repository name
+    pub name: String,
+    /// Original branch name (before griptree creation)
+    pub original_branch: String,
+    /// Whether this is a reference repo
+    pub is_reference: bool,
 }
 
 impl GriptreePointer {

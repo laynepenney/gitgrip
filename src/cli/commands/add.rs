@@ -46,6 +46,24 @@ pub fn run_add(
         }
     }
 
+    // Also handle manifest worktree if it exists (in griptree scenario)
+    let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+    let manifests_git_dir = manifests_dir.join(".git");
+    if manifests_git_dir.exists() && path_exists(&manifests_dir) {
+        match open_repo(&manifests_dir) {
+            Ok(git_repo) => {
+                let staged = stage_files(&git_repo, &manifests_dir, files)?;
+                if staged > 0 {
+                    Output::success(&format!("manifest: staged {} file(s)", staged));
+                    total_staged += staged;
+                    repos_with_changes += 1;
+                    invalidate_status_cache(&manifests_dir);
+                }
+            }
+            Err(e) => Output::warning(&format!("manifest: {}", e)),
+        }
+    }
+
     println!();
     if total_staged > 0 {
         println!(
