@@ -32,6 +32,14 @@ pub async fn run_pr_merge(
     };
 
     // Collect PRs to merge
+    #[derive(Debug, Clone, Copy)]
+    enum CheckStatus {
+        Passing,
+        Failing,
+        Pending,
+        Unknown,
+    }
+
     struct PRToMerge {
         repo_name: String,
         owner: String,
@@ -39,7 +47,7 @@ pub async fn run_pr_merge(
         pr_number: u64,
         platform: Arc<dyn crate::platform::HostingPlatform>,
         approved: bool,
-        checks_pass: bool,
+        check_status: CheckStatus,
         mergeable: bool,
     }
 
@@ -89,12 +97,31 @@ pub async fn run_pr_merge(
                 };
 
                 // Get status checks
-                let checks_pass = match platform
+                let check_status = match platform
                     .get_status_checks(&repo.owner, &repo.repo, &branch)
                     .await
                 {
-                    Ok(status) => status.state == CheckState::Success,
-                    Err(_) => false,
+                    Ok(status) => {
+                        // Successfully got check status
+                        if status.state == CheckState::Failure {
+                            // Checks are actually failing
+                            CheckStatus::Failing
+                        } else if status.state == CheckState::Pending {
+                            // Checks still running - don't block but warn
+                            CheckStatus::Pending
+                        } else {
+                            CheckStatus::Passing
+                        }
+                    }
+                    Err(e) => {
+                        // Could not determine check status
+                        // Don't block merge due to API issues
+                        Output::warning(&format!(
+                            "{}: Could not check CI status for PR #{}: {}",
+                            repo.name, pr.number, e
+                        ));
+                        CheckStatus::Unknown
+                    }
                 };
 
                 prs_to_merge.push(PRToMerge {
@@ -104,7 +131,7 @@ pub async fn run_pr_merge(
                     pr_number: pr.number,
                     platform,
                     approved,
-                    checks_pass,
+                    check_status,
                     mergeable,
                 });
             }
@@ -132,11 +159,27 @@ pub async fn run_pr_merge(
                     pr.repo_name, pr.pr_number
                 ));
             }
-            if !pr.checks_pass {
-                issues.push(format!(
-                    "{} PR #{}: checks failing",
-                    pr.repo_name, pr.pr_number
-                ));
+            match pr.check_status {
+                CheckStatus::Failing => {
+                    issues.push(format!(
+                        "{} PR #{}: checks failing",
+                        pr.repo_name, pr.pr_number
+                    ));
+                }
+                CheckStatus::Pending => {
+                    issues.push(format!(
+                        "{} PR #{}: checks still running",
+                        pr.repo_name, pr.pr_number
+                    ));
+                }
+                CheckStatus::Unknown => {
+                    // Don't block on unknown - warn but allow merge
+                    Output::warning(&format!(
+                        "{} PR #{}: check status unknown - proceeding with caution",
+                        pr.repo_name, pr.pr_number
+                    ));
+                }
+                CheckStatus::Passing => {} // All good
             }
             if !pr.mergeable {
                 issues.push(format!(
