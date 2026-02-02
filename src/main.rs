@@ -180,6 +180,9 @@ enum PrCommands {
         /// Create as draft
         #[arg(long)]
         draft: bool,
+        /// Preview without creating PR
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Show PR status
     Status {
@@ -334,13 +337,19 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Pr { action }) => {
             let (workspace_root, manifest) = load_workspace()?;
             match action {
-                PrCommands::Create { title, push, draft } => {
+                PrCommands::Create {
+                    title,
+                    push,
+                    draft,
+                    dry_run,
+                } => {
                     gitgrip::cli::commands::pr::run_pr_create(
                         &workspace_root,
                         &manifest,
                         title.as_deref(),
                         draft,
                         push,
+                        dry_run,
                     )
                     .await?;
                 }
