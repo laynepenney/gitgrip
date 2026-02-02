@@ -32,7 +32,7 @@ pub fn run_push(
     let mut success_count = 0;
     let mut skip_count = 0;
     let mut error_count = 0;
-    let mut failed_repos: Vec<(String, String)> = Vec::new();  // (repo_name, error_message)
+    let mut failed_repos: Vec<(String, String)> = Vec::new(); // (repo_name, error_message)
 
     for repo in &repos {
         if !path_exists(&repo.absolute_path) {
@@ -82,13 +82,16 @@ pub fn run_push(
                     Err(e) => {
                         // Check if this is a "nothing to push" situation
                         let error_msg = e.to_string().to_lowercase();
-                        if error_msg.contains("everything up-to-date") 
+                        if error_msg.contains("everything up-to-date")
                             || error_msg.contains("nothing to commit")
                             || error_msg.contains("nothing to push")
                             || error_msg.contains("no changes")
                             || error_msg.contains("already up to date")
                         {
-                            spinner.finish_with_message(format!("{}: skipped (nothing to push)", repo.name));
+                            spinner.finish_with_message(format!(
+                                "{}: skipped (nothing to push)",
+                                repo.name
+                            ));
                             skip_count += 1;
                         } else {
                             spinner.finish_with_message(format!("{}: failed - {}", repo.name, e));
