@@ -174,6 +174,9 @@ enum PrCommands {
         /// PR title
         #[arg(short, long)]
         title: Option<String>,
+        /// PR body/description
+        #[arg(short, long)]
+        body: Option<String>,
         /// Push before creating
         #[arg(long)]
         push: bool,
@@ -339,6 +342,7 @@ async fn main() -> anyhow::Result<()> {
             match action {
                 PrCommands::Create {
                     title,
+                    body,
                     push,
                     draft,
                     dry_run,
@@ -347,6 +351,7 @@ async fn main() -> anyhow::Result<()> {
                         &workspace_root,
                         &manifest,
                         title.as_deref(),
+                        body.as_deref(),
                         draft,
                         push,
                         dry_run,
