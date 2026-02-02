@@ -148,9 +148,14 @@ pub async fn run_pr_checks(
         );
 
         if total_failed > 0 {
-            Output::warning("Some checks are failing.");
+            Output::warning("Some checks are failing. PR cannot be merged.");
         } else if total_pending > 0 {
             Output::info("Some checks are still pending.");
+            println!();
+            Output::info("Note: GitHub may require additional CI checks (e.g., 'CI' workflow)");
+            Output::info(
+                "that are not visible here. Wait for all checks to complete before merging.",
+            );
         } else {
             Output::success("All checks passing!");
         }
