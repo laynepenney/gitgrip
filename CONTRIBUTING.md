@@ -215,3 +215,26 @@ This creates the PR for `github.com/laynepenney/gitgrip`, not the workspace mani
 - **CONTRIBUTING.md** - This file
 - **docs/** - Additional documentation
 
+
+## Worktree Conflicts
+
+If you see an error like:
+```
+fatal: 'main' is already used by worktree at '...'
+```
+
+This happens when gitgrip has multiple worktrees (e.g., in codi-workspace and codi-dev).
+
+**To resolve:**
+1. Create a new branch instead of checking out main:
+   ```bash
+   git checkout -b fix/my-feature
+   gr branch fix/my-feature
+   ```
+
+2. Or use the existing worktree at codi-workspace for gitgrip-related work
+
+**Prevention:**
+- Keep main checked out in one workspace (codi-workspace recommended)
+- Use other workspaces for feature branches
+- Or use `gr branch` which handles this automatically
