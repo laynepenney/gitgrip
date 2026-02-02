@@ -5,9 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.7] - 2026-02-01
+## [0.5.8] - 2026-02-02
 
 ### Added
+- `gr pr create` now supports `-b/--body` flag for non-interactive PR description
 - Griptree manifest worktree support - each griptree can have its own manifest worktree
 - Branch tracking for griptrees - tracks original branch per repo for proper merge-back
 - Reference repo sync - reference repos auto-sync with upstream before worktree creation
@@ -15,9 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `gr status` displays manifest worktree status as separate entry
 - Griptree worktrees now prioritize repo's current branch instead of griptree branch
 - Comprehensive test coverage for manifest worktree functionality (10 new tests)
+- Documentation in IMPROVEMENTS.md for tracking completed and pending features
+- Worktree conflict troubleshooting guide added to CONTRIBUTING.md
+- Documentation for IMPROVEMENTS.md merge conflict behavior
+- PLAN document for griptree repo branch implementation
 
 ### Changed
 - Manifest loading prioritizes griptree's own manifest, falls back to main workspace
+- IMPROVEMENTS.md reorganized to show completed vs pending features clearly
+
+## [0.5.7] - 2026-02-01
 
 ## [0.5.6] - 2026-02-01
 
