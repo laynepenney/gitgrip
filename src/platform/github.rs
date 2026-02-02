@@ -333,30 +333,24 @@ impl HostingPlatform for GitHubAdapter {
         repo: &str,
         ref_name: &str,
     ) -> Result<StatusCheckResult, PlatformError> {
-        // Get combined status using raw API call
         let token = self.get_token().await?;
         let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
-        let url = format!(
+        let http_client = reqwest::Client::new();
+
+        // Get combined status checks
+        let status_url = format!(
             "{}/repos/{}/{}/commits/{}/status",
             base_url, owner, repo, ref_name
         );
 
-        let http_client = reqwest::Client::new();
-        let response = http_client
-            .get(&url)
+        let status_response = http_client
+            .get(&status_url)
             .header("Authorization", format!("Bearer {}", token))
             .header("Accept", "application/vnd.github.v3+json")
             .header("User-Agent", "gitgrip")
             .send()
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
-
-        if !response.status().is_success() {
-            return Err(PlatformError::ApiError(format!(
-                "Failed to get status: {}",
-                response.status()
-            )));
-        }
 
         #[derive(serde::Deserialize)]
         struct CombinedStatus {
@@ -370,27 +364,100 @@ impl HostingPlatform for GitHubAdapter {
             state: String,
         }
 
-        let status: CombinedStatus = response
-            .json()
-            .await
-            .map_err(|e| PlatformError::ParseError(e.to_string()))?;
+        let mut all_statuses: Vec<StatusCheck> = Vec::new();
+        let mut status_state: Option<String> = None;
 
-        let state = match status.state.as_str() {
-            "success" => CheckState::Success,
-            "failure" | "error" => CheckState::Failure,
-            _ => CheckState::Pending,
+        if status_response.status().is_success() {
+            if let Ok(status) = status_response.json::<CombinedStatus>() {
+                status_state = Some(status.state.clone());
+                status.statuses.iter().for_each(|s| {
+                    all_statuses.push(StatusCheck {
+                        context: s.context.clone().unwrap_or_default(),
+                        state: s.state.clone(),
+                    });
+                });
+            }
+        }
+
+        // Get check runs (GitHub Actions)
+        let check_runs_url = format!(
+            "{}/repos/{}/{}/commits/{}/check-runs",
+            base_url, owner, repo, ref_name
+        );
+
+        let check_runs_response = http_client
+            .get(&check_runs_url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        #[derive(serde::Deserialize)]
+        struct CheckRunsResponse {
+            check_runs: Vec<CheckRun>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct CheckRun {
+            name: String,
+            conclusion: Option<String>,
+            status: String,
+        }
+
+        if check_runs_response.status().is_success() {
+            if let Ok(check_runs) = check_runs_response.json::<CheckRunsResponse>() {
+                for check_run in check_runs.check_runs {
+                    let state = if let Some(conclusion) = check_run.conclusion {
+                        conclusion.to_string()
+                    } else {
+                        check_run.status.to_string()
+                    };
+                    all_statuses.push(StatusCheck {
+                        context: check_run.name,
+                        state,
+                    });
+                }
+            }
+        }
+
+        // Determine overall state from both status checks and check runs
+        let overall_state = if let Some(status_val) = status_state {
+            // Use status checks state as base
+            match status_val.as_str() {
+                "success" => CheckState::Success,
+                "failure" | "error" => CheckState::Failure,
+                _ => CheckState::Pending,
+            }
+        } else if all_statuses.is_empty() {
+            // No checks at all - assume success
+            CheckState::Success
+        } else {
+            // Use check runs state
+            let has_failure = all_statuses
+                .iter()
+                .any(|s| s.state == "failure" || s.state == "error");
+            let has_pending = all_statuses
+                .iter()
+                .any(|s| s.state == "pending" || s.state == "in_progress" || s.state == "queued");
+            let has_success = all_statuses.iter().any(|s| s.state == "success");
+
+            if has_failure {
+                CheckState::Failure
+            } else if has_pending {
+                CheckState::Pending
+            } else if has_success {
+                CheckState::Success
+            } else {
+                CheckState::Pending
+            }
         };
 
-        let statuses = status
-            .statuses
-            .iter()
-            .map(|s| StatusCheck {
-                context: s.context.clone().unwrap_or_default(),
-                state: s.state.clone(),
-            })
-            .collect();
-
-        Ok(StatusCheckResult { state, statuses })
+        Ok(StatusCheckResult {
+            state: overall_state,
+            statuses: all_statuses,
+        })
     }
 
     async fn get_allowed_merge_methods(
