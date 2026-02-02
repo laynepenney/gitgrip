@@ -127,8 +127,10 @@ pub struct GriptreePointer {
     /// Manifest branch for this griptree (optional for backwards compat)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest_branch: Option<String>,
+    /// Manifest worktree name (for cleanup)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_worktree_name: Option<String>,
 }
-
 
 /// Per-repo griptree info (tracked in pointer file)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +142,15 @@ pub struct GriptreeRepoInfo {
     pub original_branch: String,
     /// Whether this is a reference repo
     pub is_reference: bool,
+    /// The name passed to git worktree add (for cleanup)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_name: Option<String>,
+    /// Absolute path to the worktree in the griptree
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    /// Absolute path to the main repo (for worktree cleanup)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_repo_path: Option<String>,
 }
 
 impl GriptreePointer {
