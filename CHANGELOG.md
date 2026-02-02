@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.6] - 2026-02-01
+
+### Added
+- Griptree manifest worktree support - each griptree can have its own manifest worktree
+- Branch tracking for griptrees - tracks original branch per repo for proper merge-back
+- Reference repo sync - reference repos auto-sync with upstream before worktree creation
+- `gr add` and `gr commit` now handle manifest worktree changes automatically
+- `gr status` displays manifest worktree status as separate entry
+- Griptree worktrees now prioritize repo's current branch instead of griptree branch
+- Comprehensive test coverage for manifest worktree functionality (10 new tests)
+
+### Changed
+- Manifest loading prioritizes griptree's own manifest, falls back to main workspace
+
+### Fixed
+- `gr push` now shows which repos failed and why
+
+### Implemented
+- Full Bitbucket API integration with PR create/merge/status support
+
+### Improved
+- CI status visibility in PR checks output
+- PR merge recognizes passing GitHub Actions check runs correctly
+- Sync error messages show which repos failed during `gr sync`
+- `gr pr create` supports `--dry-run` for preview without creating PRs
+
 ## [0.5.5] - 2026-02-01
 
 ### Added
