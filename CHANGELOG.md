@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.6] - 2026-02-01
+## [0.5.7] - 2026-02-01
 
 ### Added
 - Griptree manifest worktree support - each griptree can have its own manifest worktree
@@ -19,17 +19,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Manifest loading prioritizes griptree's own manifest, falls back to main workspace
 
-### Fixed
+## [0.5.6] - 2026-02-01
+
+### Added
+- Full Bitbucket API integration with PR create/merge/status/comment support
+- `gr pr create` supports `--dry-run` for preview without creating actual PRs
+- `gr pr create` supports `--push` flag to push branches before creating PRs
+- Shell completions for bash, zsh, fish, elvish, powershell via `gr completions <shell>`
+
+### Changed
+- `gr sync` now succeeds when on a branch without upstream configured
 - `gr push` now shows which repos failed and why
+- Better CI status visibility in PR checks output
+- Improved sync error messages showing which repos failed
 
-### Implemented
-- Full Bitbucket API integration with PR create/merge/status support
-
-### Improved
-- CI status visibility in PR checks output
-- PR merge recognizes passing GitHub Actions check runs correctly
-- Sync error messages show which repos failed during `gr sync`
-- `gr pr create` supports `--dry-run` for preview without creating PRs
+### Fixed
+- PR merge now recognizes passing GitHub Actions check runs correctly
+- `gr repo add` YAML insertion correctly places repos under `repos:` section
+- Griptree creation now writes `.griptree` pointer file for workspace detection
+- Windows CI: Fixed libgit2-sys linking by adding advapi32.lib
 
 ## [0.5.5] - 2026-02-01
 
