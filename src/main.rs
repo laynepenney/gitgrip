@@ -115,9 +115,9 @@ enum Commands {
         /// Run in parallel
         #[arg(short, long)]
         parallel: bool,
-        /// Only run in repos with changes
-        #[arg(long)]
-        changed: bool,
+        /// Run in ALL repos (default: only repos with changes)
+        #[arg(short, long)]
+        all: bool,
         /// Disable git command interception (use CLI for all commands)
         #[arg(long)]
         no_intercept: bool,
@@ -434,7 +434,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Forall {
             command,
             parallel,
-            changed,
+            all,
             no_intercept,
         }) => {
             let (workspace_root, manifest) = load_workspace()?;
@@ -443,7 +443,7 @@ async fn main() -> anyhow::Result<()> {
                 &manifest,
                 &command,
                 parallel,
-                changed,
+                !all, // Default: only repos with changes (changed_only=true unless --all)
                 no_intercept,
             )?;
         }
