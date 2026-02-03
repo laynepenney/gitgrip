@@ -165,6 +165,75 @@ gr tree remove feat/x --force            # Remove even if locked
 4. **Always use pull requests** - No direct pushes to main
 5. **Check `gr status` frequently** - Before and after operations
 
+## Common Workflow Patterns
+
+### Fixing Accidental Main Branch Commits
+
+If you accidentally committed to `main` instead of a feature branch:
+
+```bash
+# Move the last commit to a new feature branch
+gr branch feat/my-fix --move --repo <repo-name>
+```
+
+This creates a new branch at HEAD, resets the current branch to origin/main, and switches to the new branch.
+
+### Single-Repository Operations
+
+When you need to operate on just one repo:
+
+```bash
+# Create branch in specific repo only
+gr branch feat/fix --repo tooling
+
+# Commit in specific repo only  
+gr commit -m "fix: something" --repo tooling
+
+# Push specific repo only
+gr push --repo tooling
+```
+
+### PR Review Best Practices
+
+Before merging a PR, always review it:
+
+```bash
+# Check PR status and CI
+gr pr status
+gh pr checks <number>
+
+# Review the diff
+gh pr diff <number>
+
+# Wait for CI to pass before merging
+gr pr merge
+```
+
+### Never Use Raw Git Commands
+
+**Always use `gr` instead of raw `git` or `gh` commands.**
+
+```bash
+# ❌ WRONG - bypasses multi-repo coordination
+gh pr create --title "..." --body "..."
+git push -u origin <branch>
+
+# ✅ CORRECT - includes manifest repo automatically
+gr pr create -t "title" -b "body"
+gr push -u
+```
+
+If you find yourself needing raw git commands, document the friction point in `IMPROVEMENTS.md` so it can be fixed.
+
+## Contributing Improvements
+
+When you encounter friction or missing features while using `gr`:
+
+1. Add an entry to `./IMPROVEMENTS.md` under "Pending Review"
+2. Document what you expected vs what happened
+3. Include the raw commands you had to use as a workaround
+4. Ask the user if they want to create a GitHub issue
+
 ## Typical Workflow
 
 ```bash
@@ -208,6 +277,8 @@ repos:
     url: git@github.com:org/repo.git
     path: ./repo-name
     default_branch: main
+    reference: false           # Set to true for read-only reference repos
+    platform: github           # Optional: github, gitlab, azure
     copyfile:
       - src: config.example
         dest: config.example
@@ -226,7 +297,77 @@ workspace:
     post-sync:
       - command: "pnpm install"
         cwd: "./repo-name"
+
+settings:
+  pr:
+    prefix: "[BRANCH] "        # PR title prefix with branch name placeholder
+  merge_strategy: AllOrNothing  # AllOrNothing, Sequential, or Independent
 ```
+
+### Reference Repositories
+
+Mark repositories as `reference: true` to exclude them from branch and PR operations:
+
+```yaml
+repos:
+  opencode:
+    url: https://github.com/anomalyco/opencode.git
+    path: ./ref/opencode
+    reference: true  # Skipped in gr branch, gr pr create, etc.
+```
+
+Reference repos are still synced and shown in status with `[ref]` indicator, but:
+- Not included in `gr branch` operations
+- Not included in `gr checkout` operations  
+- Not included in `gr pr create/status/merge`
+
+Use this for reference implementations, documentation repos, or any repo you don't plan to modify.
+
+### Complete Manifest Schema
+
+```yaml
+version: 1                    # Manifest format version
+
+manifest:                     # Self-reference for manifest repo
+  url: <url>                  # Git URL for manifest repo
+  default_branch: <branch>    # Default branch name (e.g., main)
+  linkfile:                   # Files to link from manifest to workspace root
+    - src: <path>             # Source relative to manifest repo
+      dest: <path>            # Destination relative to workspace root
+
+repos:                        # Repository definitions
+  <repo-name>:                # Unique repo identifier
+    url: <git-url>            # Git clone URL
+    path: <relative-path>     # Local path relative to workspace root
+    default_branch: <branch>  # Default branch (e.g., main, master)
+    reference: <bool>         # Read-only reference repo (default: false)
+    platform: <platform>      # Hosting platform: github, gitlab, azure
+    copyfile:                 # Files to copy into workspace
+      - src: <path>           # Source relative to repo
+        dest: <path>          # Destination relative to workspace root
+    linkfile:                 # Symlinks to create in workspace
+      - src: <path>           # Source relative to repo
+        dest: <path>          # Destination relative to workspace root
+
+workspace:                    # Workspace-wide configuration
+  env:                        # Environment variables
+    <VAR_NAME>: <value>
+  scripts:                    # Named executable scripts
+    <script-name>:
+      description: <text>     # Human-readable description
+      command: <shell-cmd>    # Command to execute
+  hooks:                      # Lifecycle hooks
+    post-sync:                # Run after gr sync completes
+      - command: <cmd>        # Shell command
+        cwd: <path>           # Working directory (relative to workspace)
+
+settings:                     # Tool behavior settings
+  pr:
+    prefix: <string>          # PR title prefix pattern
+  merge_strategy: <strategy>  # How to merge multi-repo PRs:
+                              # - AllOrNothing: All PRs must merge together
+                              # - Sequential: Merge in order, stop on failure
+                              # - Independent: Merge each PR separately
 
 ## Error Recovery
 
