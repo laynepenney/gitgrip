@@ -2,6 +2,7 @@
 //!
 //! Manages griptrees (worktree-based parallel workspaces).
 
+use crate::cli::commands::link::run_link;
 use crate::cli::output::Output;
 use crate::core::griptree::{GriptreeConfig, GriptreePointer, GriptreeRepoInfo};
 use crate::core::manifest::Manifest;
@@ -147,14 +148,16 @@ pub fn run_tree_add(
         let worktree_path = tree_path.join(&repo.path);
         let spinner = Output::spinner(&format!("{}...", repo.name));
 
-        // For reference repos: sync with upstream before creating worktree
-        if repo.reference {
-            if let Err(e) = sync_repo_with_upstream(&repo.absolute_path, &repo.default_branch) {
-                spinner.finish_with_message(format!("{}: sync failed - {}", repo.name, e));
-                error_count += 1;
-                continue;
+        // For reference repos: try to sync with upstream before creating worktree
+        // Sync failure is not fatal - we'll create the worktree with current state
+        let sync_warning = if repo.reference {
+            match sync_repo_with_upstream(&repo.absolute_path, &repo.default_branch) {
+                Ok(_) => None,
+                Err(e) => Some(format!("sync skipped: {}", e)),
             }
-        }
+        } else {
+            None
+        };
 
         // Create worktree on the griptree branch (creates branch if needed)
         match create_worktree(&repo.absolute_path, &worktree_path, branch) {
@@ -173,7 +176,11 @@ pub fn run_tree_add(
                 });
 
                 let status_msg = if repo.reference {
-                    format!("{}: synced & created on {}", repo.name, branch)
+                    if let Some(ref warning) = sync_warning {
+                        format!("{}: created on {} ({})", repo.name, branch, warning)
+                    } else {
+                        format!("{}: synced & created on {}", repo.name, branch)
+                    }
                 } else {
                     format!(
                         "{}: created on {} (from {})",
@@ -283,6 +290,20 @@ pub fn run_tree_add(
             "Griptree created with {} success, {} errors",
             success_count, error_count
         ));
+    }
+
+    // Apply links in the new griptree
+    let tree_manifest_path = tree_path
+        .join(".gitgrip")
+        .join("manifests")
+        .join("manifest.yaml");
+    if tree_manifest_path.exists() {
+        println!();
+        if let Ok(tree_manifest) = Manifest::load(&tree_manifest_path) {
+            if let Err(e) = run_link(&tree_path, &tree_manifest, false, true) {
+                Output::warning(&format!("Failed to apply links: {}", e));
+            }
+        }
     }
 
     println!();
