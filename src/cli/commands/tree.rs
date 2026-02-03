@@ -156,26 +156,29 @@ pub fn run_tree_add(
             }
         }
 
-        // Create worktree on current branch (not griptree branch)
-        match create_worktree(&repo.absolute_path, &worktree_path, &current_branch) {
+        // Create worktree on the griptree branch (creates branch if needed)
+        match create_worktree(&repo.absolute_path, &worktree_path, branch) {
             Ok(_) => {
                 // Record for rollback
-                ctx.record_worktree(repo.absolute_path.clone(), current_branch.clone());
+                ctx.record_worktree(repo.absolute_path.clone(), branch.to_string());
 
-                // Track original branch for this repo
+                // Track original branch for this repo (for merging back later)
                 repo_branches.push(GriptreeRepoInfo {
                     name: repo.name.clone(),
                     original_branch: current_branch.clone(),
                     is_reference: repo.reference,
-                    worktree_name: Some(current_branch.clone()),
+                    worktree_name: Some(branch.to_string()),
                     worktree_path: Some(worktree_path.to_string_lossy().to_string()),
                     main_repo_path: Some(repo.absolute_path.to_string_lossy().to_string()),
                 });
 
                 let status_msg = if repo.reference {
-                    format!("{}: synced & created", repo.name)
+                    format!("{}: synced & created on {}", repo.name, branch)
                 } else {
-                    format!("{}: created on {}", repo.name, current_branch)
+                    format!(
+                        "{}: created on {} (from {})",
+                        repo.name, branch, current_branch
+                    )
                 };
                 spinner.finish_with_message(status_msg);
                 success_count += 1;
