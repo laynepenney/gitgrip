@@ -285,7 +285,9 @@ pub async fn run_pr_merge(
                     && manifest.settings.merge_strategy
                         == crate::core::manifest::MergeStrategy::AllOrNothing
                 {
-                    Output::error("Stopping due to all-or-nothing merge strategy. Use --force to bypass.");
+                    Output::error(
+                        "Stopping due to all-or-nothing merge strategy. Use --force to bypass.",
+                    );
                     return Err(e.into());
                 }
                 // If forcing with AllOrNothing, just log and continue
