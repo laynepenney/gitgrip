@@ -721,18 +721,31 @@ gh pr create  # PR #140 contains both fixes mixed together
 
 **Suggested fix**: Better branch management, or PR preview before creation showing all modified files.
 
-
-
 ---
 
-### gr pr create doesn't recognize manifest-only changes
+### gr pr create doesn't work for manifest-only changes
 
-**Discovered**: 2026-02-02 during CODI.md update
+**Discovered**: 2026-02-03 while adding git-repo reference
 
-**Problem**: When using `gr status`, it correctly shows changes in the manifest repo. However, when trying to create a PR with `gr pr create`, it said "No repositories have changes to create PRs for" even though the manifest had uncommitted changes.
+**Problem**: `gr pr create` reported "No PRs were created" even though the manifest repo had uncommitted changes (manifest.yaml and CODI.md updates). The command pushed branches but failed to create the actual PR.
 
-**Workaround used**: Had to push manually and use `gh pr create` directly.
+**Workaround used**: Had to manually push with `git push -u origin codi-gripspace` from the manifest directory, then use `gh pr create` with `--repo laynepenney/codi-workspace` flag to create the PR.
 
-**Expected behavior**: `gr pr create` should handle manifest-only changes the same way it handles regular repo changes.
+**Raw commands used**:
+```bash
+cd /Users/layne/Development/codi-gripspace/.gitgrip/manifests
+git push -u origin codi-gripspace
+gh pr create --title "..." --body "..." --repo laynepenney/codi-workspace
+```
+
+**Expected behavior**: `gr pr create` should:
+- Detect manifest repo changes like it does for regular repos
+- Create the PR automatically without manual intervention
+- Handle the manifest repo URL correctly
+
+**Additional friction**:
+- Had to cd to `.gitgrip/manifests` directory to run git commands
+- `gr push -u` showed "Nothing to push" even though manifest had commits
+- The manifest repo wasn't being tracked as having changes by `gr`
 
 ---
