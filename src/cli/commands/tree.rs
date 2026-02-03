@@ -160,7 +160,13 @@ pub fn run_tree_add(
         };
 
         // Create worktree on the griptree branch (creates branch if needed)
-        match create_worktree(&repo.absolute_path, &worktree_path, branch) {
+        // Base the new branch off the repo's default branch, not current HEAD
+        match create_worktree(
+            &repo.absolute_path,
+            &worktree_path,
+            branch,
+            Some(&repo.default_branch),
+        ) {
             Ok(_) => {
                 // Record for rollback
                 ctx.record_worktree(repo.absolute_path.clone(), branch.to_string());
@@ -184,7 +190,7 @@ pub fn run_tree_add(
                 } else {
                     format!(
                         "{}: created on {} (from {})",
-                        repo.name, branch, current_branch
+                        repo.name, branch, repo.default_branch
                     )
                 };
                 spinner.finish_with_message(status_msg);
@@ -604,8 +610,9 @@ fn create_manifest_worktree(
 
     // Create worktree at griptree's .gitgrip/manifests/
     // Use the griptree branch name for the manifest worktree
+    // Manifest worktrees create from HEAD since there's no "default branch" concept
     let worktree_name = format!("griptree-{}", branch.replace('/', "-"));
-    create_worktree(main_manifests_dir, tree_manifests_dir, &worktree_name)?;
+    create_worktree(main_manifests_dir, tree_manifests_dir, &worktree_name, None)?;
 
     // Check if manifest.yaml exists in the new worktree
     let manifest_yaml = tree_manifests_dir.join("manifest.yaml");
@@ -620,10 +627,14 @@ fn create_manifest_worktree(
     Ok(worktree_name)
 }
 /// Create a git worktree using git2
+///
+/// When creating a new branch, bases it off `base_branch` (e.g., "main") instead of HEAD.
+/// This ensures griptrees start from the default branch, not whatever branch the workspace is on.
 fn create_worktree(
     repo_path: &PathBuf,
     worktree_path: &PathBuf,
     branch: &str,
+    base_branch: Option<&str>,
 ) -> anyhow::Result<()> {
     let repo = open_repo(repo_path)?;
 
@@ -649,10 +660,23 @@ fn create_worktree(
             ),
         )?;
     } else {
-        // Create branch and worktree
-        let head = repo.head()?;
-        let commit = head.peel_to_commit()?;
-        repo.branch(branch, &commit, false)?;
+        // Create branch from base_branch (default branch) rather than HEAD
+        // This ensures griptrees start from a clean state, not from a feature branch
+        let base_commit = if let Some(base) = base_branch {
+            // Try local branch first, then remote tracking branch
+            if let Ok(local_branch) = repo.find_branch(base, git2::BranchType::Local) {
+                local_branch.get().peel_to_commit()?
+            } else {
+                // Try origin/<base>
+                let remote_ref = format!("refs/remotes/origin/{}", base);
+                repo.revparse_single(&remote_ref)?.peel_to_commit()?
+            }
+        } else {
+            // Fall back to HEAD if no base branch specified
+            repo.head()?.peel_to_commit()?
+        };
+
+        repo.branch(branch, &base_commit, false)?;
 
         repo.worktree(
             branch,
