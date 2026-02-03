@@ -82,11 +82,9 @@ pub async fn run_pr_create(
         // Only process if manifest repo exists and has a git directory
         if !manifests_dir.join(".git").exists() || !path_exists(&manifests_dir) {
             // No manifest git repo found - skip
-        } else if let Some(manifest_repo) = create_manifest_repo_info(
-            manifest_config,
-            &manifests_dir,
-            workspace_root,
-        ) {
+        } else if let Some(manifest_repo) =
+            create_manifest_repo_info(manifest_config, &manifests_dir, workspace_root)
+        {
             // Check if manifest repo has changes
             match check_repo_for_changes(&manifest_repo, &mut branch_name) {
                 Ok(true) => {
@@ -265,7 +263,7 @@ fn has_commits_ahead(repo: &Repository, branch: &str, base: &str) -> anyhow::Res
 /// Create RepoInfo for the manifest repository
 fn create_manifest_repo_info(
     config: &crate::core::manifest::ManifestRepoConfig,
-    manifests_dir: &PathBuf,
+    _manifests_dir: &PathBuf,
     workspace_root: &PathBuf,
 ) -> Option<RepoInfo> {
     let path = ".gitgrip/manifests".to_string();
