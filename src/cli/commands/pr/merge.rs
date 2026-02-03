@@ -31,6 +31,28 @@ pub async fn run_pr_merge(
         _ => MergeMethod::Merge,
     };
 
+    // Also check manifest repo if configured
+    let mut all_repos = repos.clone();
+    if let Some(manifest_config) = &manifest.manifest {
+        let manifests_dir = workspace_root.join(".gitgrip/manifests");
+        if let Some(manifest_repo) =
+            create_manifest_repo_info(manifest_config, &manifests_dir, workspace_root)
+        {
+            // Only add manifest repo if it has changes
+            match check_repo_for_changes(&manifest_repo) {
+                Ok(true) => {
+                    all_repos.push(manifest_repo);
+                }
+                Ok(false) => {
+                    Output::info("manifest: no changes, skipping");
+                }
+                Err(e) => {
+                    Output::warning(&format!("manifest: could not check for changes: {}", e));
+                }
+            }
+        }
+    }
+
     // Collect PRs to merge
     #[derive(Debug, Clone, Copy)]
     enum CheckStatus {
@@ -53,7 +75,7 @@ pub async fn run_pr_merge(
 
     let mut prs_to_merge: Vec<PRToMerge> = Vec::new();
 
-    for repo in &repos {
+    for repo in &all_repos {
         if !path_exists(&repo.absolute_path) {
             continue;
         }
@@ -145,8 +167,29 @@ pub async fn run_pr_merge(
     }
 
     if prs_to_merge.is_empty() {
-        println!("No PRs to merge.");
+        println!("No open PRs found for any repository.");
+        println!("Repositories checked: {}", repos.len());
         return Ok(());
+    }
+
+    // Show which repos have PRs and which don't
+    let repos_with_prs: Vec<String> = prs_to_merge.iter().map(|p| p.repo_name.clone()).collect();
+    let repos_without_prs: Vec<String> = repos
+        .iter()
+        .filter(|r| !repos_with_prs.contains(&r.name))
+        .map(|r| r.name.clone())
+        .collect();
+
+    if !repos_without_prs.is_empty() {
+        Output::info(&format!(
+            "Merging {} repo(s) with open PRs. {} repo(s) have no open PRs and will be skipped.",
+            prs_to_merge.len(),
+            repos_without_prs.len()
+        ));
+        for repo_name in &repos_without_prs {
+            Output::info(&format!("  - {}: skipped (no open PR)", repo_name));
+        }
+        println!();
     }
 
     // Check readiness if not forcing
@@ -257,4 +300,69 @@ pub async fn run_pr_merge(
     }
 
     Ok(())
+}
+
+/// Create RepoInfo for the manifest repository
+fn create_manifest_repo_info(
+    config: &crate::core::manifest::ManifestRepoConfig,
+    _manifests_dir: &PathBuf,
+    workspace_root: &PathBuf,
+) -> Option<RepoInfo> {
+    let path = ".gitgrip/manifests".to_string();
+
+    crate::core::repo::RepoInfo::from_config(
+        "manifest",
+        &crate::core::manifest::RepoConfig {
+            url: config.url.clone(),
+            path,
+            default_branch: config.default_branch.clone(),
+            copyfile: config.copyfile.clone(),
+            linkfile: config.linkfile.clone(),
+            platform: config.platform.clone(),
+            reference: false,
+        },
+        workspace_root,
+    )
+}
+
+/// Check if a repo has changes ahead of its default branch
+/// Returns Ok(true) if there are changes, Ok(false) if no changes or on default branch
+fn check_repo_for_changes(repo: &RepoInfo) -> anyhow::Result<bool> {
+    let git_repo = open_repo(&repo.absolute_path)
+        .map_err(|e| anyhow::anyhow!("Failed to open repo: {}", e))?;
+
+    let current = get_current_branch(&git_repo)
+        .map_err(|e| anyhow::anyhow!("Failed to get current branch: {}", e))?;
+
+    // Skip if on default branch
+    if current == repo.default_branch {
+        return Ok(false);
+    }
+
+    // Check if current branch has commits ahead of default
+    let local_branch = git_repo
+        .find_branch(&current, git2::BranchType::Local)
+        .map_err(|e| anyhow::anyhow!("Failed to find local branch: {}", e))?;
+
+    let local_ref = local_branch
+        .get()
+        .peel_to_commit()
+        .map_err(|e| anyhow::anyhow!("Failed to peel to commit: {}", e))?;
+
+    let default_branch = git_repo
+        .find_branch(&repo.default_branch, git2::BranchType::Local)
+        .map_err(|e| {
+            anyhow::anyhow!("Failed to find default branch '{}': {}", repo.default_branch, e)
+        })?;
+
+    let default_ref = default_branch
+        .get()
+        .peel_to_commit()
+        .map_err(|e| anyhow::anyhow!("Failed to peel default to commit: {}", e))?;
+
+    // Check if local is ahead of default (has unique commits)
+    match git_repo.graph_ahead_behind(local_ref.id(), default_ref.id()) {
+        Ok((ahead, _behind)) => Ok(ahead > 0),
+        Err(e) => Err(anyhow::anyhow!("Failed to compare branches: {}", e)),
+    }
 }
