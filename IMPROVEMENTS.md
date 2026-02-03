@@ -15,34 +15,39 @@ Items here should be reviewed before creating GitHub issues.
 
 ---
 
-### PR Creation Timeout Issue
+## Completed
 
-**Discovered**: 2025-12-05 during codi.md documentation PR
+### Fix: PR Creation Timeout Issue ✓
+
+**Completed**: 2026-02-02
 
 **Problem**: `gr pr create` consistently times out (~30s) even when:
 - `gh auth status` shows authenticated user with `repo` scope
 - Git operations work (push, status, diff)
 - Other `gr` commands work normally
 
-**Reproduction**:
-```bash
-gr pr create -t "title" --push    # times out
-gr pr create -t "title"           # times out
-```
+**Root Cause**: HTTP clients (octocrab for GitHub, reqwest for GitLab/Azure/Bitbucket) had no explicit timeout configuration, relying on OS-level TCP timeouts (~30s) which made debugging difficult.
 
-**Workaround**:
-```bash
-cd codi && gh pr create --title "docs: clarify codi/codi-private setup" --body "..." --base main
-```
+**Solution**: Added explicit timeout configurations to all platform adapters:
+- Connect timeout: 10 seconds (fail fast on connection issues)
+- Read/Write timeout: 30 seconds (reasonable for API operations)
 
-**Potential causes**:
-- Browser-based auth flow required
-- Token refresh issue in this environment  
-- Missing `--body` flag causing interactive prompt
+This provides:
+1. Faster failure detection when connection issues occur
+2. Clearer error messages indicating timeout vs other failures
+3. Consistent behavior across all platforms
+
+**Files Changed**:
+- `src/platform/github.rs` - Added timeouts to Octocrab builder and helper `http_client()` method
+- `src/platform/gitlab.rs` - Added timeouts to reqwest Client
+- `src/platform/azure.rs` - Added timeouts to reqwest Client
+- `src/platform/bitbucket.rs` - Added timeouts via helper `http_client()` method
+
+Closes #63
 
 ---
 
-## Completed
+### Feature: Shell autocompletions ✓
 
 ### Feature: Shell autocompletions ✓
 
