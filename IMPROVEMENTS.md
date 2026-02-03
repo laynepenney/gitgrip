@@ -263,47 +263,24 @@ Summary: 3 passed, 0 failed, 3 pending
 
 Closes #60
 
-### Feature: `gr forall` should default to changed repos only
+### Feature: `gr forall` should default to changed repos only ✓
+
+**Status**: ✅ **COMPLETED** - Implemented in PR #165
 
 **Discovered**: 2026-01-29 during workflow discussion
 
 **Problem**: `gr forall -c "pnpm test"` runs in ALL repos, even ones with no changes. This wastes time running tests in repos that haven't been modified. Running in all repos should be opt-in, not the default.
 
-**Current behavior**:
-```bash
-gr forall -c "pnpm test"  # Runs in ALL repos (wasteful)
-gr forall -c "pnpm test" --repo tooling  # Must manually specify repos
-```
-
-**Suggested**: Default to repos with changes, require `--all` for all repos:
-
+**Solution**: Default changed to repos with changes only:
 ```bash
 # Only run in repos with changes (NEW DEFAULT)
 gr forall -c "pnpm test"
 
 # Explicitly run in ALL repos
 gr forall -c "pnpm test" --all
-
-# Only repos with staged changes
-gr forall -c "pnpm build" --staged
-
-# Only repos with commits ahead of main
-gr forall -c "pnpm lint" --ahead
 ```
 
-**Use cases**:
-1. Run tests only in modified repos before committing (default)
-2. Run build only in repos that changed (default)
-3. CI/CD that needs all repos uses `--all`
-4. Pre-push hooks automatically only check affected repos
-
-**Implementation notes**:
-- Default = has uncommitted changes OR commits ahead of default branch
-- `--staged` = only repos with staged changes
-- `--ahead` = only repos with commits ahead of default branch
-- `--all` = all repos (current behavior, becomes opt-in)
-
-**Breaking change**: Yes, but safer default. Could warn for one version.
+**Breaking change**: Yes, use `--all` for previous behavior.
 
 ---
 
