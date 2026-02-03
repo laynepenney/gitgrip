@@ -167,26 +167,19 @@ backend       main             ✓       -
 
 ---
 
-### Missing: Single-repo branch creation from existing commit
+### Missing: Single-repo branch creation from existing commit ✓
+
+**Status**: ✅ **COMPLETED** - Implemented in PR #167
 
 **Discovered**: 2026-01-29 during centralized griptree metadata implementation
 
-**Problem**: Accidentally committed to `main` instead of a feature branch. Needed to create a feature branch from the current commit, then reset main to origin/main. `gr branch` creates branches across ALL repos, which isn't appropriate for fixing a single-repo mistake.
+**Problem**: Accidentally committed to `main` instead of a feature branch.
 
-**Workaround**:
+**Solution**: Added `--move` flag to `gr branch`:
 ```bash
-cd gitgrip
-git branch feat/centralized-griptree-metadata  # Create branch at HEAD
-git reset --hard HEAD~1                         # Reset main
-git checkout feat/centralized-griptree-metadata # Switch to feature
+gr branch feat/x --move --repo tooling
 ```
-
-**Suggested**: Add `--repo` support for branch creation in a single repo:
-```bash
-gr branch feat/x --repo tooling  # Already supported, but doesn't handle "move commit" scenario
-```
-
-Or add a "move last commit to new branch" helper.
+This creates the new branch at HEAD, resets current branch to origin/main, and checkouts the new branch.
 
 ### Missing: Non-interactive `gr pr create --body` ✓
 
