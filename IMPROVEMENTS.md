@@ -735,4 +735,40 @@ gh pr create  # PR #140 contains both fixes mixed together
 
 **Expected behavior**: `gr pr create` should handle manifest-only changes the same way it handles regular repo changes.
 
+**Status**: FIXED in PR #173 ✓
+
+---
+
+### gr pr merge --force fails when not all repos have open PRs
+
+**Discovered**: 2026-02-02 during PR #173 merge
+
+**Problem**: The `gr pr merge --force` command with `AllOrNothing` merge strategy failed because not all repos in the workspace had open PRs. Only `tooling` (gitgrip) and `manifest` had PRs; other repos like `strategy`, `private`, `public`, `homebrew-tap` had no changes and no PRs.
+
+**Error**: "Stopping due to all-or-nothing merge strategy. Error: API error: Failed to merge PR: GitHub"
+
+**Workaround used**: Merged the manifest PR separately with `gh pr merge`, then merged gitgrip PR with `gh pr merge --squash --delete-branch`.
+
+**Expected behavior**: `gr pr merge` should either:
+- Only require PRs for repos that actually have changes
+- Skip repos without PRs and merge only the ones that do
+- Provide a clearer error message about which repos need attention
+
+---
+
+### CI fails on pre-existing clippy/format warnings
+
+**Discovered**: 2026-02-02 during PR #173 CI checks
+
+**Problem**: The CI pipeline (Clippy and Format checks) failed for pre-existing issues in the codebase (warnings in tree.rs, repo.rs, traits.rs) that were unrelated to my changes. This blocked my PR from merging even though my changes passed all checks.
+
+**Workaround used**: Ran `cargo fmt` and `cargo clippy --fix` to fix pre-existing issues before CI would pass.
+
+**Expected behavior**: Either:
+- CI should only fail on issues introduced by the PR, not pre-existing warnings
+- A separate "code quality" CI job should run periodically instead of blocking every PR
+- Warnings should be allowed for backward-compatible APIs
+
+**Suggested fix**: Configure CI to use `cargo clippy --allow-dirty --allow-staged` for diff-based checking, or separate "strict" CI for new PRs from "warning" CI for code health.
+
 ---
