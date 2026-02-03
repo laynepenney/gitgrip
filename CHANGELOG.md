@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-02-03
+
+### Fixed
+- `gr pr merge --force` now properly bypasses `all-or-nothing` merge strategy (#180)
+  - Previously would stop on first failed merge even with `--force` flag
+  - Now continues merging remaining PRs when one fails with `--force`
+  - Shows warning for failed merges instead of hard stop
+- `gr pr create` now detects uncommitted changes in manifest repo (#178)
+  - Previously only checked for commits ahead of default branch
+  - Now detects staged and unstaged changes as well
+  - Properly handles manifest-only PR creation
+
+### Documentation
+- Updated skill documentation with complete manifest schema
+- Added workflow patterns section (accidental main branch commits, single-repo operations)
+- Documented `reference` repos and `platform` configuration options
+- Added IMPROVEMENTS.md entries for discovered friction points
+
 ## [0.7.0] - 2026-02-02
 
 ### Changed (Breaking)
