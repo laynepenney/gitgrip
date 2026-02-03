@@ -1,7 +1,7 @@
 //! PR create command implementation
 
 use crate::cli::output::Output;
-use crate::core::manifest::{Manifest, ManifestRepoConfig, PlatformType};
+use crate::core::manifest::{Manifest, PlatformType};
 use crate::core::repo::RepoInfo;
 use crate::core::state::StateFile;
 use crate::git::{get_current_branch, open_repo, path_exists};
@@ -276,9 +276,9 @@ fn create_manifest_repo_info(
             url: config.url.clone(),
             path,
             default_branch: config.default_branch.clone(),
-            copyfile: None,
-            linkfile: None,
-            platform: None,
+            copyfile: config.copyfile.clone(),
+            linkfile: config.linkfile.clone(),
+            platform: config.platform.clone(),
             reference: false,
         },
         workspace_root,
