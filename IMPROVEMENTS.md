@@ -721,22 +721,6 @@ gh pr create  # PR #140 contains both fixes mixed together
 
 **Suggested fix**: Better branch management, or PR preview before creation showing all modified files.
 
-
-
----
-
-### gr pr create doesn't recognize manifest-only changes
-
-**Discovered**: 2026-02-02 during CODI.md update
-
-**Problem**: When using `gr status`, it correctly shows changes in the manifest repo. However, when trying to create a PR with `gr pr create`, it said "No repositories have changes to create PRs for" even though the manifest had uncommitted changes.
-
-**Workaround used**: Had to push manually and use `gh pr create` directly.
-
-**Expected behavior**: `gr pr create` should handle manifest-only changes the same way it handles regular repo changes.
-
-**Status**: FIXED in PR #173 ✓
-
 ---
 
 ### gr pr merge --force fails when not all repos have open PRs
@@ -754,6 +738,8 @@ gh pr create  # PR #140 contains both fixes mixed together
 - Skip repos without PRs and merge only the ones that do
 - Provide a clearer error message about which repos need attention
 
+**GitHub Issue**: #174
+
 ---
 
 ### CI fails on pre-existing clippy/format warnings
@@ -769,6 +755,6 @@ gh pr create  # PR #140 contains both fixes mixed together
 - A separate "code quality" CI job should run periodically instead of blocking every PR
 - Warnings should be allowed for backward-compatible APIs
 
-**Suggested fix**: Configure CI to use `cargo clippy --allow-dirty --allow-staged` for diff-based checking, or separate "strict" CI for new PRs from "warning" CI for code health.
+**GitHub Issue**: #175
 
 ---
