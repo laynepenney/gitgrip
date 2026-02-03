@@ -352,7 +352,11 @@ fn check_repo_for_changes(repo: &RepoInfo) -> anyhow::Result<bool> {
     let default_branch = git_repo
         .find_branch(&repo.default_branch, git2::BranchType::Local)
         .map_err(|e| {
-            anyhow::anyhow!("Failed to find default branch '{}': {}", repo.default_branch, e)
+            anyhow::anyhow!(
+                "Failed to find default branch '{}': {}",
+                repo.default_branch,
+                e
+            )
         })?;
 
     let default_ref = default_branch
