@@ -96,6 +96,64 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
         }
     }
 
+    // Process manifest repo links
+    if let Some(ref manifest_config) = manifest.manifest {
+        let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+
+        // Check manifest copyfiles
+        if let Some(ref copyfiles) = manifest_config.copyfile {
+            for copyfile in copyfiles {
+                total_links += 1;
+                let source = manifests_dir.join(&copyfile.src);
+                let dest = workspace_root.join(&copyfile.dest);
+
+                let status = if source.exists() && dest.exists() {
+                    valid_links += 1;
+                    "✓"
+                } else if !source.exists() {
+                    broken_links += 1;
+                    "✗ (source missing)"
+                } else {
+                    broken_links += 1;
+                    "✗ (dest missing)"
+                };
+
+                println!(
+                    "  [copy] manifest:{} -> {} {}",
+                    copyfile.src, copyfile.dest, status
+                );
+            }
+        }
+
+        // Check manifest linkfiles
+        if let Some(ref linkfiles) = manifest_config.linkfile {
+            for linkfile in linkfiles {
+                total_links += 1;
+                let source = manifests_dir.join(&linkfile.src);
+                let dest = workspace_root.join(&linkfile.dest);
+
+                let status = if source.exists() && dest.exists() && dest.is_symlink() {
+                    valid_links += 1;
+                    "✓"
+                } else if !source.exists() {
+                    broken_links += 1;
+                    "✗ (source missing)"
+                } else if !dest.exists() {
+                    broken_links += 1;
+                    "✗ (link missing)"
+                } else {
+                    broken_links += 1;
+                    "✗ (not a symlink)"
+                };
+
+                println!(
+                    "  [link] manifest:{} -> {} {}",
+                    linkfile.src, linkfile.dest, status
+                );
+            }
+        }
+    }
+
     println!();
     if total_links == 0 {
         println!("No file links defined in manifest.");
@@ -235,6 +293,120 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                             Err(e) => {
                                 Output::error(&format!("Failed to create symlink: {}", e));
                                 errors += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Apply manifest repo links
+    if let Some(ref manifest_config) = manifest.manifest {
+        let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+
+        if manifests_dir.exists() {
+            // Apply manifest copyfiles
+            if let Some(ref copyfiles) = manifest_config.copyfile {
+                for copyfile in copyfiles {
+                    let source = manifests_dir.join(&copyfile.src);
+                    let dest = workspace_root.join(&copyfile.dest);
+
+                    if !source.exists() {
+                        Output::warning(&format!("Source not found: {:?}", source));
+                        errors += 1;
+                        continue;
+                    }
+
+                    // Create parent directory if needed
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+
+                    match std::fs::copy(&source, &dest) {
+                        Ok(_) => {
+                            Output::success(&format!(
+                                "[copy] manifest:{} -> {}",
+                                copyfile.src, copyfile.dest
+                            ));
+                            applied += 1;
+                        }
+                        Err(e) => {
+                            Output::error(&format!("Failed to copy: {}", e));
+                            errors += 1;
+                        }
+                    }
+                }
+            }
+
+            // Apply manifest linkfiles
+            if let Some(ref linkfiles) = manifest_config.linkfile {
+                for linkfile in linkfiles {
+                    let source = manifests_dir.join(&linkfile.src);
+                    let dest = workspace_root.join(&linkfile.dest);
+
+                    if !source.exists() {
+                        Output::warning(&format!("Source not found: {:?}", source));
+                        errors += 1;
+                        continue;
+                    }
+
+                    // Create parent directory if needed
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+
+                    // Remove existing link/file if present
+                    if dest.exists() || dest.is_symlink() {
+                        let _ = std::fs::remove_file(&dest);
+                    }
+
+                    #[cfg(unix)]
+                    {
+                        match std::os::unix::fs::symlink(&source, &dest) {
+                            Ok(_) => {
+                                Output::success(&format!(
+                                    "[link] manifest:{} -> {}",
+                                    linkfile.src, linkfile.dest
+                                ));
+                                applied += 1;
+                            }
+                            Err(e) => {
+                                Output::error(&format!("Failed to create symlink: {}", e));
+                                errors += 1;
+                            }
+                        }
+                    }
+
+                    #[cfg(windows)]
+                    {
+                        if source.is_dir() {
+                            match std::os::windows::fs::symlink_dir(&source, &dest) {
+                                Ok(_) => {
+                                    Output::success(&format!(
+                                        "[link] manifest:{} -> {}",
+                                        linkfile.src, linkfile.dest
+                                    ));
+                                    applied += 1;
+                                }
+                                Err(e) => {
+                                    Output::error(&format!("Failed to create symlink: {}", e));
+                                    errors += 1;
+                                }
+                            }
+                        } else {
+                            match std::os::windows::fs::symlink_file(&source, &dest) {
+                                Ok(_) => {
+                                    Output::success(&format!(
+                                        "[link] manifest:{} -> {}",
+                                        linkfile.src, linkfile.dest
+                                    ));
+                                    applied += 1;
+                                }
+                                Err(e) => {
+                                    Output::error(&format!("Failed to create symlink: {}", e));
+                                    errors += 1;
+                                }
                             }
                         }
                     }

@@ -1,6 +1,6 @@
 [package]
 name = "gitgrip"
-version = "0.5.8"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.80"
 description = "Multi-repo workflow tool - manage multiple git repositories as one"

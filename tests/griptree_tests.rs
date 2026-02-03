@@ -15,6 +15,9 @@ fn test_griptree_repo_info_serialization() {
         name: "codi".to_string(),
         original_branch: "main".to_string(),
         is_reference: false,
+        worktree_name: Some("main".to_string()),
+        worktree_path: Some("/path/to/worktree".to_string()),
+        main_repo_path: Some("/workspace/codi".to_string()),
     };
 
     let json = serde_json::to_string(&repo_info).unwrap();
@@ -23,6 +26,9 @@ fn test_griptree_repo_info_serialization() {
     assert_eq!(deserialized.name, repo_info.name);
     assert_eq!(deserialized.original_branch, repo_info.original_branch);
     assert_eq!(deserialized.is_reference, repo_info.is_reference);
+    assert_eq!(deserialized.worktree_name, repo_info.worktree_name);
+    assert_eq!(deserialized.worktree_path, repo_info.worktree_path);
+    assert_eq!(deserialized.main_repo_path, repo_info.main_repo_path);
 }
 
 /// Test that GriptreePointer handles backwards compatibility
@@ -43,7 +49,10 @@ fn test_griptree_pointer_backwards_compat() {
     assert_eq!(pointer.branch, "feat/test");
     assert_eq!(pointer.main_workspace, "/workspace");
     assert!(pointer.repos.is_empty(), "repos should default to empty");
-    assert!(pointer.manifest_branch.is_none(), "manifest_branch should default to None");
+    assert!(
+        pointer.manifest_branch.is_none(),
+        "manifest_branch should default to None"
+    );
 }
 
 /// Test that GriptreePointer includes repos and manifest_branch
@@ -74,7 +83,10 @@ fn test_griptree_pointer_new_fields() {
     assert_eq!(pointer.repos[0].name, "codi");
     assert_eq!(pointer.repos[0].original_branch, "main");
     assert_eq!(pointer.repos[0].is_reference, false);
-    assert_eq!(pointer.manifest_branch, Some("griptree-feat-test".to_string()));
+    assert_eq!(
+        pointer.manifest_branch,
+        Some("griptree-feat-test".to_string())
+    );
 }
 
 /// Test that manifest directory is correctly detected
@@ -97,9 +109,7 @@ fn test_griptree_manifest_path() {
     let temp = TempDir::new().unwrap();
     let griptree_path = PathBuf::from(temp.path());
 
-    let griptree_manifest_dir = griptree_path
-        .join(".gitgrip")
-        .join("manifests");
+    let griptree_manifest_dir = griptree_path.join(".gitgrip").join("manifests");
 
     // Create the directory structure
     fs::create_dir_all(&griptree_manifest_dir).unwrap();
@@ -122,7 +132,11 @@ fn test_manifest_worktree_git_dir() {
     assert!(!manifests_git_dir.exists());
 
     // Simulate git worktree by creating .git file (worktree use file, not dir)
-    fs::write(&manifests_git_dir, "gitdir: /some/other/path/.git/worktrees/mymain").unwrap();
+    fs::write(
+        &manifests_git_dir,
+        "gitdir: /some/other/path/.git/worktrees/mymain",
+    )
+    .unwrap();
 
     // After creation
     assert!(manifests_git_dir.exists());
@@ -159,6 +173,7 @@ fn test_griptree_pointer_empty_repos() {
         created_at: None,
         repos: vec![],
         manifest_branch: None,
+        manifest_worktree_name: None,
     };
 
     let json = serde_json::to_string_pretty(&pointer).unwrap();
@@ -178,6 +193,9 @@ fn test_griptree_repo_info_camel_case() {
         name: "codi-private".to_string(),
         original_branch: "develop".to_string(),
         is_reference: false,
+        worktree_name: None,
+        worktree_path: None,
+        main_repo_path: None,
     };
 
     let json = serde_json::to_string(&repo_info).unwrap();

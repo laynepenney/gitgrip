@@ -8,8 +8,8 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use chrono::Utc;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 /// Griptrees list file structure
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -23,6 +23,42 @@ struct GriptreeEntry {
     branch: String,
     locked: bool,
     lock_reason: Option<String>,
+}
+
+/// Context for tracking griptree creation progress (for rollback on failure)
+struct GriptreeCreationContext {
+    /// List of (main_repo_path, worktree_name) for created worktrees
+    created_worktrees: Vec<(PathBuf, String)>,
+    /// The griptree directory being created
+    tree_path: PathBuf,
+}
+
+impl GriptreeCreationContext {
+    fn new(tree_path: PathBuf) -> Self {
+        Self {
+            created_worktrees: Vec::new(),
+            tree_path,
+        }
+    }
+
+    fn record_worktree(&mut self, main_repo_path: PathBuf, worktree_name: String) {
+        self.created_worktrees.push((main_repo_path, worktree_name));
+    }
+
+    fn rollback(&self) {
+        // Remove worktrees in reverse order
+        for (repo_path, wt_name) in self.created_worktrees.iter().rev() {
+            if let Ok(repo) = open_repo(repo_path) {
+                if let Ok(wt) = repo.find_worktree(wt_name) {
+                    let mut opts = git2::WorktreePruneOptions::new();
+                    opts.valid(true);
+                    let _ = wt.prune(Some(&mut opts));
+                }
+            }
+        }
+        // Remove griptree directory
+        let _ = std::fs::remove_dir_all(&self.tree_path);
+    }
 }
 
 /// Run tree add command
@@ -62,6 +98,9 @@ pub fn run_tree_add(
     // Create griptree directory
     std::fs::create_dir_all(&tree_path)?;
 
+    // Initialize rollback context
+    let mut ctx = GriptreeCreationContext::new(tree_path.clone());
+
     // Get all repos
     let repos: Vec<RepoInfo> = manifest
         .repos
@@ -78,7 +117,10 @@ pub fn run_tree_add(
     for repo in &repos {
         if !path_exists(&repo.absolute_path) {
             if repo.name == "opencode" {
-                Output::error(&format!("{}: not cloned, skipping - this repo is required", repo.name));
+                Output::error(&format!(
+                    "{}: not cloned, skipping - this repo is required",
+                    repo.name
+                ));
             } else {
                 Output::warning(&format!("{}: not cloned, skipping", repo.name));
             }
@@ -102,13 +144,6 @@ pub fn run_tree_add(
             }
         };
 
-        // Track original branch for this repo
-        repo_branches.push(GriptreeRepoInfo {
-            name: repo.name.clone(),
-            original_branch: current_branch.clone(),
-            is_reference: repo.reference,
-        });
-
         let worktree_path = tree_path.join(&repo.path);
         let spinner = Output::spinner(&format!("{}...", repo.name));
 
@@ -124,6 +159,19 @@ pub fn run_tree_add(
         // Create worktree on current branch (not griptree branch)
         match create_worktree(&repo.absolute_path, &worktree_path, &current_branch) {
             Ok(_) => {
+                // Record for rollback
+                ctx.record_worktree(repo.absolute_path.clone(), current_branch.clone());
+
+                // Track original branch for this repo
+                repo_branches.push(GriptreeRepoInfo {
+                    name: repo.name.clone(),
+                    original_branch: current_branch.clone(),
+                    is_reference: repo.reference,
+                    worktree_name: Some(current_branch.clone()),
+                    worktree_path: Some(worktree_path.to_string_lossy().to_string()),
+                    main_repo_path: Some(repo.absolute_path.to_string_lossy().to_string()),
+                });
+
                 let status_msg = if repo.reference {
                     format!("{}: synced & created", repo.name)
                 } else {
@@ -139,46 +187,45 @@ pub fn run_tree_add(
         }
     }
 
-
-
     // Create .griptree structure in griptree
     let tree_gitgrip = tree_path.join(".gitgrip");
     std::fs::create_dir_all(&tree_gitgrip)?;
 
+    // Initialize state.json for this griptree
+    let state_path = tree_gitgrip.join("state.json");
+    std::fs::write(&state_path, "{}")?;
+
     // Create manifest worktree if main workspace has a manifest repo
     let main_manifests_dir = workspace_root.join(".gitgrip").join("manifests");
-    let manifest_branch_option: Option<String> = if main_manifests_dir.exists() {
-        let main_manifest_git_dir = main_manifests_dir.join(".git");
-        if main_manifest_git_dir.exists() {
-            // Main workspace has a manifest git repo - create worktree in griptree
-            let tree_manifests_dir = tree_gitgrip.join("manifests");
-            let manifest_spinner = Output::spinner("manifest");
+    let (manifest_branch_option, manifest_worktree_name): (Option<String>, Option<String>) =
+        if main_manifests_dir.exists() {
+            let main_manifest_git_dir = main_manifests_dir.join(".git");
+            if main_manifest_git_dir.exists() {
+                // Main workspace has a manifest git repo - create worktree in griptree
+                let tree_manifests_dir = tree_gitgrip.join("manifests");
+                let manifest_spinner = Output::spinner("manifest");
 
-            match create_manifest_worktree(
-                &main_manifests_dir,
-                &tree_manifests_dir,
-                branch,
-            ) {
-                Ok(manifest_branch) => {
-                    manifest_spinner.finish_with_message(format!(
-                        "manifest: created on {}",
-                        manifest_branch
-                    ));
-                    success_count += 1;
-                    Some(manifest_branch)
+                match create_manifest_worktree(&main_manifests_dir, &tree_manifests_dir, branch) {
+                    Ok(manifest_branch) => {
+                        manifest_spinner.finish_with_message(format!(
+                            "manifest: created on {}",
+                            manifest_branch
+                        ));
+                        success_count += 1;
+                        (Some(manifest_branch.clone()), Some(manifest_branch))
+                    }
+                    Err(e) => {
+                        manifest_spinner.finish_with_message(format!("manifest: failed - {}", e));
+                        error_count += 1;
+                        (None, None)
+                    }
                 }
-                Err(e) => {
-                    manifest_spinner.finish_with_message(format!("manifest: failed - {}", e));
-                    error_count += 1;
-                    None
-                }
+            } else {
+                (None, None)
             }
         } else {
-            None
-        }
-    } else {
-        None
-    };
+            (None, None)
+        };
 
     // Save griptree config in the griptree directory
     let griptree_config = GriptreeConfig::new(branch, &tree_path.to_string_lossy());
@@ -194,12 +241,20 @@ pub fn run_tree_add(
         created_at: Some(Utc::now()),
         repos: repo_branches,
         manifest_branch: manifest_branch_option,
+        manifest_worktree_name,
     };
     let pointer_path = tree_path.join(".griptree");
     let pointer_json = serde_json::to_string_pretty(&pointer)?;
     std::fs::write(&pointer_path, pointer_json)?;
 
     // Add to griptrees list
+    // Check if we should rollback due to too many failures BEFORE saving config
+    if success_count == 0 && error_count > 0 {
+        Output::error("Griptree creation failed - no worktrees were created successfully");
+        ctx.rollback();
+        anyhow::bail!("Griptree creation failed, rolled back");
+    }
+
     griptrees.griptrees.insert(
         branch.to_string(),
         GriptreeEntry {
@@ -240,36 +295,100 @@ pub fn run_tree_list(workspace_root: &PathBuf) -> anyhow::Result<()> {
     println!();
 
     let config_path = workspace_root.join(".gitgrip").join("griptrees.json");
-    if !config_path.exists() {
-        println!("No griptrees configured.");
-        return Ok(());
-    }
-
-    let content = std::fs::read_to_string(&config_path)?;
-    let griptrees: GriptreesList = serde_json::from_str(&content)?;
+    let griptrees: GriptreesList = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)?;
+        serde_json::from_str(&content)?
+    } else {
+        GriptreesList::default()
+    };
 
     if griptrees.griptrees.is_empty() {
         println!("No griptrees configured.");
-        return Ok(());
-    }
+    } else {
+        for (branch, entry) in &griptrees.griptrees {
+            let exists = PathBuf::from(&entry.path).exists();
+            let status = if !exists {
+                " (missing)"
+            } else if entry.locked {
+                " (locked)"
+            } else {
+                ""
+            };
 
-    for (branch, entry) in &griptrees.griptrees {
-        let exists = PathBuf::from(&entry.path).exists();
-        let status = if !exists {
-            " (missing)"
-        } else if entry.locked {
-            " (locked)"
-        } else {
-            ""
-        };
-
-        println!("  {} -> {}{}", branch, entry.path, status);
-        if let Some(ref reason) = entry.lock_reason {
-            println!("    Lock reason: {}", reason);
+            println!("  {} -> {}{}", branch, entry.path, status);
+            if let Some(ref reason) = entry.lock_reason {
+                println!("    Lock reason: {}", reason);
+            }
         }
     }
 
+    // Discover unregistered griptrees
+    let discovered = discover_legacy_griptrees(workspace_root, &griptrees)?;
+    if !discovered.is_empty() {
+        println!();
+        Output::warning("Found unregistered griptrees:");
+        for (path, branch) in &discovered {
+            println!("  {} -> {} (unregistered)", branch, path.display());
+        }
+        println!();
+        println!("These griptrees point to this workspace but are not in griptrees.json.");
+        println!("You can manually add them to griptrees.json if needed.");
+    }
+
     Ok(())
+}
+
+/// Discover legacy/unregistered griptrees that point to this workspace
+fn discover_legacy_griptrees(
+    workspace_root: &Path,
+    registered: &GriptreesList,
+) -> anyhow::Result<Vec<(PathBuf, String)>> {
+    let mut discovered = Vec::new();
+
+    let parent = match workspace_root.parent() {
+        Some(p) => p,
+        None => return Ok(discovered),
+    };
+
+    // Build set of registered paths for quick lookup
+    let registered_paths: HashSet<String> = registered
+        .griptrees
+        .values()
+        .map(|e| e.path.clone())
+        .collect();
+
+    // Scan sibling directories
+    let entries = match std::fs::read_dir(parent) {
+        Ok(e) => e,
+        Err(_) => return Ok(discovered),
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        if !path.is_dir() {
+            continue;
+        }
+        if path == workspace_root {
+            continue;
+        }
+        if registered_paths.contains(&path.to_string_lossy().to_string()) {
+            continue;
+        }
+
+        // Check for .griptree pointer file
+        let pointer_path = path.join(".griptree");
+        if pointer_path.exists() {
+            if let Ok(pointer) = GriptreePointer::load(&pointer_path) {
+                // Check if it points to this workspace
+                if pointer.main_workspace == workspace_root.to_string_lossy() {
+                    discovered.push((path, pointer.branch));
+                }
+            }
+        }
+    }
+
+    Ok(discovered)
 }
 
 /// Run tree remove command
@@ -304,6 +423,49 @@ pub fn run_tree_remove(workspace_root: &PathBuf, branch: &str, force: bool) -> a
 
     let tree_path = PathBuf::from(&entry.path);
 
+    // Load griptree pointer to get worktree info for cleanup
+    let pointer_path = tree_path.join(".griptree");
+    let pointer = if pointer_path.exists() {
+        GriptreePointer::load(&pointer_path).ok()
+    } else {
+        None
+    };
+
+    // Prune each repo's worktree properly before removing directory
+    if let Some(ref ptr) = pointer {
+        let cleanup_spinner = Output::spinner("Cleaning up worktrees...");
+
+        for repo_info in &ptr.repos {
+            // Use stored main_repo_path if available, otherwise fall back to workspace/name
+            let main_repo_path = repo_info
+                .main_repo_path
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(&ptr.main_workspace).join(&repo_info.name));
+
+            if let Ok(repo) = open_repo(&main_repo_path) {
+                // Use stored worktree name if available, otherwise fall back to original branch
+                let wt_name = repo_info
+                    .worktree_name
+                    .as_deref()
+                    .unwrap_or(&repo_info.original_branch);
+                prune_worktree(&repo, wt_name);
+            }
+        }
+
+        // Remove manifest worktree
+        if let Some(ref manifest_wt_name) = ptr.manifest_worktree_name {
+            let main_manifest_path = PathBuf::from(&ptr.main_workspace)
+                .join(".gitgrip")
+                .join("manifests");
+            if let Ok(repo) = open_repo(&main_manifest_path) {
+                prune_worktree(&repo, manifest_wt_name);
+            }
+        }
+
+        cleanup_spinner.finish_with_message("Worktrees cleaned up");
+    }
+
     // Remove directory
     if tree_path.exists() {
         let spinner = Output::spinner("Removing griptree directory...");
@@ -318,6 +480,15 @@ pub fn run_tree_remove(workspace_root: &PathBuf, branch: &str, force: bool) -> a
 
     Output::success(&format!("Griptree '{}' removed", branch));
     Ok(())
+}
+
+/// Prune a worktree from a repository
+fn prune_worktree(repo: &git2::Repository, worktree_name: &str) {
+    if let Ok(wt) = repo.find_worktree(worktree_name) {
+        let mut opts = git2::WorktreePruneOptions::new();
+        opts.valid(true); // Prune even if valid
+        let _ = wt.prune(Some(&mut opts));
+    }
 }
 
 /// Run tree lock command
@@ -476,20 +647,17 @@ fn create_worktree(
 }
 
 /// Sync reference repo with upstream default branch
-fn sync_repo_with_upstream(
-    repo_path: &PathBuf,
-    default_branch: &str,
-) -> anyhow::Result<()> {
+fn sync_repo_with_upstream(repo_path: &PathBuf, default_branch: &str) -> anyhow::Result<()> {
     let repo = open_repo(repo_path)?;
-    
+
     // Fetch from origin main to ensure up-to-date
     let mut remote = repo.find_remote("origin")?;
     remote.fetch(&[default_branch], None, None)?;
-    
+
     // Reset main worktree HEAD to upstream default branch
     let upstream_ref = format!("refs/remotes/origin/{}", default_branch);
     let upstream_commit = repo.revparse_single(&upstream_ref)?.peel_to_commit()?;
-    repo.reset(&upstream_commit.as_object(), git2::ResetType::Hard, None)?;
-    
+    repo.reset(upstream_commit.as_object(), git2::ResetType::Hard, None)?;
+
     Ok(())
 }

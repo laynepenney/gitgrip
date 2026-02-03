@@ -4,7 +4,7 @@ use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::remote::safe_pull_latest;
-use crate::git::{clone_repo, open_repo, path_exists};
+use crate::git::{clone_repo, get_current_branch, open_repo, path_exists};
 use std::path::PathBuf;
 
 /// Run the sync command
@@ -31,7 +31,25 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
 
             match clone_repo(&repo.url, &repo.absolute_path, Some(&repo.default_branch)) {
                 Ok(_) => {
-                    spinner.finish_with_message(format!("{}: cloned", repo.name));
+                    // Check actual branch after clone - it may differ if manifest's default_branch
+                    // doesn't exist on remote
+                    let clone_msg = if let Ok(git_repo) = open_repo(&repo.absolute_path) {
+                        if let Ok(actual_branch) = get_current_branch(&git_repo) {
+                            if actual_branch != repo.default_branch {
+                                format!(
+                                    "{}: cloned (on '{}', manifest specifies '{}')",
+                                    repo.name, actual_branch, repo.default_branch
+                                )
+                            } else {
+                                format!("{}: cloned", repo.name)
+                            }
+                        } else {
+                            format!("{}: cloned", repo.name)
+                        }
+                    } else {
+                        format!("{}: cloned", repo.name)
+                    };
+                    spinner.finish_with_message(clone_msg);
                     success_count += 1;
                 }
                 Err(e) => {
