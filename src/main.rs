@@ -58,6 +58,12 @@ enum Commands {
         /// Delete branch
         #[arg(short, long)]
         delete: bool,
+        /// Move recent commits to new branch (resets current branch to remote)
+        #[arg(short, long)]
+        r#move: bool,
+        /// Only operate on specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
         /// Include manifest repo
         #[arg(long)]
         include_manifest: bool,
@@ -294,6 +300,8 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Branch {
             name,
             delete,
+            r#move,
+            repo,
             include_manifest: _,
         }) => {
             let (workspace_root, manifest) = load_workspace()?;
@@ -302,7 +310,8 @@ async fn main() -> anyhow::Result<()> {
                 &manifest,
                 name.as_deref(),
                 delete,
-                None,
+                r#move,
+                repo.as_deref(),
             )?;
         }
         Some(Commands::Checkout { name }) => {
