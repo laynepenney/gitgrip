@@ -150,8 +150,8 @@ cargo bench
 # Run Rust benchmarks with gix comparison
 cargo bench --features gitoxide
 
-# Run TypeScript benchmarks
-npx tsx rust/bench-compare.ts 50
+# Run Rust benchmarks only
+cargo bench 100
 
 # Run specific benchmark group
 cargo bench -- forall
