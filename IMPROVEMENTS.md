@@ -721,3 +721,18 @@ gh pr create  # PR #140 contains both fixes mixed together
 
 **Suggested fix**: Better branch management, or PR preview before creation showing all modified files.
 
+
+
+---
+
+### gr pr create doesn't recognize manifest-only changes
+
+**Discovered**: 2026-02-02 during CODI.md update
+
+**Problem**: When using `gr status`, it correctly shows changes in the manifest repo. However, when trying to create a PR with `gr pr create`, it said "No repositories have changes to create PRs for" even though the manifest had uncommitted changes.
+
+**Workaround used**: Had to push manually and use `gh pr create` directly.
+
+**Expected behavior**: `gr pr create` should handle manifest-only changes the same way it handles regular repo changes.
+
+---

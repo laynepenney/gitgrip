@@ -36,7 +36,7 @@ pub async fn run_pr_create(
 
     // Get current branch for all repos and verify consistency
     let mut branch_name: Option<String> = None;
-    let mut repos_with_changes: Vec<&RepoInfo> = Vec::new();
+    let mut repos_with_changes: Vec<RepoInfo> = Vec::new();
 
     for repo in &repos {
         if !path_exists(&repo.absolute_path) {
@@ -68,10 +68,35 @@ pub async fn run_pr_create(
                     } else {
                         branch_name = Some(current);
                     }
-                    repos_with_changes.push(repo);
+                    repos_with_changes.push(repo.clone());
                 }
             }
             Err(e) => Output::error(&format!("{}: {}", repo.name, e)),
+        }
+    }
+
+    // Also check the manifest repo for changes
+    if let Some(manifest_config) = &manifest.manifest {
+        let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+
+        // Only process if manifest repo exists and has a git directory
+        if !manifests_dir.join(".git").exists() || !path_exists(&manifests_dir) {
+            // No manifest git repo found - skip
+        } else if let Some(manifest_repo) =
+            create_manifest_repo_info(manifest_config, &manifests_dir, workspace_root)
+        {
+            // Check if manifest repo has changes
+            match check_repo_for_changes(&manifest_repo, &mut branch_name) {
+                Ok(true) => {
+                    repos_with_changes.push(manifest_repo);
+                }
+                Ok(false) => {
+                    // No changes or on default branch - skip
+                }
+                Err(e) => {
+                    Output::warning(&format!("Could not check manifest repo: {}", e));
+                }
+            }
         }
     }
 
@@ -233,6 +258,61 @@ fn has_commits_ahead(repo: &Repository, branch: &str, base: &str) -> anyhow::Res
 
     let (ahead, _behind) = repo.graph_ahead_behind(local_oid, base_oid)?;
     Ok(ahead > 0)
+}
+
+/// Create RepoInfo for the manifest repository
+fn create_manifest_repo_info(
+    config: &crate::core::manifest::ManifestRepoConfig,
+    _manifests_dir: &PathBuf,
+    workspace_root: &PathBuf,
+) -> Option<RepoInfo> {
+    let path = ".gitgrip/manifests".to_string();
+
+    crate::core::repo::RepoInfo::from_config(
+        "manifest",
+        &crate::core::manifest::RepoConfig {
+            url: config.url.clone(),
+            path,
+            default_branch: config.default_branch.clone(),
+            copyfile: config.copyfile.clone(),
+            linkfile: config.linkfile.clone(),
+            platform: config.platform.clone(),
+            reference: false,
+        },
+        workspace_root,
+    )
+}
+
+/// Check if a repo has changes ahead of its default branch
+/// Returns Ok(true) if there are changes, Ok(false) if no changes or on default branch
+fn check_repo_for_changes(
+    repo: &RepoInfo,
+    branch_name: &mut Option<String>,
+) -> anyhow::Result<bool> {
+    let git_repo = open_repo(&repo.absolute_path)
+        .map_err(|e| anyhow::anyhow!("Failed to open repo: {}", e))?;
+
+    let current = get_current_branch(&git_repo)
+        .map_err(|e| anyhow::anyhow!("Failed to get current branch: {}", e))?;
+
+    // Skip if on default branch
+    if current == repo.default_branch {
+        return Ok(false);
+    }
+
+    // Check for changes ahead of default branch
+    let has_changes = has_commits_ahead(&git_repo, &current, &repo.default_branch)
+        .map_err(|e| anyhow::anyhow!("Failed to check commits: {}", e))?;
+
+    if has_changes {
+        // Update branch_name for consistency checking
+        if branch_name.is_none() {
+            *branch_name = Some(current);
+        }
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 /// Get authentication token for platform
