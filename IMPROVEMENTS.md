@@ -723,6 +723,27 @@ gh pr create  # PR #140 contains both fixes mixed together
 
 ---
 
+### gr pr merge --force still fails with all-or-nothing strategy
+
+**Discovered**: 2026-02-03 while merging documentation PRs
+
+**Problem**: Even with `--force` flag, `gr pr merge --force` failed because the `all-or-nothing` merge strategy requires ALL PRs to merge together. When some PRs had false-positive issues ("not approved", "checks still running" for docs repos), the entire merge was blocked.
+
+**Error**: "Stopping due to all-or-nothing merge strategy. Error: API error: Failed to merge PR"
+
+**Workaround used**: Had to use individual `gh pr merge` commands for each PR:
+```bash
+gh pr merge 179 --repo laynepenney/gitgrip --squash --delete-branch
+gh pr merge 16 --repo laynepenney/codi-strategy --squash --delete-branch
+```
+
+**Expected behavior**: 
+- `--force` should bypass all checks and merge regardless of strategy
+- Or have a `--strategy independent` flag to merge PRs separately
+- Documentation-only PRs shouldn't require CI checks
+
+---
+
 ### gr pr create doesn't work for manifest-only changes
 
 **Discovered**: 2026-02-03 while adding git-repo reference
