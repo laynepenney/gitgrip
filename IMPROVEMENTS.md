@@ -577,38 +577,34 @@ Closes #130
 
 ---
 
-### Missing: Auto-discovery of legacy griptrees
+### Feature: Auto-discovery of legacy griptrees ✓
+
+**Status**: ✅ **COMPLETED** - Already implemented in tree.rs
 
 **Discovered**: 2026-01-31 during Rust migration testing
 
 **Problem**: The Rust implementation stores griptrees in `.gitgrip/griptrees.json`, but the TypeScript version stored a `.griptree` marker file in each griptree directory. Existing griptrees from the TypeScript version don't show up in `gr tree list`.
 
-**Current behavior**:
-- `gr tree list` only reads from `.gitgrip/griptrees.json`
-- Existing griptrees with `.griptree` marker files are invisible
+**Solution**: `gr tree list` now automatically discovers unregistered griptrees:
+1. Scans sibling directories for `.griptree` pointer files
+2. Checks if they point to the current workspace
+3. Shows discovered griptrees with "unregistered" status
+4. Provides guidance on how to add them to griptrees.json
 
-**Expected behavior**:
-- `gr tree list` should scan sibling directories for `.griptree` marker files
-- Discovered griptrees should be automatically registered in `griptrees.json`
-- Or at minimum, show a message like "Found unregistered griptree: codi-dev"
+**Output Example**:
+```
+Griptrees
 
-**Workaround**:
-Manually create `.gitgrip/griptrees.json`:
-```json
-{
-  "griptrees": {
-    "codi-dev": {
-      "path": "/Users/layne/Development/codi-dev",
-      "branch": "codi-dev",
-      "locked": false,
-      "lock_reason": null
-    }
-  }
-}
+  feat-auth -> /Users/layne/Development/feat-auth
+
+⚠ Found unregistered griptrees:
+  codi-dev -> /Users/layne/Development/codi-dev (unregistered)
+
+These griptrees point to this workspace but are not in griptrees.json.
+You can manually add them to griptrees.json if needed.
 ```
 
-**Suggested implementation**:
-Add a `gr tree discover` command or auto-discovery in `gr tree list`.
+**Implementation**: `discover_legacy_griptrees()` function in `src/cli/commands/tree.rs`
 
 
 ---
