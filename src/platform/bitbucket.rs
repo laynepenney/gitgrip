@@ -4,10 +4,16 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
 use std::env;
+use std::time::Duration;
 
 use super::traits::{HostingPlatform, LinkedPRRef, PlatformError};
 use super::types::*;
 use crate::core::manifest::PlatformType;
+
+/// Default connection timeout in seconds
+const CONNECT_TIMEOUT_SECS: u64 = 10;
+/// Default request timeout in seconds
+const REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// Bitbucket API adapter
 pub struct BitbucketAdapter {
@@ -26,6 +32,15 @@ impl BitbucketAdapter {
 
     fn api_base_url(&self, owner: &str, repo: &str) -> String {
         format!("{}/repositories/{}/{}", self.base_url, owner, repo)
+    }
+
+    /// Create a configured HTTP client with timeouts
+    fn http_client() -> Client {
+        Client::builder()
+            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+            .build()
+            .unwrap_or_else(|_| Client::new())
     }
 }
 
@@ -103,7 +118,7 @@ impl HostingPlatform for BitbucketAdapter {
         body: Option<&str>,
         _draft: bool,
     ) -> Result<PRCreateResult, PlatformError> {
-        let client = Client::new();
+        let client = Self::http_client();
         let token = self.get_token().await?;
 
         let url = format!("{}/pullrequests", self.api_base_url(owner, repo));
@@ -147,7 +162,7 @@ impl HostingPlatform for BitbucketAdapter {
         repo: &str,
         pull_number: u64,
     ) -> Result<PullRequest, PlatformError> {
-        let client = Client::new();
+        let client = Self::http_client();
         let token = self.get_token().await?;
 
         let url = format!(
@@ -206,7 +221,7 @@ impl HostingPlatform for BitbucketAdapter {
         pull_number: u64,
         body: &str,
     ) -> Result<(), PlatformError> {
-        let client = Client::new();
+        let client = Self::http_client();
         let token = self.get_token().await?;
 
         let url = format!(
@@ -242,7 +257,7 @@ impl HostingPlatform for BitbucketAdapter {
         method: Option<MergeMethod>,
         delete_branch: bool,
     ) -> Result<bool, PlatformError> {
-        let client = Client::new();
+        let client = Self::http_client();
         let token = self.get_token().await?;
 
         let url = format!(
@@ -286,7 +301,7 @@ impl HostingPlatform for BitbucketAdapter {
         repo: &str,
         branch: &str,
     ) -> Result<Option<PRCreateResult>, PlatformError> {
-        let client = Client::new();
+        let client = Self::http_client();
         let token = self.get_token().await?;
 
         let url = format!(
@@ -322,7 +337,7 @@ impl HostingPlatform for BitbucketAdapter {
     }
 
     async fn is_pull_request_approved(&self, owner: &str, repo: &str, pull_number: u64) -> Result<bool, PlatformError> {
-        let client = Client::new();
+        let client = Self::http_client();
         let token = self.get_token().await?;
 
         let url = format!(
@@ -364,7 +379,7 @@ impl HostingPlatform for BitbucketAdapter {
     }
 
     async fn get_status_checks(&self, owner: &str, repo: &str, branch: &str) -> Result<StatusCheckResult, PlatformError> {
-        let client = Client::new();
+        let client = Self::http_client();
         let token = self.get_token().await?;
 
         let url = format!(

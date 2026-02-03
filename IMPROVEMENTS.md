@@ -15,34 +15,39 @@ Items here should be reviewed before creating GitHub issues.
 
 ---
 
-### PR Creation Timeout Issue
+## Completed
 
-**Discovered**: 2025-12-05 during codi.md documentation PR
+### Fix: PR Creation Timeout Issue ✓
+
+**Completed**: 2026-02-02
 
 **Problem**: `gr pr create` consistently times out (~30s) even when:
 - `gh auth status` shows authenticated user with `repo` scope
 - Git operations work (push, status, diff)
 - Other `gr` commands work normally
 
-**Reproduction**:
-```bash
-gr pr create -t "title" --push    # times out
-gr pr create -t "title"           # times out
-```
+**Root Cause**: HTTP clients (octocrab for GitHub, reqwest for GitLab/Azure/Bitbucket) had no explicit timeout configuration, relying on OS-level TCP timeouts (~30s) which made debugging difficult.
 
-**Workaround**:
-```bash
-cd codi && gh pr create --title "docs: clarify codi/codi-private setup" --body "..." --base main
-```
+**Solution**: Added explicit timeout configurations to all platform adapters:
+- Connect timeout: 10 seconds (fail fast on connection issues)
+- Read/Write timeout: 30 seconds (reasonable for API operations)
 
-**Potential causes**:
-- Browser-based auth flow required
-- Token refresh issue in this environment  
-- Missing `--body` flag causing interactive prompt
+This provides:
+1. Faster failure detection when connection issues occur
+2. Clearer error messages indicating timeout vs other failures
+3. Consistent behavior across all platforms
+
+**Files Changed**:
+- `src/platform/github.rs` - Added timeouts to Octocrab builder and helper `http_client()` method
+- `src/platform/gitlab.rs` - Added timeouts to reqwest Client
+- `src/platform/azure.rs` - Added timeouts to reqwest Client
+- `src/platform/bitbucket.rs` - Added timeouts via helper `http_client()` method
+
+Closes #63
 
 ---
 
-## Completed
+### Feature: Shell autocompletions ✓
 
 ### Feature: Shell autocompletions ✓
 
@@ -572,38 +577,34 @@ Closes #130
 
 ---
 
-### Missing: Auto-discovery of legacy griptrees
+### Feature: Auto-discovery of legacy griptrees ✓
+
+**Status**: ✅ **COMPLETED** - Already implemented in tree.rs
 
 **Discovered**: 2026-01-31 during Rust migration testing
 
 **Problem**: The Rust implementation stores griptrees in `.gitgrip/griptrees.json`, but the TypeScript version stored a `.griptree` marker file in each griptree directory. Existing griptrees from the TypeScript version don't show up in `gr tree list`.
 
-**Current behavior**:
-- `gr tree list` only reads from `.gitgrip/griptrees.json`
-- Existing griptrees with `.griptree` marker files are invisible
+**Solution**: `gr tree list` now automatically discovers unregistered griptrees:
+1. Scans sibling directories for `.griptree` pointer files
+2. Checks if they point to the current workspace
+3. Shows discovered griptrees with "unregistered" status
+4. Provides guidance on how to add them to griptrees.json
 
-**Expected behavior**:
-- `gr tree list` should scan sibling directories for `.griptree` marker files
-- Discovered griptrees should be automatically registered in `griptrees.json`
-- Or at minimum, show a message like "Found unregistered griptree: codi-dev"
+**Output Example**:
+```
+Griptrees
 
-**Workaround**:
-Manually create `.gitgrip/griptrees.json`:
-```json
-{
-  "griptrees": {
-    "codi-dev": {
-      "path": "/Users/layne/Development/codi-dev",
-      "branch": "codi-dev",
-      "locked": false,
-      "lock_reason": null
-    }
-  }
-}
+  feat-auth -> /Users/layne/Development/feat-auth
+
+⚠ Found unregistered griptrees:
+  codi-dev -> /Users/layne/Development/codi-dev (unregistered)
+
+These griptrees point to this workspace but are not in griptrees.json.
+You can manually add them to griptrees.json if needed.
 ```
 
-**Suggested implementation**:
-Add a `gr tree discover` command or auto-discovery in `gr tree list`.
+**Implementation**: `discover_legacy_griptrees()` function in `src/cli/commands/tree.rs`
 
 
 ---
