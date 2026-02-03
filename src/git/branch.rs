@@ -17,6 +17,28 @@ pub fn create_and_checkout_branch(repo: &Repository, branch_name: &str) -> Resul
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // Detect worktree conflict and provide helpful message
+        if stderr.contains("is already used by worktree at") {
+            // Extract worktree path from error message
+            if let Some(path_start) = stderr.find("worktree at '") {
+                let path_part = &stderr[path_start + 13..];
+                if let Some(path_end) = path_part.find('\'') {
+                    let worktree_path = &path_part[..path_end];
+                    return Err(GitError::OperationFailed(format!(
+                        "Branch '{}' is checked out in another worktree at '{}'. \
+                         Use a different branch name or work in that worktree.",
+                        branch_name, worktree_path
+                    )));
+                }
+            }
+            return Err(GitError::OperationFailed(format!(
+                "Branch '{}' is already checked out in another worktree. \
+                 Use a different branch name or work in that worktree.",
+                branch_name
+            )));
+        }
+
         return Err(GitError::OperationFailed(stderr.to_string()));
     }
 
@@ -40,6 +62,28 @@ pub fn checkout_branch(repo: &Repository, branch_name: &str) -> Result<(), GitEr
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // Detect worktree conflict and provide helpful message
+        if stderr.contains("is already used by worktree at") {
+            // Extract worktree path from error message
+            if let Some(path_start) = stderr.find("worktree at '") {
+                let path_part = &stderr[path_start + 13..];
+                if let Some(path_end) = path_part.find('\'') {
+                    let worktree_path = &path_part[..path_end];
+                    return Err(GitError::OperationFailed(format!(
+                        "Branch '{}' is checked out in another worktree at '{}'. \
+                         Either use that worktree or create a new branch with 'gr branch <name>'",
+                        branch_name, worktree_path
+                    )));
+                }
+            }
+            return Err(GitError::OperationFailed(format!(
+                "Branch '{}' is already checked out in another worktree. \
+                 Either use that worktree or create a new branch with 'gr branch <name>'",
+                branch_name
+            )));
+        }
+
         return Err(GitError::OperationFailed(stderr.to_string()));
     }
 

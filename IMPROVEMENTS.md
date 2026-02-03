@@ -609,36 +609,26 @@ You can manually add them to griptrees.json if needed.
 
 ---
 
-### Friction: Git worktree conflict prevents checking out main
+### Fix: Git worktree conflict provides helpful error message ✓
+
+**Completed**: 2026-02-02
 
 **Discovered**: 2026-02-02 during PR #118, #141 work
 
-**Problem**: When the gitgrip repository has an existing worktree (e.g., at codi-workspace), trying to check out `main` in another workspace fails with:
+**Problem**: When a branch is checked out in another worktree, git gives a cryptic error:
 ```
 fatal: 'main' is already used by worktree at '/Users/layne/Development/codi-workspace/gitgrip'
 ```
 
-**Reproduction**:
-```bash
-# In codi-workspace, worktree exists for another purpose
-gr branch fix/my-feature  # Creates branch in codi-workspace worktree
-
-# In codi-dev workspace
-git checkout main  # Fails!
+**Solution**: Enhanced error handling in `checkout_branch()` and `create_and_checkout_branch()` to detect worktree conflicts and provide actionable guidance:
+```
+Branch 'main' is checked out in another worktree at '/path/to/worktree'.
+Either use that worktree or create a new branch with 'gr branch <name>'
 ```
 
-**Workaround**: Create a new branch instead:
-```bash
-git checkout -b fix/my-feature
-gr branch fix/my-feature  # Works - creates new branch
-```
+**Files Changed**: `src/git/branch.rs`
 
-**Expected behavior**: Either:
-- Show a helpful message explaining the worktree conflict
-- Offer to create/use the branch in the current workspace
-- Add a `gr worktree` command to manage worktrees
-
-**Suggested fix**: Add detection and helpful error message, or `gr worktree` management command.
+Note: This is a git limitation - the same branch cannot be checked out in multiple worktrees simultaneously. The improved error message helps users understand the situation and suggests alternatives.
 
 ---
 
