@@ -168,13 +168,13 @@ pub async fn run_pr_merge(
 
     if prs_to_merge.is_empty() {
         println!("No open PRs found for any repository.");
-        println!("Repositories checked: {}", repos.len());
+        println!("Repositories checked: {}", all_repos.len());
         return Ok(());
     }
 
     // Show which repos have PRs and which don't
     let repos_with_prs: Vec<String> = prs_to_merge.iter().map(|p| p.repo_name.clone()).collect();
-    let repos_without_prs: Vec<String> = repos
+    let repos_without_prs: Vec<String> = all_repos
         .iter()
         .filter(|r| !repos_with_prs.contains(&r.name))
         .map(|r| r.name.clone())
