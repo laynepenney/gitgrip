@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-02-02
+
+### Fixed
+- Griptree branches now base off repo's default branch instead of HEAD
+- Griptree worktrees now use griptree branch name, not current workspace branch
+- Reference repo sync failures no longer block griptree creation (warning only)
+- Automatic link application after griptree creation
+- Manifest repo links (copyfile/linkfile) now properly processed
+- Worktree cleanup on griptree removal using git2 prune
+- Rollback on partial griptree creation failure
+- Clone fallback when specified branch doesn't exist on remote
+
+### Added
+- Legacy griptree discovery in `gr tree list`
+- Worktree tracking metadata (worktree_name, worktree_path, main_repo_path)
+- state.json initialization in new griptrees
+
 ## [0.5.8] - 2026-02-02
 
 ### Added
