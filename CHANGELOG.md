@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-02-02
+
+### Changed (Breaking)
+- `gr forall` now defaults to running commands only in repos with changes
+  - Use `--all` flag for previous behavior (run in all repos)
+
+### Added
+- `gr branch --move` flag to move commits from current branch to a new branch
+  - Creates new branch at HEAD, resets current branch to remote, checkouts new branch
+- `gr branch --repo <names>` flag to operate on specific repos only
+
+### Fixed
+- Platform API timeouts now have explicit configuration (10s connect, 30s read/write)
+  - Faster failure detection and clearer error messages
+- Worktree branch conflicts now show helpful error messages with guidance
+  - Explains the git limitation and suggests alternatives
+
 ## [0.6.0] - 2026-02-02
 
 ### Fixed
