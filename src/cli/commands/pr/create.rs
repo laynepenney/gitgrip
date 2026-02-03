@@ -36,7 +36,7 @@ pub async fn run_pr_create(
 
     // Get current branch for all repos and verify consistency
     let mut branch_name: Option<String> = None;
-    let mut repos_with_changes: Vec<&RepoInfo> = Vec::new();
+    let mut repos_with_changes: Vec<RepoInfo> = Vec::new();
 
     for repo in &repos {
         if !path_exists(&repo.absolute_path) {
@@ -68,10 +68,76 @@ pub async fn run_pr_create(
                     } else {
                         branch_name = Some(current);
                     }
-                    repos_with_changes.push(repo);
+                    repos_with_changes.push(repo.clone());
                 }
             }
             Err(e) => Output::error(&format!("{}: {}", repo.name, e)),
+        }
+    }
+
+    // Also check the manifest repo for changes
+    let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+    let manifests_git_dir = manifests_dir.join(".git");
+    if manifests_git_dir.exists() && path_exists(&manifests_dir) {
+        // Get manifest repo URL and default_branch from manifest config
+        let manifest_url = manifest.manifest.as_ref().map(|m| m.url.clone());
+        let manifest_default_branch = manifest
+            .manifest
+            .as_ref()
+            .map(|m| m.default_branch.clone())
+            .unwrap_or_else(|| "main".to_string());
+
+        // Parse manifest repo info if URL is available
+        let manifest_repo_info = manifest_url.and_then(|url| {
+            let absolute_path = manifests_dir.clone();
+            let path = ".gitgrip/manifests".to_string();
+
+            // Try to parse the URL
+            crate::core::repo::RepoInfo::from_config(
+                "manifest",
+                &crate::core::manifest::RepoConfig {
+                    url,
+                    path,
+                    default_branch: manifest_default_branch.clone(),
+                    copyfile: None,
+                    linkfile: None,
+                    platform: None,
+                    reference: false,
+                },
+                workspace_root,
+            )
+        });
+
+        // If we have manifest repo info, check for changes
+        if let Some(manifest_repo) = manifest_repo_info {
+            if path_exists(&manifest_repo.absolute_path) {
+                if let Ok(git_repo) = open_repo(&manifest_repo.absolute_path) {
+                    if let Ok(current) = get_current_branch(&git_repo) {
+                        // Skip if on default branch
+                        if current != manifest_default_branch {
+                            // Check for changes ahead of default branch
+                            if let Ok(true) =
+                                has_commits_ahead(&git_repo, &current, &manifest_default_branch)
+                            {
+                                // Check branch consistency with other repos
+                                if let Some(ref bn) = branch_name {
+                                    if bn != &current {
+                                        anyhow::bail!(
+                                            "Repositories are on different branches: {} vs {}",
+                                            bn,
+                                            current
+                                        );
+                                    }
+                                } else {
+                                    branch_name = Some(current);
+                                }
+                                // Clone and add the manifest repo
+                                repos_with_changes.push(manifest_repo);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
