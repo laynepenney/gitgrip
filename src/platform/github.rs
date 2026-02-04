@@ -316,9 +316,17 @@ impl HostingPlatform for GitHubAdapter {
             .get_pull_request_reviews(owner, repo, pull_number)
             .await?;
 
-        // Check for at least one approval and no changes requested
-        let has_approval = reviews.iter().any(|r| r.state == "APPROVED");
-        let has_changes_requested = reviews.iter().any(|r| r.state == "CHANGES_REQUESTED");
+        // Check for at least one approval and no changes requested.
+        // State comes from Debug formatting of octocrab's ReviewState enum,
+        // which gives title case without underscores (e.g. "Approved", "ChangesRequested").
+        let state_matches = |state: &str, target: &str| -> bool {
+            let normalized: String = state.chars().filter(|c| *c != '_').collect();
+            normalized.eq_ignore_ascii_case(target)
+        };
+        let has_approval = reviews.iter().any(|r| state_matches(&r.state, "Approved"));
+        let has_changes_requested = reviews
+            .iter()
+            .any(|r| state_matches(&r.state, "ChangesRequested"));
 
         Ok(has_approval && !has_changes_requested)
     }
