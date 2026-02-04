@@ -362,12 +362,9 @@ url_parse: avg=0.001ms, p50=0.001ms, p95=0.001ms (n=50)
 # Full comparison
 ./rust/run-benchmarks.sh 100
 
-# TypeScript only
-npx tsx rust/bench-compare.ts 100
-
 # Rust only (Criterion)
-cd rust && cargo bench
+cargo bench
 
 # Rust CLI benchmarks
-./rust/target/release/gr bench -n 100
+gr bench -n 100
 ```
