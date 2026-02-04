@@ -43,6 +43,7 @@ fn test_branch_with_group_filter() {
         false,
         None,
         Some(&group),
+        false,
     );
     assert!(
         result.is_ok(),
@@ -76,6 +77,7 @@ fn test_group_filter_empty_group() {
         false,
         None,
         Some(&group),
+        false,
     );
     assert!(
         result.is_ok(),

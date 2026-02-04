@@ -21,6 +21,7 @@ fn test_push_to_remote() {
         false,
         None,
         None,
+        false,
     )
     .unwrap();
 
@@ -86,6 +87,7 @@ fn test_push_skips_reference_repos() {
         false,
         None,
         None,
+        false,
     )
     .unwrap();
 
@@ -122,6 +124,7 @@ fn test_push_multiple_repos() {
         false,
         None,
         None,
+        false,
     )
     .unwrap();
 
@@ -157,6 +160,7 @@ fn test_push_force() {
         false,
         None,
         None,
+        false,
     )
     .unwrap();
 

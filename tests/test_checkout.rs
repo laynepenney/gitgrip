@@ -23,6 +23,7 @@ fn test_checkout_existing_branch() {
         false,
         None,
         None,
+        false,
     )
     .unwrap();
 
@@ -87,6 +88,7 @@ fn test_checkout_main() {
         false,
         None,
         None,
+        false,
     )
     .unwrap();
     assert_on_branch(&ws.repo_path("app"), "feat/temp");

@@ -24,6 +24,7 @@ fn test_commit_across_repos() {
         false,
         None,
         None,
+        false,
     )
     .unwrap();
 
