@@ -4,6 +4,7 @@ use crate::cli::output::Output;
 use crate::core::manifest::{Manifest, PlatformType};
 use crate::core::repo::RepoInfo;
 use crate::core::state::StateFile;
+use crate::git::status::has_uncommitted_changes;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::{detect_platform, get_platform_adapter};
 use git2::Repository;
@@ -301,8 +302,14 @@ fn check_repo_for_changes(
     }
 
     // Check for changes ahead of default branch
-    let has_changes = has_commits_ahead(&git_repo, &current, &repo.default_branch)
+    let has_commits = has_commits_ahead(&git_repo, &current, &repo.default_branch)
         .map_err(|e| anyhow::anyhow!("Failed to check commits: {}", e))?;
+
+    // Also check for uncommitted changes (staged or unstaged)
+    let has_uncommitted = has_uncommitted_changes(&git_repo)
+        .map_err(|e| anyhow::anyhow!("Failed to check uncommitted changes: {}", e))?;
+
+    let has_changes = has_commits || has_uncommitted;
 
     if has_changes {
         // Update branch_name for consistency checking

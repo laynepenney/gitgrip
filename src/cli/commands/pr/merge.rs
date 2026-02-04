@@ -280,12 +280,25 @@ pub async fn run_pr_merge(
                 spinner.finish_with_message(format!("{}: failed - {}", pr.repo_name, e));
                 error_count += 1;
 
-                // Check for all-or-nothing merge strategy
-                if manifest.settings.merge_strategy
-                    == crate::core::manifest::MergeStrategy::AllOrNothing
+                // Check for all-or-nothing merge strategy (unless forcing)
+                if !force
+                    && manifest.settings.merge_strategy
+                        == crate::core::manifest::MergeStrategy::AllOrNothing
                 {
-                    Output::error("Stopping due to all-or-nothing merge strategy.");
+                    Output::error(
+                        "Stopping due to all-or-nothing merge strategy. Use --force to bypass.",
+                    );
                     return Err(e.into());
+                }
+                // If forcing with AllOrNothing, just log and continue
+                if force
+                    && manifest.settings.merge_strategy
+                        == crate::core::manifest::MergeStrategy::AllOrNothing
+                {
+                    Output::warning(&format!(
+                        "{}: merge failed but continuing due to --force flag",
+                        pr.repo_name
+                    ));
                 }
             }
         }
