@@ -99,6 +99,9 @@ pub fn clone_repo(url: &str, dest: &Path) {
         "git clone failed: {}",
         String::from_utf8_lossy(&status.stderr)
     );
+    // Configure git identity (CI runners may not have global config)
+    git(dest, &["config", "user.email", "test@example.com"]);
+    git(dest, &["config", "user.name", "Test User"]);
 }
 
 /// Run a git command, panic on failure.
