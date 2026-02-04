@@ -33,9 +33,7 @@ async fn test_github_auth_error_no_token() {
     let err = result.unwrap_err();
     let err_str = err.to_string();
     assert!(
-        err_str.contains("Authentication")
-            || err_str.contains("token")
-            || err_str.contains("auth"),
+        err_str.contains("Authentication") || err_str.contains("token") || err_str.contains("auth"),
         "error should mention auth: {}",
         err_str
     );
