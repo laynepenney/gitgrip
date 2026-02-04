@@ -331,7 +331,20 @@ async fn test_github_linked_pr_in_body() {
 
 #[tokio::test]
 async fn test_github_auth_error_no_token() {
+    // Guard that restores GITHUB_TOKEN on drop (including panic).
+    // This prevents env var leaks into other parallel tests.
+    struct TokenGuard;
+    impl Drop for TokenGuard {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::set_var("GITHUB_TOKEN", "mock-test-token");
+            }
+        }
+    }
+
     let server = wiremock::MockServer::start().await;
+    let _guard = TokenGuard;
+
     // Clear all token env vars
     unsafe {
         std::env::remove_var("GITHUB_TOKEN");
@@ -341,11 +354,6 @@ async fn test_github_auth_error_no_token() {
     let adapter = gitgrip::platform::github::GitHubAdapter::new(Some(&server.uri()));
     let result = adapter.get_pull_request("owner", "repo", 42).await;
 
-    // Restore token for other tests
-    unsafe {
-        std::env::set_var("GITHUB_TOKEN", "mock-test-token");
-    }
-
     assert!(result.is_err(), "should fail without token");
     let err = result.unwrap_err();
     let err_str = err.to_string();
@@ -354,6 +362,7 @@ async fn test_github_auth_error_no_token() {
         "error should mention auth: {}",
         err_str
     );
+    // TokenGuard::drop restores GITHUB_TOKEN
 }
 
 #[tokio::test]

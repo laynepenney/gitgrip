@@ -168,13 +168,21 @@ fn test_sync_with_deleted_remote() {
     std::fs::remove_dir_all(ws.remote_path("app")).unwrap();
 
     let manifest = ws.load_manifest();
-    // Sync should still succeed (or fail gracefully) even if remote is gone
+    // Sync should handle missing remote gracefully (error or report per-repo failure)
     let result =
         gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false);
-    // The fetch will fail but the command should handle it
-    // (might error or might report per-repo failure - either is acceptable)
-    // Just verify it doesn't panic
-    let _ = result;
+    // Whether it returns Ok (with per-repo error reports) or Err is acceptable,
+    // but it must not panic. Verify we got a determinate result.
+    match &result {
+        Ok(_) => {} // Graceful handling with per-repo error reports
+        Err(e) => {
+            let msg = e.to_string();
+            assert!(
+                !msg.is_empty(),
+                "sync error should have a descriptive message"
+            );
+        }
+    }
 }
 
 // ── Push Without Remote Branch ──────────────────────────────────
@@ -214,8 +222,16 @@ fn test_forall_with_nonexistent_command() {
         false, // no_intercept
     );
     // Forall should handle per-repo command failures gracefully
-    // (might return error or might succeed with failure reports)
-    let _ = result;
+    match &result {
+        Ok(_) => {} // Graceful handling with per-repo failure reports
+        Err(e) => {
+            let msg = e.to_string();
+            assert!(
+                !msg.is_empty(),
+                "forall error should have a descriptive message"
+            );
+        }
+    }
 }
 
 // ── Add with No Changes ──────────────────────────────────────────
