@@ -372,4 +372,3 @@ gitgrip is self-improving. When using `gr` commands, capture any friction or ide
 2. Tell the user about the friction point
 
 This is mandatory. Every workaround reveals a gap in `gr` that should be fixed.
-
