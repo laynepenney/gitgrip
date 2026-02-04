@@ -770,3 +770,73 @@ gh pr create --title "..." --body "..." --repo laynepenney/codi-workspace
 - The manifest repo wasn't being tracked as having changes by `gr`
 
 ---
+
+### Friction: PR merge blocked when branch is behind main, `gr rebase` fails
+
+**Status**: 🔴 **ACTIVE** - Encountered while merging PR #186
+
+**Discovered**: 2026-02-03
+
+**Problem**: When trying to merge PR #186 with `gr pr merge`, got error:
+```
+⚠ Some PRs have issues:
+  - tooling PR #186: not approved
+  - tooling PR #186: checks still running
+
+Error: API error: Failed to merge PR: GitHub
+```
+
+GitHub error: "head branch is not up to date with the base branch"
+
+Attempted solutions:
+1. `gr sync` - synced successfully but PR still blocked
+2. `gr rebase main` - Failed with "0 rebased, 2 failed, 10 skipped"
+3. Manual `git rebase origin/main` - Not attempted due to complexity
+
+**Workaround used**: Had to manually investigate with `gh pr view` and `git log` to discover:
+- Local main branch was 2 commits behind origin/main
+- Feature branch was based on old main
+- PR branch couldn't merge because it lacked those 2 commits
+
+**Root cause**: `gr sync` updates local repos but doesn't rebase feature branches onto latest main. The PR becomes stale relative to the base branch.
+
+**Expected behavior**: `gr` should either:
+1. Automatically rebase feature branches before merge attempt
+2. Provide a command to update PR branch with latest main
+3. Show clear guidance on how to fix "branch behind" issues
+
+**Raw commands needed**:
+```bash
+gh pr view 186 --repo laynepenney/gitgrip  # To see PR is BEHIND
+git log --oneline main..origin/main          # To see missing commits
+```
+
+---
+
+### Friction: `gr checkout` blocked by uncommitted changes
+
+**Status**: 🔴 **ACTIVE** - Encountered while fixing PR merge
+
+**Discovered**: 2026-02-03
+
+**Problem**: When trying to switch from feature branch to main:
+```
+gr checkout main
+✗ tooling: Operation failed: error: Your local changes to the following files would be overwritten by checkout:
+    CLAUDE.md
+Aborting
+```
+
+Even after `gr add .` and switching, still blocked because the staged changes were on the wrong branch.
+
+**Workaround**: Had to:
+1. Switch back to feature branch
+2. Commit the changes there
+3. Then switch to main
+
+**Expected behavior**: `gr checkout` should either:
+1. Automatically stash/unstash changes when switching
+2. Prompt user to commit or stash
+3. Show clearer error about which branch has the changes
+
+---
