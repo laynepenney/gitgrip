@@ -154,6 +154,19 @@ fn parse_git_url(url: &str) -> Option<ParsedUrl> {
         }
     }
 
+    // Handle file:// URLs (used in testing with local bare repos)
+    if url.starts_with("file://") {
+        let path = url.trim_start_matches("file://").trim_end_matches(".git");
+        // Extract the last path component as repo name
+        if let Some(name) = path.rsplit('/').next() {
+            return Some(ParsedUrl {
+                owner: "local".to_string(),
+                repo: name.to_string(),
+                project: None,
+            });
+        }
+    }
+
     None
 }
 
@@ -211,6 +224,21 @@ mod tests {
         assert_eq!(parsed.owner, "org");
         assert_eq!(parsed.repo, "repo");
         assert_eq!(parsed.project, Some("project".to_string()));
+    }
+
+    #[test]
+    fn test_parse_file_url() {
+        let parsed = parse_git_url("file:///tmp/remotes/myrepo.git").unwrap();
+        assert_eq!(parsed.owner, "local");
+        assert_eq!(parsed.repo, "myrepo");
+        assert!(parsed.project.is_none());
+    }
+
+    #[test]
+    fn test_parse_file_url_no_extension() {
+        let parsed = parse_git_url("file:///tmp/repos/test-repo").unwrap();
+        assert_eq!(parsed.owner, "local");
+        assert_eq!(parsed.repo, "test-repo");
     }
 
     #[test]

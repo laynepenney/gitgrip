@@ -7,6 +7,10 @@ use clap_complete::{generate, Shell};
 #[command(name = "gr")]
 #[command(author, version, about = "Multi-repo workflow tool", long_about = None)]
 struct Cli {
+    /// Suppress output for repos with no relevant changes (saves tokens for AI tools)
+    #[arg(short, long, global = true)]
+    quiet: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -291,11 +295,16 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Status { verbose }) => {
             let (workspace_root, manifest) = load_workspace()?;
-            gitgrip::cli::commands::status::run_status(&workspace_root, &manifest, verbose)?;
+            gitgrip::cli::commands::status::run_status(
+                &workspace_root,
+                &manifest,
+                verbose,
+                cli.quiet,
+            )?;
         }
         Some(Commands::Sync { force }) => {
             let (workspace_root, manifest) = load_workspace()?;
-            gitgrip::cli::commands::sync::run_sync(&workspace_root, &manifest, force)?;
+            gitgrip::cli::commands::sync::run_sync(&workspace_root, &manifest, force, cli.quiet)?;
         }
         Some(Commands::Branch {
             name,
@@ -344,6 +353,7 @@ async fn main() -> anyhow::Result<()> {
                 &manifest,
                 set_upstream,
                 force,
+                cli.quiet,
             )?;
         }
         Some(Commands::Pr { action }) => {
