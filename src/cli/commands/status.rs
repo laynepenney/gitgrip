@@ -12,6 +12,7 @@ pub fn run_status(
     workspace_root: &PathBuf,
     manifest: &Manifest,
     verbose: bool,
+    quiet: bool,
 ) -> anyhow::Result<()> {
     Output::header("Repository Status");
     println!();
@@ -35,10 +36,20 @@ pub fn run_status(
     let with_changes = statuses.iter().filter(|(s, _)| !s.clean).count();
     let ahead_count = statuses.iter().filter(|(s, _)| s.ahead_main > 0).count();
 
+    // In quiet mode, only show repos with changes or not on default branch
+    let filtered_statuses: Vec<&(RepoStatus, &RepoInfo)> = if quiet {
+        statuses
+            .iter()
+            .filter(|(s, repo)| !s.clean || !s.exists || s.branch != repo.default_branch)
+            .collect()
+    } else {
+        statuses.iter().collect()
+    };
+
     // Display table
     let mut table = Table::new(vec!["Repo", "Branch", "Status", "vs main"]);
 
-    for (status, repo) in &statuses {
+    for (status, repo) in &filtered_statuses {
         let status_str = format_status(status, verbose);
         let main_str = format_main_comparison(status, &repo.default_branch);
         // Add [ref] suffix for reference repos
@@ -55,7 +66,9 @@ pub fn run_status(
         ]);
     }
 
-    table.print();
+    if !filtered_statuses.is_empty() {
+        table.print();
+    }
 
     // Show manifest worktree status if it exists
     let manifests_dir = workspace_root.join(".gitgrip").join("manifests");

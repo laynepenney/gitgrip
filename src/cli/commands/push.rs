@@ -14,6 +14,7 @@ pub fn run_push(
     manifest: &Manifest,
     set_upstream: bool,
     force: bool,
+    quiet: bool,
 ) -> anyhow::Result<()> {
     if force {
         Output::header("Force pushing changes...");
@@ -53,7 +54,9 @@ pub fn run_push(
 
                 // Check if there's anything to push
                 if !has_commits_to_push(&git_repo, &branch)? {
-                    Output::info(&format!("{}: nothing to push", repo.name));
+                    if !quiet {
+                        Output::info(&format!("{}: nothing to push", repo.name));
+                    }
                     skip_count += 1;
                     continue;
                 }
@@ -88,10 +91,14 @@ pub fn run_push(
                             || error_msg.contains("no changes")
                             || error_msg.contains("already up to date")
                         {
-                            spinner.finish_with_message(format!(
-                                "{}: skipped (nothing to push)",
-                                repo.name
-                            ));
+                            if !quiet {
+                                spinner.finish_with_message(format!(
+                                    "{}: skipped (nothing to push)",
+                                    repo.name
+                                ));
+                            } else {
+                                spinner.finish_and_clear();
+                            }
                             skip_count += 1;
                         } else {
                             spinner.finish_with_message(format!("{}: failed - {}", repo.name, e));

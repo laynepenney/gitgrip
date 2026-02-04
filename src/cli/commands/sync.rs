@@ -8,7 +8,12 @@ use crate::git::{clone_repo, get_current_branch, open_repo, path_exists};
 use std::path::PathBuf;
 
 /// Run the sync command
-pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> anyhow::Result<()> {
+pub fn run_sync(
+    workspace_root: &PathBuf,
+    manifest: &Manifest,
+    force: bool,
+    quiet: bool,
+) -> anyhow::Result<()> {
     Output::header(&format!("Syncing {} repositories...", manifest.repos.len()));
     println!();
 
@@ -87,11 +92,17 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
                                     "{}: skipped - {}",
                                     repo.name, msg
                                 ));
-                            } else {
+                            } else if !quiet {
                                 spinner.finish_with_message(format!("{}: {}", repo.name, msg));
+                            } else {
+                                spinner.finish_and_clear();
                             }
                         } else {
-                            spinner.finish_with_message(format!("{}: up to date", repo.name));
+                            if !quiet {
+                                spinner.finish_with_message(format!("{}: up to date", repo.name));
+                            } else {
+                                spinner.finish_and_clear();
+                            }
                             success_count += 1;
                         }
                     }
