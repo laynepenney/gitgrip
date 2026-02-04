@@ -214,6 +214,11 @@ fn detect_platform(url: &str) -> PlatformType {
         return PlatformType::AzureDevOps;
     }
 
+    // Check Bitbucket before GitLab
+    if url.contains("bitbucket.org") || url.contains("bitbucket.") {
+        return PlatformType::Bitbucket;
+    }
+
     // Check GitLab - ensure it's in hostname, not just path
     if url.contains("gitlab.com") || url.contains("gitlab.") {
         return PlatformType::GitLab;

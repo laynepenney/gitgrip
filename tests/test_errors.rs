@@ -81,6 +81,7 @@ fn test_status_with_missing_repo() {
         false,
         false,
         None,
+        false,
     );
     // Status should succeed even with a missing repo (reports "not cloned")
     assert!(
@@ -142,6 +143,7 @@ fn test_branch_already_exists() {
         false,
         None,
         None,
+        false,
     )
     .unwrap();
 
@@ -157,6 +159,7 @@ fn test_branch_already_exists() {
         false,
         None,
         None,
+        false,
     );
     assert!(
         result.is_ok(),

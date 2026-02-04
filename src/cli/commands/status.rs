@@ -7,6 +7,21 @@ use crate::git::path_exists;
 use crate::git::status::{get_repo_status, RepoStatus};
 use std::path::PathBuf;
 
+/// JSON-serializable repo status for --json output
+#[derive(serde::Serialize)]
+struct JsonRepoStatus {
+    name: String,
+    branch: String,
+    clean: bool,
+    staged: usize,
+    modified: usize,
+    untracked: usize,
+    ahead: usize,
+    behind: usize,
+    reference: bool,
+    groups: Vec<String>,
+}
+
 /// Run the status command
 pub fn run_status(
     workspace_root: &PathBuf,
@@ -14,7 +29,12 @@ pub fn run_status(
     verbose: bool,
     quiet: bool,
     group_filter: Option<&[String]>,
+    json: bool,
 ) -> anyhow::Result<()> {
+    if json {
+        return run_status_json(workspace_root, manifest, group_filter);
+    }
+
     Output::header("Repository Status");
     println!();
 
@@ -102,16 +122,55 @@ pub fn run_status(
 
     // Summary
     println!();
-    let ahead_suffix = if ahead_count > 0 {
-        format!(" | {} ahead of main", ahead_count)
+    if quiet {
+        // Machine-readable summary line
+        println!(
+            "SUMMARY: repos={} cloned={} changes={} ahead={}",
+            total, cloned, with_changes, ahead_count
+        );
     } else {
-        String::new()
-    };
-    println!(
-        "  {}/{} cloned | {} with changes{}",
-        cloned, total, with_changes, ahead_suffix
-    );
+        let ahead_suffix = if ahead_count > 0 {
+            format!(" | {} ahead of main", ahead_count)
+        } else {
+            String::new()
+        };
+        println!(
+            "  {}/{} cloned | {} with changes{}",
+            cloned, total, with_changes, ahead_suffix
+        );
+    }
 
+    Ok(())
+}
+
+/// Run status in JSON mode
+fn run_status_json(
+    workspace_root: &PathBuf,
+    manifest: &Manifest,
+    group_filter: Option<&[String]>,
+) -> anyhow::Result<()> {
+    let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
+
+    let json_statuses: Vec<JsonRepoStatus> = repos
+        .iter()
+        .map(|repo| {
+            let status = get_repo_status(repo);
+            JsonRepoStatus {
+                name: status.name,
+                branch: status.branch,
+                clean: status.clean,
+                staged: status.staged,
+                modified: status.modified,
+                untracked: status.untracked,
+                ahead: status.ahead_main,
+                behind: status.behind_main,
+                reference: repo.reference,
+                groups: repo.groups.clone(),
+            }
+        })
+        .collect();
+
+    println!("{}", serde_json::to_string_pretty(&json_statuses)?);
     Ok(())
 }
 

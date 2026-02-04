@@ -34,6 +34,8 @@ pub enum PlatformType {
     GitLab,
     #[serde(rename = "azure-devops")]
     AzureDevOps,
+    #[serde(rename = "bitbucket")]
+    Bitbucket,
 }
 
 impl std::fmt::Display for PlatformType {
@@ -42,6 +44,7 @@ impl std::fmt::Display for PlatformType {
             PlatformType::GitHub => write!(f, "github"),
             PlatformType::GitLab => write!(f, "gitlab"),
             PlatformType::AzureDevOps => write!(f, "azure-devops"),
+            PlatformType::Bitbucket => write!(f, "bitbucket"),
         }
     }
 }
@@ -209,6 +212,42 @@ pub struct WorkspaceHooks {
     pub post_checkout: Option<Vec<HookCommand>>,
 }
 
+/// A step in a CI pipeline
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CiStep {
+    /// Step name for display
+    pub name: String,
+    /// Command to execute
+    pub command: String,
+    /// Optional working directory (relative to workspace root)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Optional environment variables for this step
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+    /// Continue pipeline even if this step fails
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub continue_on_error: bool,
+}
+
+/// A CI pipeline definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CiPipeline {
+    /// Optional description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Steps to execute sequentially
+    pub steps: Vec<CiStep>,
+}
+
+/// CI/CD configuration in the workspace
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CiConfig {
+    /// Named pipelines
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pipelines: Option<HashMap<String, CiPipeline>>,
+}
+
 /// Workspace configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
@@ -221,6 +260,9 @@ pub struct WorkspaceConfig {
     /// Lifecycle hooks
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hooks: Option<WorkspaceHooks>,
+    /// CI/CD pipelines
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ci: Option<CiConfig>,
 }
 
 /// The main manifest structure

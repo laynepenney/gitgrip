@@ -3,6 +3,7 @@
 pub mod griptree;
 pub mod manifest;
 pub mod repo;
+pub mod repo_manifest;
 pub mod state;
 
 pub use manifest::Manifest;

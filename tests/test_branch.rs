@@ -25,6 +25,7 @@ fn test_branch_create_across_repos() {
         false,
         None,
         None,
+        false,
     );
     assert!(
         result.is_ok(),
@@ -55,6 +56,7 @@ fn test_branch_delete() {
         false,
         None,
         None,
+        false,
     )
     .unwrap();
 
@@ -70,6 +72,7 @@ fn test_branch_delete() {
         false,
         None,
         None,
+        false,
     );
     assert!(
         result.is_ok(),
@@ -96,6 +99,7 @@ fn test_branch_list() {
         false,
         None,
         None,
+        false,
     )
     .unwrap();
     git_helpers::checkout(&ws.repo_path("app"), "main");
@@ -107,6 +111,7 @@ fn test_branch_list() {
         false,
         None,
         None,
+        false,
     )
     .unwrap();
 
@@ -119,6 +124,7 @@ fn test_branch_list() {
         false,
         None,
         None,
+        false,
     );
     assert!(
         result.is_ok(),
@@ -147,6 +153,7 @@ fn test_branch_filter_repos() {
         false,
         Some(&filter),
         None,
+        false,
     );
     assert!(
         result.is_ok(),
@@ -177,6 +184,7 @@ fn test_branch_skip_reference_repos() {
         false,
         None,
         None,
+        false,
     );
     assert!(result.is_ok(), "branch should succeed: {:?}", result.err());
 
@@ -201,6 +209,7 @@ fn test_branch_idempotent_creation() {
         false,
         None,
         None,
+        false,
     )
     .unwrap();
 
@@ -213,6 +222,7 @@ fn test_branch_idempotent_creation() {
         false,
         None,
         None,
+        false,
     );
     assert!(
         result.is_ok(),
@@ -239,6 +249,7 @@ fn test_branch_not_cloned_repo() {
         false,
         None,
         None,
+        false,
     );
     assert!(
         result.is_ok(),
@@ -264,6 +275,7 @@ fn test_branch_create_then_verify_branches_exist() {
         false,
         None,
         None,
+        false,
     )
     .unwrap();
 

@@ -18,6 +18,7 @@ pub fn run_branch(
     move_commits: bool,
     repos_filter: Option<&[String]>,
     group_filter: Option<&[String]>,
+    json: bool,
 ) -> anyhow::Result<()> {
     let repos: Vec<RepoInfo> =
         filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
@@ -220,32 +221,58 @@ pub fn run_branch(
             );
         }
         None => {
-            // List branches
-            Output::header("Branches");
-            println!();
-
-            for repo in &repos {
-                if !repo.exists() {
-                    continue;
+            if json {
+                // JSON output for list mode
+                #[derive(serde::Serialize)]
+                struct JsonBranch {
+                    repo: String,
+                    branch: String,
+                    default_branch: String,
                 }
 
-                match open_repo(&repo.absolute_path) {
-                    Ok(git_repo) => {
-                        let current = get_current_branch(&git_repo).unwrap_or_default();
-                        let branches = list_local_branches(&git_repo).unwrap_or_default();
-
-                        println!("  {}:", Output::repo_name(&repo.name));
-                        for branch in branches {
-                            let marker = if branch == current { "* " } else { "  " };
-                            let formatted = if branch == current {
-                                Output::branch_name(&branch)
-                            } else {
-                                branch
-                            };
-                            println!("    {}{}", marker, formatted);
-                        }
+                let mut results: Vec<JsonBranch> = Vec::new();
+                for repo in &repos {
+                    if !repo.exists() {
+                        continue;
                     }
-                    Err(_) => continue,
+                    if let Ok(git_repo) = open_repo(&repo.absolute_path) {
+                        let current = get_current_branch(&git_repo).unwrap_or_default();
+                        results.push(JsonBranch {
+                            repo: repo.name.clone(),
+                            branch: current,
+                            default_branch: repo.default_branch.clone(),
+                        });
+                    }
+                }
+                println!("{}", serde_json::to_string_pretty(&results)?);
+            } else {
+                // List branches
+                Output::header("Branches");
+                println!();
+
+                for repo in &repos {
+                    if !repo.exists() {
+                        continue;
+                    }
+
+                    match open_repo(&repo.absolute_path) {
+                        Ok(git_repo) => {
+                            let current = get_current_branch(&git_repo).unwrap_or_default();
+                            let branches = list_local_branches(&git_repo).unwrap_or_default();
+
+                            println!("  {}:", Output::repo_name(&repo.name));
+                            for branch in branches {
+                                let marker = if branch == current { "* " } else { "  " };
+                                let formatted = if branch == current {
+                                    Output::branch_name(&branch)
+                                } else {
+                                    branch
+                                };
+                                println!("    {}{}", marker, formatted);
+                            }
+                        }
+                        Err(_) => continue,
+                    }
                 }
             }
         }

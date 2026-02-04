@@ -25,7 +25,7 @@ enum Commands {
         #[arg(short, long)]
         path: Option<String>,
         /// Create workspace from existing local directories
-        #[arg(long, conflicts_with = "url")]
+        #[arg(long, conflicts_with_all = ["url", "from_repo"])]
         from_dirs: bool,
         /// Specific directories to scan (requires --from-dirs)
         #[arg(long, requires = "from_dirs")]
@@ -42,6 +42,9 @@ enum Commands {
         /// Make manifest repository private (default: false)
         #[arg(long, requires = "create_manifest")]
         private: bool,
+        /// Initialize from existing .repo/ directory (git-repo coexistence)
+        #[arg(long, conflicts_with_all = ["from_dirs", "url"])]
+        from_repo: bool,
     },
     /// Sync all repositories
     Sync {
@@ -60,6 +63,9 @@ enum Commands {
         /// Only show repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
+        /// Output JSON (machine-readable)
+        #[arg(long)]
+        json: bool,
     },
     /// Create or switch branches across repos
     Branch {
@@ -80,6 +86,9 @@ enum Commands {
         /// Only operate on repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
+        /// Output JSON (machine-readable, list mode only)
+        #[arg(long)]
+        json: bool,
     },
     /// Checkout a branch across repos
     Checkout {
@@ -97,6 +106,9 @@ enum Commands {
         /// Show staged changes
         #[arg(long)]
         staged: bool,
+        /// Output JSON (machine-readable)
+        #[arg(long)]
+        json: bool,
     },
     /// Commit changes across repos
     Commit {
@@ -248,6 +260,16 @@ enum Commands {
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
     },
+    /// CI/CD pipeline operations
+    Ci {
+        #[command(subcommand)]
+        action: CiCommands,
+    },
+    /// Manifest operations (import, sync)
+    Manifest {
+        #[command(subcommand)]
+        action: ManifestCommands,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -344,6 +366,44 @@ enum GroupCommands {
 }
 
 #[derive(Subcommand)]
+enum CiCommands {
+    /// Run a CI pipeline
+    Run {
+        /// Pipeline name
+        name: String,
+        /// Output JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List available pipelines
+    List {
+        /// Output JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show status of last CI runs
+    Status {
+        /// Output JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ManifestCommands {
+    /// Convert git-repo XML manifest to gitgrip YAML
+    Import {
+        /// Path to XML manifest (e.g., .repo/manifests/default.xml)
+        path: String,
+        /// Output path for YAML manifest
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Re-sync gitgrip YAML from .repo/ manifest after repo sync
+    Sync,
+}
+
+#[derive(Subcommand)]
 enum RepoCommands {
     /// List repositories
     List,
@@ -378,7 +438,11 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Status { verbose, group }) => {
+        Some(Commands::Status {
+            verbose,
+            group,
+            json,
+        }) => {
             let (workspace_root, manifest) = load_workspace()?;
             gitgrip::cli::commands::status::run_status(
                 &workspace_root,
@@ -386,6 +450,7 @@ async fn main() -> anyhow::Result<()> {
                 verbose,
                 cli.quiet,
                 group.as_deref(),
+                json,
             )?;
         }
         Some(Commands::Sync { force, group }) => {
@@ -405,6 +470,7 @@ async fn main() -> anyhow::Result<()> {
             repo,
             include_manifest: _,
             group,
+            json,
         }) => {
             let (workspace_root, manifest) = load_workspace()?;
             gitgrip::cli::commands::branch::run_branch(
@@ -415,6 +481,7 @@ async fn main() -> anyhow::Result<()> {
                 r#move,
                 repo.as_deref(),
                 group.as_deref(),
+                json,
             )?;
         }
         Some(Commands::Checkout { name }) => {
@@ -425,9 +492,9 @@ async fn main() -> anyhow::Result<()> {
             let (workspace_root, manifest) = load_workspace()?;
             gitgrip::cli::commands::add::run_add(&workspace_root, &manifest, &files)?;
         }
-        Some(Commands::Diff { staged }) => {
+        Some(Commands::Diff { staged, json }) => {
             let (workspace_root, manifest) = load_workspace()?;
-            gitgrip::cli::commands::diff::run_diff(&workspace_root, &manifest, staged)?;
+            gitgrip::cli::commands::diff::run_diff(&workspace_root, &manifest, staged, json)?;
         }
         Some(Commands::Commit { message, amend }) => {
             let (workspace_root, manifest) = load_workspace()?;
@@ -517,6 +584,7 @@ async fn main() -> anyhow::Result<()> {
             create_manifest,
             manifest_name,
             private,
+            from_repo,
         }) => {
             gitgrip::cli::commands::init::run_init(
                 url.as_deref(),
@@ -527,6 +595,7 @@ async fn main() -> anyhow::Result<()> {
                 create_manifest,
                 manifest_name.as_deref(),
                 private,
+                from_repo,
             )
             .await?;
         }
@@ -686,6 +755,34 @@ async fn main() -> anyhow::Result<()> {
                 group.as_deref(),
             )?;
         }
+        Some(Commands::Ci { action }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            match action {
+                CiCommands::Run { name, json } => {
+                    gitgrip::cli::commands::ci::run_ci_run(
+                        &workspace_root,
+                        &manifest,
+                        &name,
+                        json,
+                    )?;
+                }
+                CiCommands::List { json } => {
+                    gitgrip::cli::commands::ci::run_ci_list(&manifest, json)?;
+                }
+                CiCommands::Status { json } => {
+                    gitgrip::cli::commands::ci::run_ci_status(&workspace_root, json)?;
+                }
+            }
+        }
+        Some(Commands::Manifest { action }) => match action {
+            ManifestCommands::Import { path, output } => {
+                gitgrip::cli::commands::manifest::run_manifest_import(&path, output.as_deref())?;
+            }
+            ManifestCommands::Sync => {
+                let (workspace_root, _manifest) = load_workspace()?;
+                gitgrip::cli::commands::manifest::run_manifest_sync(&workspace_root)?;
+            }
+        },
         Some(Commands::Bench(args)) => {
             gitgrip::cli::commands::bench::run(args).await?;
         }
@@ -743,9 +840,10 @@ fn load_workspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manife
         return Ok((griptree_path, manifest));
     }
 
-    // Not in a griptree - find workspace root by looking for .gitgrip directory
+    // Not in a griptree - find workspace root by looking for .gitgrip or .repo directory
     let mut search_path = current;
     loop {
+        // Check for .gitgrip/manifests/manifest.yaml (standard gitgrip)
         let gitgrip_dir = search_path.join(".gitgrip");
         if gitgrip_dir.exists() {
             let manifest_path = gitgrip_dir.join("manifests").join("manifest.yaml");
@@ -756,10 +854,27 @@ fn load_workspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manife
             }
         }
 
+        // Check for .repo/manifests/manifest.yaml (gitgrip YAML inside repo manifests dir)
+        let repo_manifests_dir = search_path.join(".repo").join("manifests");
+        let repo_yaml = repo_manifests_dir.join("manifest.yaml");
+        if repo_yaml.exists() {
+            let content = std::fs::read_to_string(&repo_yaml)?;
+            let manifest = gitgrip::core::manifest::Manifest::parse(&content)?;
+            return Ok((search_path, manifest));
+        }
+
+        // Fallback: parse .repo/manifest.xml directly (zero-config — just works)
+        let repo_xml = search_path.join(".repo").join("manifest.xml");
+        if repo_xml.exists() {
+            let xml_manifest = gitgrip::core::repo_manifest::XmlManifest::parse_file(&repo_xml)?;
+            let result = xml_manifest.to_manifest()?;
+            return Ok((search_path, result.manifest));
+        }
+
         match search_path.parent() {
             Some(parent) => search_path = parent.to_path_buf(),
             None => {
-                anyhow::bail!("Not in a gitgrip workspace (no .gitgrip directory found)");
+                anyhow::bail!("Not in a gitgrip workspace (no .gitgrip or .repo directory found)");
             }
         }
     }

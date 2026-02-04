@@ -40,8 +40,11 @@ pub async fn run_init(
     create_manifest: bool,
     manifest_name: Option<&str>,
     private: bool,
+    from_repo: bool,
 ) -> anyhow::Result<()> {
-    if from_dirs {
+    if from_repo {
+        run_init_from_repo(path)
+    } else if from_dirs {
         run_init_from_dirs(
             path,
             dirs,
@@ -54,6 +57,83 @@ pub async fn run_init(
     } else {
         run_init_from_url(url, path)
     }
+}
+
+/// Initialize from an existing .repo/ directory (git-repo coexistence)
+fn run_init_from_repo(path: Option<&str>) -> anyhow::Result<()> {
+    use crate::core::repo_manifest::XmlManifest;
+
+    let workspace_root = match path {
+        Some(p) => PathBuf::from(p),
+        None => std::env::current_dir()?,
+    };
+
+    // Find .repo directory
+    let repo_dir = workspace_root.join(".repo");
+    if !repo_dir.exists() {
+        anyhow::bail!(
+            "No .repo/ directory found in {:?}. Run 'repo init' and 'repo sync' first.",
+            workspace_root
+        );
+    }
+
+    // Find manifest.xml (typically a symlink to manifests/default.xml)
+    let manifest_xml = repo_dir.join("manifest.xml");
+    if !manifest_xml.exists() {
+        anyhow::bail!("No .repo/manifest.xml found. Ensure 'repo init' has been run.");
+    }
+
+    Output::header("Initializing gitgrip from .repo/ workspace...");
+    println!();
+
+    // Parse the XML manifest
+    let xml_manifest = XmlManifest::parse_file(&manifest_xml)?;
+    let result = xml_manifest.to_manifest()?;
+
+    // Print summary
+    let mut platform_parts: Vec<String> = result
+        .platform_counts
+        .iter()
+        .map(|(p, c)| format!("{}: {}", p, c))
+        .collect();
+    platform_parts.sort();
+
+    Output::info(&format!(
+        "Imported {} non-Gerrit repos ({})",
+        result.non_gerrit_imported,
+        platform_parts.join(", ")
+    ));
+    if result.gerrit_skipped > 0 {
+        Output::info(&format!(
+            "Skipped {} Gerrit repos (managed by repo upload)",
+            result.gerrit_skipped
+        ));
+    }
+
+    // Write manifest.yaml inside .repo/manifests/
+    let manifests_dir = repo_dir.join("manifests");
+    if !manifests_dir.exists() {
+        anyhow::bail!(".repo/manifests/ directory not found");
+    }
+
+    let yaml = serde_yaml::to_string(&result.manifest)?;
+    let yaml_path = manifests_dir.join("manifest.yaml");
+    std::fs::write(&yaml_path, &yaml)?;
+
+    // Create .gitgrip/ for state (ci results, etc.)
+    let gitgrip_dir = workspace_root.join(".gitgrip");
+    std::fs::create_dir_all(&gitgrip_dir)?;
+    let state_path = gitgrip_dir.join("state.json");
+    if !state_path.exists() {
+        std::fs::write(&state_path, "{}")?;
+    }
+
+    println!();
+    Output::success(&format!("Written: {}", yaml_path.display()));
+    println!();
+    println!("Now use: gr pr create, gr pr status, gr pr merge");
+
+    Ok(())
 }
 
 /// Initialize workspace from a manifest URL (original behavior)
@@ -787,6 +867,7 @@ pub fn suggest_manifest_url(platform: PlatformType, owner: &str, name: &str) -> 
             // SSH URL format: git@ssh.dev.azure.com:v3/org/project/repo
             format!("git@ssh.dev.azure.com:v3/{}/{}.git", owner, name)
         }
+        PlatformType::Bitbucket => format!("git@bitbucket.org:{}/{}.git", owner, name),
     }
 }
 
@@ -809,6 +890,7 @@ pub fn suggest_manifest_https_url(platform: PlatformType, owner: &str, name: &st
                 format!("https://dev.azure.com/{}/{}/_git/{}", owner, owner, name)
             }
         }
+        PlatformType::Bitbucket => format!("https://bitbucket.org/{}/{}.git", owner, name),
     }
 }
 
