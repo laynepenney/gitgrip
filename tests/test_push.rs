@@ -20,6 +20,7 @@ fn test_push_to_remote() {
         false,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -84,6 +85,7 @@ fn test_push_skips_reference_repos() {
         false,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -119,6 +121,7 @@ fn test_push_multiple_repos() {
         false,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -152,6 +155,7 @@ fn test_push_force() {
         Some("feat/force-push"),
         false,
         false,
+        None,
         None,
     )
     .unwrap();

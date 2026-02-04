@@ -22,6 +22,7 @@ fn test_checkout_existing_branch() {
         false,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -84,6 +85,7 @@ fn test_checkout_main() {
         Some("feat/temp"),
         false,
         false,
+        None,
         None,
     )
     .unwrap();

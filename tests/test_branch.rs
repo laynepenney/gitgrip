@@ -24,6 +24,7 @@ fn test_branch_create_across_repos() {
         false,
         false,
         None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -53,6 +54,7 @@ fn test_branch_delete() {
         false,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -66,6 +68,7 @@ fn test_branch_delete() {
         Some("feat/to-delete"),
         true, // delete
         false,
+        None,
         None,
     );
     assert!(
@@ -92,6 +95,7 @@ fn test_branch_list() {
         false,
         false,
         None,
+        None,
     )
     .unwrap();
     git_helpers::checkout(&ws.repo_path("app"), "main");
@@ -101,6 +105,7 @@ fn test_branch_list() {
         Some("feat/two"),
         false,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -112,6 +117,7 @@ fn test_branch_list() {
         None,
         false,
         false,
+        None,
         None,
     );
     assert!(
@@ -140,6 +146,7 @@ fn test_branch_filter_repos() {
         false,
         false,
         Some(&filter),
+        None,
     );
     assert!(
         result.is_ok(),
@@ -169,6 +176,7 @@ fn test_branch_skip_reference_repos() {
         false,
         false,
         None,
+        None,
     );
     assert!(result.is_ok(), "branch should succeed: {:?}", result.err());
 
@@ -192,6 +200,7 @@ fn test_branch_idempotent_creation() {
         false,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -202,6 +211,7 @@ fn test_branch_idempotent_creation() {
         Some("feat/existing"),
         false,
         false,
+        None,
         None,
     );
     assert!(
@@ -228,6 +238,7 @@ fn test_branch_not_cloned_repo() {
         false,
         false,
         None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -251,6 +262,7 @@ fn test_branch_create_then_verify_branches_exist() {
         Some("feat/verify"),
         false,
         false,
+        None,
         None,
     )
     .unwrap();

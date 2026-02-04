@@ -13,7 +13,7 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::RepoInfo;
+use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::path_exists;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -761,12 +761,9 @@ pub fn run_forall(
     parallel: bool,
     changed_only: bool,
     no_intercept: bool,
+    group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
-    let repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
-        .collect();
+    let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
 
     // Parse the command (handles pipes, redirects, git interception)
     let parsed = if no_intercept {

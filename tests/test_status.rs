@@ -16,8 +16,13 @@ fn test_status_clean_workspace() {
     let manifest = ws.load_manifest();
 
     // Should succeed without error on a clean workspace
-    let result =
-        gitgrip::cli::commands::status::run_status(&ws.workspace_root, &manifest, false, false);
+    let result = gitgrip::cli::commands::status::run_status(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+    );
     assert!(result.is_ok(), "status should succeed: {:?}", result.err());
 }
 
@@ -33,8 +38,13 @@ fn test_status_with_changes() {
     // Create an untracked file in frontend
     std::fs::write(ws.repo_path("frontend").join("new.txt"), "hello").unwrap();
 
-    let result =
-        gitgrip::cli::commands::status::run_status(&ws.workspace_root, &manifest, false, false);
+    let result = gitgrip::cli::commands::status::run_status(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+    );
     assert!(
         result.is_ok(),
         "status should succeed with changes: {:?}",
@@ -48,8 +58,13 @@ fn test_status_verbose() {
 
     let manifest = ws.load_manifest();
 
-    let result =
-        gitgrip::cli::commands::status::run_status(&ws.workspace_root, &manifest, true, false);
+    let result = gitgrip::cli::commands::status::run_status(
+        &ws.workspace_root,
+        &manifest,
+        true,
+        false,
+        None,
+    );
     assert!(
         result.is_ok(),
         "verbose status should succeed: {:?}",
@@ -67,8 +82,13 @@ fn test_status_reference_repo() {
     let manifest = ws.load_manifest();
 
     // Reference repos should appear in status but not cause errors
-    let result =
-        gitgrip::cli::commands::status::run_status(&ws.workspace_root, &manifest, false, false);
+    let result = gitgrip::cli::commands::status::run_status(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+    );
     assert!(
         result.is_ok(),
         "status with reference repo should succeed: {:?}",
@@ -86,8 +106,13 @@ fn test_status_quiet_mode() {
     let manifest = ws.load_manifest();
 
     // Quiet mode on a clean workspace should succeed (skips clean repos in output)
-    let result =
-        gitgrip::cli::commands::status::run_status(&ws.workspace_root, &manifest, false, true);
+    let result = gitgrip::cli::commands::status::run_status(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        true,
+        None,
+    );
     assert!(
         result.is_ok(),
         "quiet status should succeed: {:?}",
@@ -108,8 +133,13 @@ fn test_status_quiet_mode_with_changes() {
     std::fs::write(ws.repo_path("frontend").join("new.txt"), "hello").unwrap();
 
     // Quiet mode should succeed - only frontend shown in output
-    let result =
-        gitgrip::cli::commands::status::run_status(&ws.workspace_root, &manifest, false, true);
+    let result = gitgrip::cli::commands::status::run_status(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        true,
+        None,
+    );
     assert!(
         result.is_ok(),
         "quiet status with changes should succeed: {:?}",

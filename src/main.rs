@@ -48,12 +48,18 @@ enum Commands {
         /// Force sync even with local changes
         #[arg(short, long)]
         force: bool,
+        /// Only sync repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Show status of all repositories
     Status {
         /// Show detailed status
         #[arg(short, long)]
         verbose: bool,
+        /// Only show repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Create or switch branches across repos
     Branch {
@@ -71,6 +77,9 @@ enum Commands {
         /// Include manifest repo
         #[arg(long)]
         include_manifest: bool,
+        /// Only operate on repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Checkout a branch across repos
     Checkout {
@@ -115,6 +124,9 @@ enum Commands {
         /// Also prune remote tracking refs
         #[arg(long)]
         remote: bool,
+        /// Only prune repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Pull request operations
     Pr {
@@ -139,6 +151,9 @@ enum Commands {
         /// File pattern (after --)
         #[arg(last = true)]
         pathspec: Vec<String>,
+        /// Only search repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Run command in each repo
     Forall {
@@ -154,6 +169,9 @@ enum Commands {
         /// Disable git command interception (use CLI for all commands)
         #[arg(long)]
         no_intercept: bool,
+        /// Only run in repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Rebase branches across repos
     Rebase {
@@ -191,6 +209,40 @@ enum Commands {
     Repo {
         #[command(subcommand)]
         action: RepoCommands,
+    },
+    /// Repository group operations
+    Group {
+        #[command(subcommand)]
+        action: GroupCommands,
+    },
+    /// Run garbage collection across repos
+    Gc {
+        /// More thorough gc (slower)
+        #[arg(long)]
+        aggressive: bool,
+        /// Only report .git sizes, don't gc
+        #[arg(long)]
+        dry_run: bool,
+        /// Only gc repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
+    /// Cherry-pick commits across repos
+    CherryPick {
+        /// Commit SHA to cherry-pick
+        commit: Option<String>,
+        /// Abort in-progress cherry-pick
+        #[arg(long)]
+        abort: bool,
+        /// Continue after conflict resolution
+        #[arg(long, name = "continue")]
+        continue_pick: bool,
+        /// Only operate on specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Only operate on repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Generate shell completions
     Completions {
@@ -282,6 +334,12 @@ enum TreeCommands {
 }
 
 #[derive(Subcommand)]
+enum GroupCommands {
+    /// List all groups and their repos
+    List,
+}
+
+#[derive(Subcommand)]
 enum RepoCommands {
     /// List repositories
     List,
@@ -316,18 +374,25 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Status { verbose }) => {
+        Some(Commands::Status { verbose, group }) => {
             let (workspace_root, manifest) = load_workspace()?;
             gitgrip::cli::commands::status::run_status(
                 &workspace_root,
                 &manifest,
                 verbose,
                 cli.quiet,
+                group.as_deref(),
             )?;
         }
-        Some(Commands::Sync { force }) => {
+        Some(Commands::Sync { force, group }) => {
             let (workspace_root, manifest) = load_workspace()?;
-            gitgrip::cli::commands::sync::run_sync(&workspace_root, &manifest, force, cli.quiet)?;
+            gitgrip::cli::commands::sync::run_sync(
+                &workspace_root,
+                &manifest,
+                force,
+                cli.quiet,
+                group.as_deref(),
+            )?;
         }
         Some(Commands::Branch {
             name,
@@ -335,6 +400,7 @@ async fn main() -> anyhow::Result<()> {
             r#move,
             repo,
             include_manifest: _,
+            group,
         }) => {
             let (workspace_root, manifest) = load_workspace()?;
             gitgrip::cli::commands::branch::run_branch(
@@ -344,6 +410,7 @@ async fn main() -> anyhow::Result<()> {
                 delete,
                 r#move,
                 repo.as_deref(),
+                group.as_deref(),
             )?;
         }
         Some(Commands::Checkout { name }) => {
@@ -379,9 +446,19 @@ async fn main() -> anyhow::Result<()> {
                 cli.quiet,
             )?;
         }
-        Some(Commands::Prune { execute, remote }) => {
+        Some(Commands::Prune {
+            execute,
+            remote,
+            group,
+        }) => {
             let (workspace_root, manifest) = load_workspace()?;
-            gitgrip::cli::commands::prune::run_prune(&workspace_root, &manifest, execute, remote)?;
+            gitgrip::cli::commands::prune::run_prune(
+                &workspace_root,
+                &manifest,
+                execute,
+                remote,
+                group.as_deref(),
+            )?;
         }
         Some(Commands::Pr { action }) => {
             let (workspace_root, manifest) = load_workspace()?;
@@ -482,6 +559,7 @@ async fn main() -> anyhow::Result<()> {
             ignore_case,
             parallel,
             pathspec,
+            group,
         }) => {
             let (workspace_root, manifest) = load_workspace()?;
             gitgrip::cli::commands::grep::run_grep(
@@ -491,6 +569,7 @@ async fn main() -> anyhow::Result<()> {
                 ignore_case,
                 parallel,
                 &pathspec,
+                group.as_deref(),
             )?;
         }
         Some(Commands::Forall {
@@ -498,6 +577,7 @@ async fn main() -> anyhow::Result<()> {
             parallel,
             all,
             no_intercept,
+            group,
         }) => {
             let (workspace_root, manifest) = load_workspace()?;
             gitgrip::cli::commands::forall::run_forall(
@@ -507,6 +587,7 @@ async fn main() -> anyhow::Result<()> {
                 parallel,
                 !all, // Default: only repos with changes (changed_only=true unless --all)
                 no_intercept,
+                group.as_deref(),
             )?;
         }
         Some(Commands::Rebase {
@@ -558,6 +639,46 @@ async fn main() -> anyhow::Result<()> {
                     gitgrip::cli::commands::repo::run_repo_remove(&workspace_root, &name, delete)?;
                 }
             }
+        }
+        Some(Commands::Group { action }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            match action {
+                GroupCommands::List => {
+                    gitgrip::cli::commands::group::run_group_list(&workspace_root, &manifest)?;
+                }
+            }
+        }
+        Some(Commands::Gc {
+            aggressive,
+            dry_run,
+            group,
+        }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::gc::run_gc(
+                &workspace_root,
+                &manifest,
+                aggressive,
+                dry_run,
+                group.as_deref(),
+            )?;
+        }
+        Some(Commands::CherryPick {
+            commit,
+            abort,
+            continue_pick,
+            repo,
+            group,
+        }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::cherry_pick::run_cherry_pick(
+                &workspace_root,
+                &manifest,
+                commit.as_deref(),
+                abort,
+                continue_pick,
+                repo.as_deref(),
+                group.as_deref(),
+            )?;
         }
         Some(Commands::Bench(args)) => {
             gitgrip::cli::commands::bench::run(args).await?;

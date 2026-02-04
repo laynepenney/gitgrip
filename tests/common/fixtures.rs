@@ -71,6 +71,8 @@ struct RepoSpec {
     with_remote: bool,
     /// Extra files to commit during setup.
     files: Vec<(String, String)>,
+    /// Groups this repo belongs to.
+    groups: Vec<String>,
 }
 
 impl WorkspaceBuilder {
@@ -88,6 +90,19 @@ impl WorkspaceBuilder {
             reference: false,
             with_remote: true,
             files: vec![("README.md".to_string(), format!("# {}\n", name))],
+            groups: Vec::new(),
+        });
+        self
+    }
+
+    /// Add a regular repo with group tags.
+    pub fn add_repo_with_groups(mut self, name: &str, groups: Vec<&str>) -> Self {
+        self.repos.push(RepoSpec {
+            name: name.to_string(),
+            reference: false,
+            with_remote: true,
+            files: vec![("README.md".to_string(), format!("# {}\n", name))],
+            groups: groups.into_iter().map(|g| g.to_string()).collect(),
         });
         self
     }
@@ -99,6 +114,7 @@ impl WorkspaceBuilder {
             reference: true,
             with_remote: true,
             files: vec![("README.md".to_string(), format!("# {} (reference)\n", name))],
+            groups: Vec::new(),
         });
         self
     }
@@ -113,6 +129,7 @@ impl WorkspaceBuilder {
                 .into_iter()
                 .map(|(n, c)| (n.to_string(), c.to_string()))
                 .collect(),
+            groups: Vec::new(),
         });
         self
     }
@@ -212,6 +229,11 @@ fn generate_manifest(repos: &[RepoSpec], remotes_dir: &Path) -> String {
         yaml.push_str("    default_branch: main\n");
         if spec.reference {
             yaml.push_str("    reference: true\n");
+        }
+        if !spec.groups.is_empty() {
+            let groups_str: Vec<String> =
+                spec.groups.iter().map(|g| format!("\"{}\"", g)).collect();
+            yaml.push_str(&format!("    groups: [{}]\n", groups_str.join(", ")));
         }
     }
 

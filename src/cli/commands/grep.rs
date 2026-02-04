@@ -5,7 +5,7 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::RepoInfo;
+use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::path_exists;
 use std::path::PathBuf;
 use std::process::Command;
@@ -18,13 +18,9 @@ pub fn run_grep(
     ignore_case: bool,
     parallel: bool,
     pathspec: &[String],
+    group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
-    let repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
-        .filter(|r| !r.reference)
-        .collect();
+    let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, false);
 
     if parallel {
         run_grep_parallel(&repos, pattern, ignore_case, pathspec)?;

@@ -291,6 +291,7 @@ fn create_manifest_repo_info(
             linkfile: config.linkfile.clone(),
             platform: config.platform.clone(),
             reference: false,
+            groups: Vec::new(),
         },
         workspace_root,
     )

@@ -36,6 +36,7 @@ fn test_grep_finds_across_repos() {
         false,
         false,
         &[],
+        None,
     );
     assert!(result.is_ok());
 }
@@ -52,6 +53,7 @@ fn test_grep_no_matches() {
         false,
         false,
         &[],
+        None,
     );
     // Should succeed even with no matches
     assert!(result.is_ok());
@@ -78,6 +80,7 @@ fn test_grep_case_insensitive() {
         true, // ignore_case
         false,
         &[],
+        None,
     );
     assert!(result.is_ok());
 }
