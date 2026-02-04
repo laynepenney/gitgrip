@@ -1,7 +1,7 @@
 //! wiremock-based mock helpers for hosting platform API tests.
 //!
-//! Provides response builders for GitHub, GitLab, and Azure DevOps APIs,
-//! allowing fully offline testing of platform adapter methods.
+//! Provides response builders for the GitHub API, allowing fully offline
+//! testing of platform adapter methods.
 
 use serde_json::{json, Map, Value};
 use wiremock::matchers::{header, method, path};
