@@ -80,7 +80,10 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
 
     // Create workspace directory
     if target_dir.exists() {
-        anyhow::bail!("Directory already exists: {:?}", target_dir);
+        anyhow::bail!(
+            "Directory already exists: {:?}. Use a different path or remove the existing directory.",
+            target_dir
+        );
     }
     std::fs::create_dir_all(&target_dir)?;
 
@@ -107,7 +110,10 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
     let manifest_path = manifests_dir.join("manifest.yaml");
     if !manifest_path.exists() {
         let _ = std::fs::remove_dir_all(&target_dir);
-        anyhow::bail!("No manifest.yaml found in repository");
+        anyhow::bail!(
+            "No manifest.yaml found in repository. \
+             Ensure the repository contains a manifest.yaml file at its root."
+        );
     }
 
     // Create state file

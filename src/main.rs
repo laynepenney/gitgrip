@@ -107,6 +107,15 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
     },
+    /// Clean up merged branches across repos
+    Prune {
+        /// Actually delete branches (default: dry-run)
+        #[arg(long)]
+        execute: bool,
+        /// Also prune remote tracking refs
+        #[arg(long)]
+        remote: bool,
+    },
     /// Pull request operations
     Pr {
         #[command(subcommand)]
@@ -116,6 +125,20 @@ enum Commands {
     Tree {
         #[command(subcommand)]
         action: TreeCommands,
+    },
+    /// Search across all repos using git grep
+    Grep {
+        /// Search pattern
+        pattern: String,
+        /// Case insensitive
+        #[arg(short = 'i', long)]
+        ignore_case: bool,
+        /// Run in parallel
+        #[arg(short, long)]
+        parallel: bool,
+        /// File pattern (after --)
+        #[arg(last = true)]
+        pathspec: Vec<String>,
     },
     /// Run command in each repo
     Forall {
@@ -356,6 +379,10 @@ async fn main() -> anyhow::Result<()> {
                 cli.quiet,
             )?;
         }
+        Some(Commands::Prune { execute, remote }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::prune::run_prune(&workspace_root, &manifest, execute, remote)?;
+        }
         Some(Commands::Pr { action }) => {
             let (workspace_root, manifest) = load_workspace()?;
             match action {
@@ -449,6 +476,22 @@ async fn main() -> anyhow::Result<()> {
                     gitgrip::cli::commands::tree::run_tree_unlock(&workspace_root, &branch)?;
                 }
             }
+        }
+        Some(Commands::Grep {
+            pattern,
+            ignore_case,
+            parallel,
+            pathspec,
+        }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::grep::run_grep(
+                &workspace_root,
+                &manifest,
+                &pattern,
+                ignore_case,
+                parallel,
+                &pathspec,
+            )?;
         }
         Some(Commands::Forall {
             command,
