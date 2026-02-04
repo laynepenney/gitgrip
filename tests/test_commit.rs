@@ -23,6 +23,7 @@ fn test_commit_across_repos() {
         false,
         false,
         None,
+        None,
     )
     .unwrap();
 

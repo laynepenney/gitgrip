@@ -21,6 +21,7 @@ fn test_forall_all_repos() {
         false, // sequential
         false, // all repos (changed_only = false)
         false, // intercept enabled
+        None,
     );
     assert!(result.is_ok(), "forall should succeed: {:?}", result.err());
 }
@@ -45,6 +46,7 @@ fn test_forall_changed_only() {
         false,
         true, // changed_only
         false,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -71,6 +73,7 @@ fn test_forall_parallel() {
         true, // parallel
         false,
         false,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -93,6 +96,7 @@ fn test_forall_git_command_intercepted() {
         false,
         false,
         false, // intercept enabled
+        None,
     );
     assert!(
         result.is_ok(),
@@ -115,6 +119,7 @@ fn test_forall_no_intercept() {
         false,
         false,
         true, // no_intercept
+        None,
     );
     assert!(
         result.is_ok(),

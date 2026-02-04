@@ -20,7 +20,7 @@ fn test_sync_clones_missing_repos() {
     let manifest = ws.load_manifest();
 
     let result =
-        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false);
+        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false, None);
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
 
     // backend should now be cloned
@@ -42,7 +42,7 @@ fn test_sync_pulls_existing_repos() {
     let manifest = ws.load_manifest();
 
     let result =
-        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false);
+        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false, None);
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
 
     // The new file should now exist in the workspace repo
@@ -57,7 +57,7 @@ fn test_sync_handles_up_to_date() {
 
     // Sync when already up to date
     let result =
-        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false);
+        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false, None);
     assert!(
         result.is_ok(),
         "sync should succeed when up to date: {:?}",
@@ -80,7 +80,7 @@ fn test_sync_multiple_repos() {
     let manifest = ws.load_manifest();
 
     let result =
-        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false);
+        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false, None);
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
 
     // All should now be cloned
@@ -99,7 +99,8 @@ fn test_sync_quiet_mode() {
     let manifest = ws.load_manifest();
 
     // Quiet sync on already-synced repos should succeed (suppresses "up to date" messages)
-    let result = gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, true);
+    let result =
+        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, true, None);
     assert!(
         result.is_ok(),
         "quiet sync should succeed: {:?}",

@@ -75,8 +75,13 @@ fn test_status_with_missing_repo() {
     std::fs::remove_dir_all(ws.repo_path("broken")).unwrap();
 
     let manifest = ws.load_manifest();
-    let result =
-        gitgrip::cli::commands::status::run_status(&ws.workspace_root, &manifest, false, false);
+    let result = gitgrip::cli::commands::status::run_status(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+    );
     // Status should succeed even with a missing repo (reports "not cloned")
     assert!(
         result.is_ok(),
@@ -136,6 +141,7 @@ fn test_branch_already_exists() {
         false,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -149,6 +155,7 @@ fn test_branch_already_exists() {
         Some("feat/exists"),
         false,
         false,
+        None,
         None,
     );
     assert!(
@@ -170,7 +177,7 @@ fn test_sync_with_deleted_remote() {
     let manifest = ws.load_manifest();
     // Sync should handle missing remote gracefully (error or report per-repo failure)
     let result =
-        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false);
+        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false, None);
     // Whether it returns Ok (with per-repo error reports) or Err is acceptable,
     // but it must not panic. Verify we got a determinate result.
     match &result {
@@ -220,6 +227,7 @@ fn test_forall_with_nonexistent_command() {
         false, // parallel
         false, // changed_only
         false, // no_intercept
+        None,
     );
     // Forall should handle per-repo command failures gracefully
     match &result {

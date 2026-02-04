@@ -2,7 +2,7 @@
 
 use crate::cli::output::{Output, Table};
 use crate::core::manifest::Manifest;
-use crate::core::repo::RepoInfo;
+use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::path_exists;
 use crate::git::status::{get_repo_status, RepoStatus};
 use std::path::PathBuf;
@@ -13,16 +13,13 @@ pub fn run_status(
     manifest: &Manifest,
     verbose: bool,
     quiet: bool,
+    group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
     Output::header("Repository Status");
     println!();
 
-    // Get all repo info
-    let repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
-        .collect();
+    // Get all repo info (include reference repos for display)
+    let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
 
     // Get status for all repos
     let statuses: Vec<(RepoStatus, &RepoInfo)> = repos
@@ -87,6 +84,7 @@ pub fn run_status(
             platform_type: crate::core::manifest::PlatformType::GitHub,
             project: None,
             reference: false,
+            groups: Vec::new(),
         };
 
         let status = get_repo_status(&manifest_repo_info);

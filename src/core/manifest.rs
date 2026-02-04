@@ -96,6 +96,9 @@ pub struct RepoConfig {
     /// Reference repo (read-only, excluded from branch/PR operations)
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reference: bool,
+    /// Groups this repo belongs to (for selective operations)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
 }
 
 fn default_branch() -> String {
@@ -568,6 +571,48 @@ repos:
 
         let ref_repo = manifest.repos.get("ref-repo").unwrap();
         assert!(ref_repo.reference);
+    }
+
+    #[test]
+    fn test_manifest_groups_parse() {
+        let yaml = r#"
+repos:
+  frontend:
+    url: git@github.com:user/frontend.git
+    path: frontend
+    groups: [core, ui]
+  backend:
+    url: git@github.com:user/backend.git
+    path: backend
+    groups: [core, api]
+  docs:
+    url: git@github.com:user/docs.git
+    path: docs
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        assert_eq!(manifest.repos.len(), 3);
+
+        let frontend = manifest.repos.get("frontend").unwrap();
+        assert_eq!(frontend.groups, vec!["core", "ui"]);
+
+        let backend = manifest.repos.get("backend").unwrap();
+        assert_eq!(backend.groups, vec!["core", "api"]);
+
+        let docs = manifest.repos.get("docs").unwrap();
+        assert!(docs.groups.is_empty());
+    }
+
+    #[test]
+    fn test_repos_without_groups_default_empty() {
+        let yaml = r#"
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        let repo = manifest.repos.get("myrepo").unwrap();
+        assert!(repo.groups.is_empty());
     }
 
     #[test]

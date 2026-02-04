@@ -5,7 +5,7 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::RepoInfo;
+use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::branch::{delete_local_branch, is_branch_merged, list_local_branches};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use std::path::PathBuf;
@@ -17,6 +17,7 @@ pub fn run_prune(
     manifest: &Manifest,
     execute: bool,
     remote: bool,
+    group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
     if execute {
         Output::header("Pruning merged branches...");
@@ -25,12 +26,7 @@ pub fn run_prune(
     }
     println!();
 
-    let repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
-        .filter(|r| !r.reference)
-        .collect();
+    let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, false);
 
     let mut total_pruned = 0;
     let mut total_repos = 0;

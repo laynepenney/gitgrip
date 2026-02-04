@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::core::manifest::{PlatformType, RepoConfig};
+use crate::core::manifest::{Manifest, PlatformType, RepoConfig};
 
 /// Extended repository information with computed fields
 #[derive(Debug, Clone)]
@@ -27,6 +27,8 @@ pub struct RepoInfo {
     pub project: Option<String>,
     /// Reference repo (read-only, excluded from branch/PR operations)
     pub reference: bool,
+    /// Groups this repo belongs to (for selective operations)
+    pub groups: Vec<String>,
 }
 
 impl RepoInfo {
@@ -53,6 +55,7 @@ impl RepoInfo {
             platform_type,
             project: parsed.project,
             reference: config.reference,
+            groups: config.groups.clone(),
         })
     }
 
@@ -168,6 +171,35 @@ fn parse_git_url(url: &str) -> Option<ParsedUrl> {
     }
 
     None
+}
+
+/// Filter repos from a manifest by name, group, and reference status.
+///
+/// Replaces the repeated `.iter().filter_map().filter().filter().collect()` pattern
+/// found across commands.
+pub fn filter_repos(
+    manifest: &Manifest,
+    workspace_root: &PathBuf,
+    repos_filter: Option<&[String]>,
+    group_filter: Option<&[String]>,
+    include_reference: bool,
+) -> Vec<RepoInfo> {
+    manifest
+        .repos
+        .iter()
+        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter(|r| include_reference || !r.reference)
+        .filter(|r| {
+            repos_filter
+                .map(|filter| filter.iter().any(|f| f == &r.name))
+                .unwrap_or(true)
+        })
+        .filter(|r| {
+            group_filter
+                .map(|groups| r.groups.iter().any(|g| groups.contains(g)))
+                .unwrap_or(true)
+        })
+        .collect()
 }
 
 /// Detect platform type from URL

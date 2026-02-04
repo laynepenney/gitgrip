@@ -35,6 +35,7 @@ fn test_prune_dry_run_lists_merged_branches() {
         &manifest,
         false, // dry-run
         false,
+        None,
     );
     assert!(result.is_ok());
 
@@ -72,6 +73,7 @@ fn test_prune_execute_deletes_merged_branches() {
         &manifest,
         true, // execute
         false,
+        None,
     );
     assert!(result.is_ok());
 
@@ -92,6 +94,7 @@ fn test_prune_skips_current_and_default() {
         &manifest,
         true, // execute
         false,
+        None,
     );
     assert!(result.is_ok());
 
@@ -113,7 +116,7 @@ fn test_prune_no_merged_branches() {
     // Run prune — should report nothing to prune
     let manifest = ws.load_manifest();
     let result =
-        gitgrip::cli::commands::prune::run_prune(&ws.workspace_root, &manifest, true, false);
+        gitgrip::cli::commands::prune::run_prune(&ws.workspace_root, &manifest, true, false, None);
     assert!(result.is_ok());
 
     // Unmerged branch should still exist

@@ -450,6 +450,7 @@ mod tests {
                 linkfile: linkfiles,
                 platform: None,
                 reference: false,
+                groups: Vec::new(),
             },
         );
 
@@ -632,6 +633,7 @@ mod tests {
                 linkfile: None,
                 platform: None,
                 reference: false,
+                groups: Vec::new(),
             },
         );
 
