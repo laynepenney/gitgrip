@@ -172,12 +172,18 @@ fn has_commits_to_push(repo: &Repository, branch: &str) -> anyhow::Result<bool> 
         }
     };
 
-    let local_oid = local_ref
-        .target()
-        .ok_or_else(|| anyhow::anyhow!("No local target"))?;
-    let remote_oid = remote_branch
-        .target()
-        .ok_or_else(|| anyhow::anyhow!("No remote target"))?;
+    let local_oid = local_ref.target().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not resolve local branch '{}'. Ensure it exists and has at least one commit.",
+            branch
+        )
+    })?;
+    let remote_oid = remote_branch.target().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not resolve remote tracking branch 'origin/{}'. Try running `gr sync` first.",
+            branch
+        )
+    })?;
 
     // If they're the same, nothing to push
     if local_oid == remote_oid {
