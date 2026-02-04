@@ -15,9 +15,10 @@ pub fn run_gc(
     manifest: &Manifest,
     aggressive: bool,
     dry_run: bool,
+    repos_filter: Option<&[String]>,
     group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
-    let repos = filter_repos(manifest, workspace_root, None, group_filter, false);
+    let repos = filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
 
     if dry_run {
         Output::header("Repository .git sizes (dry run)...");
@@ -56,9 +57,9 @@ pub fn run_gc(
             Ok(result) => {
                 total_before += result.size_before;
                 total_after += result.size_after;
-                gc_count += 1;
 
                 if result.success {
+                    gc_count += 1;
                     let saved = result.size_before.saturating_sub(result.size_after);
                     if saved > 0 {
                         spinner.finish_with_message(format!(

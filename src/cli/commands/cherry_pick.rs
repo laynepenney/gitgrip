@@ -130,6 +130,8 @@ pub fn run_cherry_pick(
         ));
     } else if conflicts > 0 {
         Output::warning("Resolve conflicts and run 'gr cherry-pick --continue'");
+    } else if repos.is_empty() {
+        Output::info("No repos matched the given filters.");
     } else {
         Output::info(&format!("Commit {} not found in any repo.", commit_sha));
     }

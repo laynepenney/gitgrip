@@ -19,6 +19,7 @@ fn test_gc_dry_run_reports_sizes() {
         false,
         true, // dry_run
         None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -42,6 +43,7 @@ fn test_gc_runs_successfully() {
         false, // not aggressive
         false, // not dry_run
         None,
+        None,
     );
     assert!(result.is_ok(), "gc should succeed: {:?}", result.err());
 }
@@ -57,6 +59,7 @@ fn test_gc_aggressive() {
         &manifest,
         true,  // aggressive
         false, // not dry_run
+        None,
         None,
     );
     assert!(
@@ -76,7 +79,7 @@ fn test_gc_skips_missing_repos() {
     let manifest = ws.load_manifest();
 
     let result =
-        gitgrip::cli::commands::gc::run_gc(&ws.workspace_root, &manifest, false, false, None);
+        gitgrip::cli::commands::gc::run_gc(&ws.workspace_root, &manifest, false, false, None, None);
     assert!(
         result.is_ok(),
         "gc should handle missing repos gracefully: {:?}",

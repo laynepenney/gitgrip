@@ -19,10 +19,10 @@ pub enum CherryPickResult {
 /// Check if a commit exists in the repository
 pub fn commit_exists(repo_path: &Path, commit_sha: &str) -> bool {
     Command::new("git")
-        .args(["cat-file", "-t", commit_sha])
+        .args(["cat-file", "-t", "--", commit_sha])
         .current_dir(repo_path)
         .output()
-        .map(|o| o.status.success())
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "commit")
         .unwrap_or(false)
 }
 
@@ -33,7 +33,7 @@ pub fn cherry_pick(repo_path: &Path, commit_sha: &str) -> CherryPickResult {
     }
 
     let output = match Command::new("git")
-        .args(["cherry-pick", commit_sha])
+        .args(["cherry-pick", "--", commit_sha])
         .current_dir(repo_path)
         .output()
     {

@@ -223,6 +223,9 @@ enum Commands {
         /// Only report .git sizes, don't gc
         #[arg(long)]
         dry_run: bool,
+        /// Only operate on specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
         /// Only gc repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
@@ -230,12 +233,13 @@ enum Commands {
     /// Cherry-pick commits across repos
     CherryPick {
         /// Commit SHA to cherry-pick
+        #[arg(conflicts_with_all = ["abort", "continue"])]
         commit: Option<String>,
         /// Abort in-progress cherry-pick
-        #[arg(long)]
+        #[arg(long, conflicts_with = "continue")]
         abort: bool,
         /// Continue after conflict resolution
-        #[arg(long, name = "continue")]
+        #[arg(long, name = "continue", conflicts_with = "abort")]
         continue_pick: bool,
         /// Only operate on specific repos
         #[arg(long, value_delimiter = ',')]
@@ -651,6 +655,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Gc {
             aggressive,
             dry_run,
+            repo,
             group,
         }) => {
             let (workspace_root, manifest) = load_workspace()?;
@@ -659,6 +664,7 @@ async fn main() -> anyhow::Result<()> {
                 &manifest,
                 aggressive,
                 dry_run,
+                repo.as_deref(),
                 group.as_deref(),
             )?;
         }
