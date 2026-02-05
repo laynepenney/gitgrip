@@ -15,6 +15,88 @@ Items here should be reviewed before creating GitHub issues.
 
 ---
 
+### Need PR review commands (list/view/diff) in gr
+
+**Discovered**: 2026-02-05 while reviewing codi PRs
+
+**Problem**: `gr` doesn't have a way to list, view, or diff PRs for code review, so I had to use `gh pr list`, `gh pr view`, and `gh pr diff`.
+
+**Workaround used**: Ran raw `gh` commands in the `codi` repo to fetch PR metadata and diffs.
+
+**Raw commands used**:
+```bash
+gh pr list
+gh pr view 271 --json number,title,headRefName,baseRefName,author,updatedAt,additions,deletions,files
+gh pr diff 271
+```
+
+**Expected behavior**: `gr` should provide:
+- `gr pr list` (or equivalent) for a repo
+- `gr pr view <number>` for metadata
+- `gr pr diff <number>` for patch review
+
+---
+
+### Need PR review/approval in gr
+
+**Discovered**: 2026-02-05 while trying to approve codi PR #271
+
+**Problem**: `gr` has no way to submit PR reviews/approvals, so I had to use raw `gh pr review`. I also hit the GitHub restriction that you cannot approve your own PR, which blocked merging.
+
+**Workaround used**: Ran raw `gh` command in the `codi` repo to attempt approval.
+
+**Raw commands used**:
+```bash
+gh pr review 271 --approve
+```
+
+**Expected behavior**: `gr` should provide a review flow, e.g.:
+- `gr pr review <number> --approve/--comment/--request-changes`
+
+---
+
+### Need issue creation in gr (and friction logging)
+
+**Discovered**: 2026-02-05 while filing issues for tooling and codi
+
+**Problem**: `gr` doesn't provide a way to create GitHub issues, so I had to use raw `gh issue create`. This also meant I needed to log the raw `gh` usage here after the fact.
+
+**Workaround used**: Ran raw `gh` commands in the `gitgrip` and `codi` repos to create issues.
+
+**Raw commands used**:
+```bash
+gh issue create --title "Add PR review commands (list/view/diff) to gr" --body "...details..."
+gh issue create --title "Snapshot redaction strips styles/padding in tui_exec_cell snapshots" --body "...details..."
+```
+
+**Issues created**:
+- gitgrip: #202 (Add PR review commands)
+- codi: #272 (Snapshot redaction strips styles/padding)
+
+**Expected behavior**: `gr` should provide an issue creation flow, e.g.:
+- `gr issue create` (with title/body prompts or flags)
+
+---
+
+### Worktree rebase continuation requires raw git
+
+**Discovered**: 2026-02-05 while rebasing `codi` in the codi-gripspace worktree
+
+**Problem**: `gr rebase --continue-rebase` didn't detect the in-progress rebase in the worktree and couldn't continue. The rebase state lived under `.git/worktrees/<name>`, so I had to use raw `git` in the worktree to continue, plus `git checkout --ours` for conflict resolution.
+
+**Workaround used**: Ran raw `git` commands in the `codi` worktree.
+
+**Raw commands used**:
+```bash
+git -C /Users/layne/Development/codi-gripspace/codi rebase --continue
+git -C /Users/layne/Development/codi-gripspace/codi checkout --ours <paths>
+git -C /Users/layne/Development/codi-gripspace/codi add <paths>
+```
+
+**Expected behavior**: `gr rebase --continue-rebase` should detect rebase state inside worktrees and proceed, or provide a clear diagnostic with the worktree path.
+
+---
+
 ## Completed
 
 ### Fix: PR Creation Timeout Issue ✓
