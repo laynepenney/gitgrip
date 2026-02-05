@@ -371,6 +371,68 @@ pub async fn mock_merge_pr(server: &MockServer, number: u64, merged: bool) {
         .await;
 }
 
+/// GitHub API: merge PR returns 405 with "branch behind" message.
+pub async fn mock_merge_pr_behind(server: &MockServer, number: u64) {
+    let body = json!({
+        "message": "Head branch was behind base branch",
+        "documentation_url": "https://docs.github.com/rest"
+    });
+
+    Mock::given(method("PUT"))
+        .and(path(format!("/repos/owner/repo/pulls/{}/merge", number)))
+        .respond_with(ResponseTemplate::new(405).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// GitHub API: merge PR returns 403 with "protected branch" message.
+pub async fn mock_merge_pr_protected(server: &MockServer, number: u64) {
+    let body = json!({
+        "message": "At least 1 approving review is required by reviewers with write access. Protected branch rules not satisfied.",
+        "documentation_url": "https://docs.github.com/rest"
+    });
+
+    Mock::given(method("PUT"))
+        .and(path(format!("/repos/owner/repo/pulls/{}/merge", number)))
+        .respond_with(ResponseTemplate::new(403).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// GitHub API: update branch success (PUT /repos/:owner/:repo/pulls/:number/update-branch).
+pub async fn mock_update_branch(server: &MockServer, number: u64) {
+    let body = json!({
+        "message": "Updating pull request branch.",
+        "url": format!("https://github.com/owner/repo/pull/{}", number)
+    });
+
+    Mock::given(method("PUT"))
+        .and(path(format!(
+            "/repos/owner/repo/pulls/{}/update-branch",
+            number
+        )))
+        .respond_with(ResponseTemplate::new(202).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// GitHub API: update branch conflict (PUT /repos/:owner/:repo/pulls/:number/update-branch).
+pub async fn mock_update_branch_conflict(server: &MockServer, number: u64) {
+    let body = json!({
+        "message": "merge conflict between base and head",
+        "documentation_url": "https://docs.github.com/rest"
+    });
+
+    Mock::given(method("PUT"))
+        .and(path(format!(
+            "/repos/owner/repo/pulls/{}/update-branch",
+            number
+        )))
+        .respond_with(ResponseTemplate::new(422).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
 /// GitHub API response for PR reviews (GET /repos/:owner/:repo/pulls/:number/reviews).
 pub async fn mock_pr_reviews(server: &MockServer, number: u64, reviews: Vec<(&str, &str)>) {
     let items: Vec<Value> = reviews

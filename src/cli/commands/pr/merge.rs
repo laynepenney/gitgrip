@@ -4,6 +4,7 @@ use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::{get_current_branch, open_repo, path_exists};
+use crate::platform::traits::PlatformError;
 use crate::platform::{detect_platform, get_platform_adapter, CheckState, MergeMethod};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,6 +15,8 @@ pub async fn run_pr_merge(
     manifest: &Manifest,
     method: Option<&str>,
     force: bool,
+    update: bool,
+    auto: bool,
 ) -> anyhow::Result<()> {
     Output::header("Merging pull requests...");
     println!();
@@ -226,7 +229,7 @@ pub async fn run_pr_merge(
             }
             if !pr.mergeable {
                 issues.push(format!(
-                    "{} PR #{}: not mergeable (conflicts?)",
+                    "{} PR #{}: not mergeable (branch may be behind base — try --update)",
                     pr.repo_name, pr.pr_number
                 ));
             }
@@ -243,6 +246,59 @@ pub async fn run_pr_merge(
         }
     }
 
+    // Auto-merge flow: enable auto-merge and return early
+    if auto {
+        let mut success_count = 0;
+        let mut error_count = 0;
+
+        for pr in prs_to_merge {
+            let spinner = Output::spinner(&format!(
+                "Enabling auto-merge for {} PR #{}...",
+                pr.repo_name, pr.pr_number
+            ));
+
+            match pr
+                .platform
+                .enable_auto_merge(&pr.owner, &pr.repo, pr.pr_number, Some(merge_method))
+                .await
+            {
+                Ok(true) => {
+                    spinner.finish_with_message(format!(
+                        "{}: PR #{} will auto-merge when checks pass",
+                        pr.repo_name, pr.pr_number
+                    ));
+                    success_count += 1;
+                }
+                Ok(false) => {
+                    spinner.finish_with_message(format!(
+                        "{}: PR #{} auto-merge could not be enabled",
+                        pr.repo_name, pr.pr_number
+                    ));
+                    error_count += 1;
+                }
+                Err(e) => {
+                    spinner.finish_with_message(format!("{}: failed - {}", pr.repo_name, e));
+                    error_count += 1;
+                }
+            }
+        }
+
+        println!();
+        if error_count == 0 {
+            Output::success(&format!(
+                "Auto-merge enabled for {} PR(s). They will merge when all checks pass.",
+                success_count
+            ));
+        } else {
+            Output::warning(&format!(
+                "{} auto-merge enabled, {} failed",
+                success_count, error_count
+            ));
+        }
+
+        return Ok(());
+    }
+
     // Merge PRs
     let mut success_count = 0;
     let mut error_count = 0;
@@ -250,7 +306,7 @@ pub async fn run_pr_merge(
     for pr in prs_to_merge {
         let spinner = Output::spinner(&format!("Merging {} PR #{}...", pr.repo_name, pr.pr_number));
 
-        match pr
+        let merge_result = pr
             .platform
             .merge_pull_request(
                 &pr.owner,
@@ -259,8 +315,64 @@ pub async fn run_pr_merge(
                 Some(merge_method),
                 true, // delete branch
             )
-            .await
-        {
+            .await;
+
+        // Handle BranchBehind with --update retry
+        let merge_result = match merge_result {
+            Err(PlatformError::BranchBehind(ref msg)) if update => {
+                spinner.finish_with_message(format!(
+                    "{}: branch behind base, updating...",
+                    pr.repo_name
+                ));
+                let update_spinner = Output::spinner(&format!(
+                    "Updating {} PR #{} branch...",
+                    pr.repo_name, pr.pr_number
+                ));
+
+                match pr
+                    .platform
+                    .update_branch(&pr.owner, &pr.repo, pr.pr_number)
+                    .await
+                {
+                    Ok(true) => {
+                        update_spinner.finish_with_message(format!(
+                            "{}: branch updated, waiting for merge...",
+                            pr.repo_name
+                        ));
+                        // Wait for GitHub to process the update
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+                        // Retry merge
+                        pr.platform
+                            .merge_pull_request(
+                                &pr.owner,
+                                &pr.repo,
+                                pr.pr_number,
+                                Some(merge_method),
+                                true,
+                            )
+                            .await
+                    }
+                    Ok(false) => {
+                        update_spinner.finish_with_message(format!(
+                            "{}: branch already up to date",
+                            pr.repo_name
+                        ));
+                        Err(PlatformError::BranchBehind(msg.clone()))
+                    }
+                    Err(update_err) => {
+                        update_spinner.finish_with_message(format!(
+                            "{}: branch update failed - {}",
+                            pr.repo_name, update_err
+                        ));
+                        Err(PlatformError::BranchBehind(msg.clone()))
+                    }
+                }
+            }
+            other => other,
+        };
+
+        match merge_result {
             Ok(merged) => {
                 if merged {
                     spinner.finish_with_message(format!(
@@ -275,6 +387,25 @@ pub async fn run_pr_merge(
                     ));
                     success_count += 1;
                 }
+            }
+            Err(PlatformError::BranchBehind(_)) => {
+                spinner.finish_with_message(format!(
+                    "{}: PR #{} branch is behind base branch",
+                    pr.repo_name, pr.pr_number
+                ));
+                Output::info("  Hint: use 'gr pr merge --update' to update the branch and retry");
+                error_count += 1;
+            }
+            Err(PlatformError::BranchProtected(ref msg)) => {
+                spinner.finish_with_message(format!("{}: {}", pr.repo_name, msg));
+                Output::info(
+                    "  Hint: use 'gr pr merge --auto' to enable auto-merge when checks pass",
+                );
+                Output::info(&format!(
+                    "  Or:   gh pr merge {} --admin --repo {}/{}",
+                    pr.pr_number, pr.owner, pr.repo
+                ));
+                error_count += 1;
             }
             Err(e) => {
                 spinner.finish_with_message(format!("{}: failed - {}", pr.repo_name, e));
