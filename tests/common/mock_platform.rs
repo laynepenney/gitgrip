@@ -487,3 +487,134 @@ pub async fn mock_repo_info(server: &MockServer, owner: &str, repo: &str) {
         .mount(server)
         .await;
 }
+
+// ── Bitbucket mock helpers ──────────────────────────────────────────────────
+
+/// Start a wiremock server and configure BITBUCKET_TOKEN env var.
+/// Returns the server and a BitbucketAdapter pointed at it.
+pub async fn setup_bitbucket_mock() -> (MockServer, gitgrip::platform::bitbucket::BitbucketAdapter)
+{
+    let server = MockServer::start().await;
+    unsafe {
+        std::env::set_var("BITBUCKET_TOKEN", "mock-bb-token");
+    }
+    let adapter = gitgrip::platform::bitbucket::BitbucketAdapter::new(Some(&server.uri()));
+    (server, adapter)
+}
+
+/// Generate a Bitbucket PR JSON response.
+fn bb_pr_json(id: u64, state: &str, head_branch: &str, base_branch: &str) -> Value {
+    json!({
+        "id": id,
+        "title": "Test PR",
+        "description": "PR description",
+        "state": state,
+        "source": { "branch": { "name": head_branch } },
+        "destination": { "branch": { "name": base_branch } },
+        "links": {
+            "html": { "href": format!("https://bitbucket.org/owner/repo/pull-requests/{}", id) }
+        }
+    })
+}
+
+/// Bitbucket API: create PR (POST /repositories/:owner/:repo/pullrequests).
+pub async fn mock_bb_create_pr(server: &MockServer, id: u64) {
+    let body = bb_pr_json(id, "OPEN", "feat/test", "main");
+
+    Mock::given(method("POST"))
+        .and(path("/repositories/owner/repo/pullrequests"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// Bitbucket API: get PR (GET /repositories/:owner/:repo/pullrequests/:id).
+pub async fn mock_bb_get_pr(server: &MockServer, id: u64, state: &str) {
+    let body = bb_pr_json(id, state, "feat/test", "main");
+
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repositories/owner/repo/pullrequests/{}",
+            id
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// Bitbucket API: merge PR (POST /repositories/:owner/:repo/pullrequests/:id/merge).
+pub async fn mock_bb_merge_pr(server: &MockServer, id: u64) {
+    let body = bb_pr_json(id, "MERGED", "feat/test", "main");
+
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/repositories/owner/repo/pullrequests/{}/merge",
+            id
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// Bitbucket API: find PR by branch (GET /repositories/:owner/:repo/pullrequests?...).
+pub async fn mock_bb_find_pr(server: &MockServer, prs: Vec<(u64, &str)>) {
+    let values: Vec<Value> = prs
+        .iter()
+        .map(|(id, branch)| bb_pr_json(*id, "OPEN", branch, "main"))
+        .collect();
+
+    let body = json!({ "values": values });
+
+    Mock::given(method("GET"))
+        .and(path("/repositories/owner/repo/pullrequests"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// Bitbucket API: commit statuses (GET /repositories/:owner/:repo/commits/:ref/statuses).
+pub async fn mock_bb_status_checks(
+    server: &MockServer,
+    ref_name: &str,
+    statuses: Vec<(&str, &str)>,
+) {
+    let values: Vec<Value> = statuses
+        .iter()
+        .map(|(key, state)| {
+            json!({
+                "key": key,
+                "state": state
+            })
+        })
+        .collect();
+
+    let body = json!({ "values": values });
+
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repositories/owner/repo/commits/{}/statuses",
+            ref_name
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// Bitbucket API: reviewers (GET /repositories/:owner/:repo/pullrequests/:id/default-reviewers).
+pub async fn mock_bb_reviewers(server: &MockServer, id: u64, reviewers: Vec<bool>) {
+    let values: Vec<Value> = reviewers
+        .iter()
+        .map(|approved| json!({ "approved": approved }))
+        .collect();
+
+    let body = json!({ "values": values });
+
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repositories/owner/repo/pullrequests/{}/default-reviewers",
+            id
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
