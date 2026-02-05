@@ -3,6 +3,7 @@
 //! Provides a unified interface for GitHub, GitLab, and Azure DevOps.
 
 pub mod azure;
+pub mod bitbucket;
 pub mod github;
 pub mod gitlab;
 pub mod traits;
@@ -26,6 +27,7 @@ pub fn get_platform_adapter(
         PlatformType::GitHub => Arc::new(github::GitHubAdapter::new(base_url)),
         PlatformType::GitLab => Arc::new(gitlab::GitLabAdapter::new(base_url)),
         PlatformType::AzureDevOps => Arc::new(azure::AzureDevOpsAdapter::new(base_url)),
+        PlatformType::Bitbucket => Arc::new(bitbucket::BitbucketAdapter::new(base_url)),
     }
 }
 
@@ -39,6 +41,11 @@ pub fn detect_platform(url: &str) -> PlatformType {
     // Check Azure DevOps before GitLab (avoid false positives)
     if url.contains("dev.azure.com") || url.contains("visualstudio.com") {
         return PlatformType::AzureDevOps;
+    }
+
+    // Check Bitbucket before GitLab
+    if url.contains("bitbucket.org") || url.contains("bitbucket.") {
+        return PlatformType::Bitbucket;
     }
 
     // Check GitLab - ensure it's in hostname, not just path

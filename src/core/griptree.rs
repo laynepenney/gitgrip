@@ -121,6 +121,36 @@ pub struct GriptreePointer {
     /// When the griptree was created (optional for backwards compat)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<Utc>>,
+    /// Track original branch for each repo (for merge back to main)
+    #[serde(default)]
+    pub repos: Vec<GriptreeRepoInfo>,
+    /// Manifest branch for this griptree (optional for backwards compat)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest_branch: Option<String>,
+    /// Manifest worktree name (for cleanup)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_worktree_name: Option<String>,
+}
+
+/// Per-repo griptree info (tracked in pointer file)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GriptreeRepoInfo {
+    /// Repository name
+    pub name: String,
+    /// Original branch name (before griptree creation)
+    pub original_branch: String,
+    /// Whether this is a reference repo
+    pub is_reference: bool,
+    /// The name passed to git worktree add (for cleanup)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_name: Option<String>,
+    /// Absolute path to the worktree in the griptree
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    /// Absolute path to the main repo (for worktree cleanup)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_repo_path: Option<String>,
 }
 
 impl GriptreePointer {

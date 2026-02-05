@@ -96,6 +96,64 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
         }
     }
 
+    // Process manifest repo links
+    if let Some(ref manifest_config) = manifest.manifest {
+        let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+
+        // Check manifest copyfiles
+        if let Some(ref copyfiles) = manifest_config.copyfile {
+            for copyfile in copyfiles {
+                total_links += 1;
+                let source = manifests_dir.join(&copyfile.src);
+                let dest = workspace_root.join(&copyfile.dest);
+
+                let status = if source.exists() && dest.exists() {
+                    valid_links += 1;
+                    "✓"
+                } else if !source.exists() {
+                    broken_links += 1;
+                    "✗ (source missing)"
+                } else {
+                    broken_links += 1;
+                    "✗ (dest missing)"
+                };
+
+                println!(
+                    "  [copy] manifest:{} -> {} {}",
+                    copyfile.src, copyfile.dest, status
+                );
+            }
+        }
+
+        // Check manifest linkfiles
+        if let Some(ref linkfiles) = manifest_config.linkfile {
+            for linkfile in linkfiles {
+                total_links += 1;
+                let source = manifests_dir.join(&linkfile.src);
+                let dest = workspace_root.join(&linkfile.dest);
+
+                let status = if source.exists() && dest.exists() && dest.is_symlink() {
+                    valid_links += 1;
+                    "✓"
+                } else if !source.exists() {
+                    broken_links += 1;
+                    "✗ (source missing)"
+                } else if !dest.exists() {
+                    broken_links += 1;
+                    "✗ (link missing)"
+                } else {
+                    broken_links += 1;
+                    "✗ (not a symlink)"
+                };
+
+                println!(
+                    "  [link] manifest:{} -> {} {}",
+                    linkfile.src, linkfile.dest, status
+                );
+            }
+        }
+    }
+
     println!();
     if total_links == 0 {
         println!("No file links defined in manifest.");
@@ -243,6 +301,120 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
         }
     }
 
+    // Apply manifest repo links
+    if let Some(ref manifest_config) = manifest.manifest {
+        let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+
+        if manifests_dir.exists() {
+            // Apply manifest copyfiles
+            if let Some(ref copyfiles) = manifest_config.copyfile {
+                for copyfile in copyfiles {
+                    let source = manifests_dir.join(&copyfile.src);
+                    let dest = workspace_root.join(&copyfile.dest);
+
+                    if !source.exists() {
+                        Output::warning(&format!("Source not found: {:?}", source));
+                        errors += 1;
+                        continue;
+                    }
+
+                    // Create parent directory if needed
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+
+                    match std::fs::copy(&source, &dest) {
+                        Ok(_) => {
+                            Output::success(&format!(
+                                "[copy] manifest:{} -> {}",
+                                copyfile.src, copyfile.dest
+                            ));
+                            applied += 1;
+                        }
+                        Err(e) => {
+                            Output::error(&format!("Failed to copy: {}", e));
+                            errors += 1;
+                        }
+                    }
+                }
+            }
+
+            // Apply manifest linkfiles
+            if let Some(ref linkfiles) = manifest_config.linkfile {
+                for linkfile in linkfiles {
+                    let source = manifests_dir.join(&linkfile.src);
+                    let dest = workspace_root.join(&linkfile.dest);
+
+                    if !source.exists() {
+                        Output::warning(&format!("Source not found: {:?}", source));
+                        errors += 1;
+                        continue;
+                    }
+
+                    // Create parent directory if needed
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+
+                    // Remove existing link/file if present
+                    if dest.exists() || dest.is_symlink() {
+                        let _ = std::fs::remove_file(&dest);
+                    }
+
+                    #[cfg(unix)]
+                    {
+                        match std::os::unix::fs::symlink(&source, &dest) {
+                            Ok(_) => {
+                                Output::success(&format!(
+                                    "[link] manifest:{} -> {}",
+                                    linkfile.src, linkfile.dest
+                                ));
+                                applied += 1;
+                            }
+                            Err(e) => {
+                                Output::error(&format!("Failed to create symlink: {}", e));
+                                errors += 1;
+                            }
+                        }
+                    }
+
+                    #[cfg(windows)]
+                    {
+                        if source.is_dir() {
+                            match std::os::windows::fs::symlink_dir(&source, &dest) {
+                                Ok(_) => {
+                                    Output::success(&format!(
+                                        "[link] manifest:{} -> {}",
+                                        linkfile.src, linkfile.dest
+                                    ));
+                                    applied += 1;
+                                }
+                                Err(e) => {
+                                    Output::error(&format!("Failed to create symlink: {}", e));
+                                    errors += 1;
+                                }
+                            }
+                        } else {
+                            match std::os::windows::fs::symlink_file(&source, &dest) {
+                                Ok(_) => {
+                                    Output::success(&format!(
+                                        "[link] manifest:{} -> {}",
+                                        linkfile.src, linkfile.dest
+                                    ));
+                                    applied += 1;
+                                }
+                                Err(e) => {
+                                    Output::error(&format!("Failed to create symlink: {}", e));
+                                    errors += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     println!();
     if errors == 0 {
         Output::success(&format!("Applied {} link(s)", applied));
@@ -257,7 +429,8 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
 mod tests {
     use super::*;
     use crate::core::manifest::{
-        CopyFileConfig, LinkFileConfig, ManifestSettings, MergeStrategy, RepoConfig,
+        CopyFileConfig, LinkFileConfig, ManifestRepoConfig, ManifestSettings, MergeStrategy,
+        RepoConfig,
     };
     use std::collections::HashMap;
     use tempfile::TempDir;
@@ -277,6 +450,7 @@ mod tests {
                 linkfile: linkfiles,
                 platform: None,
                 reference: false,
+                groups: Vec::new(),
             },
         );
 
@@ -407,5 +581,156 @@ mod tests {
         // Verify nested directory was created
         let dest_path = workspace.join("nested/dir/file.txt");
         assert!(dest_path.exists());
+    }
+
+    #[test]
+    fn test_copyfile_overwrites_existing() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().to_path_buf();
+
+        // Create repo directory and source file
+        let repo_dir = workspace.join("test-repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        std::fs::write(repo_dir.join("config.txt"), "new content").unwrap();
+
+        // Create existing destination file
+        std::fs::write(workspace.join("config.txt"), "old content").unwrap();
+
+        let copyfiles = vec![CopyFileConfig {
+            src: "config.txt".to_string(),
+            dest: "config.txt".to_string(),
+        }];
+
+        let manifest = create_test_manifest(Some(copyfiles), None);
+
+        let result = apply_links(&workspace, &manifest);
+        assert!(result.is_ok());
+
+        // Verify the file was overwritten
+        let content = std::fs::read_to_string(workspace.join("config.txt")).unwrap();
+        assert_eq!(content, "new content");
+    }
+
+    #[test]
+    fn test_manifest_copyfile() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().to_path_buf();
+
+        // Create manifest directory and source file
+        let manifests_dir = workspace.join(".gitgrip").join("manifests");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+        std::fs::write(manifests_dir.join("CLAUDE.md"), "# Claude Guide").unwrap();
+
+        // Create manifest with manifest-level copyfile
+        let mut repos = std::collections::HashMap::new();
+        repos.insert(
+            "test-repo".to_string(),
+            RepoConfig {
+                url: "git@github.com:test/repo.git".to_string(),
+                path: "test-repo".to_string(),
+                default_branch: "main".to_string(),
+                copyfile: None,
+                linkfile: None,
+                platform: None,
+                reference: false,
+                groups: Vec::new(),
+            },
+        );
+
+        let manifest = Manifest {
+            version: 1,
+            manifest: Some(ManifestRepoConfig {
+                url: "git@github.com:test/manifest.git".to_string(),
+                default_branch: "main".to_string(),
+                copyfile: Some(vec![CopyFileConfig {
+                    src: "CLAUDE.md".to_string(),
+                    dest: "CLAUDE.md".to_string(),
+                }]),
+                linkfile: None,
+                platform: None,
+            }),
+            repos,
+            settings: ManifestSettings {
+                pr_prefix: "[cross-repo]".to_string(),
+                merge_strategy: MergeStrategy::default(),
+            },
+            workspace: None,
+        };
+
+        let result = apply_links(&workspace, &manifest);
+        assert!(result.is_ok());
+
+        // Verify the manifest file was copied to workspace root
+        let dest_path = workspace.join("CLAUDE.md");
+        assert!(dest_path.exists());
+        let content = std::fs::read_to_string(&dest_path).unwrap();
+        assert_eq!(content, "# Claude Guide");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_linkfile_points_to_source() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().to_path_buf();
+
+        // Create repo directory and source file
+        let repo_dir = workspace.join("test-repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        std::fs::write(repo_dir.join("shared.config"), "shared config").unwrap();
+
+        let linkfiles = vec![LinkFileConfig {
+            src: "shared.config".to_string(),
+            dest: "linked.config".to_string(),
+        }];
+
+        let manifest = create_test_manifest(None, Some(linkfiles));
+
+        let result = apply_links(&workspace, &manifest);
+        assert!(result.is_ok());
+
+        // Verify symlink points to the source file
+        let dest_path = workspace.join("linked.config");
+        let link_target = std::fs::read_link(&dest_path).unwrap();
+        let expected_source = repo_dir.join("shared.config");
+
+        // The target should resolve to the source file
+        assert!(
+            link_target.ends_with("test-repo/shared.config"),
+            "Symlink should point to source, got: {:?}",
+            link_target
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_linkfile_replaces_existing_file() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().to_path_buf();
+
+        // Create repo directory and source file
+        let repo_dir = workspace.join("test-repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        std::fs::write(repo_dir.join("config.yaml"), "new: value").unwrap();
+
+        // Create existing regular file at destination
+        std::fs::write(workspace.join("linked.yaml"), "old: value").unwrap();
+
+        let linkfiles = vec![LinkFileConfig {
+            src: "config.yaml".to_string(),
+            dest: "linked.yaml".to_string(),
+        }];
+
+        let manifest = create_test_manifest(None, Some(linkfiles));
+
+        let result = apply_links(&workspace, &manifest);
+        assert!(result.is_ok());
+
+        // Verify the destination is now a symlink
+        let dest_path = workspace.join("linked.yaml");
+        assert!(dest_path.is_symlink());
+
+        // Verify content through symlink
+        let content = std::fs::read_to_string(&dest_path).unwrap();
+        assert_eq!(content, "new: value");
     }
 }

@@ -48,9 +48,12 @@ pub fn run_run(
     let name = script_name.unwrap();
 
     // Find the script
-    let script = scripts
-        .and_then(|s| s.get(name))
-        .ok_or_else(|| anyhow::anyhow!("Script '{}' not found", name))?;
+    let script = scripts.and_then(|s| s.get(name)).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Script '{}' not found. Run `gr run --list` to see available scripts.",
+            name
+        )
+    })?;
 
     Output::header(&format!("Running script: {}", name));
     println!();
@@ -78,7 +81,11 @@ pub fn run_run(
             println!();
         }
     } else {
-        anyhow::bail!("Script '{}' has no command or steps defined", name);
+        anyhow::bail!(
+            "Script '{}' has no command or steps defined. \
+             Check your manifest.yaml workspace.scripts section.",
+            name
+        );
     }
 
     Output::success(&format!("Script '{}' completed", name));

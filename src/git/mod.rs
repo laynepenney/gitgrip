@@ -6,6 +6,8 @@
 
 pub mod branch;
 pub mod cache;
+pub mod cherry_pick;
+pub mod gc;
 pub mod remote;
 pub mod status;
 
@@ -64,20 +66,45 @@ pub fn path_exists<P: AsRef<Path>>(path: P) -> bool {
 }
 
 /// Clone a repository
+///
+/// If a branch is specified but doesn't exist on the remote, falls back to
+/// cloning without a branch (using the remote's default branch).
 pub fn clone_repo<P: AsRef<Path>>(
     url: &str,
     path: P,
     branch: Option<&str>,
 ) -> Result<Repository, GitError> {
     let path = path.as_ref();
+    let path_str = path.to_str().unwrap_or(".");
 
-    let mut args = vec!["clone"];
+    // Try cloning with specified branch first
     if let Some(b) = branch {
-        args.push("-b");
-        args.push(b);
+        let args = vec!["clone", "-b", b, url, path_str];
+
+        let output = Command::new("git")
+            .args(&args)
+            .output()
+            .map_err(|e| GitError::OperationFailed(e.to_string()))?;
+
+        if output.status.success() {
+            return open_repo(path);
+        }
+
+        // Check if failure was due to branch not found
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("Remote branch") && stderr.contains("not found") {
+            // Fall through to clone without branch
+        } else {
+            // Other error - return it
+            return Err(GitError::OperationFailed(format!(
+                "git clone failed: {}",
+                stderr
+            )));
+        }
     }
-    args.push(url);
-    args.push(path.to_str().unwrap_or("."));
+
+    // Clone without -b flag (uses remote's default branch)
+    let args = vec!["clone", url, path_str];
 
     let output = Command::new("git")
         .args(&args)

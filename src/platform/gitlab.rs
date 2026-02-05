@@ -4,10 +4,16 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::time::Duration;
 
 use super::traits::{HostingPlatform, LinkedPRRef, PlatformError};
 use super::types::*;
 use crate::core::manifest::PlatformType;
+
+/// Default connection timeout in seconds
+const CONNECT_TIMEOUT_SECS: u64 = 10;
+/// Default request timeout in seconds
+const REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// GitLab merge request response
 #[derive(Debug, Deserialize)]
@@ -56,9 +62,15 @@ pub struct GitLabAdapter {
 impl GitLabAdapter {
     /// Create a new GitLab adapter
     pub fn new(base_url: Option<&str>) -> Self {
+        let http_client = Client::builder()
+            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+
         Self {
             base_url: base_url.unwrap_or("https://gitlab.com").to_string(),
-            http_client: Client::new(),
+            http_client,
         }
     }
 

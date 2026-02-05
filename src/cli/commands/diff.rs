@@ -8,12 +8,21 @@ use git2::{DiffOptions, Repository};
 use std::path::PathBuf;
 
 /// Run the diff command
-pub fn run_diff(workspace_root: &PathBuf, manifest: &Manifest, staged: bool) -> anyhow::Result<()> {
+pub fn run_diff(
+    workspace_root: &PathBuf,
+    manifest: &Manifest,
+    staged: bool,
+    json: bool,
+) -> anyhow::Result<()> {
     let repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
         .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
         .collect();
+
+    if json {
+        return run_diff_json(workspace_root, &repos, staged);
+    }
 
     let mut has_changes = false;
 
@@ -42,6 +51,51 @@ pub fn run_diff(workspace_root: &PathBuf, manifest: &Manifest, staged: bool) -> 
         println!("No changes.");
     }
 
+    Ok(())
+}
+
+/// Run diff in JSON mode
+fn run_diff_json(
+    _workspace_root: &PathBuf,
+    repos: &[RepoInfo],
+    staged: bool,
+) -> anyhow::Result<()> {
+    #[derive(serde::Serialize)]
+    struct JsonDiff {
+        repo: String,
+        diff: String,
+        files_changed: usize,
+    }
+
+    let mut results: Vec<JsonDiff> = Vec::new();
+
+    for repo in repos {
+        if !path_exists(&repo.absolute_path) {
+            continue;
+        }
+
+        match open_repo(&repo.absolute_path) {
+            Ok(git_repo) => {
+                let diff_output = get_diff(&git_repo, staged)?;
+                if !diff_output.is_empty() {
+                    // Count files changed by counting "diff --git" headers
+                    let files_changed = diff_output
+                        .lines()
+                        .filter(|l| l.starts_with("diff --git"))
+                        .count();
+                    let files_changed = if files_changed == 0 { 1 } else { files_changed };
+                    results.push(JsonDiff {
+                        repo: repo.name.clone(),
+                        diff: diff_output,
+                        files_changed,
+                    });
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+
+    println!("{}", serde_json::to_string_pretty(&results)?);
     Ok(())
 }
 

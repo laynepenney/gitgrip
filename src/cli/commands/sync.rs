@@ -2,21 +2,23 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::RepoInfo;
+use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::remote::safe_pull_latest;
-use crate::git::{clone_repo, open_repo, path_exists};
+use crate::git::{clone_repo, get_current_branch, open_repo, path_exists};
 use std::path::PathBuf;
 
 /// Run the sync command
-pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> anyhow::Result<()> {
-    Output::header(&format!("Syncing {} repositories...", manifest.repos.len()));
-    println!();
+pub fn run_sync(
+    workspace_root: &PathBuf,
+    manifest: &Manifest,
+    force: bool,
+    quiet: bool,
+    group_filter: Option<&[String]>,
+) -> anyhow::Result<()> {
+    let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
 
-    let repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
-        .collect();
+    Output::header(&format!("Syncing {} repositories...", repos.len()));
+    println!();
 
     let mut success_count = 0;
     let mut error_count = 0;
@@ -31,7 +33,25 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
 
             match clone_repo(&repo.url, &repo.absolute_path, Some(&repo.default_branch)) {
                 Ok(_) => {
-                    spinner.finish_with_message(format!("{}: cloned", repo.name));
+                    // Check actual branch after clone - it may differ if manifest's default_branch
+                    // doesn't exist on remote
+                    let clone_msg = if let Ok(git_repo) = open_repo(&repo.absolute_path) {
+                        if let Ok(actual_branch) = get_current_branch(&git_repo) {
+                            if actual_branch != repo.default_branch {
+                                format!(
+                                    "{}: cloned (on '{}', manifest specifies '{}')",
+                                    repo.name, actual_branch, repo.default_branch
+                                )
+                            } else {
+                                format!("{}: cloned", repo.name)
+                            }
+                        } else {
+                            format!("{}: cloned", repo.name)
+                        }
+                    } else {
+                        format!("{}: cloned", repo.name)
+                    };
+                    spinner.finish_with_message(clone_msg);
                     success_count += 1;
                 }
                 Err(e) => {
@@ -69,11 +89,17 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
                                     "{}: skipped - {}",
                                     repo.name, msg
                                 ));
-                            } else {
+                            } else if !quiet {
                                 spinner.finish_with_message(format!("{}: {}", repo.name, msg));
+                            } else {
+                                spinner.finish_and_clear();
                             }
                         } else {
-                            spinner.finish_with_message(format!("{}: up to date", repo.name));
+                            if !quiet {
+                                spinner.finish_with_message(format!("{}: up to date", repo.name));
+                            } else {
+                                spinner.finish_and_clear();
+                            }
                             success_count += 1;
                         }
                     }

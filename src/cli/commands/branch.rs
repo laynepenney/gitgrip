@@ -2,7 +2,7 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::RepoInfo;
+use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::{
     branch::{branch_exists, create_and_checkout_branch, delete_local_branch, list_local_branches},
     get_current_branch, open_repo,
@@ -15,19 +15,13 @@ pub fn run_branch(
     manifest: &Manifest,
     name: Option<&str>,
     delete: bool,
+    move_commits: bool,
     repos_filter: Option<&[String]>,
+    group_filter: Option<&[String]>,
+    json: bool,
 ) -> anyhow::Result<()> {
-    let repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
-        .filter(|r| !r.reference) // Skip reference repos
-        .filter(|r| {
-            repos_filter
-                .map(|filter| filter.iter().any(|f| f == &r.name))
-                .unwrap_or(true)
-        })
-        .collect();
+    let repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
 
     match name {
         Some(branch_name) if delete => {
@@ -56,6 +50,138 @@ pub fn run_branch(
                     Err(e) => Output::error(&format!("{}: {}", repo.name, e)),
                 }
             }
+        }
+        Some(branch_name) if move_commits => {
+            // Move commits to new branch (create branch, reset current to remote, checkout new)
+            Output::header(&format!(
+                "Moving commits to branch '{}' in {} repos...",
+                branch_name,
+                repos.len()
+            ));
+            println!();
+
+            for repo in &repos {
+                if !repo.exists() {
+                    Output::warning(&format!("{}: not cloned", repo.name));
+                    continue;
+                }
+
+                match open_repo(&repo.absolute_path) {
+                    Ok(git_repo) => {
+                        let current = match get_current_branch(&git_repo) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                Output::error(&format!(
+                                    "{}: failed to get current branch - {}",
+                                    repo.name, e
+                                ));
+                                continue;
+                            }
+                        };
+
+                        if branch_exists(&git_repo, branch_name) {
+                            Output::error(&format!(
+                                "{}: branch '{}' already exists",
+                                repo.name, branch_name
+                            ));
+                            continue;
+                        }
+
+                        // Create branch at current HEAD
+                        let head = match git_repo.head() {
+                            Ok(h) => h,
+                            Err(e) => {
+                                Output::error(&format!(
+                                    "{}: failed to get HEAD - {}",
+                                    repo.name, e
+                                ));
+                                continue;
+                            }
+                        };
+                        let head_commit = match head.peel_to_commit() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                Output::error(&format!(
+                                    "{}: failed to get HEAD commit - {}",
+                                    repo.name, e
+                                ));
+                                continue;
+                            }
+                        };
+
+                        if let Err(e) = git_repo.branch(branch_name, &head_commit, false) {
+                            Output::error(&format!(
+                                "{}: failed to create branch - {}",
+                                repo.name, e
+                            ));
+                            continue;
+                        }
+
+                        // Reset current branch to origin/<current>
+                        let remote_ref = format!("refs/remotes/origin/{}", current);
+                        let remote_commit = match git_repo.revparse_single(&remote_ref) {
+                            Ok(obj) => match obj.peel_to_commit() {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    Output::error(&format!(
+                                        "{}: failed to find remote commit - {}",
+                                        repo.name, e
+                                    ));
+                                    continue;
+                                }
+                            },
+                            Err(e) => {
+                                Output::error(&format!(
+                                    "{}: no remote tracking branch origin/{} - {}",
+                                    repo.name, current, e
+                                ));
+                                continue;
+                            }
+                        };
+
+                        if let Err(e) =
+                            git_repo.reset(remote_commit.as_object(), git2::ResetType::Hard, None)
+                        {
+                            Output::error(&format!(
+                                "{}: failed to reset to origin/{} - {}",
+                                repo.name, current, e
+                            ));
+                            continue;
+                        }
+
+                        // Checkout the new branch
+                        if let Err(e) = git_repo.set_head(&format!("refs/heads/{}", branch_name)) {
+                            Output::error(&format!(
+                                "{}: failed to checkout new branch - {}",
+                                repo.name, e
+                            ));
+                            continue;
+                        }
+
+                        if let Err(e) = git_repo
+                            .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+                        {
+                            Output::error(&format!(
+                                "{}: failed to update working tree - {}",
+                                repo.name, e
+                            ));
+                            continue;
+                        }
+
+                        Output::success(&format!(
+                            "{}: moved commits from {} to {}",
+                            repo.name, current, branch_name
+                        ));
+                    }
+                    Err(e) => Output::error(&format!("{}: {}", repo.name, e)),
+                }
+            }
+
+            println!();
+            println!(
+                "Commits moved to branch: {}",
+                Output::branch_name(branch_name)
+            );
         }
         Some(branch_name) => {
             // Create branch
@@ -95,32 +221,58 @@ pub fn run_branch(
             );
         }
         None => {
-            // List branches
-            Output::header("Branches");
-            println!();
-
-            for repo in &repos {
-                if !repo.exists() {
-                    continue;
+            if json {
+                // JSON output for list mode
+                #[derive(serde::Serialize)]
+                struct JsonBranch {
+                    repo: String,
+                    branch: String,
+                    default_branch: String,
                 }
 
-                match open_repo(&repo.absolute_path) {
-                    Ok(git_repo) => {
-                        let current = get_current_branch(&git_repo).unwrap_or_default();
-                        let branches = list_local_branches(&git_repo).unwrap_or_default();
-
-                        println!("  {}:", Output::repo_name(&repo.name));
-                        for branch in branches {
-                            let marker = if branch == current { "* " } else { "  " };
-                            let formatted = if branch == current {
-                                Output::branch_name(&branch)
-                            } else {
-                                branch
-                            };
-                            println!("    {}{}", marker, formatted);
-                        }
+                let mut results: Vec<JsonBranch> = Vec::new();
+                for repo in &repos {
+                    if !repo.exists() {
+                        continue;
                     }
-                    Err(_) => continue,
+                    if let Ok(git_repo) = open_repo(&repo.absolute_path) {
+                        let current = get_current_branch(&git_repo).unwrap_or_default();
+                        results.push(JsonBranch {
+                            repo: repo.name.clone(),
+                            branch: current,
+                            default_branch: repo.default_branch.clone(),
+                        });
+                    }
+                }
+                println!("{}", serde_json::to_string_pretty(&results)?);
+            } else {
+                // List branches
+                Output::header("Branches");
+                println!();
+
+                for repo in &repos {
+                    if !repo.exists() {
+                        continue;
+                    }
+
+                    match open_repo(&repo.absolute_path) {
+                        Ok(git_repo) => {
+                            let current = get_current_branch(&git_repo).unwrap_or_default();
+                            let branches = list_local_branches(&git_repo).unwrap_or_default();
+
+                            println!("  {}:", Output::repo_name(&repo.name));
+                            for branch in branches {
+                                let marker = if branch == current { "* " } else { "  " };
+                                let formatted = if branch == current {
+                                    Output::branch_name(&branch)
+                                } else {
+                                    branch
+                                };
+                                println!("    {}{}", marker, formatted);
+                            }
+                        }
+                        Err(_) => continue,
+                    }
                 }
             }
         }

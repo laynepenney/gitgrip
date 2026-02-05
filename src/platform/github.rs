@@ -3,10 +3,18 @@
 use async_trait::async_trait;
 use octocrab::Octocrab;
 use std::env;
+use std::time::Duration;
 
 use super::traits::{HostingPlatform, LinkedPRRef, PlatformError};
 use super::types::*;
 use crate::core::manifest::PlatformType;
+
+/// Default connection timeout in seconds
+const CONNECT_TIMEOUT_SECS: u64 = 10;
+/// Default read timeout in seconds
+const READ_TIMEOUT_SECS: u64 = 30;
+/// Default write timeout in seconds
+const WRITE_TIMEOUT_SECS: u64 = 30;
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::metrics::GLOBAL_METRICS;
@@ -28,11 +36,24 @@ impl GitHubAdapter {
         }
     }
 
-    /// Get configured Octocrab instance
+    /// Create a configured HTTP client with timeouts
+    fn http_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
+            .build()
+            .unwrap_or_else(|_| Self::http_client())
+    }
+
+    /// Get configured Octocrab instance with proper timeouts
     async fn get_client(&self) -> Result<Octocrab, PlatformError> {
         let token = self.get_token().await?;
 
-        let mut builder = Octocrab::builder().personal_token(token);
+        let mut builder = Octocrab::builder()
+            .personal_token(token)
+            .set_connect_timeout(Some(Duration::from_secs(CONNECT_TIMEOUT_SECS)))
+            .set_read_timeout(Some(Duration::from_secs(READ_TIMEOUT_SECS)))
+            .set_write_timeout(Some(Duration::from_secs(WRITE_TIMEOUT_SECS)));
 
         if let Some(ref base_url) = self.base_url {
             builder = builder
@@ -295,9 +316,17 @@ impl HostingPlatform for GitHubAdapter {
             .get_pull_request_reviews(owner, repo, pull_number)
             .await?;
 
-        // Check for at least one approval and no changes requested
-        let has_approval = reviews.iter().any(|r| r.state == "APPROVED");
-        let has_changes_requested = reviews.iter().any(|r| r.state == "CHANGES_REQUESTED");
+        // Check for at least one approval and no changes requested.
+        // State comes from Debug formatting of octocrab's ReviewState enum,
+        // which gives title case without underscores (e.g. "Approved", "ChangesRequested").
+        let state_matches = |state: &str, target: &str| -> bool {
+            let normalized: String = state.chars().filter(|c| *c != '_').collect();
+            normalized.eq_ignore_ascii_case(target)
+        };
+        let has_approval = reviews.iter().any(|r| state_matches(&r.state, "Approved"));
+        let has_changes_requested = reviews
+            .iter()
+            .any(|r| state_matches(&r.state, "ChangesRequested"));
 
         Ok(has_approval && !has_changes_requested)
     }
@@ -342,7 +371,7 @@ impl HostingPlatform for GitHubAdapter {
             base_url, owner, repo, ref_name
         );
 
-        let http_client = reqwest::Client::new();
+        let http_client = Self::http_client();
         let response = http_client
             .get(&check_runs_url)
             .header("Authorization", format!("Bearer {}", token))
@@ -501,7 +530,7 @@ impl HostingPlatform for GitHubAdapter {
             base_url, owner, repo, pull_number
         );
 
-        let client = reqwest::Client::new();
+        let client = Self::http_client();
         let response = client
             .get(&url)
             .header("Authorization", format!("Bearer {}", token))
@@ -576,7 +605,7 @@ impl HostingPlatform for GitHubAdapter {
 
         // Check if owner is the authenticated user or an org
         // First, get the authenticated user
-        let http_client = reqwest::Client::new();
+        let http_client = Self::http_client();
 
         let user_response = http_client
             .get(format!("{}/user", base_url))
@@ -654,7 +683,7 @@ impl HostingPlatform for GitHubAdapter {
         let token = self.get_token().await?;
         let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
 
-        let http_client = reqwest::Client::new();
+        let http_client = Self::http_client();
         let url = format!("{}/repos/{}/{}", base_url, owner, name);
 
         let response = http_client
