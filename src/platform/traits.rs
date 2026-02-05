@@ -26,6 +26,12 @@ pub enum PlatformError {
 
     #[error("Parse error: {0}")]
     ParseError(String),
+
+    #[error("Branch is behind base: {0}")]
+    BranchBehind(String),
+
+    #[error("Branch protection prevents merge: {0}")]
+    BranchProtected(String),
 }
 
 /// Linked PR reference for cross-repo tracking
@@ -164,6 +170,37 @@ pub trait HostingPlatform: Send + Sync {
         let _ = (owner, name);
         Err(PlatformError::ApiError(
             "Repository deletion not supported on this platform".to_string(),
+        ))
+    }
+
+    /// Update a pull request branch (merge base into head)
+    ///
+    /// Returns Ok(true) if the branch was updated, Ok(false) if already up to date.
+    /// Returns Err if the update failed (e.g., conflicts).
+    async fn update_branch(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _pull_number: u64,
+    ) -> Result<bool, PlatformError> {
+        Err(PlatformError::ApiError(
+            "Branch update not supported on this platform".to_string(),
+        ))
+    }
+
+    /// Enable auto-merge for a pull request
+    ///
+    /// The PR will be automatically merged when all required checks pass.
+    /// Returns Ok(true) if auto-merge was enabled.
+    async fn enable_auto_merge(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _pull_number: u64,
+        _method: Option<MergeMethod>,
+    ) -> Result<bool, PlatformError> {
+        Err(PlatformError::ApiError(
+            "Auto-merge not supported on this platform".to_string(),
         ))
     }
 

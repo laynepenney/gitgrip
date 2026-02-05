@@ -232,25 +232,38 @@ impl HostingPlatform for GitHubAdapter {
         #[cfg(feature = "telemetry")]
         let start = Instant::now();
 
-        let client = self.get_client().await?;
+        let token = self.get_token().await?;
+        let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
 
-        let merge_method = match method.unwrap_or(MergeMethod::Merge) {
-            MergeMethod::Merge => octocrab::params::pulls::MergeMethod::Merge,
-            MergeMethod::Squash => octocrab::params::pulls::MergeMethod::Squash,
-            MergeMethod::Rebase => octocrab::params::pulls::MergeMethod::Rebase,
+        let merge_method_str = match method.unwrap_or(MergeMethod::Merge) {
+            MergeMethod::Merge => "merge",
+            MergeMethod::Squash => "squash",
+            MergeMethod::Rebase => "rebase",
         };
 
-        let result = client
-            .pulls(owner, repo)
-            .merge(pull_number)
-            .method(merge_method)
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/merge",
+            base_url, owner, repo, pull_number
+        );
+
+        let http_client = Self::http_client();
+        let response = http_client
+            .put(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .json(&serde_json::json!({ "merge_method": merge_method_str }))
             .send()
-            .await;
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        let status = response.status().as_u16();
+        let body_text = response.text().await.unwrap_or_default();
 
         #[cfg(feature = "telemetry")]
         {
             let duration = start.elapsed();
-            let success = result.is_ok();
+            let success = status == 200;
             GLOBAL_METRICS.record_platform("github", "merge_pr", duration, success);
             debug!(
                 owner,
@@ -262,19 +275,132 @@ impl HostingPlatform for GitHubAdapter {
             );
         }
 
-        match result {
-            Ok(merge) => Ok(merge.merged),
-            Err(e) => {
-                let error_str = e.to_string();
-                if error_str.contains("405") || error_str.contains("not mergeable") {
+        let body_lower = body_text.to_lowercase();
+
+        match status {
+            200 => {
+                // Parse merged field from response
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body_text) {
+                    Ok(parsed["merged"].as_bool().unwrap_or(false))
+                } else {
+                    Ok(true) // 200 status means success
+                }
+            }
+            405 => {
+                if body_lower.contains("head branch was behind")
+                    || body_lower.contains("not up to date")
+                {
+                    Err(PlatformError::BranchBehind(format!(
+                        "PR #{} branch is behind base branch",
+                        pull_number
+                    )))
+                } else {
+                    // Other 405 errors (not mergeable, etc.)
                     Ok(false)
+                }
+            }
+            403 => {
+                if body_lower.contains("protected branch") || body_lower.contains("required") {
+                    Err(PlatformError::BranchProtected(format!(
+                        "PR #{} is blocked by branch protection rules",
+                        pull_number
+                    )))
                 } else {
                     Err(PlatformError::ApiError(format!(
-                        "Failed to merge PR: {}",
-                        e
+                        "Failed to merge PR (403): {}",
+                        body_text
                     )))
                 }
             }
+            _ => Err(PlatformError::ApiError(format!(
+                "Failed to merge PR ({}): {}",
+                status, body_text
+            ))),
+        }
+    }
+
+    async fn update_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        pull_number: u64,
+    ) -> Result<bool, PlatformError> {
+        let token = self.get_token().await?;
+        let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
+
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/update-branch",
+            base_url, owner, repo, pull_number
+        );
+
+        let http_client = Self::http_client();
+        let response = http_client
+            .put(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        match response.status().as_u16() {
+            202 => Ok(true),
+            422 => Err(PlatformError::ApiError(
+                "Cannot update branch: conflicts exist that must be resolved manually".to_string(),
+            )),
+            status => {
+                let error_text = response.text().await.unwrap_or_default();
+                Err(PlatformError::ApiError(format!(
+                    "Failed to update branch ({}): {}",
+                    status, error_text
+                )))
+            }
+        }
+    }
+
+    /// Enable auto-merge via `gh` CLI. Uses the CLI instead of the GraphQL API
+    /// because the REST API doesn't support auto-merge and the GraphQL mutation
+    /// is complex.
+    ///
+    /// TODO: This ignores `self.base_url`, so it won't work with GitHub
+    /// Enterprise instances that use a custom API URL. To support GHE, either
+    /// use the GraphQL API or pass `--hostname` to `gh`.
+    async fn enable_auto_merge(
+        &self,
+        owner: &str,
+        repo: &str,
+        pull_number: u64,
+        method: Option<MergeMethod>,
+    ) -> Result<bool, PlatformError> {
+        let merge_flag = match method.unwrap_or(MergeMethod::Squash) {
+            MergeMethod::Merge => "--merge",
+            MergeMethod::Squash => "--squash",
+            MergeMethod::Rebase => "--rebase",
+        };
+
+        let repo_arg = format!("{}/{}", owner, repo);
+        let pr_str = pull_number.to_string();
+
+        let mut cmd = tokio::process::Command::new("gh");
+        cmd.args([
+            "pr", "merge", &pr_str, "--auto", merge_flag, "--repo", &repo_arg,
+        ]);
+
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| PlatformError::ApiError(format!("Failed to run gh CLI: {}", e)))?;
+
+        if output.status.success() {
+            Ok(true)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(PlatformError::ApiError(format!(
+                "Failed to enable auto-merge for PR #{}: {}",
+                pull_number,
+                stderr.trim()
+            )))
         }
     }
 

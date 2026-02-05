@@ -312,6 +312,12 @@ enum PrCommands {
         /// Force merge without readiness checks
         #[arg(short, long)]
         force: bool,
+        /// Update branch from base if behind before merging
+        #[arg(short = 'u', long)]
+        update: bool,
+        /// Enable auto-merge (merges when all checks pass)
+        #[arg(long)]
+        auto: bool,
     },
     /// Check CI status
     Checks {
@@ -556,12 +562,19 @@ async fn main() -> anyhow::Result<()> {
                     gitgrip::cli::commands::pr::run_pr_status(&workspace_root, &manifest, json)
                         .await?;
                 }
-                PrCommands::Merge { method, force } => {
+                PrCommands::Merge {
+                    method,
+                    force,
+                    update,
+                    auto,
+                } => {
                     gitgrip::cli::commands::pr::run_pr_merge(
                         &workspace_root,
                         &manifest,
                         method.as_deref(),
                         force,
+                        update,
+                        auto,
                     )
                     .await?;
                 }

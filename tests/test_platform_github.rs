@@ -130,6 +130,77 @@ async fn test_github_merge_pr_not_mergeable() {
     assert!(!result.unwrap(), "PR should not be merged");
 }
 
+// ── PR Merge: Branch Behind ──────────────────────────────────────────
+
+#[tokio::test]
+async fn test_github_merge_pr_branch_behind() {
+    let (server, adapter) = setup_github_mock().await;
+    mock_merge_pr_behind(&server, 42).await;
+
+    let result = adapter
+        .merge_pull_request("owner", "repo", 42, None, false)
+        .await;
+
+    assert!(result.is_err(), "should fail with BranchBehind");
+    let err = result.unwrap_err();
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("behind"),
+        "error should mention 'behind': {}",
+        err_str
+    );
+}
+
+// ── PR Merge: Branch Protected ──────────────────────────────────────
+
+#[tokio::test]
+async fn test_github_merge_pr_branch_protected() {
+    let (server, adapter) = setup_github_mock().await;
+    mock_merge_pr_protected(&server, 42).await;
+
+    let result = adapter
+        .merge_pull_request("owner", "repo", 42, None, false)
+        .await;
+
+    assert!(result.is_err(), "should fail with BranchProtected");
+    let err = result.unwrap_err();
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("protection") || err_str.contains("protected"),
+        "error should mention protection: {}",
+        err_str
+    );
+}
+
+// ── Update Branch ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_github_update_branch_success() {
+    let (server, adapter) = setup_github_mock().await;
+    mock_update_branch(&server, 42).await;
+
+    let result = adapter.update_branch("owner", "repo", 42).await;
+
+    assert!(result.is_ok(), "update branch should succeed: {:?}", result);
+    assert!(result.unwrap(), "should return true on successful update");
+}
+
+#[tokio::test]
+async fn test_github_update_branch_conflict() {
+    let (server, adapter) = setup_github_mock().await;
+    mock_update_branch_conflict(&server, 42).await;
+
+    let result = adapter.update_branch("owner", "repo", 42).await;
+
+    assert!(result.is_err(), "should fail with conflict");
+    let err_str = result.unwrap_err().to_string();
+    assert!(
+        err_str.contains("conflicts") || err_str.contains("conflict"),
+        "error should mention conflicts: {}",
+        err_str
+    );
+}
+
 // ── Find PR by Branch ──────────────────────────────────────────────
 
 #[tokio::test]
