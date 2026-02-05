@@ -15,6 +15,57 @@ Items here should be reviewed before creating GitHub issues.
 
 ---
 
+### Force-delete branch requires raw git
+
+**Discovered**: 2026-02-05 while cleaning up merged tooling branches
+
+**Problem**: `gr branch --delete` refuses to delete a branch after squash merge (not fully merged), and there is no force-delete option.
+
+**Workaround used**: Ran raw `git` to force-delete the branch.
+
+**Raw commands used**:
+```bash
+git -C /Users/layne/Development/codi-gripspace/gitgrip branch -D feat/gr-friction-logging
+```
+
+**Expected behavior**: `gr branch --delete --force <name>` (or similar) to delete unmerged branches.
+
+---
+
+### Manifest worktree blocks branch switching
+
+**Discovered**: 2026-02-05 while trying to align manifest repo with main for PR creation
+
+**Problem**: The manifest repo (`.gitgrip/manifests`) is a worktree, and `main` is already checked out in another worktree. There’s no `gr` command to target the manifest repo specifically, so I couldn’t switch it to `main` to avoid branch mismatch in `gr pr create`.
+
+**Workaround used**: Attempted raw `git` checkout in the manifest repo (blocked by worktree lock).
+
+**Raw commands used**:
+```bash
+git -C /Users/layne/Development/codi-gripspace/.gitgrip/manifests checkout main
+```
+
+**Expected behavior**: `gr checkout --include-manifest <branch>` or a repo filter for `gr checkout` to target the manifest repo.
+
+---
+
+### Need per-repo PR creation (or manifest exclusion)
+
+**Discovered**: 2026-02-05 while creating a tooling-only PR
+
+**Problem**: `gr pr create` fails when only one repo has changes but the manifest repo is on a different branch; there’s no way to exclude the manifest repo or target a single repo.
+
+**Workaround used**: Use `gh pr create` directly in the repo that changed.
+
+**Raw commands used**:
+```bash
+gh pr create --title "Log raw git branch delete" --body "Log raw git usage for forced branch deletion after squash merge."
+```
+
+**Expected behavior**: `gr pr create --repo <name>` or `--exclude-manifest` to create a PR for a single repo.
+
+---
+
 ## Completed
 
 ### Fix: PR Creation Timeout Issue ✓
