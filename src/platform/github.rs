@@ -16,6 +16,9 @@ const READ_TIMEOUT_SECS: u64 = 30;
 /// Default write timeout in seconds
 const WRITE_TIMEOUT_SECS: u64 = 30;
 
+#[allow(unused_imports)]
+use super::rate_limit::{check_rate_limit_warning, parse_github_rate_limits};
+
 #[cfg(feature = "telemetry")]
 use crate::telemetry::metrics::GLOBAL_METRICS;
 #[cfg(feature = "telemetry")]
