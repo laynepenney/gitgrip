@@ -539,6 +539,67 @@ pub async fn mock_server_error(server: &MockServer, path_str: &str) {
         .await;
 }
 
+/// GitHub API: merge PR returns 405 with a generic "not mergeable" message.
+pub async fn mock_merge_pr_405_generic(server: &MockServer, number: u64) {
+    let body = json!({
+        "message": "Pull Request is not mergeable",
+        "documentation_url": "https://docs.github.com/rest"
+    });
+
+    Mock::given(method("PUT"))
+        .and(path(format!("/repos/owner/repo/pulls/{}/merge", number)))
+        .respond_with(ResponseTemplate::new(405).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// GitHub API: create PR returns 422 validation error.
+pub async fn mock_create_pr_validation_error(server: &MockServer) {
+    let body = json!({
+        "message": "Validation Failed",
+        "errors": [{"resource": "PullRequest", "code": "custom", "message": "A pull request already exists for owner:feat/test."}],
+        "documentation_url": "https://docs.github.com/rest"
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/repos/owner/repo/pulls"))
+        .respond_with(ResponseTemplate::new(422).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// GitHub API: 403 rate limited response on a GET endpoint.
+pub async fn mock_rate_limited(server: &MockServer, path_str: &str) {
+    let body = json!({
+        "message": "API rate limit exceeded for user.",
+        "documentation_url": "https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"
+    });
+
+    Mock::given(method("GET"))
+        .and(path(path_str))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .set_body_json(body)
+                .insert_header("X-RateLimit-Remaining", "0")
+                .insert_header("X-RateLimit-Reset", "1700000000"),
+        )
+        .mount(server)
+        .await;
+}
+
+/// Mock a PUT server error (500) — useful for merge endpoint.
+pub async fn mock_server_error_put(server: &MockServer, path_str: &str) {
+    let body = json!({
+        "message": "Internal Server Error"
+    });
+
+    Mock::given(method("PUT"))
+        .and(path(path_str))
+        .respond_with(ResponseTemplate::new(500).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
 /// Mock a GitHub repo info response (GET /repos/:owner/:repo).
 pub async fn mock_repo_info(server: &MockServer, owner: &str, repo: &str) {
     let body = github_repo_json(owner, repo);

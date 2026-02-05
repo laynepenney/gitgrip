@@ -16,6 +16,7 @@ pub use cache::{invalidate_status_cache, GitStatusCache, STATUS_CACHE};
 pub use remote::*;
 pub use status::*;
 
+use crate::util::log_cmd;
 use git2::Repository;
 use std::path::Path;
 use std::process::Command;
@@ -81,8 +82,10 @@ pub fn clone_repo<P: AsRef<Path>>(
     if let Some(b) = branch {
         let args = vec!["clone", "-b", b, url, path_str];
 
-        let output = Command::new("git")
-            .args(&args)
+        let mut cmd = Command::new("git");
+        cmd.args(&args);
+        log_cmd(&cmd);
+        let output = cmd
             .output()
             .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -106,8 +109,10 @@ pub fn clone_repo<P: AsRef<Path>>(
     // Clone without -b flag (uses remote's default branch)
     let args = vec!["clone", url, path_str];
 
-    let output = Command::new("git")
-        .args(&args)
+    let mut cmd = Command::new("git");
+    cmd.args(&args);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 

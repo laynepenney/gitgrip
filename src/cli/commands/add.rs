@@ -5,6 +5,7 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::cache::invalidate_status_cache;
 use crate::git::{get_workdir, open_repo, path_exists};
+use crate::util::log_cmd;
 use git2::Repository;
 use std::path::PathBuf;
 use std::process::Command;
@@ -82,10 +83,10 @@ fn stage_files(repo: &Repository, _repo_path: &PathBuf, files: &[String]) -> any
     let repo_dir = get_workdir(repo);
 
     // Get count of changes before staging
-    let before_output = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(repo_dir)
-        .output()?;
+    let mut cmd = Command::new("git");
+    cmd.args(["status", "--porcelain"]).current_dir(repo_dir);
+    log_cmd(&cmd);
+    let before_output = cmd.output()?;
     let before_count = String::from_utf8_lossy(&before_output.stdout)
         .lines()
         .filter(|l| !l.starts_with("??") || files.contains(&".".to_string()))
@@ -106,10 +107,10 @@ fn stage_files(repo: &Repository, _repo_path: &PathBuf, files: &[String]) -> any
         }
     }
 
-    let output = Command::new("git")
-        .args(&args)
-        .current_dir(repo_dir)
-        .output()?;
+    let mut cmd = Command::new("git");
+    cmd.args(&args).current_dir(repo_dir);
+    log_cmd(&cmd);
+    let output = cmd.output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -117,10 +118,11 @@ fn stage_files(repo: &Repository, _repo_path: &PathBuf, files: &[String]) -> any
     }
 
     // Count what was actually staged
-    let after_output = Command::new("git")
-        .args(["diff", "--cached", "--name-only"])
-        .current_dir(repo_dir)
-        .output()?;
+    let mut cmd = Command::new("git");
+    cmd.args(["diff", "--cached", "--name-only"])
+        .current_dir(repo_dir);
+    log_cmd(&cmd);
+    let after_output = cmd.output()?;
 
     let staged_count = String::from_utf8_lossy(&after_output.stdout)
         .lines()

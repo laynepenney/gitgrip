@@ -11,6 +11,10 @@ struct Cli {
     #[arg(short, long, global = true)]
     quiet: bool,
 
+    /// Show verbose output including external commands being executed
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -436,12 +440,19 @@ enum RepoCommands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     let cli = Cli::parse();
+
+    // Initialize tracing — `--verbose` enables debug logging for gitgrip
+    if cli.verbose {
+        tracing_subscriber::fmt()
+            .with_env_filter("gitgrip=debug")
+            .with_target(false)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .init();
+    }
 
     match cli.command {
         Some(Commands::Status {

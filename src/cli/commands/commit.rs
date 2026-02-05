@@ -5,6 +5,7 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::cache::invalidate_status_cache;
 use crate::git::{get_workdir, open_repo, path_exists};
+use crate::util::log_cmd;
 use git2::Repository;
 use std::path::PathBuf;
 use std::process::Command;
@@ -107,10 +108,11 @@ pub fn run_commit(
 fn has_staged_changes(repo: &Repository) -> anyhow::Result<bool> {
     let repo_path = get_workdir(repo);
 
-    let output = Command::new("git")
-        .args(["diff", "--cached", "--quiet"])
-        .current_dir(repo_path)
-        .output()?;
+    let mut cmd = Command::new("git");
+    cmd.args(["diff", "--cached", "--quiet"])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd.output()?;
 
     // Exit code 0 means no diff (no staged changes)
     // Exit code 1 means there are changes
@@ -126,10 +128,10 @@ fn create_commit(repo: &Repository, message: &str, amend: bool) -> anyhow::Resul
         args.push("--amend");
     }
 
-    let output = Command::new("git")
-        .args(&args)
-        .current_dir(repo_path)
-        .output()?;
+    let mut cmd = Command::new("git");
+    cmd.args(&args).current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd.output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -137,10 +139,10 @@ fn create_commit(repo: &Repository, message: &str, amend: bool) -> anyhow::Resul
     }
 
     // Get the commit hash
-    let hash_output = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(repo_path)
-        .output()?;
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "HEAD"]).current_dir(repo_path);
+    log_cmd(&cmd);
+    let hash_output = cmd.output()?;
 
     let commit_id = String::from_utf8_lossy(&hash_output.stdout)
         .trim()

@@ -398,6 +398,96 @@ async fn test_github_linked_pr_in_body() {
     assert_eq!(links[0].number, 42);
 }
 
+// ── PR Merge: Already Merged ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_github_merge_pr_already_merged() {
+    let (server, adapter) = setup_github_mock().await;
+    // Merge response with merged=false indicates PR was not merged by this call
+    // (e.g., already merged). The adapter returns Ok(false).
+    mock_merge_pr(&server, 42, false).await;
+
+    let result = adapter
+        .merge_pull_request("owner", "repo", 42, Some(MergeMethod::Merge), false)
+        .await;
+
+    assert!(result.is_ok(), "should not error: {:?}", result);
+    assert!(
+        !result.unwrap(),
+        "merged should be false for already-merged PR"
+    );
+}
+
+// ── PR Merge: 405 Generic Not Mergeable ─────────────────────────
+
+#[tokio::test]
+async fn test_github_merge_pr_405_generic() {
+    let (server, adapter) = setup_github_mock().await;
+    mock_merge_pr_405_generic(&server, 42).await;
+
+    let result = adapter
+        .merge_pull_request("owner", "repo", 42, None, false)
+        .await;
+
+    // Generic 405 (not "branch behind") should return Ok(false)
+    assert!(result.is_ok(), "generic 405 should return Ok: {:?}", result);
+    assert!(!result.unwrap(), "should return false for non-mergeable PR");
+}
+
+// ── PR Create: Validation Error (422) ───────────────────────────
+
+#[tokio::test]
+async fn test_github_create_pr_validation_error() {
+    let (server, adapter) = setup_github_mock().await;
+    mock_create_pr_validation_error(&server).await;
+
+    let result = adapter
+        .create_pull_request("owner", "repo", "feat/test", "main", "Test PR", None, false)
+        .await;
+
+    assert!(result.is_err(), "should fail with validation error");
+    let err_str = result.unwrap_err().to_string();
+    assert!(
+        err_str.contains("Failed to create PR"),
+        "error should mention create failure: {}",
+        err_str
+    );
+}
+
+// ── Rate Limited (403) ──────────────────────────────────────────
+
+#[tokio::test]
+async fn test_github_rate_limited() {
+    let (server, adapter) = setup_github_mock().await;
+    mock_rate_limited(&server, "/repos/owner/repo/pulls/42").await;
+
+    let result = adapter.get_pull_request("owner", "repo", 42).await;
+
+    assert!(result.is_err(), "should fail when rate limited");
+}
+
+// ── Server Error (500) on Merge ─────────────────────────────────
+
+#[tokio::test]
+async fn test_github_server_error_on_merge() {
+    let (server, adapter) = setup_github_mock().await;
+    mock_server_error_put(&server, "/repos/owner/repo/pulls/42/merge").await;
+
+    let result = adapter
+        .merge_pull_request("owner", "repo", 42, None, false)
+        .await;
+
+    assert!(result.is_err(), "should fail on 500 server error");
+    let err_str = result.unwrap_err().to_string();
+    assert!(
+        err_str.contains("500")
+            || err_str.contains("Internal Server Error")
+            || err_str.contains("Failed to merge"),
+        "error should mention server error: {}",
+        err_str
+    );
+}
+
 // ── Error Scenarios ──────────────────────────────────────────────
 // Note: test_github_auth_error_no_token lives in test_platform_github_auth.rs
 // (separate binary) to avoid env var races with other tests in this file.

@@ -4,14 +4,17 @@ use git2::Repository;
 use std::process::Command;
 
 use super::{get_current_branch, GitError};
+use crate::util::log_cmd;
 
 /// Create a new local branch and check it out
 pub fn create_and_checkout_branch(repo: &Repository, branch_name: &str) -> Result<(), GitError> {
     let repo_path = super::get_workdir(repo);
 
-    let output = Command::new("git")
-        .args(["checkout", "-b", branch_name])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["checkout", "-b", branch_name])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -54,9 +57,10 @@ pub fn checkout_branch(repo: &Repository, branch_name: &str) -> Result<(), GitEr
         return Err(GitError::BranchNotFound(branch_name.to_string()));
     }
 
-    let output = Command::new("git")
-        .args(["checkout", branch_name])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["checkout", branch_name]).current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -94,14 +98,15 @@ pub fn checkout_branch(repo: &Repository, branch_name: &str) -> Result<(), GitEr
 pub fn branch_exists(repo: &Repository, branch_name: &str) -> bool {
     let repo_path = super::get_workdir(repo);
 
-    let output = Command::new("git")
-        .args([
-            "rev-parse",
-            "--verify",
-            &format!("refs/heads/{}", branch_name),
-        ])
-        .current_dir(repo_path)
-        .output();
+    let mut cmd = Command::new("git");
+    cmd.args([
+        "rev-parse",
+        "--verify",
+        &format!("refs/heads/{}", branch_name),
+    ])
+    .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd.output();
 
     output.map(|o| o.status.success()).unwrap_or(false)
 }
@@ -110,14 +115,15 @@ pub fn branch_exists(repo: &Repository, branch_name: &str) -> bool {
 pub fn remote_branch_exists(repo: &Repository, branch_name: &str, remote: &str) -> bool {
     let repo_path = super::get_workdir(repo);
 
-    let output = Command::new("git")
-        .args([
-            "rev-parse",
-            "--verify",
-            &format!("refs/remotes/{}/{}", remote, branch_name),
-        ])
-        .current_dir(repo_path)
-        .output();
+    let mut cmd = Command::new("git");
+    cmd.args([
+        "rev-parse",
+        "--verify",
+        &format!("refs/remotes/{}/{}", remote, branch_name),
+    ])
+    .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd.output();
 
     output.map(|o| o.status.success()).unwrap_or(false)
 }
@@ -139,9 +145,11 @@ pub fn delete_local_branch(
     }
 
     let flag = if force { "-D" } else { "-d" };
-    let output = Command::new("git")
-        .args(["branch", flag, branch_name])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["branch", flag, branch_name])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -167,9 +175,11 @@ pub fn is_branch_merged(
 ) -> Result<bool, GitError> {
     let repo_path = super::get_workdir(repo);
 
-    let output = Command::new("git")
-        .args(["branch", "--merged", target_branch])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["branch", "--merged", target_branch])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -183,9 +193,11 @@ pub fn is_branch_merged(
 pub fn list_local_branches(repo: &Repository) -> Result<Vec<String>, GitError> {
     let repo_path = super::get_workdir(repo);
 
-    let output = Command::new("git")
-        .args(["branch", "--format=%(refname:short)"])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["branch", "--format=%(refname:short)"])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -198,9 +210,11 @@ pub fn list_remote_branches(repo: &Repository, remote: &str) -> Result<Vec<Strin
     let repo_path = super::get_workdir(repo);
     let prefix = format!("{}/", remote);
 
-    let output = Command::new("git")
-        .args(["branch", "-r", "--format=%(refname:short)"])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["branch", "-r", "--format=%(refname:short)"])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -226,9 +240,10 @@ pub fn get_commits_between(
     };
 
     let range = format!("{}..{}", base_branch, head_name);
-    let output = Command::new("git")
-        .args(["rev-list", &range])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-list", &range]).current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
