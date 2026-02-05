@@ -6,6 +6,7 @@ use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::{get_current_branch, open_repo, path_exists};
+use crate::util::log_cmd;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -70,10 +71,11 @@ pub fn run_rebase(
         let spinner = Output::spinner(&format!("Rebasing {}...", repo.name));
 
         // Use git command for rebase (git2 doesn't support interactive rebase well)
-        let output = Command::new("git")
-            .args(["rebase", target])
-            .current_dir(&repo.absolute_path)
-            .output()?;
+        let mut cmd = Command::new("git");
+        cmd.args(["rebase", target])
+            .current_dir(&repo.absolute_path);
+        log_cmd(&cmd);
+        let output = cmd.output()?;
 
         if output.status.success() {
             spinner.finish_with_message(format!("{}: rebased", repo.name));
@@ -136,10 +138,11 @@ fn run_rebase_abort(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
         let rebase_apply_dir = repo.absolute_path.join(".git/rebase-apply");
 
         if rebase_dir.exists() || rebase_apply_dir.exists() {
-            let output = Command::new("git")
-                .args(["rebase", "--abort"])
-                .current_dir(&repo.absolute_path)
-                .output()?;
+            let mut cmd = Command::new("git");
+            cmd.args(["rebase", "--abort"])
+                .current_dir(&repo.absolute_path);
+            log_cmd(&cmd);
+            let output = cmd.output()?;
 
             if output.status.success() {
                 Output::success(&format!("{}: rebase aborted", repo.name));
@@ -172,10 +175,11 @@ fn run_rebase_continue(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow:
         let rebase_apply_dir = repo.absolute_path.join(".git/rebase-apply");
 
         if rebase_dir.exists() || rebase_apply_dir.exists() {
-            let output = Command::new("git")
-                .args(["rebase", "--continue"])
-                .current_dir(&repo.absolute_path)
-                .output()?;
+            let mut cmd = Command::new("git");
+            cmd.args(["rebase", "--continue"])
+                .current_dir(&repo.absolute_path);
+            log_cmd(&cmd);
+            let output = cmd.output()?;
 
             if output.status.success() {
                 Output::success(&format!("{}: rebase continued", repo.name));

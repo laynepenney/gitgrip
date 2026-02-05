@@ -7,6 +7,7 @@ use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::path_exists;
+use crate::util::log_cmd;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -62,11 +63,10 @@ fn run_grep_in_repo(
 
     let args = build_grep_args(pattern, ignore_case, pathspec);
 
-    let output = Command::new("git")
-        .args(&args)
-        .current_dir(&repo.absolute_path)
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("git");
+    cmd.args(&args).current_dir(&repo.absolute_path);
+    log_cmd(&cmd);
+    let output = cmd.output().ok()?;
 
     if !output.status.success() {
         // git grep returns exit code 1 for no matches — not an error

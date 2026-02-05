@@ -7,6 +7,7 @@ use std::process::Command;
 use super::cache::STATUS_CACHE;
 use super::{get_current_branch, open_repo, path_exists, GitError};
 use crate::core::repo::RepoInfo;
+use crate::util::log_cmd;
 
 /// Repository status information
 #[derive(Debug, Clone)]
@@ -61,9 +62,11 @@ pub fn get_status_info(repo: &Repository) -> Result<RepoStatusInfo, GitError> {
     // Use git porcelain status for reliable parsing
     let repo_path = super::get_workdir(repo);
 
-    let output = Command::new("git")
-        .args(["status", "--porcelain=v1"])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["status", "--porcelain=v1"])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -129,11 +132,11 @@ pub fn get_cached_status(repo_path: &PathBuf) -> Result<RepoStatusInfo, GitError
 
 /// Get ahead/behind counts using git rev-list
 fn get_ahead_behind_git(repo_path: &std::path::Path) -> Option<(usize, usize)> {
-    let output = Command::new("git")
-        .args(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])
-        .current_dir(repo_path)
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd.output().ok()?;
 
     if !output.status.success() {
         return Some((0, 0));
@@ -150,29 +153,29 @@ fn get_ahead_behind_branch(
     // Try remote first: origin/{base_branch}
     let remote_ref = format!("origin/{}", base_branch);
 
-    let output = Command::new("git")
-        .args([
-            "rev-list",
-            "--left-right",
-            "--count",
-            &format!("{}...HEAD", remote_ref),
-        ])
-        .current_dir(repo_path)
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("git");
+    cmd.args([
+        "rev-list",
+        "--left-right",
+        "--count",
+        &format!("{}...HEAD", remote_ref),
+    ])
+    .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd.output().ok()?;
 
     if !output.status.success() {
         // Fallback to local branch
-        let output = Command::new("git")
-            .args([
-                "rev-list",
-                "--left-right",
-                "--count",
-                &format!("{}...HEAD", base_branch),
-            ])
-            .current_dir(repo_path)
-            .output()
-            .ok()?;
+        let mut cmd = Command::new("git");
+        cmd.args([
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("{}...HEAD", base_branch),
+        ])
+        .current_dir(repo_path);
+        log_cmd(&cmd);
+        let output = cmd.output().ok()?;
 
         if !output.status.success() {
             return Some((0, 0));

@@ -10,6 +10,7 @@ use std::time::Duration;
 use super::traits::{HostingPlatform, LinkedPRRef, PlatformError};
 use super::types::*;
 use crate::core::manifest::PlatformType;
+use tracing::debug;
 
 /// Default connection timeout in seconds
 const CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -224,6 +225,7 @@ impl HostingPlatform for AzureDevOpsAdapter {
         }
 
         // Try az CLI to get access token
+        debug!(target: "gitgrip::cmd", program = "az", args = ?["account", "get-access-token", "--resource", "499b84ac-1321-427f-aa17-267ca6975798", "--query", "accessToken", "-o", "tsv"], "exec");
         let output = tokio::process::Command::new("az")
             .args([
                 "account",

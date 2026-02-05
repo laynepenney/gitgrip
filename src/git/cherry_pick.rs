@@ -1,6 +1,7 @@
 //! Git cherry-pick operations
 
 use crate::git::GitError;
+use crate::util::log_cmd;
 use std::path::Path;
 use std::process::Command;
 
@@ -18,10 +19,11 @@ pub enum CherryPickResult {
 
 /// Check if a commit exists in the repository
 pub fn commit_exists(repo_path: &Path, commit_sha: &str) -> bool {
-    Command::new("git")
-        .args(["cat-file", "-t", "--", commit_sha])
-        .current_dir(repo_path)
-        .output()
+    let mut cmd = Command::new("git");
+    cmd.args(["cat-file", "-t", "--", commit_sha])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    cmd.output()
         .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "commit")
         .unwrap_or(false)
 }
@@ -32,11 +34,11 @@ pub fn cherry_pick(repo_path: &Path, commit_sha: &str) -> CherryPickResult {
         return CherryPickResult::CommitNotFound;
     }
 
-    let output = match Command::new("git")
-        .args(["cherry-pick", "--", commit_sha])
-        .current_dir(repo_path)
-        .output()
-    {
+    let mut cmd = Command::new("git");
+    cmd.args(["cherry-pick", "--", commit_sha])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = match cmd.output() {
         Ok(o) => o,
         Err(e) => return CherryPickResult::Error(format!("failed to run git cherry-pick: {}", e)),
     };
@@ -55,9 +57,10 @@ pub fn cherry_pick(repo_path: &Path, commit_sha: &str) -> CherryPickResult {
 
 /// Abort an in-progress cherry-pick
 pub fn cherry_pick_abort(repo_path: &Path) -> Result<(), GitError> {
-    let output = Command::new("git")
-        .args(["cherry-pick", "--abort"])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["cherry-pick", "--abort"]).current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(format!("failed to abort cherry-pick: {}", e)))?;
 
@@ -74,9 +77,11 @@ pub fn cherry_pick_abort(repo_path: &Path) -> Result<(), GitError> {
 
 /// Continue an in-progress cherry-pick
 pub fn cherry_pick_continue(repo_path: &Path) -> Result<(), GitError> {
-    let output = Command::new("git")
-        .args(["cherry-pick", "--continue"])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["cherry-pick", "--continue"])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(format!("failed to continue cherry-pick: {}", e)))?;
 

@@ -1,6 +1,7 @@
 //! Git garbage collection operations
 
 use crate::git::GitError;
+use crate::util::log_cmd;
 use std::path::Path;
 use std::process::Command;
 
@@ -51,9 +52,10 @@ pub fn run_git_gc(repo_path: &Path, aggressive: bool) -> Result<GcResult, GitErr
         args.push("--aggressive");
     }
 
-    let output = Command::new("git")
-        .args(&args)
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(&args).current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(format!("failed to run git gc: {}", e)))?;
 

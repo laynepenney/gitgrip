@@ -26,6 +26,9 @@ use std::time::Instant;
 #[cfg(feature = "telemetry")]
 use tracing::debug;
 
+#[cfg(not(feature = "telemetry"))]
+use tracing::debug;
+
 /// GitHub API adapter
 pub struct GitHubAdapter {
     base_url: Option<String>,
@@ -86,6 +89,7 @@ impl HostingPlatform for GitHubAdapter {
         }
 
         // Try gh CLI auth
+        debug!(target: "gitgrip::cmd", program = "gh", args = ?["auth", "token"], "exec");
         let output = tokio::process::Command::new("gh")
             .args(["auth", "token"])
             .output()
@@ -387,6 +391,7 @@ impl HostingPlatform for GitHubAdapter {
             "pr", "merge", &pr_str, "--auto", merge_flag, "--repo", &repo_arg,
         ]);
 
+        debug!(target: "gitgrip::cmd", program = "gh", args = ?["pr", "merge", &pr_str, "--auto", merge_flag, "--repo", &repo_arg], "exec");
         let output = cmd
             .output()
             .await

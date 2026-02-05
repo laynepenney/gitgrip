@@ -8,6 +8,7 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::branch::{delete_local_branch, is_branch_merged, list_local_branches};
 use crate::git::{get_current_branch, open_repo, path_exists};
+use crate::util::log_cmd;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -106,10 +107,11 @@ pub fn run_prune(
 
         // Prune remote tracking refs if requested
         if remote {
-            let output = Command::new("git")
-                .args(["fetch", "--prune"])
-                .current_dir(&repo.absolute_path)
-                .output();
+            let mut cmd = Command::new("git");
+            cmd.args(["fetch", "--prune"])
+                .current_dir(&repo.absolute_path);
+            log_cmd(&cmd);
+            let output = cmd.output();
 
             match output {
                 Ok(o) if o.status.success() => {

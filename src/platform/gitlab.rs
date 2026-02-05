@@ -9,6 +9,7 @@ use std::time::Duration;
 use super::traits::{HostingPlatform, LinkedPRRef, PlatformError};
 use super::types::*;
 use crate::core::manifest::PlatformType;
+use tracing::debug;
 
 /// Default connection timeout in seconds
 const CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -206,6 +207,7 @@ impl HostingPlatform for GitLabAdapter {
         }
 
         // Try glab CLI
+        debug!(target: "gitgrip::cmd", program = "glab", args = ?["auth", "status", "-t"], "exec");
         let output = tokio::process::Command::new("glab")
             .args(["auth", "status", "-t"])
             .output()

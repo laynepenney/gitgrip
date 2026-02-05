@@ -5,6 +5,7 @@ use std::process::Command;
 
 use super::cache::invalidate_status_cache;
 use super::{get_current_branch, GitError};
+use crate::util::log_cmd;
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::metrics::GLOBAL_METRICS;
@@ -17,9 +18,11 @@ use tracing::{debug, instrument};
 pub fn get_remote_url(repo: &Repository, remote: &str) -> Result<Option<String>, GitError> {
     let repo_path = super::get_workdir(repo);
 
-    let output = Command::new("git")
-        .args(["remote", "get-url", remote])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["remote", "get-url", remote])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -36,16 +39,18 @@ pub fn set_remote_url(repo: &Repository, remote: &str, url: &str) -> Result<(), 
     let repo_path = super::get_workdir(repo);
 
     if get_remote_url(repo, remote)?.is_none() {
-        Command::new("git")
-            .args(["remote", "add", remote, url])
-            .current_dir(repo_path)
-            .output()
+        let mut cmd = Command::new("git");
+        cmd.args(["remote", "add", remote, url])
+            .current_dir(repo_path);
+        log_cmd(&cmd);
+        cmd.output()
             .map_err(|e| GitError::OperationFailed(e.to_string()))?;
     } else {
-        Command::new("git")
-            .args(["remote", "set-url", remote, url])
-            .current_dir(repo_path)
-            .output()
+        let mut cmd = Command::new("git");
+        cmd.args(["remote", "set-url", remote, url])
+            .current_dir(repo_path);
+        log_cmd(&cmd);
+        cmd.output()
             .map_err(|e| GitError::OperationFailed(e.to_string()))?;
     }
     Ok(())
@@ -59,9 +64,10 @@ pub fn fetch_remote(repo: &Repository, remote: &str) -> Result<(), GitError> {
     #[cfg(feature = "telemetry")]
     let start = Instant::now();
 
-    let output = Command::new("git")
-        .args(["fetch", remote])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["fetch", remote]).current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -95,9 +101,10 @@ pub fn pull_latest(repo: &Repository, remote: &str) -> Result<(), GitError> {
     #[cfg(feature = "telemetry")]
     let start = Instant::now();
 
-    let output = Command::new("git")
-        .args(["pull", remote])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["pull", remote]).current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -157,9 +164,10 @@ pub fn push_branch(
         args.insert(1, "-u");
     }
 
-    let output = Command::new("git")
-        .args(&args)
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(&args).current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -222,9 +230,11 @@ pub fn force_push_branch(
 ) -> Result<(), GitError> {
     let repo_path = super::get_workdir(repo);
 
-    let output = Command::new("git")
-        .args(["push", "--force", remote, branch_name])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["push", "--force", remote, branch_name])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -244,9 +254,11 @@ pub fn delete_remote_branch(
 ) -> Result<(), GitError> {
     let repo_path = super::get_workdir(repo);
 
-    let output = Command::new("git")
-        .args(["push", remote, "--delete", branch_name])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["push", remote, "--delete", branch_name])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -270,13 +282,15 @@ pub fn get_upstream_branch(
         None => get_current_branch(repo)?,
     };
 
-    let output = Command::new("git")
-        .args([
-            "rev-parse",
-            "--abbrev-ref",
-            &format!("{}@{{upstream}}", branch),
-        ])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args([
+        "rev-parse",
+        "--abbrev-ref",
+        &format!("{}@{{upstream}}", branch),
+    ])
+    .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -309,13 +323,15 @@ pub fn set_upstream_branch(repo: &Repository, remote: &str) -> Result<(), GitErr
     let repo_path = super::get_workdir(repo);
     let branch_name = get_current_branch(repo)?;
 
-    let output = Command::new("git")
-        .args([
-            "branch",
-            "--set-upstream-to",
-            &format!("{}/{}", remote, branch_name),
-        ])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args([
+        "branch",
+        "--set-upstream-to",
+        &format!("{}/{}", remote, branch_name),
+    ])
+    .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
@@ -331,9 +347,10 @@ pub fn set_upstream_branch(repo: &Repository, remote: &str) -> Result<(), GitErr
 pub fn reset_hard(repo: &Repository, target: &str) -> Result<(), GitError> {
     let repo_path = super::get_workdir(repo);
 
-    let output = Command::new("git")
-        .args(["reset", "--hard", target])
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.args(["reset", "--hard", target]).current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
         .output()
         .map_err(|e| GitError::OperationFailed(e.to_string()))?;
 
