@@ -72,6 +72,8 @@ gh pr create --title "Log raw git branch delete" --body "Log raw git usage for f
 
 **Problem**: `gr sync` only syncs the configured repos and skips the manifest repo (`.gitgrip/manifests`). This leaves the manifest out of date, which can cause branch mismatch issues during PR creation.
 
+**Issue**: #210
+
 **Expected behavior**: `gr sync` should include the manifest repo by default (or provide a `--include-manifest` flag).
 
 ---
@@ -81,6 +83,8 @@ gh pr create --title "Log raw git branch delete" --body "Log raw git usage for f
 **Discovered**: 2026-02-05 while syncing a griptree workspace
 
 **Problem**: In griptrees (git worktrees), syncing against `main` alone can be incorrect if the workspace is tracking a different upstream (e.g., `origin/main` or whatever the primary griptree is on). This can cause `gr sync` to report clean status while the underlying upstream has advanced.
+
+**Issue**: #211
 
 **Expected behavior**: When a griptree is created, record its upstream branch (e.g., `origin/main` or the primary griptree’s branch) and use that for sync and comparisons in worktrees.
 
