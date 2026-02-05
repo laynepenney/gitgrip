@@ -66,6 +66,28 @@ gh pr create --title "Log raw git branch delete" --body "Log raw git usage for f
 
 ---
 
+### Need issue creation in gr
+
+**Discovered**: 2026-02-05 while filing sync-related issues
+
+**Problem**: `gr` doesn't provide an issue creation flow, so I had to use raw `gh issue create`.
+
+**Workaround used**: Ran raw `gh` commands in the `gitgrip` repo to create issues.
+
+**Raw commands used**:
+```bash
+gh issue create --title "gr sync should include manifest repo" --body "Problem: gr sync skips .gitgrip/manifests, leaving manifest stale and causing branch mismatch issues during PR creation. Expected: include manifest by default or add --include-manifest flag."
+gh issue create --title "gr sync should use upstream branch in griptrees" --body "Problem: gr sync compares against main only; in griptrees/worktrees it should sync/compare against the upstream branch (e.g. origin/main or the primary griptree’s branch). Expected: record upstream when creating a griptree and use it for sync/compare."
+```
+
+**Issues created**:
+- #210 (gr sync should include manifest repo)
+- #211 (gr sync should use upstream branch in griptrees)
+
+**Expected behavior**: `gr issue create` (with prompts or flags).
+
+---
+
 ### gr sync should include manifest repo
 
 **Discovered**: 2026-02-05 while syncing codi-gripspace
