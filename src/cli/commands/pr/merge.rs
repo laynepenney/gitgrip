@@ -317,7 +317,8 @@ pub async fn run_pr_merge(
             )
             .await;
 
-        // Handle BranchBehind with --update retry
+        // Handle BranchBehind with --update retry (single attempt — if another
+        // commit lands between update and retry, the user can re-run the command).
         let merge_result = match merge_result {
             Err(PlatformError::BranchBehind(ref msg)) if update => {
                 spinner.finish_with_message(format!(
@@ -336,14 +337,20 @@ pub async fn run_pr_merge(
                 {
                     Ok(true) => {
                         update_spinner.finish_with_message(format!(
-                            "{}: branch updated, waiting for merge...",
+                            "{}: branch updated, retrying merge...",
                             pr.repo_name
                         ));
                         // Wait for GitHub to process the update
                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-                        // Retry merge
-                        pr.platform
+                        let retry_spinner = Output::spinner(&format!(
+                            "Merging {} PR #{}...",
+                            pr.repo_name, pr.pr_number
+                        ));
+
+                        // Retry merge once
+                        match pr
+                            .platform
                             .merge_pull_request(
                                 &pr.owner,
                                 &pr.repo,
@@ -352,6 +359,25 @@ pub async fn run_pr_merge(
                                 true,
                             )
                             .await
+                        {
+                            Ok(true) => {
+                                retry_spinner.finish_with_message(format!(
+                                    "{}: merged PR #{}",
+                                    pr.repo_name, pr.pr_number
+                                ));
+                                success_count += 1;
+                                continue;
+                            }
+                            Ok(false) => {
+                                retry_spinner.finish_with_message(format!(
+                                    "{}: PR #{} was already merged",
+                                    pr.repo_name, pr.pr_number
+                                ));
+                                success_count += 1;
+                                continue;
+                            }
+                            Err(e) => Err(e),
+                        }
                     }
                     Ok(false) => {
                         update_spinner.finish_with_message(format!(
@@ -372,6 +398,7 @@ pub async fn run_pr_merge(
             other => other,
         };
 
+        // Original spinner is still active for non-update paths
         match merge_result {
             Ok(merged) => {
                 if merged {

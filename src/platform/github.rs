@@ -356,6 +356,13 @@ impl HostingPlatform for GitHubAdapter {
         }
     }
 
+    /// Enable auto-merge via `gh` CLI. Uses the CLI instead of the GraphQL API
+    /// because the REST API doesn't support auto-merge and the GraphQL mutation
+    /// is complex.
+    ///
+    /// TODO: This ignores `self.base_url`, so it won't work with GitHub
+    /// Enterprise instances that use a custom API URL. To support GHE, either
+    /// use the GraphQL API or pass `--hostname` to `gh`.
     async fn enable_auto_merge(
         &self,
         owner: &str,
