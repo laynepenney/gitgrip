@@ -15,6 +15,23 @@ Items here should be reviewed before creating GitHub issues.
 
 ---
 
+### Force-delete branch requires raw git
+
+**Discovered**: 2026-02-05 while cleaning up merged tooling branches
+
+**Problem**: `gr branch --delete` refuses to delete a branch after squash merge (not fully merged), and there is no force-delete option.
+
+**Workaround used**: Ran raw `git` to force-delete the branch.
+
+**Raw commands used**:
+```bash
+git -C /Users/layne/Development/codi-gripspace/gitgrip branch -D feat/gr-friction-logging
+```
+
+**Expected behavior**: `gr branch --delete --force <name>` (or similar) to delete unmerged branches.
+
+---
+
 ## Completed
 
 ### Fix: PR Creation Timeout Issue ✓
