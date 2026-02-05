@@ -224,8 +224,9 @@ Merge all linked PRs atomically.
 | Option | Description |
 |--------|-------------|
 | `-m, --method <method>` | merge, squash, or rebase |
-| `--no-delete-branch` | Keep branches after merge |
 | `-f, --force` | Merge even if checks pending |
+| `-u, --update` | Update branch from base if behind, then retry merge |
+| `--auto` | Enable auto-merge (merges when all checks pass) |
 
 #### `gr repo add <url>`
 

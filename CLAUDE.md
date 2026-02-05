@@ -243,6 +243,9 @@ All commands use `gr` (or `gitgrip`):
 - `gr commit` - Commit staged changes across all repos
 - `gr push` - Push current branch in all repos
 - `gr pr create/status/merge/checks/diff` - Linked PR workflow
+  - `gr pr merge --update` - Update branch from base if behind, then merge
+  - `gr pr merge --auto` - Enable auto-merge (merges when checks pass)
+  - `gr pr merge --force` - Merge even if checks pending
 - `gr repo add/list/remove` - Manage repositories
 - `gr link` - Manage copyfile/linkfile entries
 - `gr run` - Execute workspace scripts

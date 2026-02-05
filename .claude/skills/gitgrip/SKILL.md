@@ -83,7 +83,9 @@ gr pr status --json
 gr pr merge                  # Default merge
 gr pr merge -m squash        # Squash merge
 gr pr merge -m rebase        # Rebase merge
-gr pr merge --no-delete-branch  # Keep branches after merge
+gr pr merge --update         # Update branch from base if behind, then merge
+gr pr merge --auto           # Enable auto-merge (merges when checks pass)
+gr pr merge --force          # Merge even if checks pending
 ```
 
 ### File Linking

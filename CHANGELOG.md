@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-02-05
+
+### Added
+- `gr pr merge --update` flag - automatically update branch from base when behind, then retry merge
+- `gr pr merge --auto` flag - enable auto-merge so PRs merge when all required checks pass
+- `BranchBehind` error variant - detects when PR branch is behind base and provides actionable hint
+- `BranchProtected` error variant - detects branch protection rule violations and suggests `--auto` or `--admin`
+- `update_branch` platform trait method with GitHub implementation (PUT update-branch API)
+- `enable_auto_merge` platform trait method with GitHub implementation (via `gh` CLI)
+- wiremock tests for branch-behind, branch-protected, update-branch success, and update-branch conflict scenarios
+
+### Changed
+- `merge_pull_request` in GitHub adapter now uses raw HTTP instead of octocrab for proper error classification
+  - octocrab swallowed HTTP response bodies, making it impossible to distinguish error types
+  - Now correctly parses 405 (branch behind), 403 (branch protected), and other failure modes
+- CI workflow no longer uses path filters - runs on every push/PR to main (#175)
+
+### Fixed
+- `gr pr merge` "not mergeable" message now suggests `--update` when branch may be behind base
+
 ## [0.8.0] - 2026-02-04
 
 ### Added
