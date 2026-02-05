@@ -4,6 +4,7 @@ use crate::cli::output::Output;
 use crate::core::manifest::{Manifest, PlatformType};
 use crate::core::repo::RepoInfo;
 use crate::core::state::StateFile;
+use crate::git::status::has_uncommitted_changes;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::{detect_platform, get_platform_adapter};
 use git2::Repository;
@@ -229,7 +230,11 @@ pub async fn run_pr_create(
 }
 
 /// Check if a branch has commits ahead of another branch
-fn has_commits_ahead(repo: &Repository, branch: &str, base: &str) -> anyhow::Result<bool> {
+pub(crate) fn has_commits_ahead(
+    repo: &Repository,
+    branch: &str,
+    base: &str,
+) -> anyhow::Result<bool> {
     let local_ref = format!("refs/heads/{}", branch);
     let base_ref = format!("refs/remotes/origin/{}", base);
 
@@ -244,17 +249,25 @@ fn has_commits_ahead(repo: &Repository, branch: &str, base: &str) -> anyhow::Res
             // Try local base branch
             match repo.find_reference(&format!("refs/heads/{}", base)) {
                 Ok(r) => r,
-                Err(_) => return Ok(false),
+                // Neither remote nor local base ref exists — assume the branch
+                // has changes worth including (e.g. repo hasn't fetched yet).
+                Err(_) => return Ok(true),
             }
         }
     };
 
-    let local_oid = local
-        .target()
-        .ok_or_else(|| anyhow::anyhow!("No local target"))?;
-    let base_oid = base_branch
-        .target()
-        .ok_or_else(|| anyhow::anyhow!("No base target"))?;
+    let local_oid = local.target().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not resolve branch '{}'. Ensure it exists and has at least one commit.",
+            branch
+        )
+    })?;
+    let base_oid = base_branch.target().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not resolve base branch '{}'. Ensure it exists and has at least one commit.",
+            base
+        )
+    })?;
 
     let (ahead, _behind) = repo.graph_ahead_behind(local_oid, base_oid)?;
     Ok(ahead > 0)
@@ -278,6 +291,7 @@ fn create_manifest_repo_info(
             linkfile: config.linkfile.clone(),
             platform: config.platform.clone(),
             reference: false,
+            groups: Vec::new(),
         },
         workspace_root,
     )
@@ -285,7 +299,7 @@ fn create_manifest_repo_info(
 
 /// Check if a repo has changes ahead of its default branch
 /// Returns Ok(true) if there are changes, Ok(false) if no changes or on default branch
-fn check_repo_for_changes(
+pub(crate) fn check_repo_for_changes(
     repo: &RepoInfo,
     branch_name: &mut Option<String>,
 ) -> anyhow::Result<bool> {
@@ -301,8 +315,14 @@ fn check_repo_for_changes(
     }
 
     // Check for changes ahead of default branch
-    let has_changes = has_commits_ahead(&git_repo, &current, &repo.default_branch)
+    let has_commits = has_commits_ahead(&git_repo, &current, &repo.default_branch)
         .map_err(|e| anyhow::anyhow!("Failed to check commits: {}", e))?;
+
+    // Also check for uncommitted changes (staged or unstaged)
+    let has_uncommitted = has_uncommitted_changes(&git_repo)
+        .map_err(|e| anyhow::anyhow!("Failed to check uncommitted changes: {}", e))?;
+
+    let has_changes = has_commits || has_uncommitted;
 
     if has_changes {
         // Update branch_name for consistency checking
@@ -324,5 +344,144 @@ pub fn get_token_for_platform(platform: &PlatformType) -> Option<String> {
             .or_else(|| std::env::var("GH_TOKEN").ok()),
         PlatformType::GitLab => std::env::var("GITLAB_TOKEN").ok(),
         PlatformType::AzureDevOps => std::env::var("AZURE_DEVOPS_TOKEN").ok(),
+        PlatformType::Bitbucket => std::env::var("BITBUCKET_TOKEN").ok(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn setup_test_repo() -> (TempDir, Repository) {
+        let temp = TempDir::new().unwrap();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        // Create initial commit on main
+        fs::write(temp.path().join("README.md"), "# Test").unwrap();
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let repo = crate::git::open_repo(temp.path()).unwrap();
+        (temp, repo)
+    }
+
+    #[test]
+    fn test_has_commits_ahead_returns_true_when_no_base_refs_exist() {
+        let (temp, repo) = setup_test_repo();
+
+        // Create a feature branch with a commit
+        Command::new("git")
+            .args(["checkout", "-b", "feat/test"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        fs::write(temp.path().join("feature.txt"), "new feature").unwrap();
+        Command::new("git")
+            .args(["add", "feature.txt"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Add feature"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        // Check against a base branch that doesn't exist locally or remotely.
+        // This simulates the scenario where origin/main hasn't been fetched.
+        let result = has_commits_ahead(&repo, "feat/test", "nonexistent-base");
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap(),
+            "Should return true when base refs are missing"
+        );
+    }
+
+    #[test]
+    fn test_has_commits_ahead_with_local_base() {
+        let (temp, repo) = setup_test_repo();
+
+        // Get the default branch name
+        let output = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        let default_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        // Create feature branch with a commit
+        Command::new("git")
+            .args(["checkout", "-b", "feat/test"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        fs::write(temp.path().join("feature.txt"), "new feature").unwrap();
+        Command::new("git")
+            .args(["add", "feature.txt"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Add feature"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        // Local base ref exists — should detect the commit ahead
+        let result = has_commits_ahead(&repo, "feat/test", &default_branch);
+        assert!(result.is_ok());
+        assert!(result.unwrap(), "Should detect commits ahead of local base");
+    }
+
+    #[test]
+    fn test_has_commits_ahead_same_commit() {
+        let (temp, repo) = setup_test_repo();
+
+        let output = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        let default_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        // Create feature branch but don't add any commits
+        Command::new("git")
+            .args(["checkout", "-b", "feat/no-changes"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let result = has_commits_ahead(&repo, "feat/no-changes", &default_branch);
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "Should return false when no commits ahead"
+        );
     }
 }

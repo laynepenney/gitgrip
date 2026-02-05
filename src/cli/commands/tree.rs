@@ -168,15 +168,16 @@ pub fn run_tree_add(
             Some(&repo.default_branch),
         ) {
             Ok(_) => {
-                // Record for rollback
-                ctx.record_worktree(repo.absolute_path.clone(), branch.to_string());
+                // Record for rollback (use sanitized name matching create_worktree)
+                let worktree_name = branch.replace('/', "-");
+                ctx.record_worktree(repo.absolute_path.clone(), worktree_name.clone());
 
                 // Track original branch for this repo (for merging back later)
                 repo_branches.push(GriptreeRepoInfo {
                     name: repo.name.clone(),
                     original_branch: current_branch.clone(),
                     is_reference: repo.reference,
-                    worktree_name: Some(branch.to_string()),
+                    worktree_name: Some(worktree_name),
                     worktree_path: Some(worktree_path.to_string_lossy().to_string()),
                     main_repo_path: Some(repo.absolute_path.to_string_lossy().to_string()),
                 });
@@ -643,13 +644,18 @@ fn create_worktree(
         std::fs::create_dir_all(parent)?;
     }
 
+    // Sanitize worktree name: git2 uses this as a directory name under
+    // .git/worktrees/<name>, so slashes would create nested directories
+    // that don't exist. Replace them with dashes.
+    let worktree_name = branch.replace('/', "-");
+
     // Check if branch exists, create if not
     let branch_exists = repo.find_branch(branch, git2::BranchType::Local).is_ok();
 
     if branch_exists {
         // Add worktree with existing branch
         repo.worktree(
-            branch,
+            &worktree_name,
             worktree_path,
             Some(
                 git2::WorktreeAddOptions::new().reference(Some(
@@ -679,7 +685,7 @@ fn create_worktree(
         repo.branch(branch, &base_commit, false)?;
 
         repo.worktree(
-            branch,
+            &worktree_name,
             worktree_path,
             Some(
                 git2::WorktreeAddOptions::new().reference(Some(

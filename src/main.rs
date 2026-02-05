@@ -7,6 +7,10 @@ use clap_complete::{generate, Shell};
 #[command(name = "gr")]
 #[command(author, version, about = "Multi-repo workflow tool", long_about = None)]
 struct Cli {
+    /// Suppress output for repos with no relevant changes (saves tokens for AI tools)
+    #[arg(short, long, global = true)]
+    quiet: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -21,7 +25,7 @@ enum Commands {
         #[arg(short, long)]
         path: Option<String>,
         /// Create workspace from existing local directories
-        #[arg(long, conflicts_with = "url")]
+        #[arg(long, conflicts_with_all = ["url", "from_repo"])]
         from_dirs: bool,
         /// Specific directories to scan (requires --from-dirs)
         #[arg(long, requires = "from_dirs")]
@@ -38,18 +42,30 @@ enum Commands {
         /// Make manifest repository private (default: false)
         #[arg(long, requires = "create_manifest")]
         private: bool,
+        /// Initialize from existing .repo/ directory (git-repo coexistence)
+        #[arg(long, conflicts_with_all = ["from_dirs", "url"])]
+        from_repo: bool,
     },
     /// Sync all repositories
     Sync {
         /// Force sync even with local changes
         #[arg(short, long)]
         force: bool,
+        /// Only sync repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Show status of all repositories
     Status {
         /// Show detailed status
         #[arg(short, long)]
         verbose: bool,
+        /// Only show repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+        /// Output JSON (machine-readable)
+        #[arg(long)]
+        json: bool,
     },
     /// Create or switch branches across repos
     Branch {
@@ -67,6 +83,12 @@ enum Commands {
         /// Include manifest repo
         #[arg(long)]
         include_manifest: bool,
+        /// Only operate on repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+        /// Output JSON (machine-readable, list mode only)
+        #[arg(long)]
+        json: bool,
     },
     /// Checkout a branch across repos
     Checkout {
@@ -84,6 +106,9 @@ enum Commands {
         /// Show staged changes
         #[arg(long)]
         staged: bool,
+        /// Output JSON (machine-readable)
+        #[arg(long)]
+        json: bool,
     },
     /// Commit changes across repos
     Commit {
@@ -103,6 +128,18 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
     },
+    /// Clean up merged branches across repos
+    Prune {
+        /// Actually delete branches (default: dry-run)
+        #[arg(long)]
+        execute: bool,
+        /// Also prune remote tracking refs
+        #[arg(long)]
+        remote: bool,
+        /// Only prune repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
     /// Pull request operations
     Pr {
         #[command(subcommand)]
@@ -112,6 +149,23 @@ enum Commands {
     Tree {
         #[command(subcommand)]
         action: TreeCommands,
+    },
+    /// Search across all repos using git grep
+    Grep {
+        /// Search pattern
+        pattern: String,
+        /// Case insensitive
+        #[arg(short = 'i', long)]
+        ignore_case: bool,
+        /// Run in parallel
+        #[arg(short, long)]
+        parallel: bool,
+        /// File pattern (after --)
+        #[arg(last = true)]
+        pathspec: Vec<String>,
+        /// Only search repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Run command in each repo
     Forall {
@@ -127,6 +181,9 @@ enum Commands {
         /// Disable git command interception (use CLI for all commands)
         #[arg(long)]
         no_intercept: bool,
+        /// Only run in repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Rebase branches across repos
     Rebase {
@@ -164,6 +221,54 @@ enum Commands {
     Repo {
         #[command(subcommand)]
         action: RepoCommands,
+    },
+    /// Repository group operations
+    Group {
+        #[command(subcommand)]
+        action: GroupCommands,
+    },
+    /// Run garbage collection across repos
+    Gc {
+        /// More thorough gc (slower)
+        #[arg(long)]
+        aggressive: bool,
+        /// Only report .git sizes, don't gc
+        #[arg(long)]
+        dry_run: bool,
+        /// Only operate on specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Only gc repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
+    /// Cherry-pick commits across repos
+    CherryPick {
+        /// Commit SHA to cherry-pick
+        #[arg(conflicts_with_all = ["abort", "continue"])]
+        commit: Option<String>,
+        /// Abort in-progress cherry-pick
+        #[arg(long, conflicts_with = "continue")]
+        abort: bool,
+        /// Continue after conflict resolution
+        #[arg(long, name = "continue", conflicts_with = "abort")]
+        continue_pick: bool,
+        /// Only operate on specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Only operate on repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
+    /// CI/CD pipeline operations
+    Ci {
+        #[command(subcommand)]
+        action: CiCommands,
+    },
+    /// Manifest operations (import, sync)
+    Manifest {
+        #[command(subcommand)]
+        action: ManifestCommands,
     },
     /// Generate shell completions
     Completions {
@@ -255,6 +360,50 @@ enum TreeCommands {
 }
 
 #[derive(Subcommand)]
+enum GroupCommands {
+    /// List all groups and their repos
+    List,
+}
+
+#[derive(Subcommand)]
+enum CiCommands {
+    /// Run a CI pipeline
+    Run {
+        /// Pipeline name
+        name: String,
+        /// Output JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List available pipelines
+    List {
+        /// Output JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show status of last CI runs
+    Status {
+        /// Output JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ManifestCommands {
+    /// Convert git-repo XML manifest to gitgrip YAML
+    Import {
+        /// Path to XML manifest (e.g., .repo/manifests/default.xml)
+        path: String,
+        /// Output path for YAML manifest
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Re-sync gitgrip YAML from .repo/ manifest after repo sync
+    Sync,
+}
+
+#[derive(Subcommand)]
 enum RepoCommands {
     /// List repositories
     List,
@@ -289,13 +438,30 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Status { verbose }) => {
+        Some(Commands::Status {
+            verbose,
+            group,
+            json,
+        }) => {
             let (workspace_root, manifest) = load_workspace()?;
-            gitgrip::cli::commands::status::run_status(&workspace_root, &manifest, verbose)?;
+            gitgrip::cli::commands::status::run_status(
+                &workspace_root,
+                &manifest,
+                verbose,
+                cli.quiet,
+                group.as_deref(),
+                json,
+            )?;
         }
-        Some(Commands::Sync { force }) => {
+        Some(Commands::Sync { force, group }) => {
             let (workspace_root, manifest) = load_workspace()?;
-            gitgrip::cli::commands::sync::run_sync(&workspace_root, &manifest, force)?;
+            gitgrip::cli::commands::sync::run_sync(
+                &workspace_root,
+                &manifest,
+                force,
+                cli.quiet,
+                group.as_deref(),
+            )?;
         }
         Some(Commands::Branch {
             name,
@@ -303,6 +469,8 @@ async fn main() -> anyhow::Result<()> {
             r#move,
             repo,
             include_manifest: _,
+            group,
+            json,
         }) => {
             let (workspace_root, manifest) = load_workspace()?;
             gitgrip::cli::commands::branch::run_branch(
@@ -312,6 +480,8 @@ async fn main() -> anyhow::Result<()> {
                 delete,
                 r#move,
                 repo.as_deref(),
+                group.as_deref(),
+                json,
             )?;
         }
         Some(Commands::Checkout { name }) => {
@@ -322,9 +492,9 @@ async fn main() -> anyhow::Result<()> {
             let (workspace_root, manifest) = load_workspace()?;
             gitgrip::cli::commands::add::run_add(&workspace_root, &manifest, &files)?;
         }
-        Some(Commands::Diff { staged }) => {
+        Some(Commands::Diff { staged, json }) => {
             let (workspace_root, manifest) = load_workspace()?;
-            gitgrip::cli::commands::diff::run_diff(&workspace_root, &manifest, staged)?;
+            gitgrip::cli::commands::diff::run_diff(&workspace_root, &manifest, staged, json)?;
         }
         Some(Commands::Commit { message, amend }) => {
             let (workspace_root, manifest) = load_workspace()?;
@@ -344,6 +514,21 @@ async fn main() -> anyhow::Result<()> {
                 &manifest,
                 set_upstream,
                 force,
+                cli.quiet,
+            )?;
+        }
+        Some(Commands::Prune {
+            execute,
+            remote,
+            group,
+        }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::prune::run_prune(
+                &workspace_root,
+                &manifest,
+                execute,
+                remote,
+                group.as_deref(),
             )?;
         }
         Some(Commands::Pr { action }) => {
@@ -399,6 +584,7 @@ async fn main() -> anyhow::Result<()> {
             create_manifest,
             manifest_name,
             private,
+            from_repo,
         }) => {
             gitgrip::cli::commands::init::run_init(
                 url.as_deref(),
@@ -409,6 +595,7 @@ async fn main() -> anyhow::Result<()> {
                 create_manifest,
                 manifest_name.as_deref(),
                 private,
+                from_repo,
             )
             .await?;
         }
@@ -440,11 +627,30 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Some(Commands::Grep {
+            pattern,
+            ignore_case,
+            parallel,
+            pathspec,
+            group,
+        }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::grep::run_grep(
+                &workspace_root,
+                &manifest,
+                &pattern,
+                ignore_case,
+                parallel,
+                &pathspec,
+                group.as_deref(),
+            )?;
+        }
         Some(Commands::Forall {
             command,
             parallel,
             all,
             no_intercept,
+            group,
         }) => {
             let (workspace_root, manifest) = load_workspace()?;
             gitgrip::cli::commands::forall::run_forall(
@@ -454,6 +660,7 @@ async fn main() -> anyhow::Result<()> {
                 parallel,
                 !all, // Default: only repos with changes (changed_only=true unless --all)
                 no_intercept,
+                group.as_deref(),
             )?;
         }
         Some(Commands::Rebase {
@@ -506,6 +713,76 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Some(Commands::Group { action }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            match action {
+                GroupCommands::List => {
+                    gitgrip::cli::commands::group::run_group_list(&workspace_root, &manifest)?;
+                }
+            }
+        }
+        Some(Commands::Gc {
+            aggressive,
+            dry_run,
+            repo,
+            group,
+        }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::gc::run_gc(
+                &workspace_root,
+                &manifest,
+                aggressive,
+                dry_run,
+                repo.as_deref(),
+                group.as_deref(),
+            )?;
+        }
+        Some(Commands::CherryPick {
+            commit,
+            abort,
+            continue_pick,
+            repo,
+            group,
+        }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::cherry_pick::run_cherry_pick(
+                &workspace_root,
+                &manifest,
+                commit.as_deref(),
+                abort,
+                continue_pick,
+                repo.as_deref(),
+                group.as_deref(),
+            )?;
+        }
+        Some(Commands::Ci { action }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            match action {
+                CiCommands::Run { name, json } => {
+                    gitgrip::cli::commands::ci::run_ci_run(
+                        &workspace_root,
+                        &manifest,
+                        &name,
+                        json,
+                    )?;
+                }
+                CiCommands::List { json } => {
+                    gitgrip::cli::commands::ci::run_ci_list(&manifest, json)?;
+                }
+                CiCommands::Status { json } => {
+                    gitgrip::cli::commands::ci::run_ci_status(&workspace_root, json)?;
+                }
+            }
+        }
+        Some(Commands::Manifest { action }) => match action {
+            ManifestCommands::Import { path, output } => {
+                gitgrip::cli::commands::manifest::run_manifest_import(&path, output.as_deref())?;
+            }
+            ManifestCommands::Sync => {
+                let (workspace_root, _manifest) = load_workspace()?;
+                gitgrip::cli::commands::manifest::run_manifest_sync(&workspace_root)?;
+            }
+        },
         Some(Commands::Bench(args)) => {
             gitgrip::cli::commands::bench::run(args).await?;
         }
@@ -563,9 +840,10 @@ fn load_workspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manife
         return Ok((griptree_path, manifest));
     }
 
-    // Not in a griptree - find workspace root by looking for .gitgrip directory
+    // Not in a griptree - find workspace root by looking for .gitgrip or .repo directory
     let mut search_path = current;
     loop {
+        // Check for .gitgrip/manifests/manifest.yaml (standard gitgrip)
         let gitgrip_dir = search_path.join(".gitgrip");
         if gitgrip_dir.exists() {
             let manifest_path = gitgrip_dir.join("manifests").join("manifest.yaml");
@@ -576,10 +854,27 @@ fn load_workspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manife
             }
         }
 
+        // Check for .repo/manifests/manifest.yaml (gitgrip YAML inside repo manifests dir)
+        let repo_manifests_dir = search_path.join(".repo").join("manifests");
+        let repo_yaml = repo_manifests_dir.join("manifest.yaml");
+        if repo_yaml.exists() {
+            let content = std::fs::read_to_string(&repo_yaml)?;
+            let manifest = gitgrip::core::manifest::Manifest::parse(&content)?;
+            return Ok((search_path, manifest));
+        }
+
+        // Fallback: parse .repo/manifest.xml directly (zero-config — just works)
+        let repo_xml = search_path.join(".repo").join("manifest.xml");
+        if repo_xml.exists() {
+            let xml_manifest = gitgrip::core::repo_manifest::XmlManifest::parse_file(&repo_xml)?;
+            let result = xml_manifest.to_manifest()?;
+            return Ok((search_path, result.manifest));
+        }
+
         match search_path.parent() {
             Some(parent) => search_path = parent.to_path_buf(),
             None => {
-                anyhow::bail!("Not in a gitgrip workspace (no .gitgrip directory found)");
+                anyhow::bail!("Not in a gitgrip workspace (no .gitgrip or .repo directory found)");
             }
         }
     }

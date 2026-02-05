@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::core::manifest::{PlatformType, RepoConfig};
+use crate::core::manifest::{Manifest, PlatformType, RepoConfig};
 
 /// Extended repository information with computed fields
 #[derive(Debug, Clone)]
@@ -27,6 +27,8 @@ pub struct RepoInfo {
     pub project: Option<String>,
     /// Reference repo (read-only, excluded from branch/PR operations)
     pub reference: bool,
+    /// Groups this repo belongs to (for selective operations)
+    pub groups: Vec<String>,
 }
 
 impl RepoInfo {
@@ -53,6 +55,7 @@ impl RepoInfo {
             platform_type,
             project: parsed.project,
             reference: config.reference,
+            groups: config.groups.clone(),
         })
     }
 
@@ -154,7 +157,49 @@ fn parse_git_url(url: &str) -> Option<ParsedUrl> {
         }
     }
 
+    // Handle file:// URLs (used in testing with local bare repos)
+    if url.starts_with("file://") {
+        let path = url.trim_start_matches("file://").trim_end_matches(".git");
+        // Extract the last path component as repo name
+        if let Some(name) = path.rsplit('/').next() {
+            return Some(ParsedUrl {
+                owner: "local".to_string(),
+                repo: name.to_string(),
+                project: None,
+            });
+        }
+    }
+
     None
+}
+
+/// Filter repos from a manifest by name, group, and reference status.
+///
+/// Replaces the repeated `.iter().filter_map().filter().filter().collect()` pattern
+/// found across commands.
+pub fn filter_repos(
+    manifest: &Manifest,
+    workspace_root: &PathBuf,
+    repos_filter: Option<&[String]>,
+    group_filter: Option<&[String]>,
+    include_reference: bool,
+) -> Vec<RepoInfo> {
+    manifest
+        .repos
+        .iter()
+        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter(|r| include_reference || !r.reference)
+        .filter(|r| {
+            repos_filter
+                .map(|filter| filter.iter().any(|f| f == &r.name))
+                .unwrap_or(true)
+        })
+        .filter(|r| {
+            group_filter
+                .map(|groups| r.groups.iter().any(|g| groups.contains(g)))
+                .unwrap_or(true)
+        })
+        .collect()
 }
 
 /// Detect platform type from URL
@@ -167,6 +212,11 @@ fn detect_platform(url: &str) -> PlatformType {
     // Check Azure DevOps before GitLab (avoid false positives)
     if url.contains("dev.azure.com") || url.contains("visualstudio.com") {
         return PlatformType::AzureDevOps;
+    }
+
+    // Check Bitbucket before GitLab
+    if url.contains("bitbucket.org") || url.contains("bitbucket.") {
+        return PlatformType::Bitbucket;
     }
 
     // Check GitLab - ensure it's in hostname, not just path
@@ -211,6 +261,21 @@ mod tests {
         assert_eq!(parsed.owner, "org");
         assert_eq!(parsed.repo, "repo");
         assert_eq!(parsed.project, Some("project".to_string()));
+    }
+
+    #[test]
+    fn test_parse_file_url() {
+        let parsed = parse_git_url("file:///tmp/remotes/myrepo.git").unwrap();
+        assert_eq!(parsed.owner, "local");
+        assert_eq!(parsed.repo, "myrepo");
+        assert!(parsed.project.is_none());
+    }
+
+    #[test]
+    fn test_parse_file_url_no_extension() {
+        let parsed = parse_git_url("file:///tmp/repos/test-repo").unwrap();
+        assert_eq!(parsed.owner, "local");
+        assert_eq!(parsed.repo, "test-repo");
     }
 
     #[test]

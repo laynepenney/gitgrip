@@ -437,9 +437,9 @@ Supported shells: `bash`, `zsh`, `fish`, `elvish`, `powershell`
   - GitLab: `glab` CLI
   - Azure DevOps: `az` CLI
 
-## Legacy TypeScript Version
+## History
 
-The original TypeScript implementation is available in the `typescript-legacy/` directory and on npm as `gitgrip`. The Rust version is now the primary implementation with better performance and additional features.
+This project was originally written in TypeScript and published to npm as `gitgrip`. It was rewritten in Rust for better performance and additional features.
 
 ## License
 

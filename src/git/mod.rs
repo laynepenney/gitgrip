@@ -6,6 +6,8 @@
 
 pub mod branch;
 pub mod cache;
+pub mod cherry_pick;
+pub mod gc;
 pub mod remote;
 pub mod status;
 

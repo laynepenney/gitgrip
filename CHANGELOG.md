@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-02-04
+
+### Added
+- `gr prune` command - delete local branches merged into the default branch
+  - Dry-run by default, `--execute` to actually delete
+  - `--remote` flag to also prune remote tracking refs (`git fetch --prune`)
+  - Reports summary of pruned branches across repos
+- `gr grep` command - cross-repo search using `git grep`
+  - Prefixes results with repo name for easy identification
+  - `-i` flag for case-insensitive search
+  - `--parallel` flag for concurrent search across repos
+  - Supports pathspec filtering (`gr grep "pattern" -- "*.rs"`)
+- Test harness with 40+ integration tests (Phases 0-3)
+  - `WorkspaceBuilder` fixture for creating temporary workspaces with bare remotes
+  - git_helpers module for test git operations
+  - wiremock-based platform mocks for GitHub/GitLab/Azure
+  - Tests for branch, checkout, sync, add, commit, push, status, forall, griptree, PR, and error scenarios
+
+### Fixed
+- `gr pr create` now includes repos without remote tracking branches
+  - Previously `has_commits_ahead()` returned false when base ref was missing, silently skipping repos
+  - Now assumes the branch has changes when neither remote nor local base ref exists
+- Griptree worktree name parsing bug fix for names with path separators
+
+### Improved
+- Error messages across 5 key files with actionable recovery suggestions:
+  - Push errors: interpreted messages for non-fast-forward, auth failure, network issues
+  - PR create: clearer branch reference errors with guidance
+  - Init: recovery suggestions for existing directory and missing manifest
+  - Run: suggests `gr run --list` for missing scripts
+  - Push: suggests `gr sync` for missing remote targets
+
+## [0.7.1] - 2026-02-03
+
+### Fixed
+- `gr pr merge --force` now properly bypasses `all-or-nothing` merge strategy (#180)
+  - Previously would stop on first failed merge even with `--force` flag
+  - Now continues merging remaining PRs when one fails with `--force`
+  - Shows warning for failed merges instead of hard stop
+- `gr pr create` now detects uncommitted changes in manifest repo (#178)
+  - Previously only checked for commits ahead of default branch
+  - Now detects staged and unstaged changes as well
+  - Properly handles manifest-only PR creation
+
+### Documentation
+- Updated skill documentation with complete manifest schema
+- Added workflow patterns section (accidental main branch commits, single-repo operations)
+- Documented `reference` repos and `platform` configuration options
+- Added IMPROVEMENTS.md entries for discovered friction points
+
 ## [0.7.0] - 2026-02-02
 
 ### Changed (Breaking)

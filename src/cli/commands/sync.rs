@@ -2,21 +2,23 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::RepoInfo;
+use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::remote::safe_pull_latest;
 use crate::git::{clone_repo, get_current_branch, open_repo, path_exists};
 use std::path::PathBuf;
 
 /// Run the sync command
-pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> anyhow::Result<()> {
-    Output::header(&format!("Syncing {} repositories...", manifest.repos.len()));
-    println!();
+pub fn run_sync(
+    workspace_root: &PathBuf,
+    manifest: &Manifest,
+    force: bool,
+    quiet: bool,
+    group_filter: Option<&[String]>,
+) -> anyhow::Result<()> {
+    let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
 
-    let repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
-        .collect();
+    Output::header(&format!("Syncing {} repositories...", repos.len()));
+    println!();
 
     let mut success_count = 0;
     let mut error_count = 0;
@@ -87,11 +89,17 @@ pub fn run_sync(workspace_root: &PathBuf, manifest: &Manifest, force: bool) -> a
                                     "{}: skipped - {}",
                                     repo.name, msg
                                 ));
-                            } else {
+                            } else if !quiet {
                                 spinner.finish_with_message(format!("{}: {}", repo.name, msg));
+                            } else {
+                                spinner.finish_and_clear();
                             }
                         } else {
-                            spinner.finish_with_message(format!("{}: up to date", repo.name));
+                            if !quiet {
+                                spinner.finish_with_message(format!("{}: up to date", repo.name));
+                            } else {
+                                spinner.finish_and_clear();
+                            }
                             success_count += 1;
                         }
                     }

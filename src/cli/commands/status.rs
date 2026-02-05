@@ -2,26 +2,44 @@
 
 use crate::cli::output::{Output, Table};
 use crate::core::manifest::Manifest;
-use crate::core::repo::RepoInfo;
+use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::path_exists;
 use crate::git::status::{get_repo_status, RepoStatus};
 use std::path::PathBuf;
+
+/// JSON-serializable repo status for --json output
+#[derive(serde::Serialize)]
+struct JsonRepoStatus {
+    name: String,
+    branch: String,
+    clean: bool,
+    staged: usize,
+    modified: usize,
+    untracked: usize,
+    ahead: usize,
+    behind: usize,
+    reference: bool,
+    groups: Vec<String>,
+}
 
 /// Run the status command
 pub fn run_status(
     workspace_root: &PathBuf,
     manifest: &Manifest,
     verbose: bool,
+    quiet: bool,
+    group_filter: Option<&[String]>,
+    json: bool,
 ) -> anyhow::Result<()> {
+    if json {
+        return run_status_json(workspace_root, manifest, group_filter);
+    }
+
     Output::header("Repository Status");
     println!();
 
-    // Get all repo info
-    let repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
-        .collect();
+    // Get all repo info (include reference repos for display)
+    let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
 
     // Get status for all repos
     let statuses: Vec<(RepoStatus, &RepoInfo)> = repos
@@ -35,10 +53,20 @@ pub fn run_status(
     let with_changes = statuses.iter().filter(|(s, _)| !s.clean).count();
     let ahead_count = statuses.iter().filter(|(s, _)| s.ahead_main > 0).count();
 
+    // In quiet mode, only show repos with changes or not on default branch
+    let filtered_statuses: Vec<&(RepoStatus, &RepoInfo)> = if quiet {
+        statuses
+            .iter()
+            .filter(|(s, repo)| !s.clean || !s.exists || s.branch != repo.default_branch)
+            .collect()
+    } else {
+        statuses.iter().collect()
+    };
+
     // Display table
     let mut table = Table::new(vec!["Repo", "Branch", "Status", "vs main"]);
 
-    for (status, repo) in &statuses {
+    for (status, repo) in &filtered_statuses {
         let status_str = format_status(status, verbose);
         let main_str = format_main_comparison(status, &repo.default_branch);
         // Add [ref] suffix for reference repos
@@ -55,7 +83,9 @@ pub fn run_status(
         ]);
     }
 
-    table.print();
+    if !filtered_statuses.is_empty() {
+        table.print();
+    }
 
     // Show manifest worktree status if it exists
     let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
@@ -74,6 +104,7 @@ pub fn run_status(
             platform_type: crate::core::manifest::PlatformType::GitHub,
             project: None,
             reference: false,
+            groups: Vec::new(),
         };
 
         let status = get_repo_status(&manifest_repo_info);
@@ -91,16 +122,55 @@ pub fn run_status(
 
     // Summary
     println!();
-    let ahead_suffix = if ahead_count > 0 {
-        format!(" | {} ahead of main", ahead_count)
+    if quiet {
+        // Machine-readable summary line
+        println!(
+            "SUMMARY: repos={} cloned={} changes={} ahead={}",
+            total, cloned, with_changes, ahead_count
+        );
     } else {
-        String::new()
-    };
-    println!(
-        "  {}/{} cloned | {} with changes{}",
-        cloned, total, with_changes, ahead_suffix
-    );
+        let ahead_suffix = if ahead_count > 0 {
+            format!(" | {} ahead of main", ahead_count)
+        } else {
+            String::new()
+        };
+        println!(
+            "  {}/{} cloned | {} with changes{}",
+            cloned, total, with_changes, ahead_suffix
+        );
+    }
 
+    Ok(())
+}
+
+/// Run status in JSON mode
+fn run_status_json(
+    workspace_root: &PathBuf,
+    manifest: &Manifest,
+    group_filter: Option<&[String]>,
+) -> anyhow::Result<()> {
+    let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
+
+    let json_statuses: Vec<JsonRepoStatus> = repos
+        .iter()
+        .map(|repo| {
+            let status = get_repo_status(repo);
+            JsonRepoStatus {
+                name: status.name,
+                branch: status.branch,
+                clean: status.clean,
+                staged: status.staged,
+                modified: status.modified,
+                untracked: status.untracked,
+                ahead: status.ahead_main,
+                behind: status.behind_main,
+                reference: repo.reference,
+                groups: repo.groups.clone(),
+            }
+        })
+        .collect();
+
+    println!("{}", serde_json::to_string_pretty(&json_statuses)?);
     Ok(())
 }
 

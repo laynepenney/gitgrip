@@ -81,7 +81,7 @@ pub fn fetch_remote(repo: &Repository, remote: &str) -> Result<(), GitError> {
 
     if !success {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GitError::OperationFailed(stderr.to_string()));
+        return Err(GitError::OperationFailed(interpret_push_error(&stderr)));
     }
 
     Ok(())
@@ -181,10 +181,37 @@ pub fn push_branch(
 
     if !success {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GitError::OperationFailed(stderr.to_string()));
+        return Err(GitError::OperationFailed(interpret_push_error(&stderr)));
     }
 
     Ok(())
+}
+
+/// Interpret common git push/fetch errors into user-friendly messages
+fn interpret_push_error(stderr: &str) -> String {
+    let lower = stderr.to_lowercase();
+    if lower.contains("non-fast-forward") {
+        return format!(
+            "Push rejected: remote has changes. Pull first with `gr sync`, then try again.\n\
+             (Original: {})",
+            stderr.trim()
+        );
+    }
+    if lower.contains("could not read from remote") || lower.contains("repository not found") {
+        return format!(
+            "Cannot reach remote. Check your network connection and repository URL.\n\
+             (Original: {})",
+            stderr.trim()
+        );
+    }
+    if lower.contains("permission denied") || lower.contains("authentication failed") {
+        return format!(
+            "Authentication failed. Run `gh auth login` to refresh credentials.\n\
+             (Original: {})",
+            stderr.trim()
+        );
+    }
+    stderr.to_string()
 }
 
 /// Force push branch to remote
@@ -203,7 +230,7 @@ pub fn force_push_branch(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GitError::OperationFailed(stderr.to_string()));
+        return Err(GitError::OperationFailed(interpret_push_error(&stderr)));
     }
 
     Ok(())

@@ -372,14 +372,3 @@ gitgrip is self-improving. When using `gr` commands, capture any friction or ide
 2. Tell the user about the friction point
 
 This is mandatory. Every workaround reveals a gap in `gr` that should be fixed.
-
-## Legacy TypeScript Version
-
-The original TypeScript implementation is in `typescript-legacy/`. It is no longer actively developed but kept for reference and npm users.
-
-```bash
-cd typescript-legacy
-pnpm install
-pnpm build
-pnpm test
-```
