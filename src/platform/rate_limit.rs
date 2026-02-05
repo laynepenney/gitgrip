@@ -19,10 +19,7 @@ pub struct RateLimitInfo {
 impl RateLimitInfo {
     /// Check if rate limited (no remaining requests)
     pub fn is_rate_limited(&self) -> bool {
-        match self.remaining {
-            Some(0) => true,
-            _ => false,
-        }
+        matches!(self.remaining, Some(0))
     }
 
     /// Check if approaching rate limit (less than 10% remaining)
@@ -33,7 +30,7 @@ impl RateLimitInfo {
         }
     }
 
-    /// Get wait time until复位 (in seconds)
+    /// Get wait time until reset (in seconds)
     pub fn wait_seconds(&self) -> Option<u64> {
         self.reset_time.map(|reset| {
             let now = Utc::now();
