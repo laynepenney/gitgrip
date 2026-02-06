@@ -111,11 +111,7 @@ pub fn pull_latest_rebase(repo: &Repository, remote: &str) -> Result<(), GitErro
     pull_latest_with_mode(repo, remote, PullMode::Rebase)
 }
 
-fn pull_latest_with_mode(
-    repo: &Repository,
-    remote: &str,
-    mode: PullMode,
-) -> Result<(), GitError> {
+fn pull_latest_with_mode(repo: &Repository, remote: &str, mode: PullMode) -> Result<(), GitError> {
     let repo_path = super::get_workdir(repo);
     let has_upstream = get_upstream_branch(repo, None)?.is_some();
 
