@@ -117,6 +117,7 @@ fn pull_latest_with_mode(
     mode: PullMode,
 ) -> Result<(), GitError> {
     let repo_path = super::get_workdir(repo);
+    let has_upstream = get_upstream_branch(repo, None)?.is_some();
 
     #[cfg(feature = "telemetry")]
     let start = Instant::now();
@@ -126,7 +127,10 @@ fn pull_latest_with_mode(
     if matches!(mode, PullMode::Rebase) {
         cmd.arg("--rebase");
     }
-    cmd.arg(remote).current_dir(repo_path);
+    if !has_upstream {
+        cmd.arg(remote);
+    }
+    cmd.current_dir(repo_path);
     log_cmd(&cmd);
     let output = cmd
         .output()
