@@ -453,6 +453,45 @@ Supported shells: `bash`, `zsh`, `fish`, `elvish`, `powershell`
   - GitLab: `glab` CLI
   - Azure DevOps: `az` CLI
 
+## Documentation
+
+Additional documentation is available in the `docs/` folder:
+
+- **[MANIFEST.md](docs/MANIFEST.md)** - Complete manifest reference with examples
+- **[SKILL.md](docs/SKILL.md)** - Exportable skill file for AI assistants
+- **[TELEMETRY.md](docs/TELEMETRY.md)** - Telemetry, tracing, and benchmarks
+
+View the manifest schema from the CLI:
+
+```bash
+gr manifest schema              # YAML format
+gr manifest schema --format json     # JSON format
+gr manifest schema --format markdown # Markdown table
+```
+
+## AI Assistant Integration
+
+gitgrip includes a skill file for AI coding assistants (Claude Code, Codex, etc.).
+
+### Setup for Claude Code
+
+Copy the skill file to your workspace:
+
+```bash
+mkdir -p .claude/skills/gitgrip
+cp docs/SKILL.md .claude/skills/gitgrip/SKILL.md
+```
+
+Or copy from an existing gitgrip workspace.
+
+### What the Skill Provides
+
+The skill file teaches AI assistants to:
+- Use `gr` commands instead of raw `git` commands
+- Follow multi-repo workflow patterns
+- Create proper linked PRs across repos
+- Manage branches and sync correctly
+
 ## History
 
 This project was originally written in TypeScript and published to npm as `gitgrip`. It was rewritten in Rust for better performance and additional features.
@@ -460,4 +499,3 @@ This project was originally written in TypeScript and published to npm as `gitgr
 ## License
 
 MIT
-# CI retry
