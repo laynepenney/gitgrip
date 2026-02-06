@@ -7,6 +7,7 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::remote::get_upstream_branch;
 use crate::git::{get_current_branch, open_repo, path_exists};
+use crate::git::remote::get_upstream_branch;
 use crate::util::log_cmd;
 use std::path::PathBuf;
 use std::process::Command;
