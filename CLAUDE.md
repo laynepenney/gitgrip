@@ -235,28 +235,18 @@ Workspace configuration in `.gitgrip/manifests/manifest.yaml`:
 All commands use `gr` (or `gitgrip`):
 - `gr init <url>` - Initialize workspace from manifest URL
 - `gr init --from-dirs` - Initialize workspace from existing local directories
-- `gr sync` - Pull all repos in parallel + process links + run hooks (includes manifest)
-  - `gr sync --sequential` - Sync repos sequentially (slower but ordered output)
+- `gr sync` - Pull all repos + process links + run hooks
 - `gr status` - Show repo and manifest status
-- `gr branch` - Branch operations across all repos (includes manifest)
-- `gr checkout <branch>` - Checkout branch across all repos (includes manifest)
-  - `gr checkout -b <branch>` - Create and checkout branch in one command
+- `gr branch/checkout` - Branch operations across all repos
 - `gr add` - Stage changes across all repos
-- `gr diff` - Show diff across all repos (includes manifest)
+- `gr diff` - Show diff across all repos
 - `gr commit` - Commit staged changes across all repos
-- `gr push` - Push current branch in all repos (includes manifest)
+- `gr push` - Push current branch in all repos
 - `gr pr create/status/merge/checks/diff` - Linked PR workflow
   - `gr pr merge --update` - Update branch from base if behind, then merge
   - `gr pr merge --auto` - Enable auto-merge (merges when checks pass)
   - `gr pr merge --force` - Merge even if checks pending
 - `gr repo add/list/remove` - Manage repositories
-- `gr group list` - List all groups and their repos
-  - `gr group add <group> <repos...>` - Add repos to a group
-  - `gr group remove <group> <repos...>` - Remove repos from a group
-- `gr manifest import/sync` - Import git-repo XML manifests
-  - `gr manifest schema` - Show manifest schema specification
-  - `gr manifest schema --format json` - Show schema as JSON
-  - `gr manifest schema --format markdown` - Show schema as markdown
 - `gr link` - Manage copyfile/linkfile entries
 - `gr run` - Execute workspace scripts
 - `gr env` - Show workspace environment variables
@@ -366,19 +356,9 @@ Test files are alongside the modules they test or in `tests/`.
 
 ## Continuous Improvement
 
-gitgrip is self-improving. When you encounter friction, missing features, or bugs:
+gitgrip is self-improving. The workflow for capturing friction is now:
 
-1. **Tell the user** about the friction point
-2. **Ask if they want a GitHub issue created** - e.g., "Want me to create an issue for this?"
-3. **Create the issue directly** with `gh issue create` if approved
+1. Create a GitHub issue directly for any `gr` friction or feature gap.
+2. Tell the user about the friction point and include the issue link.
 
-No need to document in IMPROVEMENTS.md first - create issues directly to reduce overhead.
-
-### CRITICAL: Report When Falling Back to Raw Commands
-
-**If you ever use raw `git` or `gh` commands, you MUST immediately:**
-
-1. Tell the user about the friction point
-2. Ask if they want a GitHub issue created
-
-This is mandatory. Every workaround reveals a gap in `gr` that should be fixed.
+`IMPROVEMENTS.md` is deprecated and should not receive new entries.

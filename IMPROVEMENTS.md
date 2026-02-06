@@ -3,6 +3,8 @@
 This file captures friction points, feature ideas, and bugs discovered while using `gr`.
 Items here should be reviewed before creating GitHub issues.
 
+> **Deprecated**: This log is being phased out in favor of direct GitHub issues to reduce overhead. New friction should be filed as issues instead of adding entries here.
+
 > **Note**: Historical entries may reference `cr` (the old command name). The current command is `gr`.
 
 > **Merge Conflicts**: When rebasing feature branches, you may encounter merge conflicts in this file when other PRs also add entries. This is expected behavior. To resolve:
@@ -12,6 +14,24 @@ Items here should be reviewed before creating GitHub issues.
 > 3. The alternative would be to use a dedicated documentation file, but we accept this tradeoff for now
 >
 > See issue #143 for context.
+
+---
+
+### gr pr checks unreliable in current environment
+
+**Discovered**: 2026-02-06 while validating checks for codi PR #273
+
+**Problem**: `gr pr checks` intermittently fails with network connect errors to GitHub (octocrab), even though `gh pr checks` works.
+
+**Workaround used**: Ran raw `gh pr checks` and `gh pr merge` to validate checks and merge.
+
+**Raw commands used**:
+```bash
+gh pr checks 273 -R laynepenney/codi
+gh pr merge 273 --squash -R laynepenney/codi
+```
+
+**Expected behavior**: `gr pr checks` should be as reliable as `gh` or provide a fallback path when octocrab errors occur.
 
 ---
 
