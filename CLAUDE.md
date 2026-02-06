@@ -356,22 +356,19 @@ Test files are alongside the modules they test or in `tests/`.
 
 ## Continuous Improvement
 
-gitgrip is self-improving. When using `gr` commands, capture any friction or ideas in:
+gitgrip is self-improving. When you encounter friction, missing features, or bugs:
 
-```
-./IMPROVEMENTS.md
-```
+1. **Tell the user** about the friction point
+2. **Ask if they want a GitHub issue created** - e.g., "Want me to create an issue for this?"
+3. **Create the issue directly** with `gh issue create` if approved
 
-**Do NOT create GitHub issues directly.** Instead:
-1. Add observations to IMPROVEMENTS.md under "Pending Review"
-2. Prompt the user: "I added [observation] to IMPROVEMENTS.md. Want me to create an issue?"
-3. Only create issues after user approval
+No need to document in IMPROVEMENTS.md first - create issues directly to reduce overhead.
 
-### CRITICAL: Document When Falling Back to Raw Commands
+### CRITICAL: Report When Falling Back to Raw Commands
 
 **If you ever use raw `git` or `gh` commands, you MUST immediately:**
 
-1. Add an entry to `IMPROVEMENTS.md` explaining why `gr` couldn't handle the use case
-2. Tell the user about the friction point
+1. Tell the user about the friction point
+2. Ask if they want a GitHub issue created
 
 This is mandatory. Every workaround reveals a gap in `gr` that should be fixed.
