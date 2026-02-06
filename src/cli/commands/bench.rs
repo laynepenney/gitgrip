@@ -350,3 +350,208 @@ pub async fn run(args: BenchArgs) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── calculate_stats ─────────────────────────────────────────
+
+    #[test]
+    fn test_calculate_stats_basic() {
+        let durations = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let (min, max, avg, p50, p95, std_dev) = calculate_stats(&durations);
+
+        assert!((min - 1.0).abs() < f64::EPSILON);
+        assert!((max - 5.0).abs() < f64::EPSILON);
+        assert!((avg - 3.0).abs() < f64::EPSILON);
+        assert!((p50 - 3.0).abs() < f64::EPSILON);
+        assert!((p95 - 5.0).abs() < f64::EPSILON);
+        assert!(std_dev > 0.0);
+    }
+
+    #[test]
+    fn test_calculate_stats_single_value() {
+        let durations = vec![42.0];
+        let (min, max, avg, p50, p95, std_dev) = calculate_stats(&durations);
+
+        assert!((min - 42.0).abs() < f64::EPSILON);
+        assert!((max - 42.0).abs() < f64::EPSILON);
+        assert!((avg - 42.0).abs() < f64::EPSILON);
+        assert!((p50 - 42.0).abs() < f64::EPSILON);
+        assert!((p95 - 42.0).abs() < f64::EPSILON);
+        assert!((std_dev - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_calculate_stats_empty() {
+        let durations: Vec<f64> = vec![];
+        let (min, max, avg, p50, p95, std_dev) = calculate_stats(&durations);
+
+        assert!((min - 0.0).abs() < f64::EPSILON);
+        assert!((max - 0.0).abs() < f64::EPSILON);
+        assert!((avg - 0.0).abs() < f64::EPSILON);
+        assert!((p50 - 0.0).abs() < f64::EPSILON);
+        assert!((p95 - 0.0).abs() < f64::EPSILON);
+        assert!((std_dev - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_calculate_stats_unsorted_input() {
+        let durations = vec![5.0, 1.0, 3.0, 2.0, 4.0];
+        let (min, max, avg, _, _, _) = calculate_stats(&durations);
+
+        assert!((min - 1.0).abs() < f64::EPSILON);
+        assert!((max - 5.0).abs() < f64::EPSILON);
+        assert!((avg - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_calculate_stats_identical_values() {
+        let durations = vec![7.0, 7.0, 7.0, 7.0];
+        let (min, max, avg, p50, p95, std_dev) = calculate_stats(&durations);
+
+        assert!((min - 7.0).abs() < f64::EPSILON);
+        assert!((max - 7.0).abs() < f64::EPSILON);
+        assert!((avg - 7.0).abs() < f64::EPSILON);
+        assert!((p50 - 7.0).abs() < f64::EPSILON);
+        assert!((p95 - 7.0).abs() < f64::EPSILON);
+        assert!((std_dev - 0.0).abs() < f64::EPSILON);
+    }
+
+    // ── format_duration ─────────────────────────────────────────
+
+    #[test]
+    fn test_format_duration_nanoseconds() {
+        let result = format_duration(0.0005);
+        assert!(result.contains("ns"), "expected ns, got: {}", result);
+    }
+
+    #[test]
+    fn test_format_duration_microseconds() {
+        let result = format_duration(0.5);
+        assert!(result.contains("µs"), "expected µs, got: {}", result);
+    }
+
+    #[test]
+    fn test_format_duration_milliseconds() {
+        let result = format_duration(42.5);
+        assert!(result.contains("ms"), "expected ms, got: {}", result);
+        assert_eq!(result, "42.50ms");
+    }
+
+    #[test]
+    fn test_format_duration_seconds() {
+        let result = format_duration(1500.0);
+        assert!(result.contains("s"), "expected s, got: {}", result);
+        assert_eq!(result, "1.50s");
+    }
+
+    #[test]
+    fn test_format_duration_minutes() {
+        let result = format_duration(90000.0);
+        assert!(result.contains("m"), "expected m, got: {}", result);
+    }
+
+    // ── run_benchmark_operation ─────────────────────────────────
+
+    #[test]
+    fn test_benchmark_manifest_parse() {
+        let result = run_benchmark_operation("manifest-parse");
+        assert!(result.is_ok(), "manifest-parse failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_benchmark_state_parse() {
+        let result = run_benchmark_operation("state-parse");
+        assert!(result.is_ok(), "state-parse failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_benchmark_url_parse() {
+        let result = run_benchmark_operation("url-parse");
+        assert!(result.is_ok(), "url-parse failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_benchmark_unknown_operation() {
+        let result = run_benchmark_operation("nonexistent");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Unknown benchmark"),
+            "error should mention unknown: {}",
+            err
+        );
+    }
+
+    // ── run_single_benchmark ────────────────────────────────────
+
+    #[test]
+    fn test_run_single_benchmark() {
+        let result = run_single_benchmark("manifest-parse", 5, 1);
+        assert!(result.is_ok(), "benchmark failed: {:?}", result.err());
+        let bench = result.unwrap();
+        assert_eq!(bench.name, "manifest-parse");
+        assert_eq!(bench.iterations, 5);
+        assert!(bench.min > 0.0);
+        assert!(bench.max >= bench.min);
+        assert!(bench.avg >= bench.min);
+        assert!(bench.avg <= bench.max);
+    }
+
+    // ── format_results ──────────────────────────────────────────
+
+    #[test]
+    fn test_format_results_contains_header() {
+        let results = vec![BenchmarkResult {
+            name: "test-op".to_string(),
+            iterations: 10,
+            min: 0.5,
+            max: 1.5,
+            avg: 1.0,
+            p50: 0.9,
+            p95: 1.4,
+            std_dev: 0.3,
+        }];
+
+        let output = format_results(&results);
+        assert!(output.contains("Benchmark Results"));
+        assert!(output.contains("test-op"));
+        assert!(output.contains("10")); // iterations
+    }
+
+    // ── BenchmarkResult serde ───────────────────────────────────
+
+    #[test]
+    fn test_benchmark_result_json_serialization() {
+        let result = BenchmarkResult {
+            name: "test".to_string(),
+            iterations: 10,
+            min: 0.1,
+            max: 0.5,
+            avg: 0.3,
+            p50: 0.25,
+            p95: 0.45,
+            std_dev: 0.1,
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"name\":\"test\""));
+        assert!(json.contains("\"iterations\":10"));
+    }
+
+    // ── BENCHMARKS constant ─────────────────────────────────────
+
+    #[test]
+    fn test_benchmarks_list_not_empty() {
+        assert!(
+            !BENCHMARKS.is_empty(),
+            "BENCHMARKS should have at least one entry"
+        );
+        for bench in BENCHMARKS {
+            assert!(!bench.name.is_empty());
+            assert!(!bench.description.is_empty());
+        }
+    }
+}
