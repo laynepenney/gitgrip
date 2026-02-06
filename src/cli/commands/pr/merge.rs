@@ -6,7 +6,7 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::{get_manifest_repo_info, RepoInfo};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::traits::PlatformError;
-use crate::platform::{detect_platform, get_platform_adapter, CheckState, MergeMethod};
+use crate::platform::{get_platform_adapter, CheckState, MergeMethod};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -94,8 +94,10 @@ pub async fn run_pr_merge(
             continue;
         }
 
-        let platform_type = detect_platform(&repo.url);
-        let platform = get_platform_adapter(platform_type, None);
+        let platform = get_platform_adapter(
+            repo.platform_type,
+            repo.platform_base_url.as_deref(),
+        );
 
         match platform
             .find_pr_by_branch(&repo.owner, &repo.repo, &branch)

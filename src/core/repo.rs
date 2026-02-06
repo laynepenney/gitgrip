@@ -23,6 +23,8 @@ pub struct RepoInfo {
     pub repo: String,
     /// Detected or configured platform type
     pub platform_type: PlatformType,
+    /// Optional base URL for self-hosted platform instances
+    pub platform_base_url: Option<String>,
     /// Project name (Azure DevOps only)
     pub project: Option<String>,
     /// Reference repo (read-only, excluded from branch/PR operations)
@@ -43,6 +45,7 @@ impl RepoInfo {
             .as_ref()
             .map(|p| p.platform_type)
             .unwrap_or_else(|| detect_platform(&config.url));
+        let platform_base_url = config.platform.as_ref().and_then(|p| p.base_url.clone());
 
         Some(Self {
             name: name.to_string(),
@@ -53,6 +56,7 @@ impl RepoInfo {
             owner: parsed.owner,
             repo: parsed.repo,
             platform_type,
+            platform_base_url,
             project: parsed.project,
             reference: config.reference,
             groups: config.groups.clone(),

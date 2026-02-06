@@ -589,4 +589,20 @@ mod tests {
             Some("https://github.com/test/repo2.git".to_string())
         );
     }
+
+    #[test]
+    fn test_pull_latest_missing_remote_errors() {
+        let (_temp, repo) = setup_test_repo();
+
+        let err = pull_latest(&repo, "origin").expect_err("pull should fail without remote");
+        let message = err.to_string();
+        assert!(
+            message.contains("remote")
+                || message.contains("NotFound")
+                || message.contains("fatal")
+                || message.contains("not found"),
+            "unexpected error message: {}",
+            message
+        );
+    }
 }

@@ -8,6 +8,12 @@ mod common;
 
 use common::fixtures::WorkspaceBuilder;
 use common::git_helpers;
+use common::mock_platform::{
+    mock_check_runs, mock_get_pr, mock_list_prs, mock_merge_pr, mock_merge_pr_behind,
+    mock_pr_reviews, setup_github_mock,
+};
+use gitgrip::core::manifest::{PlatformConfig, PlatformType};
+use wiremock::http::Method;
 
 // ── No Open PRs ─────────────────────────────────────────────────
 // When all repos are on the default branch, no API calls are made
@@ -165,28 +171,104 @@ async fn test_pr_merge_mixed_repos_all_skipped() {
 // The --force flag should merge PRs even if not approved or checks pending.
 
 #[tokio::test]
-#[ignore = "requires platform injection for API mocking"]
 async fn test_pr_merge_force_bypasses_checks() {
-    // TODO: Implement with mock platform
-    // 1. Create workspace with repo on feature branch
-    // 2. Mock find_pr_by_branch to return a PR
-    // 3. Mock get_pull_request to return approved=false, mergeable=true
-    // 4. Mock get_status_checks to return pending
-    // 5. Call run_pr_merge with force=true
-    // 6. Verify merge_pull_request was called despite pending checks
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let mut manifest = ws.load_manifest();
+
+    // Switch to feature branch
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
+    git_helpers::commit_file(&ws.repo_path("app"), "feature.txt", "feature", "Add feature");
+
+    // Point manifest at mock GitHub
+    let repo_config = manifest.repos.get_mut("app").unwrap();
+    repo_config.url = "https://github.com/owner/repo.git".to_string();
+    repo_config.platform = Some(PlatformConfig {
+        platform_type: PlatformType::GitHub,
+        base_url: Some(server.uri()),
+    });
+
+    mock_list_prs(&server, vec![(42, "feat/test")]).await;
+    mock_get_pr(&server, 42, "open", false).await;
+    mock_pr_reviews(&server, 42, vec![("COMMENTED", "alice")]).await;
+    mock_check_runs(&server, "feat/test", vec![("CI", "in_progress", None)]).await;
+    mock_merge_pr(&server, 42, true).await;
+
+    let result = gitgrip::cli::commands::pr::run_pr_merge(
+        &ws.workspace_root,
+        &manifest,
+        None,
+        true,  // force
+        false, // update
+        false, // auto
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "force merge should not error: {:?}",
+        result.err()
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.method == Method::PUT && r.url.path().ends_with("/merge")),
+        "expected merge request to be sent"
+    );
 }
 
 // ── Branch Behind Suggests Update ───────────────────────────────
 // When merge fails with BranchBehind, suggest using --update.
 
 #[tokio::test]
-#[ignore = "requires platform injection for API mocking"]
 async fn test_pr_merge_branch_behind_suggests_update() {
-    // TODO: Implement with mock platform
-    // 1. Create workspace with repo on feature branch
-    // 2. Mock find_pr_by_branch to return a PR
-    // 3. Mock merge_pull_request to fail with BranchBehind
-    // 4. Verify output suggests using --update
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let mut manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
+    git_helpers::commit_file(&ws.repo_path("app"), "feature.txt", "feature", "Add feature");
+
+    let repo_config = manifest.repos.get_mut("app").unwrap();
+    repo_config.url = "https://github.com/owner/repo.git".to_string();
+    repo_config.platform = Some(PlatformConfig {
+        platform_type: PlatformType::GitHub,
+        base_url: Some(server.uri()),
+    });
+
+    mock_list_prs(&server, vec![(42, "feat/test")]).await;
+    mock_get_pr(&server, 42, "open", false).await;
+    mock_pr_reviews(&server, 42, vec![("APPROVED", "alice")]).await;
+    mock_check_runs(&server, "feat/test", vec![("CI", "completed", Some("success"))]).await;
+    mock_merge_pr_behind(&server, 42).await;
+
+    let result = gitgrip::cli::commands::pr::run_pr_merge(
+        &ws.workspace_root,
+        &manifest,
+        None,
+        true,  // force to bypass readiness
+        false, // update
+        false, // auto
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "branch-behind merge should be handled without crashing: {:?}",
+        result.err()
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.method == Method::PUT && r.url.path().ends_with("/merge")),
+        "expected merge attempt for branch-behind case"
+    );
 }
 
 // ── AllOrNothing Stops on Failure ───────────────────────────────

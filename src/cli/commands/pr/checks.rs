@@ -4,7 +4,7 @@ use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::{get_current_branch, open_repo, path_exists};
-use crate::platform::{detect_platform, get_platform_adapter, CheckState};
+use crate::platform::{get_platform_adapter, CheckState};
 use std::path::PathBuf;
 
 /// Run the PR checks command
@@ -63,8 +63,10 @@ pub async fn run_pr_checks(
             continue;
         }
 
-        let platform_type = detect_platform(&repo.url);
-        let platform = get_platform_adapter(platform_type, None);
+        let platform = get_platform_adapter(
+            repo.platform_type,
+            repo.platform_base_url.as_deref(),
+        );
 
         // Find PR number (optional, for display)
         let pr_number = match platform

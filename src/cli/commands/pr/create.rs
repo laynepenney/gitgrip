@@ -6,7 +6,7 @@ use crate::core::repo::{get_manifest_repo_info, RepoInfo};
 use crate::core::state::StateFile;
 use crate::git::status::has_uncommitted_changes;
 use crate::git::{get_current_branch, open_repo, path_exists};
-use crate::platform::{detect_platform, get_platform_adapter};
+use crate::platform::get_platform_adapter;
 use git2::Repository;
 use std::path::PathBuf;
 
@@ -156,8 +156,10 @@ pub async fn run_pr_create(
     let mut created_prs: Vec<(String, u64, String)> = Vec::new(); // (repo_name, pr_number, url)
 
     for repo in &repos_with_changes {
-        let platform_type = detect_platform(&repo.url);
-        let platform = get_platform_adapter(platform_type, None);
+        let platform = get_platform_adapter(
+            repo.platform_type,
+            repo.platform_base_url.as_deref(),
+        );
 
         let spinner = Output::spinner(&format!("Creating PR for {}...", repo.name));
 
