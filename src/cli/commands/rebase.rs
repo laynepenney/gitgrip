@@ -6,6 +6,7 @@ use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::{get_current_branch, open_repo, path_exists};
+use crate::git::remote::get_upstream_branch;
 use crate::util::log_cmd;
 use std::path::PathBuf;
 use std::process::Command;
@@ -15,6 +16,7 @@ pub fn run_rebase(
     workspace_root: &PathBuf,
     manifest: &Manifest,
     onto: Option<&str>,
+    upstream: bool,
     abort: bool,
     _continue: bool,
 ) -> anyhow::Result<()> {
@@ -26,8 +28,17 @@ pub fn run_rebase(
         return run_rebase_continue(workspace_root, manifest);
     }
 
+    let use_upstream = upstream || onto.is_none();
+    if upstream && onto.is_some() {
+        Output::warning("Ignoring explicit target because --upstream was set");
+    }
     let target = onto.unwrap_or("origin/main");
-    Output::header(&format!("Rebasing onto {}", target));
+    let header = if use_upstream {
+        "Rebasing onto upstream branches".to_string()
+    } else {
+        format!("Rebasing onto {}", target)
+    };
+    Output::header(&header);
     println!();
 
     let repos: Vec<RepoInfo> = manifest
@@ -70,9 +81,18 @@ pub fn run_rebase(
 
         let spinner = Output::spinner(&format!("Rebasing {}...", repo.name));
 
+        let resolved_target = if use_upstream {
+            match get_upstream_branch(&git_repo, None) {
+                Ok(Some(upstream_ref)) => upstream_ref,
+                _ => format!("origin/{}", repo.default_branch),
+            }
+        } else {
+            target.to_string()
+        };
+
         // Use git command for rebase (git2 doesn't support interactive rebase well)
         let mut cmd = Command::new("git");
-        cmd.args(["rebase", target])
+        cmd.args(["rebase", &resolved_target])
             .current_dir(&repo.absolute_path);
         log_cmd(&cmd);
         let output = cmd.output()?;

@@ -59,6 +59,11 @@ pub fn push_upstream(repo_path: &Path, remote: &str, branch: &str) {
     git(repo_path, &["push", "-u", remote, branch]);
 }
 
+/// Set upstream tracking for the current branch.
+pub fn set_upstream(repo_path: &Path, upstream: &str) {
+    git(repo_path, &["branch", "--set-upstream-to", upstream]);
+}
+
 /// Add a remote to a repository.
 pub fn add_remote(repo_path: &Path, name: &str, url: &str) {
     git(repo_path, &["remote", "add", name, url]);
@@ -67,6 +72,11 @@ pub fn add_remote(repo_path: &Path, name: &str, url: &str) {
 /// Get the current branch name.
 pub fn current_branch(repo_path: &Path) -> String {
     git_output(repo_path, &["rev-parse", "--abbrev-ref", "HEAD"])
+}
+
+/// Check if recent log output contains a message.
+pub fn log_contains(repo_path: &Path, message: &str) -> bool {
+    git_output(repo_path, &["log", "--oneline", "-n", "10"]).contains(message)
 }
 
 /// Get HEAD sha.

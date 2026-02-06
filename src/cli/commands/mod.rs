@@ -21,6 +21,7 @@ pub mod manifest;
 pub mod pr;
 pub mod prune;
 pub mod push;
+pub mod pull;
 pub mod rebase;
 pub mod repo;
 pub mod run;

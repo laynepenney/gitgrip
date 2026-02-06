@@ -21,6 +21,7 @@ fn test_rebase_on_default_branch_skips() {
         None,
         false,
         false,
+        false,
     );
     assert!(
         result.is_ok(),
@@ -52,11 +53,52 @@ fn test_rebase_on_feature_branch() {
         Some("origin/main"),
         false,
         false,
+        false,
     );
     assert!(
         result.is_ok(),
         "rebase on feature branch should succeed: {:?}",
         result.err()
+    );
+}
+
+#[test]
+fn test_rebase_uses_upstream_when_no_target() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    let repo_path = ws.repo_path("app");
+
+    // Create dev branch and push upstream
+    git_helpers::create_branch(&repo_path, "dev");
+    git_helpers::commit_file(&repo_path, "dev.txt", "dev", "Add dev");
+    git_helpers::push_upstream(&repo_path, "origin", "dev");
+
+    // Create feature branch from main
+    git_helpers::checkout(&repo_path, "main");
+    git_helpers::create_branch(&repo_path, "feat/rebase-upstream");
+    git_helpers::commit_file(&repo_path, "feature.txt", "feature", "Add feature");
+
+    // Point feature branch upstream at origin/dev
+    git_helpers::set_upstream(&repo_path, "origin/dev");
+
+    let result = gitgrip::cli::commands::rebase::run_rebase(
+        &ws.workspace_root,
+        &manifest,
+        None,
+        false,
+        false,
+        false,
+    );
+    assert!(
+        result.is_ok(),
+        "rebase on upstream should succeed: {:?}",
+        result.err()
+    );
+
+    assert!(
+        git_helpers::log_contains(&repo_path, "Add dev"),
+        "expected rebase to include upstream dev commit"
     );
 }
 
@@ -71,6 +113,7 @@ fn test_rebase_abort_no_rebase() {
         &ws.workspace_root,
         &manifest,
         None,
+        false,
         true, // abort
         false,
     );
@@ -95,6 +138,7 @@ fn test_rebase_missing_repo() {
         &ws.workspace_root,
         &manifest,
         None,
+        false,
         false,
         false,
     );

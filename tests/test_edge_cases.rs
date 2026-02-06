@@ -255,6 +255,7 @@ fn test_rebase_continue_no_rebase() {
         &manifest,
         None,
         false,
+        false,
         true, // continue
     );
     assert!(

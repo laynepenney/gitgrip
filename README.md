@@ -160,7 +160,8 @@ gr sync
 | `gr tree add <branch>` | Create a worktree-based workspace |
 | `gr tree list` | List all griptrees |
 | `gr tree remove <branch>` | Remove a griptree |
-| `gr rebase` | Rebase across repos |
+| `gr pull` | Pull latest changes across repos |
+| `gr rebase` | Rebase across repos (defaults to upstream) |
 | `gr link` | Manage file links |
 | `gr run <script>` | Run workspace scripts |
 | `gr env` | Show environment variables |

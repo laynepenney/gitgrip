@@ -14,6 +14,12 @@ use std::time::Instant;
 #[cfg(feature = "telemetry")]
 use tracing::{debug, instrument};
 
+#[derive(Debug, Clone, Copy)]
+pub enum PullMode {
+    Merge,
+    Rebase,
+}
+
 /// Get the URL of a remote
 pub fn get_remote_url(repo: &Repository, remote: &str) -> Result<Option<String>, GitError> {
     let repo_path = super::get_workdir(repo);
@@ -96,13 +102,31 @@ pub fn fetch_remote(repo: &Repository, remote: &str) -> Result<(), GitError> {
 /// Pull latest changes (fetch + merge)
 #[cfg_attr(feature = "telemetry", instrument(skip(repo), fields(remote, success)))]
 pub fn pull_latest(repo: &Repository, remote: &str) -> Result<(), GitError> {
+    pull_latest_with_mode(repo, remote, PullMode::Merge)
+}
+
+/// Pull latest changes with rebase
+#[cfg_attr(feature = "telemetry", instrument(skip(repo), fields(remote, success)))]
+pub fn pull_latest_rebase(repo: &Repository, remote: &str) -> Result<(), GitError> {
+    pull_latest_with_mode(repo, remote, PullMode::Rebase)
+}
+
+fn pull_latest_with_mode(
+    repo: &Repository,
+    remote: &str,
+    mode: PullMode,
+) -> Result<(), GitError> {
     let repo_path = super::get_workdir(repo);
 
     #[cfg(feature = "telemetry")]
     let start = Instant::now();
 
     let mut cmd = Command::new("git");
-    cmd.args(["pull", remote]).current_dir(repo_path);
+    cmd.arg("pull");
+    if matches!(mode, PullMode::Rebase) {
+        cmd.arg("--rebase");
+    }
+    cmd.arg(remote).current_dir(repo_path);
     log_cmd(&cmd);
     let output = cmd
         .output()
@@ -371,11 +395,24 @@ pub fn safe_pull_latest(
     default_branch: &str,
     remote: &str,
 ) -> Result<SafePullResult, GitError> {
+    safe_pull_latest_with_mode(repo, default_branch, remote, PullMode::Merge)
+}
+
+pub fn safe_pull_latest_with_mode(
+    repo: &Repository,
+    default_branch: &str,
+    remote: &str,
+    mode: PullMode,
+) -> Result<SafePullResult, GitError> {
     let current_branch = get_current_branch(repo)?;
 
     // If on default branch, just pull
     if current_branch == default_branch {
-        return match pull_latest(repo, remote) {
+        let pull_result = match mode {
+            PullMode::Merge => pull_latest(repo, remote),
+            PullMode::Rebase => pull_latest_rebase(repo, remote),
+        };
+        return match pull_result {
             Ok(()) => Ok(SafePullResult {
                 pulled: true,
                 recovered: false,
@@ -420,7 +457,10 @@ pub fn safe_pull_latest(
 
         // Safe to switch - upstream was deleted and no local work would be lost
         super::branch::checkout_branch(repo, default_branch)?;
-        pull_latest(repo, remote)?;
+        match mode {
+            PullMode::Merge => pull_latest(repo, remote)?,
+            PullMode::Rebase => pull_latest_rebase(repo, remote)?,
+        }
 
         return Ok(SafePullResult {
             pulled: true,
@@ -433,7 +473,11 @@ pub fn safe_pull_latest(
     }
 
     // Normal pull
-    match pull_latest(repo, remote) {
+    let pull_result = match mode {
+        PullMode::Merge => pull_latest(repo, remote),
+        PullMode::Rebase => pull_latest_rebase(repo, remote),
+    };
+    match pull_result {
         Ok(()) => Ok(SafePullResult {
             pulled: true,
             recovered: false,
