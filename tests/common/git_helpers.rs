@@ -69,6 +69,11 @@ pub fn add_remote(repo_path: &Path, name: &str, url: &str) {
     git(repo_path, &["remote", "add", name, url]);
 }
 
+/// Remove a remote from a repository.
+pub fn remove_remote(repo_path: &Path, name: &str) {
+    git(repo_path, &["remote", "remove", name]);
+}
+
 /// Get the current branch name.
 pub fn current_branch(repo_path: &Path) -> String {
     git_output(repo_path, &["rev-parse", "--abbrev-ref", "HEAD"])
