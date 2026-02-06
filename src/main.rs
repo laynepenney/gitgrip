@@ -530,14 +530,16 @@ async fn main() -> anyhow::Result<()> {
         }) => {
             let (workspace_root, manifest) = load_workspace()?;
             gitgrip::cli::commands::branch::run_branch(
-                &workspace_root,
-                &manifest,
-                name.as_deref(),
-                delete,
-                r#move,
-                repo.as_deref(),
-                group.as_deref(),
-                json,
+                gitgrip::cli::commands::branch::BranchOptions {
+                    workspace_root: &workspace_root,
+                    manifest: &manifest,
+                    name: name.as_deref(),
+                    delete,
+                    move_commits: r#move,
+                    repos_filter: repo.as_deref(),
+                    group_filter: group.as_deref(),
+                    json,
+                },
             )?;
         }
         Some(Commands::Checkout { name, create }) => {
@@ -654,17 +656,17 @@ async fn main() -> anyhow::Result<()> {
             private,
             from_repo,
         }) => {
-            gitgrip::cli::commands::init::run_init(
-                url.as_deref(),
-                path.as_deref(),
+            gitgrip::cli::commands::init::run_init(gitgrip::cli::commands::init::InitOptions {
+                url: url.as_deref(),
+                path: path.as_deref(),
                 from_dirs,
-                &dirs,
+                dirs: &dirs,
                 interactive,
                 create_manifest,
-                manifest_name.as_deref(),
+                manifest_name: manifest_name.as_deref(),
                 private,
                 from_repo,
-            )
+            })
             .await?;
         }
         Some(Commands::Tree { action }) => {

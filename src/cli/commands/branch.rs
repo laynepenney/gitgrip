@@ -9,27 +9,35 @@ use crate::git::{
 };
 use std::path::PathBuf;
 
+/// Options for the branch command
+pub struct BranchOptions<'a> {
+    pub workspace_root: &'a PathBuf,
+    pub manifest: &'a Manifest,
+    pub name: Option<&'a str>,
+    pub delete: bool,
+    pub move_commits: bool,
+    pub repos_filter: Option<&'a [String]>,
+    pub group_filter: Option<&'a [String]>,
+    pub json: bool,
+}
+
 /// Run the branch command
-pub fn run_branch(
-    workspace_root: &PathBuf,
-    manifest: &Manifest,
-    name: Option<&str>,
-    delete: bool,
-    move_commits: bool,
-    repos_filter: Option<&[String]>,
-    group_filter: Option<&[String]>,
-    json: bool,
-) -> anyhow::Result<()> {
-    let mut repos: Vec<RepoInfo> =
-        filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
+pub fn run_branch(opts: BranchOptions<'_>) -> anyhow::Result<()> {
+    let mut repos: Vec<RepoInfo> = filter_repos(
+        opts.manifest,
+        opts.workspace_root,
+        opts.repos_filter,
+        opts.group_filter,
+        false,
+    );
 
     // Include manifest repo in branch operations
-    if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
+    if let Some(manifest_repo) = get_manifest_repo_info(opts.manifest, opts.workspace_root) {
         repos.push(manifest_repo);
     }
 
-    match name {
-        Some(branch_name) if delete => {
+    match opts.name {
+        Some(branch_name) if opts.delete => {
             // Delete branch
             Output::header(&format!("Deleting branch '{}'", branch_name));
             println!();
@@ -56,7 +64,7 @@ pub fn run_branch(
                 }
             }
         }
-        Some(branch_name) if move_commits => {
+        Some(branch_name) if opts.move_commits => {
             // Move commits to new branch (create branch, reset current to remote, checkout new)
             Output::header(&format!(
                 "Moving commits to branch '{}' in {} repos...",
@@ -226,7 +234,7 @@ pub fn run_branch(
             );
         }
         None => {
-            if json {
+            if opts.json {
                 // JSON output for list mode
                 #[derive(serde::Serialize)]
                 struct JsonBranch {

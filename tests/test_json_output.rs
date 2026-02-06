@@ -137,30 +137,31 @@ fn test_branch_json_list() {
     let manifest = ws.load_manifest();
 
     // Create a branch first
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/test"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/test"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
     git_helpers::checkout(&ws.repo_path("app"), "main");
 
     // List branches in JSON mode
-    let result = gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        None, // list mode
-        false,
-        false,
-        None,
-        None,
-        true, // json
-    );
+    let result =
+        gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+            workspace_root: &ws.workspace_root,
+            manifest: &manifest,
+            name: None,
+            delete: false,
+            move_commits: false,
+            repos_filter: None,
+            group_filter: None,
+            json: true,
+        });
     assert!(
         result.is_ok(),
         "branch json list should succeed: {:?}",

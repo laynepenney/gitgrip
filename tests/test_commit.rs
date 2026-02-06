@@ -16,16 +16,16 @@ fn test_commit_across_repos() {
     let manifest = ws.load_manifest();
 
     // Create branch (good practice, avoid committing on main)
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/commit-test"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/commit-test"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
 
     // Create and stage files

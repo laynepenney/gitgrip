@@ -15,16 +15,16 @@ fn test_checkout_existing_branch() {
     let manifest = ws.load_manifest();
 
     // Create a branch
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/checkout-test"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/checkout-test"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
 
     // Go back to main
@@ -83,16 +83,16 @@ fn test_checkout_main() {
     let manifest = ws.load_manifest();
 
     // Create and switch to feature branch
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/temp"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/temp"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
     assert_on_branch(&ws.repo_path("app"), "feat/temp");
 
