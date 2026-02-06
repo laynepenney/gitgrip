@@ -18,6 +18,18 @@ Manage multiple related repositories as a single workspace with synchronized bra
 
 Inspired by Android's [repo tool](https://source.android.com/docs/setup/create/repo), gitgrip brings manifest-based multi-repo management to any project.
 
+## Why gitgrip?
+
+| Without gitgrip | With gitgrip |
+|-----------------|--------------|
+| `cd repo1 && git checkout -b feat/x` | `gr branch feat/x` |
+| Repeat for each repo... | (all repos at once) |
+| Open 5 PRs manually | `gr pr create -t "feat: x"` |
+| Merge each PR independently | `gr pr merge` (atomic) |
+| ~30 minutes of ceremony | ~30 seconds |
+
+> **New in v0.10.0:** Parallel sync (default), `gr checkout -b`, group management, and `gr manifest schema`. See the [changelog](CHANGELOG.md) for details.
+
 ## Features
 
 - **Manifest-based configuration** - Define all your repos in a single YAML file
