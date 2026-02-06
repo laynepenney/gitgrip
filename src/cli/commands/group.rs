@@ -219,9 +219,7 @@ pub fn run_group_remove(
 
 /// Create a new group (informational - groups are created by adding repos)
 pub fn run_group_create(_workspace_root: &PathBuf, name: &str) -> anyhow::Result<()> {
-    Output::info(&format!(
-        "Groups are created implicitly when you add repos to them."
-    ));
+    Output::info("Groups are created implicitly when you add repos to them.");
     println!();
     Output::info(&format!(
         "To create group '{}', run: gr group add {} <repo-name>",

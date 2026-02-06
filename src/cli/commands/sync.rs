@@ -94,6 +94,7 @@ fn sync_sequential(
 }
 
 /// Sync repos in parallel using tokio
+#[allow(clippy::unnecessary_to_owned)] // We need to clone for move into spawn_blocking
 async fn sync_parallel(
     repos: &[RepoInfo],
     force: bool,
@@ -105,10 +106,8 @@ async fn sync_parallel(
     // Show a single spinner for all repos
     let spinner = Output::spinner(&format!("Syncing {} repos in parallel...", repos.len()));
 
-    for repo in repos.iter().cloned() {
+    for repo in repos.to_vec() {
         let results = Arc::clone(&results);
-        let force = force;
-        let quiet = quiet;
 
         join_set.spawn_blocking(move || {
             let result = sync_single_repo(&repo, force, quiet, false)?;
