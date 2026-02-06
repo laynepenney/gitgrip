@@ -20,6 +20,7 @@ pub mod link;
 pub mod manifest;
 pub mod pr;
 pub mod prune;
+pub mod pull;
 pub mod push;
 pub mod rebase;
 pub mod repo;

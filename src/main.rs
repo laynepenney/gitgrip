@@ -199,12 +199,27 @@ enum Commands {
     Rebase {
         /// Target branch
         onto: Option<String>,
+        /// Use upstream tracking branch when no target is provided
+        #[arg(long)]
+        upstream: bool,
         /// Abort rebase in progress
         #[arg(long)]
         abort: bool,
         /// Continue rebase after resolving conflicts
         #[arg(long, name = "continue")]
         continue_rebase: bool,
+    },
+    /// Pull latest changes across repos
+    Pull {
+        /// Rebase instead of merge
+        #[arg(long)]
+        rebase: bool,
+        /// Only pull repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+        /// Sync repos sequentially (default: parallel)
+        #[arg(long)]
+        sequential: bool,
     },
     /// Manage file links
     Link {
@@ -735,6 +750,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Rebase {
             onto,
+            upstream,
             abort,
             continue_rebase,
         }) => {
@@ -743,9 +759,26 @@ async fn main() -> anyhow::Result<()> {
                 &workspace_root,
                 &manifest,
                 onto.as_deref(),
+                upstream,
                 abort,
                 continue_rebase,
             )?;
+        }
+        Some(Commands::Pull {
+            rebase,
+            group,
+            sequential,
+        }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::pull::run_pull(
+                &workspace_root,
+                &manifest,
+                rebase,
+                group.as_deref(),
+                sequential,
+                cli.quiet,
+            )
+            .await?;
         }
         Some(Commands::Link { status, apply }) => {
             let (workspace_root, manifest) = load_workspace()?;
