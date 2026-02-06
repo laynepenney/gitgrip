@@ -1,0 +1,160 @@
+# gitgrip Manifest Schema Specification
+# Version: 1
+#
+# This document describes the structure of a gitgrip manifest.yaml file.
+# The manifest defines a multi-repository workspace configuration.
+
+# Schema version (required)
+version: 1
+
+# Manifest repository self-tracking (optional)
+# If specified, gitgrip will include the manifest repo in sync/branch/push operations
+manifest:
+  # Git URL for the manifest repository (required)
+  url: "git@github.com:org/workspace-manifest.git"
+
+  # Default branch (defaults to "main")
+  default_branch: "main"
+
+  # Files to copy from manifest repo to workspace root (optional)
+  copyfile:
+    - src: "envsetup.sh"          # Source path relative to manifest repo
+      dest: "envsetup.sh"         # Destination path relative to workspace root
+
+  # Symlinks from workspace to manifest repo (optional)
+  linkfile:
+    - src: "config/shared.yaml"
+      dest: ".config/shared.yaml"
+
+  # Platform override for self-hosted instances (optional)
+  platform:
+    type: "github"                # github, gitlab, azure-devops, bitbucket
+    base_url: "https://github.mycompany.com"
+
+# Repository definitions (required, at least one)
+repos:
+  # Key is the repository name used in gitgrip commands
+  frontend:
+    # Git URL - SSH or HTTPS (required)
+    url: "git@github.com:org/frontend.git"
+
+    # Local path relative to workspace root (required)
+    path: "./frontend"
+
+    # Default branch (defaults to "main")
+    default_branch: "main"
+
+    # Groups for selective operations (optional)
+    # Use with: gr sync --group=core
+    groups:
+      - core
+      - web
+
+    # Mark as reference/read-only repo (optional, defaults to false)
+    # Reference repos are synced but excluded from branch/commit/PR operations
+    reference: false
+
+    # Platform override (optional, auto-detected from URL)
+    platform:
+      type: "github"
+      base_url: null              # Only needed for self-hosted instances
+
+    # Files to copy after clone/sync (optional)
+    copyfile:
+      - src: "README.md"
+        dest: "docs/FRONTEND_README.md"
+
+    # Symlinks to create (optional)
+    linkfile:
+      - src: ".env.example"
+        dest: ".env"
+
+  backend:
+    url: "git@github.com:org/backend.git"
+    path: "./backend"
+    groups:
+      - core
+      - api
+
+  # Reference repositories (read-only)
+  reference-lib:
+    url: "https://github.com/external/lib.git"
+    path: "./ref/lib"
+    reference: true               # Excluded from branch/commit operations
+
+# Global settings (optional)
+settings:
+  # Prefix for PR titles (defaults to "[cross-repo]")
+  pr_prefix: "[cross-repo]"
+
+  # Merge strategy for linked PRs
+  # all-or-nothing: All PRs must merge together or none
+  # independent: Each PR can be merged separately
+  merge_strategy: "all-or-nothing"
+
+# Workspace configuration (optional)
+workspace:
+  # Environment variables available to workspace scripts
+  env:
+    NODE_ENV: "development"
+    WORKSPACE_NAME: "myproject"
+
+  # Named scripts runnable via `gr run <name>`
+  scripts:
+    build:
+      description: "Build all packages"
+      command: "npm run build"
+      cwd: "."                    # Working directory (optional)
+
+    test:
+      description: "Run all tests"
+      # Multi-step scripts
+      steps:
+        - name: "Lint"
+          command: "npm run lint"
+          cwd: "./frontend"
+        - name: "Unit tests"
+          command: "npm test"
+        - name: "Integration tests"
+          command: "npm run test:integration"
+
+  # Lifecycle hooks (optional)
+  hooks:
+    # Run after `gr sync`
+    post-sync:
+      - command: "npm install"
+        cwd: "./frontend"
+      - command: "cargo build"
+        cwd: "./backend"
+
+    # Run after `gr checkout`
+    post-checkout:
+      - command: "./scripts/setup-env.sh"
+
+  # CI/CD pipelines runnable via `gr ci run <name>`
+  ci:
+    pipelines:
+      test:
+        description: "Run full test suite"
+        steps:
+          - name: "Install dependencies"
+            command: "npm ci"
+          - name: "Run tests"
+            command: "npm test"
+            continue_on_error: false
+          - name: "Upload coverage"
+            command: "npm run coverage:upload"
+            env:
+              COVERAGE_TOKEN: "${COVERAGE_TOKEN}"
+
+# Supported platform types:
+# - github: GitHub.com or GitHub Enterprise
+# - gitlab: GitLab.com or self-hosted GitLab
+# - azure-devops: Azure DevOps (dev.azure.com) or Azure DevOps Server
+# - bitbucket: Bitbucket Cloud or Bitbucket Server
+
+# Path rules:
+# - Paths must be relative to workspace root
+# - Paths cannot start with ".." or "/"
+# - Paths cannot contain "/../"
+# - These rules prevent directory traversal attacks

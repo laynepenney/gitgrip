@@ -2,7 +2,7 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::RepoInfo;
+use crate::core::repo::{get_manifest_repo_info, RepoInfo};
 use crate::git::remote::{force_push_branch, push_branch};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use git2::Repository;
@@ -23,12 +23,17 @@ pub fn run_push(
     }
     println!();
 
-    let repos: Vec<RepoInfo> = manifest
+    let mut repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
         .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
         .filter(|r| !r.reference) // Skip reference repos
         .collect();
+
+    // Include manifest repo in push operations
+    if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
+        repos.push(manifest_repo);
+    }
 
     let mut success_count = 0;
     let mut skip_count = 0;

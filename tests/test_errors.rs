@@ -120,6 +120,7 @@ fn test_checkout_nonexistent_branch() {
         &ws.workspace_root,
         &manifest,
         "nonexistent-branch",
+        false,
     );
     // Should succeed (returns Ok) but skip repos where branch doesn't exist
     assert!(
@@ -148,7 +149,8 @@ fn test_branch_already_exists() {
     .unwrap();
 
     // Switch back to main
-    gitgrip::cli::commands::checkout::run_checkout(&ws.workspace_root, &manifest, "main").unwrap();
+    gitgrip::cli::commands::checkout::run_checkout(&ws.workspace_root, &manifest, "main", false)
+        .unwrap();
 
     // Try creating same branch again - should handle gracefully
     let result = gitgrip::cli::commands::branch::run_branch(
@@ -170,8 +172,8 @@ fn test_branch_already_exists() {
 
 // ── Sync with Broken Remote ──────────────────────────────────────
 
-#[test]
-fn test_sync_with_deleted_remote() {
+#[tokio::test]
+async fn test_sync_with_deleted_remote() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
     // Delete the bare remote to simulate inaccessible remote
@@ -179,8 +181,15 @@ fn test_sync_with_deleted_remote() {
 
     let manifest = ws.load_manifest();
     // Sync should handle missing remote gracefully (error or report per-repo failure)
-    let result =
-        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false, None);
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+    )
+    .await;
     // Whether it returns Ok (with per-repo error reports) or Err is acceptable,
     // but it must not panic. Verify we got a determinate result.
     match &result {

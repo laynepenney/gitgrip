@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-02-05
+
+### Added
+- **Parallel sync** - `gr sync` now runs in parallel by default for faster syncing
+  - Use `--sequential` flag for sequential sync (previous behavior)
+- **Checkout create flag** - `gr checkout -b <branch>` creates and switches to branch in one command
+  - Creates branch if it doesn't exist, checks out if it does
+- **Manifest schema command** - `gr manifest schema` displays manifest specification
+  - `--format yaml` (default), `--format json`, or `--format markdown`
+- **Group management** - Interactive repo grouping commands
+  - `gr group add <group> <repos...>` - add repos to a group
+  - `gr group remove <group> <repos...>` - remove repos from a group
+  - `gr group create <name>` - shows how to create groups
+
+### Changed
+- **Consistent manifest handling** - Manifest repo now included in all operations:
+  - `gr sync` - syncs manifest repo first
+  - `gr branch` - creates/deletes branches in manifest repo
+  - `gr checkout` - checks out manifest repo with other repos
+  - `gr push` - pushes manifest repo if it has changes
+  - `gr diff` - shows manifest repo changes
+- Added `get_manifest_repo_info()` helper in `src/core/repo.rs` for reusable manifest repo handling
+
+### Fixed
+- Manifest repo was inconsistently handled across commands (fixes #210, #214)
+
 ## [0.9.0] - 2026-02-05
 
 ### Added

@@ -288,8 +288,12 @@ fn test_checkout_main_from_feature() {
     .unwrap();
 
     // Checkout main
-    let result =
-        gitgrip::cli::commands::checkout::run_checkout(&ws.workspace_root, &manifest, "main");
+    let result = gitgrip::cli::commands::checkout::run_checkout(
+        &ws.workspace_root,
+        &manifest,
+        "main",
+        false,
+    );
     assert!(
         result.is_ok(),
         "checkout main should succeed: {:?}",

@@ -134,10 +134,12 @@ gr sync
 |---------|-------------|
 | `gr init <url>` | Initialize workspace from manifest repo |
 | `gr init --from-dirs` | Initialize workspace from existing local directories |
-| `gr sync` | Pull latest from all repos |
+| `gr sync` | Pull latest from all repos (parallel by default) |
+| `gr sync --sequential` | Pull repos one at a time |
 | `gr status` | Show status of all repos |
 | `gr branch [name]` | Create or list branches |
 | `gr checkout <branch>` | Checkout branch across repos |
+| `gr checkout -b <branch>` | Create and checkout branch in one command |
 | `gr add [files]` | Stage changes across repos |
 | `gr diff` | Show diff across repos |
 | `gr commit -m "msg"` | Commit across repos |
@@ -150,6 +152,10 @@ gr sync
 | `gr repo add <url>` | Add a new repository to workspace |
 | `gr repo list` | List all repositories |
 | `gr repo remove <name>` | Remove a repository |
+| `gr group list` | List all groups and repos |
+| `gr group add <group> <repos>` | Add repos to a group |
+| `gr group remove <group> <repos>` | Remove repos from a group |
+| `gr manifest schema` | Show manifest schema specification |
 | `gr forall -c "cmd"` | Run command in each repo |
 | `gr tree add <branch>` | Create a worktree-based workspace |
 | `gr tree list` | List all griptrees |
@@ -185,26 +191,35 @@ Initialize a workspace from existing local git repositories. Discovers repos, ex
 
 #### `gr sync [options]`
 
-Pull latest changes from the manifest and all repositories.
+Pull latest changes from the manifest and all repositories. Syncs in parallel by default for faster performance.
 
 | Option | Description |
 |--------|-------------|
-| `--fetch` | Fetch only, don't merge |
-| `--no-link` | Skip processing copyfile/linkfile entries |
-| `--no-hooks` | Skip running post-sync hooks |
+| `--sequential` | Sync repos one at a time (slower but ordered output) |
+| `--group <name>` | Only sync repos in this group |
+| `-f, --force` | Force sync even with local changes |
 
 #### `gr status`
 
 Show status of all repositories including branch, changes, and sync state.
 
+#### `gr checkout <branch>`
+
+Checkout a branch across all repos. Can also create branches with the `-b` flag.
+
+| Option | Description |
+|--------|-------------|
+| `-b` | Create branch if it doesn't exist |
+
 #### `gr branch [name]`
 
-Create a new branch across all repositories, or list existing branches.
+Create a new branch across all repositories, or list existing branches. Manifest repo is always included.
 
 | Option | Description |
 |--------|-------------|
 | `-r, --repo <repos...>` | Only operate on specific repos |
-| `--include-manifest` | Include manifest repo |
+| `-d, --delete` | Delete the branch |
+| `-m, --move` | Move commits to new branch |
 
 #### `gr pr create`
 

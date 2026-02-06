@@ -28,7 +28,8 @@ fn test_checkout_existing_branch() {
     .unwrap();
 
     // Go back to main
-    gitgrip::cli::commands::checkout::run_checkout(&ws.workspace_root, &manifest, "main").unwrap();
+    gitgrip::cli::commands::checkout::run_checkout(&ws.workspace_root, &manifest, "main", false)
+        .unwrap();
     assert_on_branch(&ws.repo_path("frontend"), "main");
     assert_on_branch(&ws.repo_path("backend"), "main");
 
@@ -37,6 +38,7 @@ fn test_checkout_existing_branch() {
         &ws.workspace_root,
         &manifest,
         "feat/checkout-test",
+        false,
     );
     assert!(
         result.is_ok(),
@@ -59,6 +61,7 @@ fn test_checkout_nonexistent_branch() {
         &ws.workspace_root,
         &manifest,
         "feat/does-not-exist",
+        false,
     );
     assert!(
         result.is_ok(),
@@ -94,8 +97,12 @@ fn test_checkout_main() {
     assert_on_branch(&ws.repo_path("app"), "feat/temp");
 
     // Checkout main
-    let result =
-        gitgrip::cli::commands::checkout::run_checkout(&ws.workspace_root, &manifest, "main");
+    let result = gitgrip::cli::commands::checkout::run_checkout(
+        &ws.workspace_root,
+        &manifest,
+        "main",
+        false,
+    );
     assert!(
         result.is_ok(),
         "checkout main should succeed: {:?}",
@@ -104,4 +111,31 @@ fn test_checkout_main() {
 
     assert_on_branch(&ws.repo_path("app"), "main");
     assert_on_branch(&ws.repo_path("lib"), "main");
+}
+
+#[test]
+fn test_checkout_create_flag() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo("frontend")
+        .add_repo("backend")
+        .build();
+
+    let manifest = ws.load_manifest();
+
+    // Use -b flag to create and checkout in one command
+    let result = gitgrip::cli::commands::checkout::run_checkout(
+        &ws.workspace_root,
+        &manifest,
+        "feat/new-feature",
+        true, // create = true (-b flag)
+    );
+    assert!(
+        result.is_ok(),
+        "checkout -b should succeed: {:?}",
+        result.err()
+    );
+
+    // Both repos should now be on the new branch
+    assert_on_branch(&ws.repo_path("frontend"), "feat/new-feature");
+    assert_on_branch(&ws.repo_path("backend"), "feat/new-feature");
 }

@@ -1,8 +1,8 @@
 //! Repository information and operations
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::core::manifest::{Manifest, PlatformType, RepoConfig};
+use crate::core::manifest::{Manifest, ManifestRepoConfig, PlatformType, RepoConfig};
 
 /// Extended repository information with computed fields
 #[derive(Debug, Clone)]
@@ -202,6 +202,45 @@ pub fn filter_repos(
         .collect()
 }
 
+/// Get RepoInfo for the manifest repo if it exists.
+///
+/// This provides a standardized way to include the manifest repository
+/// in operations like sync, branch, checkout, push, and diff.
+pub fn get_manifest_repo_info(manifest: &Manifest, workspace_root: &Path) -> Option<RepoInfo> {
+    let manifest_config = manifest.manifest.as_ref()?;
+    let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+
+    // Only return if the manifest repo actually exists as a git repo
+    if !manifests_dir.join(".git").exists() {
+        return None;
+    }
+
+    create_manifest_repo_info(manifest_config, workspace_root)
+}
+
+/// Create RepoInfo from ManifestRepoConfig
+fn create_manifest_repo_info(
+    config: &ManifestRepoConfig,
+    workspace_root: &Path,
+) -> Option<RepoInfo> {
+    let path = ".gitgrip/manifests".to_string();
+
+    RepoInfo::from_config(
+        "manifest",
+        &RepoConfig {
+            url: config.url.clone(),
+            path,
+            default_branch: config.default_branch.clone(),
+            copyfile: config.copyfile.clone(),
+            linkfile: config.linkfile.clone(),
+            platform: config.platform.clone(),
+            reference: false,
+            groups: Vec::new(),
+        },
+        &workspace_root.to_path_buf(),
+    )
+}
+
 /// Detect platform type from URL
 fn detect_platform(url: &str) -> PlatformType {
     // Check GitHub first (most common)
@@ -300,5 +339,87 @@ mod tests {
             detect_platform("https://dev.azure.com/org/project/_git/repo"),
             PlatformType::AzureDevOps
         );
+    }
+
+    #[test]
+    fn test_get_manifest_repo_info_no_manifest() {
+        use crate::core::manifest::Manifest;
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let manifest = Manifest {
+            version: 1,
+            manifest: None,
+            repos: HashMap::new(),
+            settings: Default::default(),
+            workspace: None,
+        };
+
+        let result = get_manifest_repo_info(&manifest, temp.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_manifest_repo_info_no_git_dir() {
+        use crate::core::manifest::{Manifest, ManifestRepoConfig};
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let manifest = Manifest {
+            version: 1,
+            manifest: Some(ManifestRepoConfig {
+                url: "git@github.com:user/manifest.git".to_string(),
+                default_branch: "main".to_string(),
+                copyfile: None,
+                linkfile: None,
+                platform: None,
+            }),
+            repos: HashMap::new(),
+            settings: Default::default(),
+            workspace: None,
+        };
+
+        // No .gitgrip/manifests/.git directory exists
+        let result = get_manifest_repo_info(&manifest, temp.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_manifest_repo_info_with_git_dir() {
+        use crate::core::manifest::{Manifest, ManifestRepoConfig};
+        use std::collections::HashMap;
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+
+        // Create .gitgrip/manifests/.git directory
+        let manifests_dir = temp.path().join(".gitgrip").join("manifests");
+        fs::create_dir_all(manifests_dir.join(".git")).unwrap();
+
+        let manifest = Manifest {
+            version: 1,
+            manifest: Some(ManifestRepoConfig {
+                url: "git@github.com:user/manifest.git".to_string(),
+                default_branch: "main".to_string(),
+                copyfile: None,
+                linkfile: None,
+                platform: None,
+            }),
+            repos: HashMap::new(),
+            settings: Default::default(),
+            workspace: None,
+        };
+
+        let result = get_manifest_repo_info(&manifest, temp.path());
+        assert!(result.is_some());
+
+        let info = result.unwrap();
+        assert_eq!(info.name, "manifest");
+        assert_eq!(info.path, ".gitgrip/manifests");
+        assert_eq!(info.default_branch, "main");
+        assert!(!info.reference);
     }
 }

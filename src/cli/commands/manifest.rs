@@ -74,3 +74,110 @@ pub fn run_manifest_sync(workspace_root: &std::path::PathBuf) -> anyhow::Result<
 
     Ok(())
 }
+
+/// Show manifest schema specification
+pub fn run_manifest_schema(format: &str) -> anyhow::Result<()> {
+    let schema = include_str!("../../../docs/manifest-schema.yaml");
+
+    match format {
+        "yaml" => {
+            println!("{}", schema);
+        }
+        "json" => {
+            // Parse YAML and convert to JSON
+            let value: serde_yaml::Value = serde_yaml::from_str(schema)?;
+            let json = serde_json::to_string_pretty(&value)?;
+            println!("{}", json);
+        }
+        "markdown" | "md" => {
+            print_schema_markdown();
+        }
+        _ => {
+            anyhow::bail!("Unknown format: {}. Use yaml, json, or markdown.", format);
+        }
+    }
+
+    Ok(())
+}
+
+/// Print schema as markdown documentation
+fn print_schema_markdown() {
+    println!(
+        r#"# gitgrip Manifest Schema
+
+## Overview
+
+The manifest file (`manifest.yaml`) defines a multi-repository workspace configuration.
+It is typically located at `.gitgrip/manifests/manifest.yaml`.
+
+## Top-Level Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `version` | integer | Yes | Schema version (currently `1`) |
+| `manifest` | object | No | Self-tracking manifest repo config |
+| `repos` | object | Yes | Repository definitions |
+| `settings` | object | No | Global workspace settings |
+| `workspace` | object | No | Scripts, hooks, and environment |
+
+## Repository Configuration
+
+Each repository under `repos` supports:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `url` | string | - | Git URL (SSH or HTTPS) |
+| `path` | string | - | Local path relative to workspace |
+| `default_branch` | string | `main` | Default branch name |
+| `groups` | array | `[]` | Groups for selective operations |
+| `reference` | boolean | `false` | Read-only reference repo |
+| `copyfile` | array | - | Files to copy to workspace |
+| `linkfile` | array | - | Symlinks to create |
+| `platform` | object | auto | Platform type and base URL |
+
+## Settings
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `pr_prefix` | string | `[cross-repo]` | Prefix for PR titles |
+| `merge_strategy` | string | `all-or-nothing` | `all-or-nothing` or `independent` |
+
+## Platform Types
+
+- `github` - GitHub.com or GitHub Enterprise
+- `gitlab` - GitLab.com or self-hosted
+- `azure-devops` - Azure DevOps or Azure DevOps Server
+- `bitbucket` - Bitbucket Cloud or Server
+
+## Example
+
+```yaml
+version: 1
+
+manifest:
+  url: git@github.com:org/manifest.git
+  default_branch: main
+
+repos:
+  frontend:
+    url: git@github.com:org/frontend.git
+    path: ./frontend
+    groups: [core, web]
+
+  backend:
+    url: git@github.com:org/backend.git
+    path: ./backend
+    groups: [core, api]
+
+settings:
+  pr_prefix: "[multi-repo]"
+  merge_strategy: all-or-nothing
+
+workspace:
+  scripts:
+    build:
+      command: "npm run build"
+```
+"#
+    );
+}
