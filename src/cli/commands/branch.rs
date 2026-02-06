@@ -2,7 +2,7 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::{filter_repos, RepoInfo};
+use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::git::{
     branch::{branch_exists, create_and_checkout_branch, delete_local_branch, list_local_branches},
     get_current_branch, open_repo,
@@ -20,8 +20,13 @@ pub fn run_branch(
     group_filter: Option<&[String]>,
     json: bool,
 ) -> anyhow::Result<()> {
-    let repos: Vec<RepoInfo> =
+    let mut repos: Vec<RepoInfo> =
         filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
+
+    // Include manifest repo in branch operations
+    if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
+        repos.push(manifest_repo);
+    }
 
     match name {
         Some(branch_name) if delete => {

@@ -6,8 +6,8 @@ use common::assertions::{assert_file_exists, assert_on_branch};
 use common::fixtures::WorkspaceBuilder;
 use common::git_helpers;
 
-#[test]
-fn test_sync_clones_missing_repos() {
+#[tokio::test]
+async fn test_sync_clones_missing_repos() {
     let ws = WorkspaceBuilder::new()
         .add_repo("frontend")
         .add_repo("backend")
@@ -19,8 +19,15 @@ fn test_sync_clones_missing_repos() {
 
     let manifest = ws.load_manifest();
 
-    let result =
-        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false, None);
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+    )
+    .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
 
     // backend should now be cloned
@@ -28,8 +35,8 @@ fn test_sync_clones_missing_repos() {
     assert_on_branch(&ws.repo_path("backend"), "main");
 }
 
-#[test]
-fn test_sync_pulls_existing_repos() {
+#[tokio::test]
+async fn test_sync_pulls_existing_repos() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
     // Push a new commit to the bare remote (simulating upstream changes)
@@ -41,23 +48,37 @@ fn test_sync_pulls_existing_repos() {
 
     let manifest = ws.load_manifest();
 
-    let result =
-        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false, None);
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+    )
+    .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
 
     // The new file should now exist in the workspace repo
     assert_file_exists(&ws.repo_path("app").join("new-file.txt"));
 }
 
-#[test]
-fn test_sync_handles_up_to_date() {
+#[tokio::test]
+async fn test_sync_handles_up_to_date() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
     let manifest = ws.load_manifest();
 
     // Sync when already up to date
-    let result =
-        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false, None);
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+    )
+    .await;
     assert!(
         result.is_ok(),
         "sync should succeed when up to date: {:?}",
@@ -65,8 +86,8 @@ fn test_sync_handles_up_to_date() {
     );
 }
 
-#[test]
-fn test_sync_multiple_repos() {
+#[tokio::test]
+async fn test_sync_multiple_repos() {
     let ws = WorkspaceBuilder::new()
         .add_repo("alpha")
         .add_repo("beta")
@@ -79,8 +100,15 @@ fn test_sync_multiple_repos() {
 
     let manifest = ws.load_manifest();
 
-    let result =
-        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, false, None);
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+    )
+    .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
 
     // All should now be cloned
@@ -89,8 +117,8 @@ fn test_sync_multiple_repos() {
     assert!(ws.repo_path("gamma").join(".git").exists());
 }
 
-#[test]
-fn test_sync_quiet_mode() {
+#[tokio::test]
+async fn test_sync_quiet_mode() {
     let ws = WorkspaceBuilder::new()
         .add_repo("frontend")
         .add_repo("backend")
@@ -99,11 +127,44 @@ fn test_sync_quiet_mode() {
     let manifest = ws.load_manifest();
 
     // Quiet sync on already-synced repos should succeed (suppresses "up to date" messages)
-    let result =
-        gitgrip::cli::commands::sync::run_sync(&ws.workspace_root, &manifest, false, true, None);
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        true,
+        None,
+        false,
+    )
+    .await;
     assert!(
         result.is_ok(),
         "quiet sync should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+async fn test_sync_sequential_mode() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo("frontend")
+        .add_repo("backend")
+        .build();
+
+    let manifest = ws.load_manifest();
+
+    // Sequential sync (--sequential flag)
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        true,
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "sequential sync should succeed: {:?}",
         result.err()
     );
 }
