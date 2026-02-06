@@ -1,5 +1,6 @@
 //! PR merge command implementation
 
+use super::create::has_commits_ahead;
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::{get_manifest_repo_info, RepoInfo};
@@ -482,34 +483,6 @@ fn check_repo_for_changes(repo: &RepoInfo) -> anyhow::Result<bool> {
         return Ok(false);
     }
 
-    // Check if current branch has commits ahead of default
-    let local_branch = git_repo
-        .find_branch(&current, git2::BranchType::Local)
-        .map_err(|e| anyhow::anyhow!("Failed to find local branch: {}", e))?;
-
-    let local_ref = local_branch
-        .get()
-        .peel_to_commit()
-        .map_err(|e| anyhow::anyhow!("Failed to peel to commit: {}", e))?;
-
-    let default_branch = git_repo
-        .find_branch(&repo.default_branch, git2::BranchType::Local)
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to find default branch '{}': {}",
-                repo.default_branch,
-                e
-            )
-        })?;
-
-    let default_ref = default_branch
-        .get()
-        .peel_to_commit()
-        .map_err(|e| anyhow::anyhow!("Failed to peel default to commit: {}", e))?;
-
-    // Check if local is ahead of default (has unique commits)
-    match git_repo.graph_ahead_behind(local_ref.id(), default_ref.id()) {
-        Ok((ahead, _behind)) => Ok(ahead > 0),
-        Err(e) => Err(anyhow::anyhow!("Failed to compare branches: {}", e)),
-    }
+    // Check for commits ahead of default branch using shared helper
+    has_commits_ahead(&git_repo, &current, &repo.default_branch)
 }
