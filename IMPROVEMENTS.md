@@ -3,6 +3,8 @@
 This file captures friction points, feature ideas, and bugs discovered while using `gr`.
 Items here should be reviewed before creating GitHub issues.
 
+> **Deprecated**: This log is being phased out in favor of direct GitHub issues to reduce overhead. New friction should be filed as issues instead of adding entries here.
+
 > **Note**: Historical entries may reference `cr` (the old command name). The current command is `gr`.
 
 > **Merge Conflicts**: When rebasing feature branches, you may encounter merge conflicts in this file when other PRs also add entries. This is expected behavior. To resolve:
@@ -12,6 +14,24 @@ Items here should be reviewed before creating GitHub issues.
 > 3. The alternative would be to use a dedicated documentation file, but we accept this tradeoff for now
 >
 > See issue #143 for context.
+
+---
+
+### gr pr checks unreliable in current environment
+
+**Discovered**: 2026-02-06 while validating checks for codi PR #273
+
+**Problem**: `gr pr checks` intermittently fails with network connect errors to GitHub (octocrab), even though `gh pr checks` works.
+
+**Workaround used**: Ran raw `gh pr checks` and `gh pr merge` to validate checks and merge.
+
+**Raw commands used**:
+```bash
+gh pr checks 273 -R laynepenney/codi
+gh pr merge 273 --squash -R laynepenney/codi
+```
+
+**Expected behavior**: `gr pr checks` should be as reliable as `gh` or provide a fallback path when octocrab errors occur.
 
 ---
 
@@ -63,6 +83,52 @@ gh pr create --title "Log raw git branch delete" --body "Log raw git usage for f
 ```
 
 **Expected behavior**: `gr pr create --repo <name>` or `--exclude-manifest` to create a PR for a single repo.
+
+---
+
+### Need issue creation in gr
+
+**Discovered**: 2026-02-05 while filing sync-related issues
+
+**Problem**: `gr` doesn't provide an issue creation flow, so I had to use raw `gh issue create`.
+
+**Workaround used**: Ran raw `gh` commands in the `gitgrip` repo to create issues.
+
+**Raw commands used**:
+```bash
+gh issue create --title "gr sync should include manifest repo" --body "Problem: gr sync skips .gitgrip/manifests, leaving manifest stale and causing branch mismatch issues during PR creation. Expected: include manifest by default or add --include-manifest flag."
+gh issue create --title "gr sync should use upstream branch in griptrees" --body "Problem: gr sync compares against main only; in griptrees/worktrees it should sync/compare against the upstream branch (e.g. origin/main or the primary griptree’s branch). Expected: record upstream when creating a griptree and use it for sync/compare."
+```
+
+**Issues created**:
+- #210 (gr sync should include manifest repo)
+- #211 (gr sync should use upstream branch in griptrees)
+
+**Expected behavior**: `gr issue create` (with prompts or flags).
+
+---
+
+### gr sync should include manifest repo
+
+**Discovered**: 2026-02-05 while syncing codi-gripspace
+
+**Problem**: `gr sync` only syncs the configured repos and skips the manifest repo (`.gitgrip/manifests`). This leaves the manifest out of date, which can cause branch mismatch issues during PR creation.
+
+**Issue**: #210
+
+**Expected behavior**: `gr sync` should include the manifest repo by default (or provide a `--include-manifest` flag).
+
+---
+
+### gr sync should use upstream branch in griptrees
+
+**Discovered**: 2026-02-05 while syncing a griptree workspace
+
+**Problem**: In griptrees (git worktrees), syncing against `main` alone can be incorrect if the workspace is tracking a different upstream (e.g., `origin/main` or whatever the primary griptree is on). This can cause `gr sync` to report clean status while the underlying upstream has advanced.
+
+**Issue**: #211
+
+**Expected behavior**: When a griptree is created, record its upstream branch (e.g., `origin/main` or the primary griptree’s branch) and use that for sync and comparisons in worktrees.
 
 ---
 
