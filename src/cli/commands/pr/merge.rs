@@ -2,7 +2,7 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::RepoInfo;
+use crate::core::repo::{get_manifest_repo_info, RepoInfo};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::traits::PlatformError;
 use crate::platform::{detect_platform, get_platform_adapter, CheckState, MergeMethod};
@@ -36,22 +36,17 @@ pub async fn run_pr_merge(
 
     // Also check manifest repo if configured
     let mut all_repos = repos.clone();
-    if let Some(manifest_config) = &manifest.manifest {
-        let manifests_dir = workspace_root.join(".gitgrip/manifests");
-        if let Some(manifest_repo) =
-            create_manifest_repo_info(manifest_config, &manifests_dir, workspace_root)
-        {
-            // Only add manifest repo if it has changes
-            match check_repo_for_changes(&manifest_repo) {
-                Ok(true) => {
-                    all_repos.push(manifest_repo);
-                }
-                Ok(false) => {
-                    Output::info("manifest: no changes, skipping");
-                }
-                Err(e) => {
-                    Output::warning(&format!("manifest: could not check for changes: {}", e));
-                }
+    if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
+        // Only add manifest repo if it has changes
+        match check_repo_for_changes(&manifest_repo) {
+            Ok(true) => {
+                all_repos.push(manifest_repo);
+            }
+            Ok(false) => {
+                Output::info("manifest: no changes, skipping");
+            }
+            Err(e) => {
+                Output::warning(&format!("manifest: could not check for changes: {}", e));
             }
         }
     }
@@ -471,30 +466,6 @@ pub async fn run_pr_merge(
     }
 
     Ok(())
-}
-
-/// Create RepoInfo for the manifest repository
-fn create_manifest_repo_info(
-    config: &crate::core::manifest::ManifestRepoConfig,
-    _manifests_dir: &PathBuf,
-    workspace_root: &PathBuf,
-) -> Option<RepoInfo> {
-    let path = ".gitgrip/manifests".to_string();
-
-    crate::core::repo::RepoInfo::from_config(
-        "manifest",
-        &crate::core::manifest::RepoConfig {
-            url: config.url.clone(),
-            path,
-            default_branch: config.default_branch.clone(),
-            copyfile: config.copyfile.clone(),
-            linkfile: config.linkfile.clone(),
-            platform: config.platform.clone(),
-            reference: false,
-            groups: Vec::new(),
-        },
-        workspace_root,
-    )
 }
 
 /// Check if a repo has changes ahead of its default branch
