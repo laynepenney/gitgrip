@@ -112,16 +112,17 @@ fn test_branch_group_filter_json() {
     let manifest = ws.load_manifest();
     let group = vec!["ui".to_string()];
 
-    let result = gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        None, // list mode
-        false,
-        false,
-        None,
-        Some(&group),
-        true, // json
-    );
+    let result =
+        gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+            workspace_root: &ws.workspace_root,
+            manifest: &manifest,
+            name: None,
+            delete: false,
+            move_commits: false,
+            repos_filter: None,
+            group_filter: Some(&group),
+            json: true,
+        });
     assert!(
         result.is_ok(),
         "branch json with group filter should succeed: {:?}",
@@ -275,16 +276,16 @@ fn test_checkout_main_from_feature() {
     let manifest = ws.load_manifest();
 
     // Create feature branch
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/roundtrip"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/roundtrip"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
 
     // Checkout main

@@ -35,16 +35,17 @@ fn test_branch_with_group_filter() {
 
     // Create branch only in "ui" group repos
     let group = vec!["ui".to_string()];
-    let result = gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/ui-fix"),
-        false,
-        false,
-        None,
-        Some(&group),
-        false,
-    );
+    let result =
+        gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+            workspace_root: &ws.workspace_root,
+            manifest: &manifest,
+            name: Some("feat/ui-fix"),
+            delete: false,
+            move_commits: false,
+            repos_filter: None,
+            group_filter: Some(&group),
+            json: false,
+        });
     assert!(
         result.is_ok(),
         "branch with group filter should succeed: {:?}",
@@ -69,16 +70,17 @@ fn test_group_filter_empty_group() {
 
     // Filter by a group that doesn't exist
     let group = vec!["nonexistent".to_string()];
-    let result = gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/empty"),
-        false,
-        false,
-        None,
-        Some(&group),
-        false,
-    );
+    let result =
+        gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+            workspace_root: &ws.workspace_root,
+            manifest: &manifest,
+            name: Some("feat/empty"),
+            delete: false,
+            move_commits: false,
+            repos_filter: None,
+            group_filter: Some(&group),
+            json: false,
+        });
     assert!(
         result.is_ok(),
         "branch with empty group should succeed gracefully: {:?}",

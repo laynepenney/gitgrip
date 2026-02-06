@@ -136,16 +136,16 @@ fn test_branch_already_exists() {
     let manifest = ws.load_manifest();
 
     // Create branch first time
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/exists"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/exists"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
 
     // Switch back to main
@@ -153,16 +153,17 @@ fn test_branch_already_exists() {
         .unwrap();
 
     // Try creating same branch again - should handle gracefully
-    let result = gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/exists"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    );
+    let result =
+        gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+            workspace_root: &ws.workspace_root,
+            manifest: &manifest,
+            name: Some("feat/exists"),
+            delete: false,
+            move_commits: false,
+            repos_filter: None,
+            group_filter: None,
+            json: false,
+        });
     assert!(
         result.is_ok(),
         "creating existing branch should not crash: {:?}",

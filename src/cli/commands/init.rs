@@ -31,32 +31,35 @@ pub struct DiscoveredRepo {
     pub default_branch: String,
 }
 
+/// Options for the init command
+pub struct InitOptions<'a> {
+    pub url: Option<&'a str>,
+    pub path: Option<&'a str>,
+    pub from_dirs: bool,
+    pub dirs: &'a [String],
+    pub interactive: bool,
+    pub create_manifest: bool,
+    pub manifest_name: Option<&'a str>,
+    pub private: bool,
+    pub from_repo: bool,
+}
+
 /// Run the init command
-pub async fn run_init(
-    url: Option<&str>,
-    path: Option<&str>,
-    from_dirs: bool,
-    dirs: &[String],
-    interactive: bool,
-    create_manifest: bool,
-    manifest_name: Option<&str>,
-    private: bool,
-    from_repo: bool,
-) -> anyhow::Result<()> {
-    if from_repo {
-        run_init_from_repo(path)
-    } else if from_dirs {
+pub async fn run_init(opts: InitOptions<'_>) -> anyhow::Result<()> {
+    if opts.from_repo {
+        run_init_from_repo(opts.path)
+    } else if opts.from_dirs {
         run_init_from_dirs(
-            path,
-            dirs,
-            interactive,
-            create_manifest,
-            manifest_name,
-            private,
+            opts.path,
+            opts.dirs,
+            opts.interactive,
+            opts.create_manifest,
+            opts.manifest_name,
+            opts.private,
         )
         .await
     } else {
-        run_init_from_url(url, path)
+        run_init_from_url(opts.url, opts.path)
     }
 }
 

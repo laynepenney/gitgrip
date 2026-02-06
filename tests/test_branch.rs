@@ -17,16 +17,17 @@ fn test_branch_create_across_repos() {
 
     let manifest = ws.load_manifest();
 
-    let result = gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/new-feature"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    );
+    let result =
+        gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+            workspace_root: &ws.workspace_root,
+            manifest: &manifest,
+            name: Some("feat/new-feature"),
+            delete: false,
+            move_commits: false,
+            repos_filter: None,
+            group_filter: None,
+            json: false,
+        });
     assert!(
         result.is_ok(),
         "branch create should succeed: {:?}",
@@ -48,16 +49,16 @@ fn test_branch_delete() {
     let manifest = ws.load_manifest();
 
     // Create branch first
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/to-delete"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/to-delete"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
 
     // Switch back to main so we can delete
@@ -65,16 +66,17 @@ fn test_branch_delete() {
         .unwrap();
 
     // Delete the branch
-    let result = gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/to-delete"),
-        true, // delete
-        false,
-        None,
-        None,
-        false,
-    );
+    let result =
+        gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+            workspace_root: &ws.workspace_root,
+            manifest: &manifest,
+            name: Some("feat/to-delete"),
+            delete: true,
+            move_commits: false,
+            repos_filter: None,
+            group_filter: None,
+            json: false,
+        });
     assert!(
         result.is_ok(),
         "branch delete should succeed: {:?}",
@@ -92,41 +94,42 @@ fn test_branch_list() {
     let manifest = ws.load_manifest();
 
     // Create a couple branches
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/one"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/one"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
     git_helpers::checkout(&ws.repo_path("app"), "main");
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/two"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/two"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
 
     // List branches (no name passed)
-    let result = gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        None,
-        false,
-        false,
-        None,
-        None,
-        false,
-    );
+    let result =
+        gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+            workspace_root: &ws.workspace_root,
+            manifest: &manifest,
+            name: None,
+            delete: false,
+            move_commits: false,
+            repos_filter: None,
+            group_filter: None,
+            json: false,
+        });
     assert!(
         result.is_ok(),
         "branch list should succeed: {:?}",
@@ -146,16 +149,17 @@ fn test_branch_filter_repos() {
 
     // Create branch only in frontend and backend
     let filter = vec!["frontend".to_string(), "backend".to_string()];
-    let result = gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/filtered"),
-        false,
-        false,
-        Some(&filter),
-        None,
-        false,
-    );
+    let result =
+        gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+            workspace_root: &ws.workspace_root,
+            manifest: &manifest,
+            name: Some("feat/filtered"),
+            delete: false,
+            move_commits: false,
+            repos_filter: Some(&filter),
+            group_filter: None,
+            json: false,
+        });
     assert!(
         result.is_ok(),
         "filtered branch should succeed: {:?}",
@@ -177,16 +181,17 @@ fn test_branch_skip_reference_repos() {
 
     let manifest = ws.load_manifest();
 
-    let result = gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/skip-refs"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    );
+    let result =
+        gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+            workspace_root: &ws.workspace_root,
+            manifest: &manifest,
+            name: Some("feat/skip-refs"),
+            delete: false,
+            move_commits: false,
+            repos_filter: None,
+            group_filter: None,
+            json: false,
+        });
     assert!(result.is_ok(), "branch should succeed: {:?}", result.err());
 
     // app should be on the new branch
@@ -202,29 +207,30 @@ fn test_branch_idempotent_creation() {
     let manifest = ws.load_manifest();
 
     // Create branch
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/existing"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/existing"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
 
     // Create same branch again -- should not error (prints "already exists")
-    let result = gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/existing"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    );
+    let result =
+        gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+            workspace_root: &ws.workspace_root,
+            manifest: &manifest,
+            name: Some("feat/existing"),
+            delete: false,
+            move_commits: false,
+            repos_filter: None,
+            group_filter: None,
+            json: false,
+        });
     assert!(
         result.is_ok(),
         "creating an existing branch should not fail: {:?}",
@@ -242,16 +248,17 @@ fn test_branch_not_cloned_repo() {
     let manifest = ws.load_manifest();
 
     // Should succeed (prints warning for not-cloned repo)
-    let result = gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/no-repo"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    );
+    let result =
+        gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+            workspace_root: &ws.workspace_root,
+            manifest: &manifest,
+            name: Some("feat/no-repo"),
+            delete: false,
+            move_commits: false,
+            repos_filter: None,
+            group_filter: None,
+            json: false,
+        });
     assert!(
         result.is_ok(),
         "branch on missing repo should not fail: {:?}",
@@ -268,16 +275,16 @@ fn test_branch_create_then_verify_branches_exist() {
 
     let manifest = ws.load_manifest();
 
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/verify"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/verify"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
 
     assert_branch_exists(&ws.repo_path("alpha"), "feat/verify");

@@ -13,16 +13,16 @@ fn test_push_to_remote() {
     let manifest = ws.load_manifest();
 
     // Create branch, make changes, commit
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/push-test"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/push-test"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
 
     std::fs::write(ws.repo_path("app").join("pushed.txt"), "content").unwrap();
@@ -79,16 +79,16 @@ fn test_push_skips_reference_repos() {
     let manifest = ws.load_manifest();
 
     // Create branch in app only (reference repos are skipped)
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/ref-test"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/ref-test"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
 
     std::fs::write(ws.repo_path("app").join("change.txt"), "data").unwrap();
@@ -116,16 +116,16 @@ fn test_push_multiple_repos() {
     let manifest = ws.load_manifest();
 
     // Create branch, commit in both
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/multi-push"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/multi-push"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
 
     std::fs::write(ws.repo_path("frontend").join("fe.txt"), "fe").unwrap();
@@ -152,16 +152,16 @@ fn test_push_force() {
     let manifest = ws.load_manifest();
 
     // Create branch, commit, push
-    gitgrip::cli::commands::branch::run_branch(
-        &ws.workspace_root,
-        &manifest,
-        Some("feat/force-push"),
-        false,
-        false,
-        None,
-        None,
-        false,
-    )
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/force-push"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
     .unwrap();
 
     std::fs::write(ws.repo_path("app").join("first.txt"), "first").unwrap();
