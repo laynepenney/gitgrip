@@ -206,6 +206,18 @@ enum Commands {
         #[arg(long, name = "continue")]
         continue_rebase: bool,
     },
+    /// Pull latest changes across repos
+    Pull {
+        /// Rebase instead of merge
+        #[arg(long)]
+        rebase: bool,
+        /// Only pull repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+        /// Sync repos sequentially (default: parallel)
+        #[arg(long)]
+        sequential: bool,
+    },
     /// Manage file links
     Link {
         /// Show link status
@@ -718,6 +730,22 @@ async fn main() -> anyhow::Result<()> {
                 abort,
                 continue_rebase,
             )?;
+        }
+        Some(Commands::Pull {
+            rebase,
+            group,
+            sequential,
+        }) => {
+            let (workspace_root, manifest) = load_workspace()?;
+            gitgrip::cli::commands::pull::run_pull(
+                &workspace_root,
+                &manifest,
+                rebase,
+                group.as_deref(),
+                sequential,
+                cli.quiet,
+            )
+            .await?;
         }
         Some(Commands::Link { status, apply }) => {
             let (workspace_root, manifest) = load_workspace()?;
