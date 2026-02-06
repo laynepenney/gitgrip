@@ -223,3 +223,255 @@ pub struct AzureDevOpsContext {
     /// Repository name
     pub repository: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Display traits ──────────────────────────────────────────
+
+    #[test]
+    fn test_pr_state_display() {
+        assert_eq!(PRState::Open.to_string(), "open");
+        assert_eq!(PRState::Closed.to_string(), "closed");
+        assert_eq!(PRState::Merged.to_string(), "merged");
+    }
+
+    #[test]
+    fn test_check_state_display() {
+        assert_eq!(CheckState::Pending.to_string(), "pending");
+        assert_eq!(CheckState::Success.to_string(), "success");
+        assert_eq!(CheckState::Failure.to_string(), "failure");
+    }
+
+    #[test]
+    fn test_merge_method_display() {
+        assert_eq!(MergeMethod::Merge.to_string(), "merge");
+        assert_eq!(MergeMethod::Squash.to_string(), "squash");
+        assert_eq!(MergeMethod::Rebase.to_string(), "rebase");
+    }
+
+    // ── Default implementations ─────────────────────────────────
+
+    #[test]
+    fn test_pr_state_default() {
+        assert_eq!(PRState::default(), PRState::Open);
+    }
+
+    #[test]
+    fn test_check_state_default() {
+        assert_eq!(CheckState::default(), CheckState::Pending);
+    }
+
+    #[test]
+    fn test_merge_method_default() {
+        assert_eq!(MergeMethod::default(), MergeMethod::Merge);
+    }
+
+    #[test]
+    fn test_allowed_merge_methods_default() {
+        let methods = AllowedMergeMethods::default();
+        assert!(methods.merge);
+        assert!(methods.squash);
+        assert!(methods.rebase);
+    }
+
+    #[test]
+    fn test_pr_create_options_default() {
+        let opts = PRCreateOptions::default();
+        assert!(opts.title.is_empty());
+        assert!(opts.body.is_none());
+        assert!(opts.base.is_none());
+        assert!(opts.draft.is_none());
+    }
+
+    #[test]
+    fn test_pr_merge_options_default() {
+        let opts = PRMergeOptions::default();
+        assert!(opts.method.is_none());
+        assert!(opts.delete_branch.is_none());
+    }
+
+    // ── Serde serialization ─────────────────────────────────────
+
+    #[test]
+    fn test_pr_state_serde_roundtrip() {
+        let json = serde_json::to_string(&PRState::Open).unwrap();
+        assert_eq!(json, "\"open\"");
+
+        let json = serde_json::to_string(&PRState::Closed).unwrap();
+        assert_eq!(json, "\"closed\"");
+
+        let json = serde_json::to_string(&PRState::Merged).unwrap();
+        assert_eq!(json, "\"merged\"");
+
+        // Deserialize
+        let state: PRState = serde_json::from_str("\"open\"").unwrap();
+        assert_eq!(state, PRState::Open);
+
+        let state: PRState = serde_json::from_str("\"merged\"").unwrap();
+        assert_eq!(state, PRState::Merged);
+    }
+
+    #[test]
+    fn test_check_state_serde_roundtrip() {
+        let json = serde_json::to_string(&CheckState::Success).unwrap();
+        assert_eq!(json, "\"success\"");
+
+        let state: CheckState = serde_json::from_str("\"failure\"").unwrap();
+        assert_eq!(state, CheckState::Failure);
+
+        let state: CheckState = serde_json::from_str("\"pending\"").unwrap();
+        assert_eq!(state, CheckState::Pending);
+    }
+
+    #[test]
+    fn test_pull_request_serde_roundtrip() {
+        let pr = PullRequest {
+            number: 42,
+            url: "https://github.com/owner/repo/pull/42".to_string(),
+            title: "Test PR".to_string(),
+            body: "Description".to_string(),
+            state: PRState::Open,
+            merged: false,
+            mergeable: Some(true),
+            head: PRHead {
+                ref_name: "feat/test".to_string(),
+                sha: "abc123".to_string(),
+            },
+            base: PRBase {
+                ref_name: "main".to_string(),
+            },
+        };
+
+        let json = serde_json::to_string(&pr).unwrap();
+        let deserialized: PullRequest = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.number, 42);
+        assert_eq!(deserialized.title, "Test PR");
+        assert_eq!(deserialized.state, PRState::Open);
+        assert!(!deserialized.merged);
+        assert_eq!(deserialized.mergeable, Some(true));
+        assert_eq!(deserialized.head.ref_name, "feat/test");
+        assert_eq!(deserialized.head.sha, "abc123");
+        assert_eq!(deserialized.base.ref_name, "main");
+    }
+
+    #[test]
+    fn test_pr_head_serde_ref_rename() {
+        // The "ref" field is renamed from "ref_name" via serde
+        let head = PRHead {
+            ref_name: "feat/branch".to_string(),
+            sha: "def456".to_string(),
+        };
+        let json = serde_json::to_string(&head).unwrap();
+        assert!(json.contains("\"ref\""));
+        assert!(!json.contains("\"ref_name\""));
+
+        let parsed: PRHead = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.ref_name, "feat/branch");
+    }
+
+    #[test]
+    fn test_pr_create_result_serde() {
+        let result = PRCreateResult {
+            number: 99,
+            url: "https://github.com/owner/repo/pull/99".to_string(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: PRCreateResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.number, 99);
+        assert_eq!(deserialized.url, "https://github.com/owner/repo/pull/99");
+    }
+
+    #[test]
+    fn test_pr_review_serde() {
+        let review = PRReview {
+            state: "APPROVED".to_string(),
+            user: "reviewer".to_string(),
+        };
+        let json = serde_json::to_string(&review).unwrap();
+        let deserialized: PRReview = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.state, "APPROVED");
+        assert_eq!(deserialized.user, "reviewer");
+    }
+
+    #[test]
+    fn test_status_check_result_serde() {
+        let result = StatusCheckResult {
+            state: CheckState::Success,
+            statuses: vec![
+                StatusCheck {
+                    context: "CI".to_string(),
+                    state: "success".to_string(),
+                },
+                StatusCheck {
+                    context: "Tests".to_string(),
+                    state: "success".to_string(),
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: StatusCheckResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.state, CheckState::Success);
+        assert_eq!(deserialized.statuses.len(), 2);
+        assert_eq!(deserialized.statuses[0].context, "CI");
+    }
+
+    #[test]
+    fn test_check_status_details_serde() {
+        let details = CheckStatusDetails {
+            state: CheckState::Failure,
+            passed: 3,
+            failed: 1,
+            pending: 0,
+            skipped: 2,
+            total: 6,
+        };
+
+        let json = serde_json::to_string(&details).unwrap();
+        let deserialized: CheckStatusDetails = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.state, CheckState::Failure);
+        assert_eq!(deserialized.passed, 3);
+        assert_eq!(deserialized.failed, 1);
+        assert_eq!(deserialized.total, 6);
+    }
+
+    #[test]
+    fn test_allowed_merge_methods_serde() {
+        let methods = AllowedMergeMethods {
+            merge: true,
+            squash: false,
+            rebase: true,
+        };
+
+        let json = serde_json::to_string(&methods).unwrap();
+        let deserialized: AllowedMergeMethods = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.merge);
+        assert!(!deserialized.squash);
+        assert!(deserialized.rebase);
+    }
+
+    // ── Equality ────────────────────────────────────────────────
+
+    #[test]
+    fn test_pr_state_equality() {
+        assert_eq!(PRState::Open, PRState::Open);
+        assert_ne!(PRState::Open, PRState::Closed);
+        assert_ne!(PRState::Closed, PRState::Merged);
+    }
+
+    #[test]
+    fn test_check_state_equality() {
+        assert_eq!(CheckState::Success, CheckState::Success);
+        assert_ne!(CheckState::Success, CheckState::Failure);
+        assert_ne!(CheckState::Pending, CheckState::Success);
+    }
+
+    #[test]
+    fn test_merge_method_equality() {
+        assert_eq!(MergeMethod::Squash, MergeMethod::Squash);
+        assert_ne!(MergeMethod::Merge, MergeMethod::Rebase);
+    }
+}
