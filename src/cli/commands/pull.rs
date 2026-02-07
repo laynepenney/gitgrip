@@ -35,10 +35,18 @@ pub async fn run_pull(
         repos.insert(0, manifest_repo);
     }
 
-    let mode = if rebase { PullMode::Rebase } else { PullMode::Merge };
+    let mode = if rebase {
+        PullMode::Rebase
+    } else {
+        PullMode::Merge
+    };
     let mode_label = if rebase { "rebase" } else { "merge" };
 
-    Output::header(&format!("Pulling {} repositories ({})...", repos.len(), mode_label));
+    Output::header(&format!(
+        "Pulling {} repositories ({})...",
+        repos.len(),
+        mode_label
+    ));
     println!();
 
     let results = if sequential {
@@ -170,7 +178,8 @@ fn pull_single_repo(
 
     match open_repo(&repo.absolute_path) {
         Ok(git_repo) => {
-            let result = safe_pull_latest_with_mode(&git_repo, &repo.default_branch, "origin", mode);
+            let result =
+                safe_pull_latest_with_mode(&git_repo, &repo.default_branch, "origin", mode);
 
             match result {
                 Ok(pull_result) => {

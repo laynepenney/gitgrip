@@ -48,10 +48,7 @@ pub async fn run_pr_diff(
             continue;
         }
 
-        let platform = get_platform_adapter(
-            repo.platform_type,
-            repo.platform_base_url.as_deref(),
-        );
+        let platform = get_platform_adapter(repo.platform_type, repo.platform_base_url.as_deref());
 
         match platform
             .find_pr_by_branch(&repo.owner, &repo.repo, &branch)

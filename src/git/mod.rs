@@ -154,9 +154,9 @@ pub fn get_current_branch(repo: &Repository) -> Result<String, GitError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
     use std::process::Command;
+    use tempfile::TempDir;
 
     #[test]
     fn test_is_git_repo() {
@@ -227,7 +227,12 @@ mod tests {
         git(&staging, &["commit", "-m", "Initial commit"]);
         git(
             &staging,
-            &["remote", "add", "origin", &format!("file://{}", bare_path.display())],
+            &[
+                "remote",
+                "add",
+                "origin",
+                &format!("file://{}", bare_path.display()),
+            ],
         );
         git(&staging, &["push", "-u", "origin", "main"]);
 
@@ -250,7 +255,10 @@ mod tests {
         let dest = dest_root.path().join("dest");
 
         let result = clone_repo(&remote_url, &dest, Some("does-not-exist"));
-        assert!(result.is_ok(), "expected clone to fall back to default branch");
+        assert!(
+            result.is_ok(),
+            "expected clone to fall back to default branch"
+        );
 
         let repo = open_repo(&dest).expect("open repo");
         let branch = get_current_branch(&repo).expect("current branch");

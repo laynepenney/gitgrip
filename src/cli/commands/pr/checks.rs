@@ -63,10 +63,7 @@ pub async fn run_pr_checks(
             continue;
         }
 
-        let platform = get_platform_adapter(
-            repo.platform_type,
-            repo.platform_base_url.as_deref(),
-        );
+        let platform = get_platform_adapter(repo.platform_type, repo.platform_base_url.as_deref());
 
         // Find PR number (optional, for display)
         let pr_number = match platform

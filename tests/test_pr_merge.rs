@@ -179,7 +179,12 @@ async fn test_pr_merge_force_bypasses_checks() {
 
     // Switch to feature branch
     git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
-    git_helpers::commit_file(&ws.repo_path("app"), "feature.txt", "feature", "Add feature");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "feature.txt",
+        "feature",
+        "Add feature",
+    );
 
     // Point manifest at mock GitHub
     let repo_config = manifest.repos.get_mut("app").unwrap();
@@ -231,7 +236,12 @@ async fn test_pr_merge_branch_behind_suggests_update() {
     let mut manifest = ws.load_manifest();
 
     git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
-    git_helpers::commit_file(&ws.repo_path("app"), "feature.txt", "feature", "Add feature");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "feature.txt",
+        "feature",
+        "Add feature",
+    );
 
     let repo_config = manifest.repos.get_mut("app").unwrap();
     repo_config.url = "https://github.com/owner/repo.git".to_string();
@@ -243,7 +253,12 @@ async fn test_pr_merge_branch_behind_suggests_update() {
     mock_list_prs(&server, vec![(42, "feat/test")]).await;
     mock_get_pr(&server, 42, "open", false).await;
     mock_pr_reviews(&server, 42, vec![("APPROVED", "alice")]).await;
-    mock_check_runs(&server, "feat/test", vec![("CI", "completed", Some("success"))]).await;
+    mock_check_runs(
+        &server,
+        "feat/test",
+        vec![("CI", "completed", Some("success"))],
+    )
+    .await;
     mock_merge_pr_behind(&server, 42).await;
 
     let result = gitgrip::cli::commands::pr::run_pr_merge(

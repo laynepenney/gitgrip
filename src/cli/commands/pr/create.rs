@@ -156,10 +156,7 @@ pub async fn run_pr_create(
     let mut created_prs: Vec<(String, u64, String)> = Vec::new(); // (repo_name, pr_number, url)
 
     for repo in &repos_with_changes {
-        let platform = get_platform_adapter(
-            repo.platform_type,
-            repo.platform_base_url.as_deref(),
-        );
+        let platform = get_platform_adapter(repo.platform_type, repo.platform_base_url.as_deref());
 
         let spinner = Output::spinner(&format!("Creating PR for {}...", repo.name));
 

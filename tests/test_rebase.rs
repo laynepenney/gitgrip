@@ -191,7 +191,12 @@ fn test_rebase_skips_non_git_repo() {
 
     // Create a feature branch on the healthy repo
     git_helpers::create_branch(&ws.repo_path("app"), "feat/rebase-healthy");
-    git_helpers::commit_file(&ws.repo_path("app"), "feature.txt", "feature", "Add feature");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "feature.txt",
+        "feature",
+        "Add feature",
+    );
 
     let result = gitgrip::cli::commands::rebase::run_rebase(
         &ws.workspace_root,
