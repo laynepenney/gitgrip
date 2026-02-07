@@ -58,6 +58,9 @@ enum Commands {
         /// Only sync repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
+        /// Sync repos sequentially (default: parallel)
+        #[arg(long)]
+        sequential: bool,
     },
     /// Show status of all repositories
     Status {
@@ -98,8 +101,11 @@ enum Commands {
     Checkout {
         /// Branch name
         name: Option<String>,
+        /// Create branch if it doesn't exist
+        #[arg(short = 'b', long)]
+        create: bool,
         /// Checkout the griptree base branch for this worktree
-        #[arg(long)]
+        #[arg(long, conflicts_with = "create")]
         base: bool,
     },
     /// Stage changes across repos
@@ -391,6 +397,27 @@ enum TreeCommands {
 enum GroupCommands {
     /// List all groups and their repos
     List,
+    /// Add repo(s) to a group
+    Add {
+        /// Group name
+        group: String,
+        /// Repository names
+        #[arg(required = true)]
+        repos: Vec<String>,
+    },
+    /// Remove repo(s) from a group
+    Remove {
+        /// Group name
+        group: String,
+        /// Repository names
+        #[arg(required = true)]
+        repos: Vec<String>,
+    },
+    /// Create a new empty group (for documentation purposes)
+    Create {
+        /// Group name
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -429,6 +456,12 @@ enum ManifestCommands {
     },
     /// Re-sync gitgrip YAML from .repo/ manifest after repo sync
     Sync,
+    /// Show manifest schema specification
+    Schema {
+        /// Output format (yaml, json, markdown)
+        #[arg(long, default_value = "yaml")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -488,7 +521,11 @@ async fn main() -> anyhow::Result<()> {
                 json,
             )?;
         }
-        Some(Commands::Sync { force, group }) => {
+        Some(Commands::Sync {
+            force,
+            group,
+            sequential,
+        }) => {
             let (workspace_root, manifest) = load_workspace()?;
             gitgrip::cli::commands::sync::run_sync(
                 &workspace_root,
@@ -496,7 +533,9 @@ async fn main() -> anyhow::Result<()> {
                 force,
                 cli.quiet,
                 group.as_deref(),
-            )?;
+                sequential,
+            )
+            .await?;
         }
         Some(Commands::Branch {
             name,
@@ -519,19 +558,24 @@ async fn main() -> anyhow::Result<()> {
                 json,
             )?;
         }
-        Some(Commands::Checkout { name, base }) => {
+        Some(Commands::Checkout { name, create, base }) => {
             let (workspace_root, manifest) = load_workspace()?;
             let branch = if base {
                 let config = gitgrip::core::griptree::GriptreeConfig::load_from_workspace(
                     &workspace_root,
-                )
+                )?
                 .ok_or_else(|| anyhow::anyhow!("Not in a griptree workspace"))?;
                 config.branch
             } else {
                 name.ok_or_else(|| anyhow::anyhow!("Branch name is required"))?
             };
 
-            gitgrip::cli::commands::checkout::run_checkout(&workspace_root, &manifest, &branch)?;
+            gitgrip::cli::commands::checkout::run_checkout(
+                &workspace_root,
+                &manifest,
+                &branch,
+                create,
+            )?;
         }
         Some(Commands::Add { files }) => {
             let (workspace_root, manifest) = load_workspace()?;
@@ -789,6 +833,19 @@ async fn main() -> anyhow::Result<()> {
                 GroupCommands::List => {
                     gitgrip::cli::commands::group::run_group_list(&workspace_root, &manifest)?;
                 }
+                GroupCommands::Add { group, repos } => {
+                    gitgrip::cli::commands::group::run_group_add(&workspace_root, &group, &repos)?;
+                }
+                GroupCommands::Remove { group, repos } => {
+                    gitgrip::cli::commands::group::run_group_remove(
+                        &workspace_root,
+                        &group,
+                        &repos,
+                    )?;
+                }
+                GroupCommands::Create { name } => {
+                    gitgrip::cli::commands::group::run_group_create(&workspace_root, &name)?;
+                }
             }
         }
         Some(Commands::Gc {
@@ -851,6 +908,9 @@ async fn main() -> anyhow::Result<()> {
             ManifestCommands::Sync => {
                 let (workspace_root, _manifest) = load_workspace()?;
                 gitgrip::cli::commands::manifest::run_manifest_sync(&workspace_root)?;
+            }
+            ManifestCommands::Schema { format } => {
+                gitgrip::cli::commands::manifest::run_manifest_schema(&format)?;
             }
         },
         Some(Commands::Bench(args)) => {

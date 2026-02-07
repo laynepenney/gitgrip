@@ -32,7 +32,6 @@ pub fn run_rebase(
     if upstream && onto.is_some() {
         Output::warning("Ignoring explicit target because --upstream was set");
     }
-
     if use_upstream {
         Output::header("Rebasing onto upstream branches");
     } else if let Some(target) = onto {
@@ -40,7 +39,7 @@ pub fn run_rebase(
     }
     println!();
 
-    let griptree_config = GriptreeConfig::load_from_workspace(workspace_root);
+    let griptree_config = GriptreeConfig::load_from_workspace(workspace_root)?;
 
     let repos: Vec<RepoInfo> = manifest
         .repos
