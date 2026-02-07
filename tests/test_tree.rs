@@ -5,8 +5,26 @@
 
 mod common;
 
+use std::fs;
+use std::path::Path;
+
+use serde_yaml::Value;
+
 use common::assertions;
 use common::fixtures::WorkspaceBuilder;
+use common::git_helpers;
+
+fn set_default_branch(manifest_path: &Path, repo: &str, branch: &str) {
+    let content = fs::read_to_string(manifest_path).unwrap();
+    let mut doc: Value = serde_yaml::from_str(&content).unwrap();
+    assert!(
+        !doc["repos"][repo].is_null(),
+        "repo {} missing from manifest",
+        repo
+    );
+    doc["repos"][repo]["default_branch"] = Value::String(branch.to_string());
+    fs::write(manifest_path, serde_yaml::to_string(&doc).unwrap()).unwrap();
+}
 
 // ── Tree Add ──────────────────────────────────────────────────────
 
@@ -65,6 +83,43 @@ fn test_tree_add_creates_worktrees() {
     // Worktrees should be on the new branch
     assertions::assert_on_branch(&tree_path.join("app"), "feat/new-feature");
     assertions::assert_on_branch(&tree_path.join("lib"), "feat/new-feature");
+}
+
+#[test]
+fn test_tree_add_writes_repo_upstreams() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo("app")
+        .add_repo("lib")
+        .build();
+
+    git_helpers::create_branch(&ws.repo_path("lib"), "dev");
+    git_helpers::commit_file(&ws.repo_path("lib"), "dev.txt", "dev", "Add dev");
+    git_helpers::push_branch(&ws.repo_path("lib"), "origin", "dev");
+    git_helpers::checkout(&ws.repo_path("lib"), "main");
+
+    let manifest_path = ws
+        .workspace_root
+        .join(".gitgrip")
+        .join("manifests")
+        .join("manifest.yaml");
+    set_default_branch(&manifest_path, "lib", "dev");
+    let manifest = ws.load_manifest();
+
+    let result =
+        gitgrip::cli::commands::tree::run_tree_add(&ws.workspace_root, &manifest, "feat/upstream");
+    assert!(
+        result.is_ok(),
+        "tree add should succeed: {:?}",
+        result.err()
+    );
+
+    let tree_path = ws.workspace_root.parent().unwrap().join("feat-upstream");
+    let config_path = tree_path.join(".gitgrip").join("griptree.json");
+    let config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+
+    assert_eq!(config["repoUpstreams"]["app"], "origin/main");
+    assert_eq!(config["repoUpstreams"]["lib"], "origin/dev");
 }
 
 #[test]

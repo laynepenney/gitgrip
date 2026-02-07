@@ -139,7 +139,6 @@ fn test_checkout_create_flag() {
     assert_on_branch(&ws.repo_path("frontend"), "feat/new-feature");
     assert_on_branch(&ws.repo_path("backend"), "feat/new-feature");
 }
-
 #[test]
 fn test_checkout_skips_non_git_repo() {
     let ws = WorkspaceBuilder::new()

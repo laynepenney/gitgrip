@@ -1,0 +1,3 @@
+[build]
+# Use a repo-local target dir to avoid cross-workspace lock contention.
+target-dir = "target-gitgrip"

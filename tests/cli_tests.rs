@@ -2,9 +2,15 @@
 //!
 //! Tests the CLI binary end-to-end.
 
+mod common;
+
 use assert_cmd::Command;
+use gitgrip::core::griptree::GriptreeConfig;
 use predicates::prelude::*;
 use tempfile::TempDir;
+
+use common::fixtures::WorkspaceBuilder;
+use common::git_helpers;
 
 /// Test that `gr --help` works
 #[test]
@@ -73,4 +79,37 @@ fn test_bench_json() {
         .assert()
         .success()
         .stdout(predicate::str::starts_with("["));
+}
+
+#[test]
+fn test_checkout_base_uses_griptree_config() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo("app")
+        .add_repo("lib")
+        .build();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/base");
+    git_helpers::checkout(&ws.repo_path("app"), "main");
+    git_helpers::create_branch(&ws.repo_path("lib"), "feat/base");
+    git_helpers::checkout(&ws.repo_path("lib"), "main");
+
+    let mut config = GriptreeConfig::new("feat/base", &ws.workspace_root.to_string_lossy());
+    let config_path = ws.workspace_root.join(".gitgrip").join("griptree.json");
+    config.save(&config_path).unwrap();
+
+    let mut cmd = Command::cargo_bin("gr").unwrap();
+    cmd.current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("--base")
+        .assert()
+        .success();
+
+    assert_eq!(
+        git_helpers::current_branch(&ws.repo_path("app")),
+        "feat/base"
+    );
+    assert_eq!(
+        git_helpers::current_branch(&ws.repo_path("lib")),
+        "feat/base"
+    );
 }

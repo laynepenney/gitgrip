@@ -235,18 +235,28 @@ Workspace configuration in `.gitgrip/manifests/manifest.yaml`:
 All commands use `gr` (or `gitgrip`):
 - `gr init <url>` - Initialize workspace from manifest URL
 - `gr init --from-dirs` - Initialize workspace from existing local directories
-- `gr sync` - Pull all repos + process links + run hooks
+- `gr sync` - Pull all repos in parallel + process links + run hooks (includes manifest)
+  - `gr sync --sequential` - Sync repos sequentially (slower but ordered output)
 - `gr status` - Show repo and manifest status
-- `gr branch/checkout` - Branch operations across all repos
+- `gr branch` - Branch operations across all repos (includes manifest)
+- `gr checkout <branch>` - Checkout branch across all repos (includes manifest)
+  - `gr checkout -b <branch>` - Create and checkout branch in one command
 - `gr add` - Stage changes across all repos
-- `gr diff` - Show diff across all repos
+- `gr diff` - Show diff across all repos (includes manifest)
 - `gr commit` - Commit staged changes across all repos
-- `gr push` - Push current branch in all repos
+- `gr push` - Push current branch in all repos (includes manifest)
 - `gr pr create/status/merge/checks/diff` - Linked PR workflow
   - `gr pr merge --update` - Update branch from base if behind, then merge
   - `gr pr merge --auto` - Enable auto-merge (merges when checks pass)
   - `gr pr merge --force` - Merge even if checks pending
 - `gr repo add/list/remove` - Manage repositories
+- `gr group list` - List all groups and their repos
+  - `gr group add <group> <repos...>` - Add repos to a group
+  - `gr group remove <group> <repos...>` - Remove repos from a group
+- `gr manifest import/sync` - Import git-repo XML manifests
+  - `gr manifest schema` - Show manifest schema specification
+  - `gr manifest schema --format json` - Show schema as JSON
+  - `gr manifest schema --format markdown` - Show schema as markdown
 - `gr link` - Manage copyfile/linkfile entries
 - `gr run` - Execute workspace scripts
 - `gr env` - Show workspace environment variables
