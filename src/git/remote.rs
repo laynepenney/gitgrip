@@ -168,7 +168,10 @@ fn pull_latest_with_mode(repo: &Repository, remote: &str, mode: PullMode) -> Res
 }
 
 /// Pull latest changes from a specific upstream ref (e.g., origin/main)
-#[cfg_attr(feature = "telemetry", instrument(skip(repo), fields(upstream, success)))]
+#[cfg_attr(
+    feature = "telemetry",
+    instrument(skip(repo), fields(upstream, success))
+)]
 pub fn pull_latest_from_upstream(repo: &Repository, upstream: &str) -> Result<(), GitError> {
     let repo_path = super::get_workdir(repo);
     let (remote, branch) = split_upstream_ref(upstream);

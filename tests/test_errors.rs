@@ -79,8 +79,7 @@ fn test_invalid_griptree_config() {
     )
     .unwrap();
 
-    let result =
-        gitgrip::core::griptree::GriptreeConfig::load_from_workspace(&workspace_root);
+    let result = gitgrip::core::griptree::GriptreeConfig::load_from_workspace(&workspace_root);
     assert!(result.is_err(), "invalid griptree config should error");
 }
 
@@ -102,10 +101,7 @@ fn test_invalid_griptree_upstream_format() {
         .unwrap()
         .unwrap();
     let result = config.upstream_for_repo("app", "main");
-    assert!(
-        result.is_err(),
-        "invalid upstream should return an error"
-    );
+    assert!(result.is_err(), "invalid upstream should return an error");
 }
 
 // ── Missing/Broken Repos ──────────────────────────────────────────

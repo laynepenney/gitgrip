@@ -142,12 +142,7 @@ async fn test_sync_skips_griptree_base_with_local_commits_ahead() {
 
     let staging = ws._temp.path().join("sync-diverge-staging");
     git_helpers::clone_repo(&ws.remote_url("app"), &staging);
-    git_helpers::commit_file(
-        &staging,
-        "upstream.txt",
-        "upstream",
-        "Add upstream file",
-    );
+    git_helpers::commit_file(&staging, "upstream.txt", "upstream", "Add upstream file");
     git_helpers::push_branch(&staging, "origin", "main");
 
     write_griptree_config(&ws.workspace_root, "feat/griptree", "app", "origin/main");

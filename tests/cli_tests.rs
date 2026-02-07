@@ -93,12 +93,8 @@ fn test_checkout_base_uses_griptree_config() {
     git_helpers::create_branch(&ws.repo_path("lib"), "feat/base");
     git_helpers::checkout(&ws.repo_path("lib"), "main");
 
-    let mut config =
-        GriptreeConfig::new("feat/base", &ws.workspace_root.to_string_lossy());
-    let config_path = ws
-        .workspace_root
-        .join(".gitgrip")
-        .join("griptree.json");
+    let mut config = GriptreeConfig::new("feat/base", &ws.workspace_root.to_string_lossy());
+    let config_path = ws.workspace_root.join(".gitgrip").join("griptree.json");
     config.save(&config_path).unwrap();
 
     let mut cmd = Command::cargo_bin("gr").unwrap();
@@ -108,6 +104,12 @@ fn test_checkout_base_uses_griptree_config() {
         .assert()
         .success();
 
-    assert_eq!(git_helpers::current_branch(&ws.repo_path("app")), "feat/base");
-    assert_eq!(git_helpers::current_branch(&ws.repo_path("lib")), "feat/base");
+    assert_eq!(
+        git_helpers::current_branch(&ws.repo_path("app")),
+        "feat/base"
+    );
+    assert_eq!(
+        git_helpers::current_branch(&ws.repo_path("lib")),
+        "feat/base"
+    );
 }

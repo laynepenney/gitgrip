@@ -50,8 +50,14 @@ pub async fn run_sync(
             griptree_branch.as_deref(),
         )?
     } else {
-        sync_parallel(&repos, force, quiet, griptree_config.clone(), griptree_branch.clone())
-            .await?
+        sync_parallel(
+            &repos,
+            force,
+            quiet,
+            griptree_config.clone(),
+            griptree_branch.clone(),
+        )
+        .await?
     };
 
     // Display results
