@@ -356,9 +356,19 @@ Test files are alongside the modules they test or in `tests/`.
 
 ## Continuous Improvement
 
-gitgrip is self-improving. The workflow for capturing friction is now:
+gitgrip is self-improving. When you encounter friction, missing features, or bugs:
 
-1. Create a GitHub issue directly for any `gr` friction or feature gap.
-2. Tell the user about the friction point and include the issue link.
+1. **Tell the user** about the friction point
+2. **Ask if they want a GitHub issue created** - e.g., "Want me to create an issue for this?"
+3. **Create the issue directly** with `gh issue create` if approved
 
-`IMPROVEMENTS.md` is deprecated and should not receive new entries.
+No need to document in IMPROVEMENTS.md first - create issues directly to reduce overhead.
+
+### CRITICAL: Report When Falling Back to Raw Commands
+
+**If you ever use raw `git` or `gh` commands, you MUST immediately:**
+
+1. Tell the user about the friction point
+2. Ask if they want a GitHub issue created
+
+This is mandatory. Every workaround reveals a gap in `gr` that should be fixed.

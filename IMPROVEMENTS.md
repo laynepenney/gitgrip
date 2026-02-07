@@ -840,3 +840,27 @@ Even after `gr add .` and switching, still blocked because the staged changes we
 3. Show clearer error about which branch has the changes
 
 ---
+
+### Friction: `gr rebase` doesn't handle rebasing onto remote main
+
+**Discovered**: 2026-02-05 during PR merge tests implementation
+
+**Problem**: Feature branch was based on older version of main. When CI failed due to a function signature change on main (new `update` and `auto` parameters added to `run_pr_merge`), needed to rebase onto latest main to get the updated code.
+
+**Workaround used**: Raw `git fetch origin main && git rebase origin/main` followed by `gr push --force`
+
+**Raw commands used**:
+```bash
+git fetch origin main
+git rebase origin/main
+gr push --force
+```
+
+**Expected behavior**: `gr rebase main` or `gr rebase --onto main` that:
+1. Fetches latest from origin
+2. Rebases current branch onto origin/main across all repos with changes
+3. Handles conflicts with helpful messaging
+
+**Note**: This friction occurred twice during the same PR - once after the initial CI failure, and again after the first rebase when function signatures changed further.
+
+---
