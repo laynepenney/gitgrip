@@ -7,9 +7,8 @@ use std::process::Command;
 use tracing::debug;
 
 /// Regex to match credentials in URLs (e.g., `https://user:token@host/...`)
-static CRED_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"://[^@/]+@").expect("credential regex must compile")
-});
+static CRED_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"://[^@/]+@").expect("credential regex must compile"));
 
 /// Replace embedded credentials in a string with `***`.
 fn sanitize_credentials(input: &str) -> Cow<'_, str> {

@@ -423,8 +423,7 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                         if source.is_dir() {
                             match std::os::windows::fs::symlink_dir(&source, &dest) {
                                 Ok(_) => {
-                                    if let Err(e) =
-                                        validate_within_workspace(&dest, workspace_root)
+                                    if let Err(e) = validate_within_workspace(&dest, workspace_root)
                                     {
                                         let _ = std::fs::remove_file(&dest);
                                         Output::error(&format!("{}", e));
@@ -445,8 +444,7 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                         } else {
                             match std::os::windows::fs::symlink_file(&source, &dest) {
                                 Ok(_) => {
-                                    if let Err(e) =
-                                        validate_within_workspace(&dest, workspace_root)
+                                    if let Err(e) = validate_within_workspace(&dest, workspace_root)
                                     {
                                         let _ = std::fs::remove_file(&dest);
                                         Output::error(&format!("{}", e));
