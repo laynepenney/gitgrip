@@ -5,6 +5,7 @@ mod common;
 use common::assertions::{assert_file_exists, assert_on_branch};
 use common::fixtures::WorkspaceBuilder;
 use common::git_helpers;
+use std::fs;
 
 #[tokio::test]
 async fn test_sync_clones_missing_repos() {
@@ -166,5 +167,61 @@ async fn test_sync_sequential_mode() {
         result.is_ok(),
         "sequential sync should succeed: {:?}",
         result.err()
+    );
+}
+
+#[tokio::test]
+async fn test_sync_clone_failure_invalid_url() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let mut manifest = ws.load_manifest();
+
+    // Force clone path: delete repo and replace URL with invalid path
+    fs::remove_dir_all(ws.repo_path("app")).unwrap();
+    assert!(!ws.repo_path("app").exists());
+    manifest.repos.get_mut("app").expect("app repo config").url =
+        "file:///does-not-exist/repo.git".to_string();
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should not crash: {:?}", result.err());
+
+    // Clone should fail, leaving no git metadata
+    assert!(
+        !ws.repo_path("app").join(".git").exists(),
+        "expected clone to fail without .git"
+    );
+}
+
+#[tokio::test]
+async fn test_sync_existing_repo_missing_git_dir() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    // Corrupt repo by removing .git
+    fs::remove_dir_all(ws.repo_path("app").join(".git")).unwrap();
+    assert!(!ws.repo_path("app").join(".git").exists());
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should not crash: {:?}", result.err());
+
+    // Sync should report error and leave repo unchanged (still missing .git)
+    assert!(
+        !ws.repo_path("app").join(".git").exists(),
+        "expected sync to fail for non-git directory"
     );
 }

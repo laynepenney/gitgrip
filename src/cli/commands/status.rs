@@ -102,6 +102,7 @@ pub fn run_status(
             owner: String::new(),
             repo: "manifests".to_string(),
             platform_type: crate::core::manifest::PlatformType::GitHub,
+            platform_base_url: None,
             project: None,
             reference: false,
             groups: Vec::new(),

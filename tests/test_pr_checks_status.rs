@@ -50,6 +50,50 @@ async fn test_pr_checks_json_output_empty() {
     assert!(result.is_ok());
 }
 
+#[tokio::test]
+async fn test_pr_checks_handles_api_error_on_feature_branch() {
+    // Feature branch with file:// remote triggers platform API error;
+    // the command should handle it and return Ok.
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/checks-error");
+
+    let result = gitgrip::cli::commands::pr::run_pr_checks(
+        &ws.workspace_root,
+        &manifest,
+        true, // json
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "pr checks should handle API errors: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+async fn test_pr_checks_skips_non_git_repo() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    std::fs::remove_dir_all(ws.repo_path("app").join(".git")).unwrap();
+
+    let result = gitgrip::cli::commands::pr::run_pr_checks(
+        &ws.workspace_root,
+        &manifest,
+        true, // json
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "pr checks should skip non-git repos: {:?}",
+        result.err()
+    );
+}
+
 // ── pr status ───────────────────────────────────────────────────
 
 #[tokio::test]
@@ -119,6 +163,27 @@ async fn test_pr_status_non_json_no_changes() {
     assert!(
         result.is_ok(),
         "pr status (non-json) should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+async fn test_pr_status_skips_non_git_repo() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    std::fs::remove_dir_all(ws.repo_path("app").join(".git")).unwrap();
+
+    let result = gitgrip::cli::commands::pr::run_pr_status(
+        &ws.workspace_root,
+        &manifest,
+        true, // json
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "pr status should skip non-git repos: {:?}",
         result.err()
     );
 }
