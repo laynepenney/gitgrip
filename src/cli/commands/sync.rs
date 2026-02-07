@@ -17,7 +17,7 @@ pub fn run_sync(
     group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
     let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
-    let griptree_config = GriptreeConfig::load_from_workspace(workspace_root)?;
+    let griptree_config = GriptreeConfig::load_from_workspace(workspace_root);
     let griptree_branch = griptree_config.as_ref().map(|cfg| cfg.branch.as_str());
 
     let griptree_config = GriptreeConfig::load_from_workspace(workspace_root)?;

@@ -96,12 +96,12 @@ impl GriptreeConfig {
     }
 
     /// Load griptree config from a workspace root (if present)
-    pub fn load_from_workspace(workspace_root: &PathBuf) -> Result<Option<Self>, GriptreeError> {
+    pub fn load_from_workspace(workspace_root: &PathBuf) -> Option<Self> {
         let path = workspace_root.join(".gitgrip").join("griptree.json");
         if !path.exists() {
-            return Ok(None);
+            return None;
         }
-        Self::load(&path).map(Some)
+        Self::load(&path).ok()
     }
 
     /// Resolve upstream branch for a repo, falling back to origin/<default_branch>
