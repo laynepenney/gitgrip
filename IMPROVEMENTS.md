@@ -771,7 +771,6 @@ gh pr create --title "..." --body "..." --repo laynepenney/codi-workspace
 
 ---
 
-<<<<<<< HEAD
 ### Friction: `gr rebase` doesn't handle rebasing onto remote main
 
 **Discovered**: 2026-02-05 during PR merge tests implementation
@@ -793,7 +792,9 @@ gr push --force
 3. Handles conflicts with helpful messaging
 
 **Note**: This friction occurred twice during the same PR - once after the initial CI failure, and again after the first rebase when function signatures changed further.
-=======
+
+---
+
 ### Friction: PR merge blocked when branch is behind main, `gr rebase` fails
 
 **Status**: 🔴 **ACTIVE** - Encountered while merging PR #186
@@ -861,6 +862,5 @@ Even after `gr add .` and switching, still blocked because the staged changes we
 1. Automatically stash/unstash changes when switching
 2. Prompt user to commit or stash
 3. Show clearer error about which branch has the changes
->>>>>>> 6d28d77 (docs: document gitgrip friction points from PR #186 merge)
 
 ---
