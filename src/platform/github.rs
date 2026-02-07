@@ -48,7 +48,13 @@ impl GitHubAdapter {
             .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
             .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
             .build()
-            .unwrap_or_else(|_| Self::http_client())
+            .unwrap_or_else(|err| {
+                debug!(
+                    error = %err,
+                    "Failed to build HTTP client with timeouts; falling back to default client"
+                );
+                reqwest::Client::new()
+            })
     }
 
     /// Get configured Octocrab instance with proper timeouts
