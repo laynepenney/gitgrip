@@ -14,6 +14,10 @@ Thumbs.db
 # Benchmark output
 benchmark-output.txt
 
+# Profiling artifacts
+*.profraw
+*.profdata
+
 # Environment
 .env
 .env.local
