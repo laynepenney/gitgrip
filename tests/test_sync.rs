@@ -129,6 +129,50 @@ async fn test_sync_handles_up_to_date() {
 }
 
 #[tokio::test]
+async fn test_sync_skips_griptree_base_with_local_commits_ahead() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/griptree");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "local-only.txt",
+        "local",
+        "Add local-only file",
+    );
+
+    let staging = ws._temp.path().join("sync-diverge-staging");
+    git_helpers::clone_repo(&ws.remote_url("app"), &staging);
+    git_helpers::commit_file(
+        &staging,
+        "upstream.txt",
+        "upstream",
+        "Add upstream file",
+    );
+    git_helpers::push_branch(&staging, "origin", "main");
+
+    write_griptree_config(&ws.workspace_root, "feat/griptree", "app", "origin/main");
+    let manifest = ws.load_manifest();
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
+
+    assert_file_exists(&ws.repo_path("app").join("local-only.txt"));
+    assert!(
+        !ws.repo_path("app").join("upstream.txt").exists(),
+        "expected sync to skip pulling upstream changes"
+    );
+    assert_on_branch(&ws.repo_path("app"), "feat/griptree");
+}
+
+#[tokio::test]
 async fn test_sync_multiple_repos() {
     let ws = WorkspaceBuilder::new()
         .add_repo("alpha")
