@@ -4,6 +4,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -57,6 +58,9 @@ pub struct GriptreeConfig {
     /// Reason for locking
     #[serde(skip_serializing_if = "Option::is_none")]
     pub locked_reason: Option<String>,
+    /// Per-repo upstream branch mapping (e.g., origin/main, origin/dev)
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub repo_upstreams: HashMap<String, String>,
 }
 
 impl GriptreeConfig {
@@ -70,6 +74,7 @@ impl GriptreeConfig {
             locked: false,
             locked_at: None,
             locked_reason: None,
+            repo_upstreams: HashMap::new(),
         }
     }
 
@@ -88,6 +93,23 @@ impl GriptreeConfig {
         }
         std::fs::write(path, json)?;
         Ok(())
+    }
+
+    /// Load griptree config from a workspace root (if present)
+    pub fn load_from_workspace(workspace_root: &PathBuf) -> Option<Self> {
+        let path = workspace_root.join(".gitgrip").join("griptree.json");
+        if !path.exists() {
+            return None;
+        }
+        Self::load(&path).ok()
+    }
+
+    /// Resolve upstream branch for a repo, falling back to origin/<default_branch>
+    pub fn upstream_for_repo(&self, repo_name: &str, default_branch: &str) -> String {
+        self.repo_upstreams
+            .get(repo_name)
+            .cloned()
+            .unwrap_or_else(|| format!("origin/{}", default_branch))
     }
 
     /// Lock the griptree
@@ -243,5 +265,22 @@ mod tests {
         let config = GriptreeConfig::new("main", "/workspace");
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains("\"branch\":\"main\""));
+    }
+
+    #[test]
+    fn test_upstream_for_repo_fallback_and_override() {
+        let mut config = GriptreeConfig::new("feat/test", "/path");
+        assert_eq!(
+            config.upstream_for_repo("repo", "main"),
+            "origin/main".to_string()
+        );
+
+        config
+            .repo_upstreams
+            .insert("repo".to_string(), "origin/dev".to_string());
+        assert_eq!(
+            config.upstream_for_repo("repo", "main"),
+            "origin/dev".to_string()
+        );
     }
 }
