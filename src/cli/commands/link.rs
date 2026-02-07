@@ -6,7 +6,23 @@ use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::path_exists;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Verify that a path, once canonicalized, stays within the workspace root.
+fn validate_within_workspace(path: &Path, workspace_root: &Path) -> anyhow::Result<()> {
+    if path.exists() {
+        let canonical = path.canonicalize()?;
+        let ws_canonical = workspace_root.canonicalize()?;
+        if !canonical.starts_with(&ws_canonical) {
+            anyhow::bail!(
+                "Path escapes workspace: {} -> {}",
+                path.display(),
+                canonical.display()
+            );
+        }
+    }
+    Ok(())
+}
 
 /// Run the link command
 pub fn run_link(
@@ -251,11 +267,17 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                 {
                     match std::os::unix::fs::symlink(&source, &dest) {
                         Ok(_) => {
-                            Output::success(&format!(
-                                "[link] {} -> {}",
-                                linkfile.src, linkfile.dest
-                            ));
-                            applied += 1;
+                            if let Err(e) = validate_within_workspace(&dest, workspace_root) {
+                                let _ = std::fs::remove_file(&dest);
+                                Output::error(&format!("{}", e));
+                                errors += 1;
+                            } else {
+                                Output::success(&format!(
+                                    "[link] {} -> {}",
+                                    linkfile.src, linkfile.dest
+                                ));
+                                applied += 1;
+                            }
                         }
                         Err(e) => {
                             Output::error(&format!("Failed to create symlink: {}", e));
@@ -270,11 +292,17 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                     if source.is_dir() {
                         match std::os::windows::fs::symlink_dir(&source, &dest) {
                             Ok(_) => {
-                                Output::success(&format!(
-                                    "[link] {} -> {}",
-                                    linkfile.src, linkfile.dest
-                                ));
-                                applied += 1;
+                                if let Err(e) = validate_within_workspace(&dest, workspace_root) {
+                                    let _ = std::fs::remove_file(&dest);
+                                    Output::error(&format!("{}", e));
+                                    errors += 1;
+                                } else {
+                                    Output::success(&format!(
+                                        "[link] {} -> {}",
+                                        linkfile.src, linkfile.dest
+                                    ));
+                                    applied += 1;
+                                }
                             }
                             Err(e) => {
                                 Output::error(&format!("Failed to create symlink: {}", e));
@@ -284,11 +312,17 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                     } else {
                         match std::os::windows::fs::symlink_file(&source, &dest) {
                             Ok(_) => {
-                                Output::success(&format!(
-                                    "[link] {} -> {}",
-                                    linkfile.src, linkfile.dest
-                                ));
-                                applied += 1;
+                                if let Err(e) = validate_within_workspace(&dest, workspace_root) {
+                                    let _ = std::fs::remove_file(&dest);
+                                    Output::error(&format!("{}", e));
+                                    errors += 1;
+                                } else {
+                                    Output::success(&format!(
+                                        "[link] {} -> {}",
+                                        linkfile.src, linkfile.dest
+                                    ));
+                                    applied += 1;
+                                }
                             }
                             Err(e) => {
                                 Output::error(&format!("Failed to create symlink: {}", e));
@@ -365,11 +399,17 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                     {
                         match std::os::unix::fs::symlink(&source, &dest) {
                             Ok(_) => {
-                                Output::success(&format!(
-                                    "[link] manifest:{} -> {}",
-                                    linkfile.src, linkfile.dest
-                                ));
-                                applied += 1;
+                                if let Err(e) = validate_within_workspace(&dest, workspace_root) {
+                                    let _ = std::fs::remove_file(&dest);
+                                    Output::error(&format!("{}", e));
+                                    errors += 1;
+                                } else {
+                                    Output::success(&format!(
+                                        "[link] manifest:{} -> {}",
+                                        linkfile.src, linkfile.dest
+                                    ));
+                                    applied += 1;
+                                }
                             }
                             Err(e) => {
                                 Output::error(&format!("Failed to create symlink: {}", e));
@@ -383,11 +423,19 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                         if source.is_dir() {
                             match std::os::windows::fs::symlink_dir(&source, &dest) {
                                 Ok(_) => {
-                                    Output::success(&format!(
-                                        "[link] manifest:{} -> {}",
-                                        linkfile.src, linkfile.dest
-                                    ));
-                                    applied += 1;
+                                    if let Err(e) =
+                                        validate_within_workspace(&dest, workspace_root)
+                                    {
+                                        let _ = std::fs::remove_file(&dest);
+                                        Output::error(&format!("{}", e));
+                                        errors += 1;
+                                    } else {
+                                        Output::success(&format!(
+                                            "[link] manifest:{} -> {}",
+                                            linkfile.src, linkfile.dest
+                                        ));
+                                        applied += 1;
+                                    }
                                 }
                                 Err(e) => {
                                     Output::error(&format!("Failed to create symlink: {}", e));
@@ -397,11 +445,19 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                         } else {
                             match std::os::windows::fs::symlink_file(&source, &dest) {
                                 Ok(_) => {
-                                    Output::success(&format!(
-                                        "[link] manifest:{} -> {}",
-                                        linkfile.src, linkfile.dest
-                                    ));
-                                    applied += 1;
+                                    if let Err(e) =
+                                        validate_within_workspace(&dest, workspace_root)
+                                    {
+                                        let _ = std::fs::remove_file(&dest);
+                                        Output::error(&format!("{}", e));
+                                        errors += 1;
+                                    } else {
+                                        Output::success(&format!(
+                                            "[link] manifest:{} -> {}",
+                                            linkfile.src, linkfile.dest
+                                        ));
+                                        applied += 1;
+                                    }
                                 }
                                 Err(e) => {
                                     Output::error(&format!("Failed to create symlink: {}", e));

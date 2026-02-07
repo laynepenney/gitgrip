@@ -50,7 +50,7 @@ fn rand_float() -> f64 {
     use std::time::SystemTime;
     let nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or(Duration::from_secs(1))
         .subsec_nanos();
     (nanos % 1000) as f64 / 1000.0
 }

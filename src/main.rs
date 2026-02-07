@@ -576,10 +576,8 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Commit { message, amend }) => {
             let (workspace_root, manifest) = load_workspace()?;
-            let msg = message.unwrap_or_else(|| {
-                eprintln!("Error: commit message required (-m)");
-                std::process::exit(1);
-            });
+            let msg = message
+                .ok_or_else(|| anyhow::anyhow!("commit message required (-m)"))?;
             gitgrip::cli::commands::commit::run_commit(&workspace_root, &manifest, &msg, amend)?;
         }
         Some(Commands::Push {

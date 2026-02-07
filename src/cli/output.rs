@@ -71,7 +71,7 @@ impl Output {
         pb.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.cyan} {msg}")
-                .unwrap()
+                .expect("hardcoded template must be valid")
                 .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
         );
         pb.set_message(message.to_string());
@@ -85,7 +85,7 @@ impl Output {
         pb.set_style(
             ProgressStyle::default_bar()
                 .template("{msg} [{bar:40.cyan/blue}] {pos}/{len}")
-                .unwrap()
+                .expect("hardcoded template must be valid")
                 .progress_chars("█▓░"),
         );
         pb.set_message(message.to_string());

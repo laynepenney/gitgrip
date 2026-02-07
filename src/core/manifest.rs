@@ -464,16 +464,30 @@ impl Manifest {
     }
 }
 
-/// Check if a path escapes the workspace boundary
+/// Check if a path escapes the workspace boundary using depth-tracking walk.
+///
+/// Walks each path segment, incrementing depth for normal components and
+/// decrementing for `..`. If depth ever goes negative, the path escapes.
 fn path_escapes_boundary(path: &str) -> bool {
-    // Normalize path separators
     let normalized = path.replace('\\', "/");
-
-    // Reject: paths starting with "..", "/", or containing "/../"
-    if normalized.starts_with("..") || normalized.starts_with('/') || normalized.contains("/../") {
+    if normalized.starts_with('/') {
         return true;
     }
-
+    let mut depth: i32 = 0;
+    for segment in normalized.split('/') {
+        match segment {
+            "" | "." => continue,
+            ".." => {
+                depth -= 1;
+                if depth < 0 {
+                    return true;
+                }
+            }
+            _ => {
+                depth += 1;
+            }
+        }
+    }
     false
 }
 
@@ -584,13 +598,20 @@ workspace:
 
     #[test]
     fn test_path_escapes_boundary() {
+        // Paths that escape
         assert!(path_escapes_boundary(".."));
         assert!(path_escapes_boundary("../foo"));
         assert!(path_escapes_boundary("/etc"));
         assert!(path_escapes_boundary("foo/../../../etc"));
+        assert!(path_escapes_boundary("foo/../../etc"));
+        assert!(path_escapes_boundary("foo\\..\\..\\etc"));
+
+        // Paths that stay within boundary
         assert!(!path_escapes_boundary("foo"));
         assert!(!path_escapes_boundary("foo/bar"));
         assert!(!path_escapes_boundary("./foo"));
+        assert!(!path_escapes_boundary("foo/bar/../baz"));
+        assert!(!path_escapes_boundary("foo/bar/.."));
     }
 
     #[test]

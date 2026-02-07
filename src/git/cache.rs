@@ -43,7 +43,7 @@ impl GitStatusCache {
 
     /// Get cached status or None if not cached/expired
     pub fn get(&self, repo_path: &PathBuf) -> Option<RepoStatusInfo> {
-        let cache = self.cache.lock().unwrap();
+        let cache = self.cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(entry) = cache.get(repo_path) {
             if !self.is_expired(entry) {
                 #[cfg(feature = "telemetry")]
@@ -64,7 +64,7 @@ impl GitStatusCache {
 
     /// Set status in cache
     pub fn set(&self, repo_path: PathBuf, status: RepoStatusInfo) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         cache.insert(
             repo_path,
             CacheEntry {
@@ -76,13 +76,13 @@ impl GitStatusCache {
 
     /// Invalidate cache for a specific repo
     pub fn invalidate(&self, repo_path: &PathBuf) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         cache.remove(repo_path);
     }
 
     /// Clear the entire cache
     pub fn clear(&self) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         cache.clear();
     }
 }

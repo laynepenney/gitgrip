@@ -39,7 +39,10 @@ impl BitbucketAdapter {
             .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
             .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
             .build()
-            .unwrap_or_else(|_| Client::new())
+            .unwrap_or_else(|err| {
+                tracing::debug!(error = %err, "HTTP client build failed; using default");
+                Client::new()
+            })
     }
 }
 
