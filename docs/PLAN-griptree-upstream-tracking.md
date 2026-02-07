@@ -15,22 +15,24 @@ In griptree workspaces, the local “base” branch is the griptree branch (e.g.
 - Changing git’s own upstream configuration.
 
 ## Data Model
-Add a small JSON file in the worktree root:
+Reuse the existing griptree config file in the worktree root:
 
 `.gitgrip/griptree.json`
 ```json
 {
-  "griptree_branch": "codi-gripspace",
-  "repos": {
-    "gitgrip": { "upstream": "origin/main" },
-    "opencode": { "upstream": "origin/dev" }
+  "branch": "codi-gripspace",
+  "path": "/abs/path/to/worktree",
+  "createdAt": "2026-02-07T18:10:00Z",
+  "repoUpstreams": {
+    "gitgrip": "origin/main",
+    "opencode": "origin/dev"
   }
 }
 ```
 
 Notes:
-- `griptree_branch` is the base branch for the worktree.
-- `repos[repo].upstream` is the upstream default to use for sync/rebase.
+- `branch` is the base branch for the worktree.
+- `repoUpstreams[repo]` is the upstream default to use for sync/rebase.
 - Missing entries fall back to manifest defaults (e.g. `origin/<default_branch>`).
 
 ## Command Changes
