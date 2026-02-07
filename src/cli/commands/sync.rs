@@ -34,6 +34,7 @@ pub async fn run_sync(
     if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
         repos.insert(0, manifest_repo);
     }
+
     let griptree_config = GriptreeConfig::load_from_workspace(workspace_root)?;
     let griptree_branch = griptree_config.as_ref().map(|cfg| cfg.branch.clone());
 
