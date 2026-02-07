@@ -9,6 +9,7 @@
 mod common;
 
 use common::fixtures::WorkspaceBuilder;
+use tempfile::TempDir;
 
 // ── Invalid Manifest ──────────────────────────────────────────────
 
@@ -60,6 +61,24 @@ repos:
         "error should mention path escaping: {}",
         err
     );
+}
+
+// ── Invalid Griptree Config ───────────────────────────────────────
+
+#[test]
+fn test_invalid_griptree_config() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("workspace");
+    std::fs::create_dir_all(workspace_root.join(".gitgrip")).unwrap();
+    std::fs::write(
+        workspace_root.join(".gitgrip").join("griptree.json"),
+        "{invalid json",
+    )
+    .unwrap();
+
+    let result =
+        gitgrip::core::griptree::GriptreeConfig::load_from_workspace(&workspace_root);
+    assert!(result.is_err(), "invalid griptree config should error");
 }
 
 // ── Missing/Broken Repos ──────────────────────────────────────────

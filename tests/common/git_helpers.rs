@@ -54,6 +54,15 @@ pub fn push_branch(repo_path: &Path, remote: &str, branch: &str) {
     git(repo_path, &["push", remote, branch]);
 }
 
+/// Fetch from a remote (optionally a single branch).
+pub fn fetch(repo_path: &Path, remote: &str, branch: Option<&str>) {
+    let mut args = vec!["fetch", remote];
+    if let Some(branch) = branch {
+        args.push(branch);
+    }
+    git(repo_path, &args);
+}
+
 /// Push with set-upstream.
 pub fn push_upstream(repo_path: &Path, remote: &str, branch: &str) {
     git(repo_path, &["push", "-u", remote, branch]);
