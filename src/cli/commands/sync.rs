@@ -37,9 +37,6 @@ pub async fn run_sync(
     let griptree_config = GriptreeConfig::load_from_workspace(workspace_root)?;
     let griptree_branch = griptree_config.as_ref().map(|cfg| cfg.branch.clone());
 
-    let griptree_config = GriptreeConfig::load_from_workspace(workspace_root)?;
-    let griptree_branch = griptree_config.as_ref().map(|cfg| cfg.branch.clone());
-
     Output::header(&format!("Syncing {} repositories...", repos.len()));
     println!();
 

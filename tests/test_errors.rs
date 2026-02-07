@@ -8,8 +8,9 @@
 
 mod common;
 
-use common::fixtures::WorkspaceBuilder;
 use tempfile::TempDir;
+
+use common::fixtures::WorkspaceBuilder;
 
 // ── Invalid Manifest ──────────────────────────────────────────────
 

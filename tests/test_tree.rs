@@ -5,12 +5,14 @@
 
 mod common;
 
+use std::fs;
+use std::path::Path;
+
+use serde_yaml::Value;
+
 use common::assertions;
 use common::fixtures::WorkspaceBuilder;
 use common::git_helpers;
-use serde_yaml::Value;
-use std::fs;
-use std::path::Path;
 
 fn set_default_branch(manifest_path: &Path, repo: &str, branch: &str) {
     let content = fs::read_to_string(manifest_path).unwrap();

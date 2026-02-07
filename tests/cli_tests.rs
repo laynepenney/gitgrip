@@ -5,11 +5,12 @@
 mod common;
 
 use assert_cmd::Command;
-use common::fixtures::WorkspaceBuilder;
-use common::git_helpers;
 use gitgrip::core::griptree::GriptreeConfig;
 use predicates::prelude::*;
 use tempfile::TempDir;
+
+use common::fixtures::WorkspaceBuilder;
+use common::git_helpers;
 
 /// Test that `gr --help` works
 #[test]
