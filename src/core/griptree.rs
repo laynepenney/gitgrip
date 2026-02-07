@@ -22,6 +22,9 @@ pub enum GriptreeError {
 
     #[error("Griptree not found: {0}")]
     NotFound(String),
+
+    #[error("Invalid upstream reference: {0}. Expected format: <remote>/<branch>")]
+    InvalidUpstream(String),
 }
 
 /// Griptree status
@@ -105,11 +108,28 @@ impl GriptreeConfig {
     }
 
     /// Resolve upstream branch for a repo, falling back to origin/<default_branch>
-    pub fn upstream_for_repo(&self, repo_name: &str, default_branch: &str) -> String {
-        self.repo_upstreams
+    pub fn upstream_for_repo(
+        &self,
+        repo_name: &str,
+        default_branch: &str,
+    ) -> Result<String, GriptreeError> {
+        let upstream = self
+            .repo_upstreams
             .get(repo_name)
             .cloned()
-            .unwrap_or_else(|| format!("origin/{}", default_branch))
+            .unwrap_or_else(|| format!("origin/{}", default_branch));
+        Self::validate_upstream_ref(&upstream)?;
+        Ok(upstream)
+    }
+
+    fn validate_upstream_ref(upstream: &str) -> Result<(), GriptreeError> {
+        let mut parts = upstream.splitn(2, '/');
+        let remote = parts.next().unwrap_or("").trim();
+        let branch = parts.next().unwrap_or("").trim();
+        if remote.is_empty() || branch.is_empty() {
+            return Err(GriptreeError::InvalidUpstream(upstream.to_string()));
+        }
+        Ok(())
     }
 
     /// Lock the griptree
@@ -271,7 +291,7 @@ mod tests {
     fn test_upstream_for_repo_fallback_and_override() {
         let mut config = GriptreeConfig::new("feat/test", "/path");
         assert_eq!(
-            config.upstream_for_repo("repo", "main"),
+            config.upstream_for_repo("repo", "main").unwrap(),
             "origin/main".to_string()
         );
 
@@ -279,7 +299,7 @@ mod tests {
             .repo_upstreams
             .insert("repo".to_string(), "origin/dev".to_string());
         assert_eq!(
-            config.upstream_for_repo("repo", "main"),
+            config.upstream_for_repo("repo", "main").unwrap(),
             "origin/dev".to_string()
         );
     }

@@ -10,6 +10,8 @@ mod common;
 
 use tempfile::TempDir;
 
+use gitgrip::core::griptree::GriptreeConfig;
+
 use common::fixtures::WorkspaceBuilder;
 
 // ── Invalid Manifest ──────────────────────────────────────────────
@@ -80,6 +82,30 @@ fn test_invalid_griptree_config() {
     let result =
         gitgrip::core::griptree::GriptreeConfig::load_from_workspace(&workspace_root);
     assert!(result.is_err(), "invalid griptree config should error");
+}
+
+#[test]
+fn test_invalid_griptree_upstream_format() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("workspace");
+    std::fs::create_dir_all(workspace_root.join(".gitgrip")).unwrap();
+
+    let mut config = GriptreeConfig::new("feat/griptree", "/workspace");
+    config
+        .repo_upstreams
+        .insert("app".to_string(), "main".to_string());
+    config
+        .save(&workspace_root.join(".gitgrip").join("griptree.json"))
+        .unwrap();
+
+    let config = GriptreeConfig::load_from_workspace(&workspace_root)
+        .unwrap()
+        .unwrap();
+    let result = config.upstream_for_repo("app", "main");
+    assert!(
+        result.is_err(),
+        "invalid upstream should return an error"
+    );
 }
 
 // ── Missing/Broken Repos ──────────────────────────────────────────

@@ -4,7 +4,8 @@ use crate::cli::output::Output;
 use crate::core::griptree::GriptreeConfig;
 use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
-use crate::git::remote::{pull_latest_from_upstream, safe_pull_latest};
+use crate::git::branch::has_commits_ahead;
+use crate::git::remote::{fetch_remote, pull_latest_from_upstream, safe_pull_latest};
 use crate::git::{clone_repo, get_current_branch, open_repo, path_exists};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -243,9 +244,71 @@ fn sync_single_repo(
             };
 
             if use_griptree_upstream {
-                let upstream = griptree_config
-                    .map(|cfg| cfg.upstream_for_repo(&repo.name, &repo.default_branch))
-                    .unwrap_or_else(|| format!("origin/{}", repo.default_branch));
+                let upstream = match griptree_config {
+                    Some(cfg) => match cfg.upstream_for_repo(&repo.name, &repo.default_branch) {
+                        Ok(upstream) => upstream,
+                        Err(e) => {
+                            let msg = format!("error - {}", e);
+                            if let Some(s) = spinner {
+                                s.finish_with_message(format!("{}: {}", repo.name, msg));
+                            }
+                            return Ok(SyncResult {
+                                name: repo.name.clone(),
+                                success: false,
+                                message: msg,
+                                was_cloned: false,
+                            });
+                        }
+                    },
+                    None => format!("origin/{}", repo.default_branch),
+                };
+
+                let remote = upstream.splitn(2, '/').next().unwrap_or("origin");
+                if let Err(e) = fetch_remote(&git_repo, remote) {
+                    let msg = format!("error - {}", e);
+                    if let Some(s) = spinner {
+                        s.finish_with_message(format!("{}: {}", repo.name, msg));
+                    }
+                    return Ok(SyncResult {
+                        name: repo.name.clone(),
+                        success: false,
+                        message: msg,
+                        was_cloned: false,
+                    });
+                }
+
+                if let Some(current) = current_branch.as_deref() {
+                    match has_commits_ahead(&git_repo, &upstream) {
+                        Ok(true) => {
+                            let msg = format!(
+                                "skipped - branch '{}' has local commits not in '{}'",
+                                current, upstream
+                            );
+                            if let Some(s) = spinner {
+                                s.finish_with_message(format!("{}: {}", repo.name, msg));
+                            }
+                            return Ok(SyncResult {
+                                name: repo.name.clone(),
+                                success: true,
+                                message: msg,
+                                was_cloned: false,
+                            });
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            let msg = format!("error - {}", e);
+                            if let Some(s) = spinner {
+                                s.finish_with_message(format!("{}: {}", repo.name, msg));
+                            }
+                            return Ok(SyncResult {
+                                name: repo.name.clone(),
+                                success: false,
+                                message: msg,
+                                was_cloned: false,
+                            });
+                        }
+                    }
+                }
 
                 match pull_latest_from_upstream(&git_repo, &upstream) {
                     Ok(()) => {

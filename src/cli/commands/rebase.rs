@@ -81,10 +81,19 @@ pub fn run_rebase(
 
         let spinner = Output::spinner(&format!("Rebasing {}...", repo.name));
         let target = if use_upstream {
-            griptree_config
-                .as_ref()
-                .map(|cfg| cfg.upstream_for_repo(&repo.name, &repo.default_branch))
-                .unwrap_or_else(|| format!("origin/{}", repo.default_branch))
+            match griptree_config.as_ref() {
+                Some(cfg) => match cfg.upstream_for_repo(&repo.name, &repo.default_branch) {
+                    Ok(upstream) => upstream,
+                    Err(e) => {
+                        if let Some(s) = spinner {
+                            s.finish_with_message(format!("{}: error - {}", repo.name, e));
+                        }
+                        error_count += 1;
+                        continue;
+                    }
+                },
+                None => format!("origin/{}", repo.default_branch),
+            }
         } else {
             onto.unwrap_or("origin/main").to_string()
         };
