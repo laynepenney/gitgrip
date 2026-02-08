@@ -77,6 +77,7 @@ pub async fn run_pr_merge(
     // Also check manifest repo if configured
     let mut all_repos = repos.clone();
     if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
+        let manifest_name = manifest_repo.name.clone();
         // Only add manifest repo if it has changes
         match check_repo_for_changes(&manifest_repo) {
             Ok(true) => {
@@ -84,7 +85,7 @@ pub async fn run_pr_merge(
             }
             Ok(false) => {
                 reports.push(RepoReport {
-                    repo_name: "manifest".to_string(),
+                    repo_name: manifest_name.clone(),
                     outcome: RepoOutcome::Skipped {
                         reason: "no changes".to_string(),
                     },
@@ -92,7 +93,7 @@ pub async fn run_pr_merge(
             }
             Err(e) => {
                 reports.push(RepoReport {
-                    repo_name: "manifest".to_string(),
+                    repo_name: manifest_name,
                     outcome: RepoOutcome::Skipped {
                         reason: format!("could not check for changes: {}", e),
                     },
