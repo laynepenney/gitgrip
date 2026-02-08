@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Griptree upstream tracking** - Per-repo upstream branch configuration for griptrees (#246)
+  - `gr tree add` now auto-detects and records upstream for each repo in `griptree.json`
+  - `gr sync` uses per-repo upstream mapping when on griptree base branch
+  - `gr rebase --upstream` uses griptree upstream mapping instead of hardcoded `origin/main`
+  - `gr checkout --base` - new flag to checkout the griptree base branch across all repos
+  - Upstream validation with clear error messages for malformed refs
+- **Pull command** - `gr pull` for pulling changes across repos (#234)
+  - `--rebase` flag for rebase-based pulls
+  - `--sequential` flag for ordered output
+  - `--group` flag for group-scoped pulls
+- **Terminal UI improvements** - verbose mode and debug output (#232)
+- **Rate limiting** - Infrastructure for platform API rate limiting (#153)
+- **`--verbose` global flag** - Shows external commands being executed (#204)
+
+### Changed
+- `gr rebase --upstream` now uses griptree config for per-repo upstream resolution
+- Refactored `InitOptions` and `BranchOptions` into dedicated structs (#222)
+- Simplified `check_repo_for_changes` in PR merge (#221)
+- Consolidated duplicate manifest helper functions (#220)
+
+### Fixed
+- **Production readiness hardening** (#247)
+  - Replaced `process::exit(1)` with proper error propagation in commit command
+  - Poisoned mutex recovery in git status cache (4 locations)
+  - Safe `SystemTime` fallback in retry jitter
+  - Descriptive `expect()` for hardcoded progress bar templates
+  - Improved path traversal detection with depth-tracking segment walk
+  - Credential sanitization in git command logging
+  - Symlink destination validation within workspace boundaries
+  - HTTP client fallback logging in GitLab, Azure DevOps, and Bitbucket adapters
+- Fixed HTTP client recursion in platform adapters (#242)
+
+### Testing
+- 75+ new integration tests covering edge cases and error scenarios
+- Pull error handling tests (#235)
+- Unit tests for rate_limit, types, bench, and PR commands (#228)
+- PR merge command integration tests (#206)
+
 ## [0.10.0] - 2026-02-05
 
 ### Added

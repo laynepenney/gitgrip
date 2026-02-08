@@ -161,7 +161,14 @@ gr sync
 | `gr tree list` | List all griptrees |
 | `gr tree remove <branch>` | Remove a griptree |
 | `gr pull` | Pull latest changes across repos |
-| `gr rebase` | Rebase across repos (defaults to upstream) |
+| `gr rebase` | Rebase across repos |
+| `gr rebase --upstream` | Rebase onto per-repo upstream (griptree-aware) |
+| `gr grep <pattern>` | Search across all repos |
+| `gr prune` | Clean up merged branches (dry-run) |
+| `gr prune --execute` | Delete merged branches |
+| `gr gc` | Run garbage collection across repos |
+| `gr cherry-pick <sha>` | Cherry-pick commits across repos |
+| `gr ci run/list/status` | CI/CD pipeline operations |
 | `gr link` | Manage file links |
 | `gr run <script>` | Run workspace scripts |
 | `gr env` | Show environment variables |
@@ -211,6 +218,7 @@ Checkout a branch across all repos. Can also create branches with the `-b` flag.
 | Option | Description |
 |--------|-------------|
 | `-b` | Create branch if it doesn't exist |
+| `--base` | Checkout the griptree base branch (griptree workspaces only) |
 
 #### `gr branch [name]`
 
@@ -310,6 +318,7 @@ gitgrip supports multiple hosting platforms. The platform is auto-detected from 
 | GitHub | `git@github.com:org/repo.git`, `https://github.com/org/repo.git` |
 | GitLab | `git@gitlab.com:group/repo.git`, `https://gitlab.com/group/repo.git` |
 | Azure DevOps | `git@ssh.dev.azure.com:v3/org/project/repo`, `https://dev.azure.com/org/project/_git/repo` |
+| Bitbucket | `git@bitbucket.org:org/repo.git`, `https://bitbucket.org/org/repo.git` |
 
 ### Authentication
 
@@ -334,6 +343,11 @@ glab auth login
 export AZURE_DEVOPS_TOKEN=your-pat
 # or
 az login
+```
+
+**Bitbucket:**
+```bash
+export BITBUCKET_TOKEN=your-app-password
 ```
 
 ### Mixed-Platform Workspaces
@@ -405,10 +419,26 @@ gr tree remove feat/new-feature
   <img src="assets/griptree-workflow.svg" alt="Griptree Workflow" width="700">
 </p>
 
+**Upstream Tracking:**
+
+Each griptree records per-repo upstream defaults so repos can track different branches:
+
+```bash
+# Sync uses per-repo upstream when on the griptree base branch
+gr sync
+
+# Rebase onto each repo's configured upstream
+gr rebase --upstream
+
+# Return to the griptree base branch
+gr checkout --base
+```
+
 **Benefits:**
 - No branch switching required
 - Shared git objects (fast creation, minimal disk usage)
 - Independent working directories
+- Per-repo upstream tracking (different repos can target different branches)
 
 ## Shorthand
 
