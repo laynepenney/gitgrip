@@ -55,6 +55,9 @@ enum Commands {
         /// Force sync even with local changes
         #[arg(short, long)]
         force: bool,
+        /// Hard reset reference repos to upstream (discard local changes)
+        #[arg(long, alias = "reset-ref")]
+        reset_refs: bool,
         /// Only sync repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
@@ -547,6 +550,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Sync {
             force,
+            reset_refs,
             group,
             sequential,
         }) => {
@@ -558,6 +562,7 @@ async fn main() -> anyhow::Result<()> {
                 cli.quiet,
                 group.as_deref(),
                 sequential,
+                reset_refs,
             )
             .await?;
         }
