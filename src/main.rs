@@ -391,6 +391,30 @@ enum TreeCommands {
         /// Branch name
         branch: String,
     },
+    /// Return to the griptree base branch, sync, and optionally prune a branch
+    Return {
+        /// Override base branch (defaults to griptree config)
+        #[arg(long)]
+        base: Option<String>,
+        /// Skip syncing after checkout
+        #[arg(long)]
+        no_sync: bool,
+        /// Stash and restore local changes automatically
+        #[arg(long)]
+        autostash: bool,
+        /// Prune this branch after returning
+        #[arg(long)]
+        prune: Option<String>,
+        /// Prune the current branch (pre-return) after returning
+        #[arg(long, conflicts_with = "prune")]
+        prune_current: bool,
+        /// Also prune the remote branch (origin)
+        #[arg(long)]
+        prune_remote: bool,
+        /// Force delete local branches even if not merged
+        #[arg(short, long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -721,6 +745,28 @@ async fn main() -> anyhow::Result<()> {
                 }
                 TreeCommands::Unlock { branch } => {
                     gitgrip::cli::commands::tree::run_tree_unlock(&workspace_root, &branch)?;
+                }
+                TreeCommands::Return {
+                    base,
+                    no_sync,
+                    autostash,
+                    prune,
+                    prune_current,
+                    prune_remote,
+                    force,
+                } => {
+                    gitgrip::cli::commands::tree::run_tree_return(
+                        &workspace_root,
+                        &manifest,
+                        base.as_deref(),
+                        no_sync,
+                        autostash,
+                        prune.as_deref(),
+                        prune_current,
+                        prune_remote,
+                        force,
+                    )
+                    .await?;
                 }
             }
         }

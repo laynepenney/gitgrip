@@ -6,12 +6,18 @@ use crate::cli::commands::link::run_link;
 use crate::cli::output::Output;
 use crate::core::griptree::{GriptreeConfig, GriptreePointer, GriptreeRepoInfo};
 use crate::core::manifest::Manifest;
-use crate::core::repo::RepoInfo;
-use crate::git::remote::get_upstream_branch;
+use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
+use crate::git::branch::{
+    branch_exists, checkout_branch, delete_local_branch, remote_branch_exists,
+};
+use crate::git::remote::{delete_remote_branch, get_upstream_branch};
+use crate::git::status::get_cached_status;
 use crate::git::{get_current_branch, open_repo, path_exists};
+use crate::util::log_cmd;
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Griptrees list file structure
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -389,6 +395,209 @@ pub fn run_tree_list(workspace_root: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Return to the griptree base branch, sync upstreams, and optionally prune a branch.
+pub async fn run_tree_return(
+    workspace_root: &PathBuf,
+    manifest: &Manifest,
+    base_override: Option<&str>,
+    no_sync: bool,
+    autostash: bool,
+    prune_branch: Option<&str>,
+    prune_current: bool,
+    prune_remote: bool,
+    force: bool,
+) -> anyhow::Result<()> {
+    let griptree_config = GriptreeConfig::load_from_workspace(workspace_root)?;
+    let base_branch = match (base_override, griptree_config.as_ref()) {
+        (Some(base), _) => base.to_string(),
+        (None, Some(cfg)) => cfg.branch.clone(),
+        (None, None) => {
+            anyhow::bail!(
+                "No griptree config found. Use --base <branch> to specify the base branch."
+            );
+        }
+    };
+
+    let mut repos: Vec<RepoInfo> = filter_repos(
+        manifest,
+        workspace_root,
+        None,
+        None,
+        false, /* include_reference */
+    );
+    if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
+        repos.push(manifest_repo);
+    }
+
+    Output::header(&format!(
+        "Returning to {} and syncing upstreams...",
+        Output::branch_name(&base_branch)
+    ));
+    println!();
+
+    let mut dirty_repos: Vec<String> = Vec::new();
+    let mut current_branches: HashMap<String, String> = HashMap::new();
+
+    for repo in &repos {
+        if !repo.exists() {
+            continue;
+        }
+        let status = get_cached_status(&repo.absolute_path)?;
+        current_branches.insert(repo.name.clone(), status.current_branch.clone());
+        if !status.is_clean {
+            dirty_repos.push(repo.name.clone());
+        }
+    }
+
+    if !dirty_repos.is_empty() && !autostash {
+        anyhow::bail!(
+            "Uncommitted changes in: {}. Use --autostash to proceed.",
+            dirty_repos.join(", ")
+        );
+    }
+
+    let mut stashed_repos: Vec<PathBuf> = Vec::new();
+    if autostash {
+        for repo in &repos {
+            if !dirty_repos.contains(&repo.name) || !repo.exists() {
+                continue;
+            }
+            match stash_repo(&repo.absolute_path, "gr tree return") {
+                Ok(true) => stashed_repos.push(repo.absolute_path.clone()),
+                Ok(false) => {}
+                Err(e) => Output::error(&format!("{}: stash failed - {}", repo.name, e)),
+            }
+        }
+    }
+
+    let mut checkout_failures = 0;
+    for repo in &repos {
+        if !repo.exists() {
+            Output::warning(&format!("{}: not cloned, skipping", repo.name));
+            continue;
+        }
+        let git_repo = open_repo(&repo.absolute_path)?;
+        if let Ok(current) = get_current_branch(&git_repo) {
+            if current == base_branch {
+                Output::success(&format!("{}: already on {}", repo.name, base_branch));
+                continue;
+            }
+        }
+        if !branch_exists(&git_repo, &base_branch) {
+            Output::warning(&format!(
+                "{}: branch '{}' does not exist, skipping",
+                repo.name, base_branch
+            ));
+            checkout_failures += 1;
+            continue;
+        }
+        match checkout_branch(&git_repo, &base_branch) {
+            Ok(()) => Output::success(&format!("{}: checked out {}", repo.name, base_branch)),
+            Err(e) => {
+                Output::error(&format!("{}: {}", repo.name, e));
+                checkout_failures += 1;
+            }
+        }
+    }
+
+    if !no_sync {
+        println!();
+        let _ = crate::cli::commands::sync::run_sync(
+            workspace_root,
+            manifest,
+            false,
+            false,
+            None,
+            false,
+        )
+        .await;
+    }
+
+    if prune_branch.is_some() || prune_current {
+        println!();
+        let prune_target = prune_branch.map(|b| b.to_string());
+        for repo in &repos {
+            if !repo.exists() {
+                continue;
+            }
+            let git_repo = open_repo(&repo.absolute_path)?;
+            let target_branch = match &prune_target {
+                Some(branch) => branch.clone(),
+                None => current_branches
+                    .get(&repo.name)
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+            if target_branch.is_empty() || target_branch == base_branch {
+                continue;
+            }
+            if !branch_exists(&git_repo, &target_branch) {
+                Output::info(&format!(
+                    "{}: branch '{}' not found, skipping",
+                    repo.name, target_branch
+                ));
+                continue;
+            }
+            if let Err(e) = delete_local_branch(&git_repo, &target_branch, force) {
+                Output::warning(&format!(
+                    "{}: failed to delete '{}' - {}",
+                    repo.name, target_branch, e
+                ));
+                continue;
+            }
+            Output::success(&format!(
+                "{}: deleted local branch '{}'",
+                repo.name, target_branch
+            ));
+
+            if prune_remote {
+                let remote = "origin";
+                if remote_branch_exists(&git_repo, &target_branch, remote) {
+                    match delete_remote_branch(&git_repo, &target_branch, remote) {
+                        Ok(()) => Output::success(&format!(
+                            "{}: deleted remote branch '{}/{}'",
+                            repo.name, remote, target_branch
+                        )),
+                        Err(e) => Output::warning(&format!(
+                            "{}: failed to delete remote '{}/{}' - {}",
+                            repo.name, remote, target_branch, e
+                        )),
+                    }
+                } else {
+                    Output::info(&format!(
+                        "{}: remote branch '{}/{}' not found, skipping",
+                        repo.name, remote, target_branch
+                    ));
+                }
+            }
+        }
+    }
+
+    if autostash && !stashed_repos.is_empty() {
+        println!();
+        for repo_path in &stashed_repos {
+            if let Err(e) = stash_pop_repo(repo_path) {
+                Output::warning(&format!(
+                    "{}: stash pop failed - {}",
+                    repo_path.display(),
+                    e
+                ));
+            }
+        }
+    }
+
+    if checkout_failures > 0 {
+        Output::warning(&format!(
+            "Return completed with {} checkout error(s)",
+            checkout_failures
+        ));
+    } else {
+        Output::success("Return completed");
+    }
+
+    Ok(())
+}
+
 /// Discover legacy/unregistered griptrees that point to this workspace
 fn discover_legacy_griptrees(
     workspace_root: &Path,
@@ -733,5 +942,38 @@ fn sync_repo_with_upstream(repo_path: &PathBuf, default_branch: &str) -> anyhow:
     let upstream_commit = repo.revparse_single(&upstream_ref)?.peel_to_commit()?;
     repo.reset(upstream_commit.as_object(), git2::ResetType::Hard, None)?;
 
+    Ok(())
+}
+
+fn stash_repo(repo_path: &PathBuf, message: &str) -> anyhow::Result<bool> {
+    let mut cmd = Command::new("git");
+    cmd.args(["stash", "push", "-u", "-m", message])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd.output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        return Err(anyhow::anyhow!("git stash failed: {}", stderr.trim()));
+    }
+
+    let combined = format!("{}{}", stdout, stderr);
+    if combined.contains("No local changes to save") {
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
+fn stash_pop_repo(repo_path: &PathBuf) -> anyhow::Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.args(["stash", "pop"]).current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!("git stash pop failed: {}", stderr.trim()));
+    }
     Ok(())
 }
