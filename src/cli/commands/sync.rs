@@ -5,7 +5,7 @@ use crate::core::griptree::GriptreeConfig;
 use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::git::branch::has_commits_ahead;
-use crate::git::remote::{fetch_remote, pull_latest_from_upstream, safe_pull_latest};
+use crate::git::remote::{fetch_remote, pull_latest_from_upstream, reset_hard, safe_pull_latest};
 use crate::git::{clone_repo, get_current_branch, open_repo, path_exists};
 use git2::Repository;
 use indicatif::ProgressBar;
@@ -30,6 +30,7 @@ pub async fn run_sync(
     quiet: bool,
     group_filter: Option<&[String]>,
     sequential: bool,
+    reset_refs: bool,
 ) -> anyhow::Result<()> {
     let mut repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
 
@@ -50,6 +51,7 @@ pub async fn run_sync(
             quiet,
             griptree_config.as_ref(),
             griptree_branch.as_deref(),
+            reset_refs,
         )?
     } else {
         sync_parallel(
@@ -58,6 +60,7 @@ pub async fn run_sync(
             quiet,
             griptree_config.clone(),
             griptree_branch.clone(),
+            reset_refs,
         )
         .await?
     };
@@ -103,11 +106,20 @@ fn sync_sequential(
     quiet: bool,
     griptree_config: Option<&GriptreeConfig>,
     griptree_branch: Option<&str>,
+    reset_refs: bool,
 ) -> anyhow::Result<Vec<SyncResult>> {
     let mut results = Vec::new();
 
     for repo in repos {
-        let result = sync_single_repo(repo, force, quiet, true, griptree_config, griptree_branch)?;
+        let result = sync_single_repo(
+            repo,
+            force,
+            quiet,
+            true,
+            griptree_config,
+            griptree_branch,
+            reset_refs,
+        )?;
         results.push(result);
     }
 
@@ -122,6 +134,7 @@ async fn sync_parallel(
     quiet: bool,
     griptree_config: Option<GriptreeConfig>,
     griptree_branch: Option<String>,
+    reset_refs: bool,
 ) -> anyhow::Result<Vec<SyncResult>> {
     let results: Arc<Mutex<Vec<SyncResult>>> = Arc::new(Mutex::new(Vec::new()));
     let mut join_set: JoinSet<anyhow::Result<()>> = JoinSet::new();
@@ -142,6 +155,7 @@ async fn sync_parallel(
                 false,
                 griptree_config.as_ref(),
                 griptree_branch.as_deref(),
+                reset_refs,
             )?;
             results.lock().unwrap().push(result);
             Ok(())
@@ -282,6 +296,79 @@ fn sync_griptree_upstream(
     }
 }
 
+fn sync_reference_reset(
+    repo: &RepoInfo,
+    git_repo: &Repository,
+    griptree_config: Option<&GriptreeConfig>,
+    spinner: Option<&ProgressBar>,
+    quiet: bool,
+) -> SyncResult {
+    let upstream = match griptree_config {
+        Some(cfg) => match cfg.upstream_for_repo(&repo.name, &repo.default_branch) {
+            Ok(upstream) => upstream,
+            Err(e) => {
+                let msg = format!("error - {}", e);
+                if let Some(s) = spinner {
+                    s.finish_with_message(format!("{}: {}", repo.name, msg));
+                }
+                return SyncResult {
+                    name: repo.name.clone(),
+                    success: false,
+                    message: msg,
+                    was_cloned: false,
+                };
+            }
+        },
+        None => format!("origin/{}", repo.default_branch),
+    };
+
+    let remote = upstream.split('/').next().unwrap_or("origin");
+    if let Err(e) = fetch_remote(git_repo, remote) {
+        let msg = format!("error - {}", e);
+        if let Some(s) = spinner {
+            s.finish_with_message(format!("{}: {}", repo.name, msg));
+        }
+        return SyncResult {
+            name: repo.name.clone(),
+            success: false,
+            message: msg,
+            was_cloned: false,
+        };
+    }
+
+    match reset_hard(git_repo, &upstream) {
+        Ok(()) => {
+            let msg = format!("reset ({})", upstream);
+            if let Some(s) = spinner {
+                if !quiet {
+                    s.finish_with_message(format!("{}: {}", repo.name, msg));
+                } else {
+                    s.finish_and_clear();
+                }
+            }
+
+            SyncResult {
+                name: repo.name.clone(),
+                success: true,
+                message: msg,
+                was_cloned: false,
+            }
+        }
+        Err(e) => {
+            let msg = format!("error - {}", e);
+            if let Some(s) = spinner {
+                s.finish_with_message(format!("{}: {}", repo.name, msg));
+            }
+            SyncResult {
+                name: repo.name.clone(),
+                success: false,
+                message: msg,
+                was_cloned: false,
+            }
+        }
+    }
+}
+
 /// Sync a single repository
 fn sync_single_repo(
     repo: &RepoInfo,
@@ -290,6 +377,7 @@ fn sync_single_repo(
     show_spinner: bool,
     griptree_config: Option<&GriptreeConfig>,
     griptree_branch: Option<&str>,
+    reset_refs: bool,
 ) -> anyhow::Result<SyncResult> {
     let spinner = if show_spinner {
         Some(Output::spinner(&format!("Pulling {}...", repo.name)))
@@ -352,6 +440,17 @@ fn sync_single_repo(
     // Pull existing repo
     match open_repo(&repo.absolute_path) {
         Ok(git_repo) => {
+            if repo.reference && reset_refs {
+                let result = sync_reference_reset(
+                    repo,
+                    &git_repo,
+                    griptree_config,
+                    spinner.as_ref(),
+                    quiet,
+                );
+                return Ok(result);
+            }
+
             let current_branch = get_current_branch(&git_repo).ok();
             let use_griptree_upstream = match (griptree_branch, current_branch.as_deref()) {
                 (Some(base), Some(current)) => current == base,
