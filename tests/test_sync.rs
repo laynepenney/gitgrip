@@ -198,6 +198,37 @@ async fn test_sync_reset_refs_hard_resets_reference_repo() {
 }
 
 #[tokio::test]
+async fn test_sync_reset_refs_checks_out_upstream_branch() {
+    let ws = WorkspaceBuilder::new().add_reference_repo("ref").build();
+
+    let staging = ws._temp.path().join("sync-ref-staging");
+    git_helpers::clone_repo(&ws.remote_url("ref"), &staging);
+    git_helpers::create_branch(&staging, "dev");
+    git_helpers::commit_file(&staging, "dev-only.txt", "dev", "Add dev file");
+    git_helpers::push_branch(&staging, "origin", "dev");
+
+    git_helpers::create_branch(&ws.repo_path("ref"), "codi-gripspace");
+
+    write_griptree_config(&ws.workspace_root, "feat/griptree", "ref", "origin/dev");
+    let manifest = ws.load_manifest();
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+        true,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
+
+    assert_on_branch(&ws.repo_path("ref"), "dev");
+    assert_file_exists(&ws.repo_path("ref").join("dev-only.txt"));
+}
+
+#[tokio::test]
 async fn test_sync_multiple_repos() {
     let ws = WorkspaceBuilder::new()
         .add_repo("alpha")
