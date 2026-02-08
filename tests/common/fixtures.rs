@@ -7,6 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+use gitgrip::core::griptree::GriptreeConfig;
+
 use super::git_helpers;
 
 /// A test workspace with temporary directories that are cleaned up on drop.
@@ -56,6 +58,16 @@ impl WorkspaceFixture {
         });
         gitgrip::core::manifest::Manifest::parse(&content).expect("failed to parse manifest")
     }
+}
+
+/// Write a minimal griptree config with a single repo upstream mapping.
+pub fn write_griptree_config(workspace_root: &Path, branch: &str, repo: &str, upstream: &str) {
+    let mut config = GriptreeConfig::new(branch, &workspace_root.to_string_lossy());
+    config
+        .repo_upstreams
+        .insert(repo.to_string(), upstream.to_string());
+    let config_path = workspace_root.join(".gitgrip").join("griptree.json");
+    config.save(&config_path).unwrap();
 }
 
 /// Builder for creating test workspaces.

@@ -3,9 +3,9 @@
 //! Rebases branches across repositories.
 
 use crate::cli::output::Output;
+use crate::core::griptree::GriptreeConfig;
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
-use crate::git::remote::get_upstream_branch;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::util::log_cmd;
 use std::path::PathBuf;
@@ -32,14 +32,14 @@ pub fn run_rebase(
     if upstream && onto.is_some() {
         Output::warning("Ignoring explicit target because --upstream was set");
     }
-    let target = onto.unwrap_or("origin/main");
-    let header = if use_upstream {
-        "Rebasing onto upstream branches".to_string()
-    } else {
-        format!("Rebasing onto {}", target)
-    };
-    Output::header(&header);
+    if use_upstream {
+        Output::header("Rebasing onto upstream branches");
+    } else if let Some(target) = onto {
+        Output::header(&format!("Rebasing onto {}", target));
+    }
     println!();
+
+    let griptree_config = GriptreeConfig::load_from_workspace(workspace_root)?;
 
     let repos: Vec<RepoInfo> = manifest
         .repos
@@ -80,19 +80,25 @@ pub fn run_rebase(
         }
 
         let spinner = Output::spinner(&format!("Rebasing {}...", repo.name));
-
-        let resolved_target = if use_upstream {
-            match get_upstream_branch(&git_repo, None) {
-                Ok(Some(upstream_ref)) => upstream_ref,
-                _ => format!("origin/{}", repo.default_branch),
+        let target = if use_upstream {
+            match griptree_config.as_ref() {
+                Some(cfg) => match cfg.upstream_for_repo(&repo.name, &repo.default_branch) {
+                    Ok(upstream) => upstream,
+                    Err(e) => {
+                        spinner.finish_with_message(format!("{}: error - {}", repo.name, e));
+                        error_count += 1;
+                        continue;
+                    }
+                },
+                None => format!("origin/{}", repo.default_branch),
             }
         } else {
-            target.to_string()
+            onto.unwrap_or("origin/main").to_string()
         };
 
         // Use git command for rebase (git2 doesn't support interactive rebase well)
         let mut cmd = Command::new("git");
-        cmd.args(["rebase", &resolved_target])
+        cmd.args(["rebase", &target])
             .current_dir(&repo.absolute_path);
         log_cmd(&cmd);
         let output = cmd.output()?;
