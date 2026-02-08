@@ -27,6 +27,7 @@ async fn test_sync_clones_missing_repos() {
         false,
         None,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -54,6 +55,7 @@ async fn test_sync_pulls_existing_repos() {
         false,
         false,
         None,
+        false,
         false,
     )
     .await;
@@ -85,6 +87,7 @@ async fn test_sync_uses_griptree_upstream_mapping() {
         false,
         None,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -105,6 +108,7 @@ async fn test_sync_handles_up_to_date() {
         false,
         false,
         None,
+        false,
         false,
     )
     .await;
@@ -142,6 +146,7 @@ async fn test_sync_skips_griptree_base_with_local_commits_ahead() {
         false,
         None,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -152,6 +157,44 @@ async fn test_sync_skips_griptree_base_with_local_commits_ahead() {
         "expected sync to skip pulling upstream changes"
     );
     assert_on_branch(&ws.repo_path("app"), "feat/griptree");
+}
+
+#[tokio::test]
+async fn test_sync_reset_refs_hard_resets_reference_repo() {
+    let ws = WorkspaceBuilder::new().add_reference_repo("ref").build();
+
+    let remote_sha = git_helpers::get_head_sha(&ws.remote_path("ref"));
+
+    git_helpers::commit_file(
+        &ws.repo_path("ref"),
+        "local-only.txt",
+        "local",
+        "Add local-only file",
+    );
+
+    let local_sha = git_helpers::get_head_sha(&ws.repo_path("ref"));
+    assert_ne!(local_sha, remote_sha);
+
+    let manifest = ws.load_manifest();
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+        true,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
+
+    let synced_sha = git_helpers::get_head_sha(&ws.repo_path("ref"));
+    let remote_sha_after = git_helpers::get_head_sha(&ws.remote_path("ref"));
+    assert_eq!(synced_sha, remote_sha_after);
+    assert!(
+        !ws.repo_path("ref").join("local-only.txt").exists(),
+        "expected reset to discard local changes"
+    );
 }
 
 #[tokio::test]
@@ -174,6 +217,7 @@ async fn test_sync_multiple_repos() {
         false,
         false,
         None,
+        false,
         false,
     )
     .await;
@@ -202,6 +246,7 @@ async fn test_sync_quiet_mode() {
         true,
         None,
         false,
+        false,
     )
     .await;
     assert!(
@@ -228,6 +273,7 @@ async fn test_sync_sequential_mode() {
         false,
         None,
         true,
+        false,
     )
     .await;
     assert!(
@@ -255,6 +301,7 @@ async fn test_sync_clone_failure_invalid_url() {
         false,
         None,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should not crash: {:?}", result.err());
@@ -281,6 +328,7 @@ async fn test_sync_existing_repo_missing_git_dir() {
         false,
         false,
         None,
+        false,
         false,
     )
     .await;
