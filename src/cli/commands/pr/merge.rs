@@ -406,7 +406,15 @@ pub async fn run_pr_merge(
             ));
         }
 
-        if !reports.is_empty() {
+        let auto_show_summary = reports.iter().any(|report| {
+            matches!(
+                report.outcome,
+                RepoOutcome::AutoFailed { .. }
+                    | RepoOutcome::Skipped { .. }
+                    | RepoOutcome::AlreadyMerged { .. }
+            )
+        });
+        if auto_show_summary {
             println!();
             Output::header("Repository summary");
             for report in &reports {
@@ -661,57 +669,80 @@ pub async fn run_pr_merge(
         .iter()
         .filter(|r| matches!(r.outcome, RepoOutcome::AlreadyMerged { .. }))
         .count();
-    if failed_count == 0 && not_merged_count == 0 {
-        Output::success(&format!(
-            "Merged {} PR(s). {} already merged. {} skipped.",
-            merged_count, already_merged_count, skipped_count
-        ));
-    } else {
-        Output::warning(&format!(
-            "{} merged, {} already merged, {} not merged, {} failed, {} skipped",
-            merged_count, already_merged_count, not_merged_count, failed_count, skipped_count
-        ));
+    let mut summary_parts: Vec<String> = Vec::new();
+    if merged_count > 0 {
+        summary_parts.push(format!("Merged {} PR(s)", merged_count));
+    }
+    if already_merged_count > 0 {
+        summary_parts.push(format!("{} already merged", already_merged_count));
+    }
+    if not_merged_count > 0 {
+        summary_parts.push(format!("{} not merged", not_merged_count));
+    }
+    if failed_count > 0 {
+        summary_parts.push(format!("{} failed", failed_count));
+    }
+    if skipped_count > 0 {
+        summary_parts.push(format!("{} skipped", skipped_count));
     }
 
-    println!();
-    Output::header("Repository summary");
-    for report in &reports {
-        match &report.outcome {
-            RepoOutcome::Skipped { reason } => {
-                Output::info(&format!("{}: skipped — {}", report.repo_name, reason));
-            }
-            RepoOutcome::Merged { pr_number } => {
-                Output::success(&format!("{}: merged PR #{}", report.repo_name, pr_number));
-            }
-            RepoOutcome::AlreadyMerged { pr_number } => {
-                Output::info(&format!(
-                    "{}: already merged PR #{}",
-                    report.repo_name, pr_number
-                ));
-            }
-            RepoOutcome::NotMerged { pr_number, reason } => {
-                Output::warning(&format!(
-                    "{}: PR #{} not merged — {}",
-                    report.repo_name, pr_number, reason
-                ));
-            }
-            RepoOutcome::Failed { pr_number, reason } => {
-                Output::error(&format!(
-                    "{}: PR #{} failed — {}",
-                    report.repo_name, pr_number, reason
-                ));
-            }
-            RepoOutcome::AutoEnabled { pr_number } => {
-                Output::success(&format!(
-                    "{}: auto-merge enabled for PR #{}",
-                    report.repo_name, pr_number
-                ));
-            }
-            RepoOutcome::AutoFailed { pr_number, reason } => {
-                Output::warning(&format!(
-                    "{}: auto-merge failed for PR #{} — {}",
-                    report.repo_name, pr_number, reason
-                ));
+    if failed_count == 0 && not_merged_count == 0 {
+        if summary_parts.is_empty() {
+            Output::success("No PRs merged.");
+        } else if summary_parts.len() == 1 {
+            Output::success(&format!("{}.", summary_parts.join("")));
+        } else {
+            Output::success(&format!("{}.", summary_parts.join(". ")));
+        }
+    } else if summary_parts.is_empty() {
+        Output::warning("No PRs merged.");
+    } else {
+        Output::warning(&format!("{}.", summary_parts.join(", ")));
+    }
+
+    let show_summary =
+        skipped_count > 0 || failed_count > 0 || not_merged_count > 0 || already_merged_count > 0;
+    if show_summary {
+        println!();
+        Output::header("Repository summary");
+        for report in &reports {
+            match &report.outcome {
+                RepoOutcome::Skipped { reason } => {
+                    Output::info(&format!("{}: skipped — {}", report.repo_name, reason));
+                }
+                RepoOutcome::Merged { pr_number } => {
+                    Output::success(&format!("{}: merged PR #{}", report.repo_name, pr_number));
+                }
+                RepoOutcome::AlreadyMerged { pr_number } => {
+                    Output::info(&format!(
+                        "{}: already merged PR #{}",
+                        report.repo_name, pr_number
+                    ));
+                }
+                RepoOutcome::NotMerged { pr_number, reason } => {
+                    Output::warning(&format!(
+                        "{}: PR #{} not merged — {}",
+                        report.repo_name, pr_number, reason
+                    ));
+                }
+                RepoOutcome::Failed { pr_number, reason } => {
+                    Output::error(&format!(
+                        "{}: PR #{} failed — {}",
+                        report.repo_name, pr_number, reason
+                    ));
+                }
+                RepoOutcome::AutoEnabled { pr_number } => {
+                    Output::success(&format!(
+                        "{}: auto-merge enabled for PR #{}",
+                        report.repo_name, pr_number
+                    ));
+                }
+                RepoOutcome::AutoFailed { pr_number, reason } => {
+                    Output::warning(&format!(
+                        "{}: auto-merge failed for PR #{} — {}",
+                        report.repo_name, pr_number, reason
+                    ));
+                }
             }
         }
     }
