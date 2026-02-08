@@ -189,7 +189,21 @@ src/
 │   ├── diff.rs           # gr diff
 │   ├── commit.rs         # gr commit
 │   ├── push.rs           # gr push
+│   ├── pull.rs           # gr pull
+│   ├── rebase.rs         # gr rebase
 │   ├── forall.rs         # gr forall
+│   ├── grep.rs           # gr grep
+│   ├── prune.rs          # gr prune
+│   ├── gc.rs             # gr gc
+│   ├── cherry_pick.rs    # gr cherry-pick
+│   ├── ci.rs             # gr ci
+│   ├── group.rs          # gr group
+│   ├── manifest.rs       # gr manifest
+│   ├── repo.rs           # gr repo
+│   ├── link.rs           # gr link
+│   ├── run.rs            # gr run
+│   ├── env.rs            # gr env
+│   ├── bench.rs          # gr bench
 │   ├── tree.rs           # gr tree (griptrees)
 │   └── pr/               # PR subcommands
 │       ├── mod.rs
@@ -201,23 +215,33 @@ src/
 ├── core/                 # Core library
 │   ├── mod.rs
 │   ├── manifest.rs       # Manifest parsing
+│   ├── griptree.rs       # Griptree config and upstream tracking
 │   ├── workspace.rs      # Workspace operations
+│   ├── repo.rs           # Repo info and filtering
 │   └── config.rs         # Configuration
 ├── git/                  # Git operations
 │   ├── mod.rs
 │   ├── repo.rs           # Repository operations
 │   ├── branch.rs         # Branch operations
+│   ├── remote.rs         # Remote/fetch/pull operations
+│   ├── cache.rs          # Git status cache
 │   └── worktree.rs       # Worktree operations
 ├── platform/             # Multi-platform hosting support
 │   ├── mod.rs
 │   ├── github.rs         # GitHub adapter
 │   ├── gitlab.rs         # GitLab adapter
-│   └── azure_devops.rs   # Azure DevOps adapter
+│   ├── azure.rs          # Azure DevOps adapter
+│   ├── bitbucket.rs      # Bitbucket adapter
+│   ├── rate_limit.rs     # API rate limiting
+│   ├── traits.rs         # HostingPlatform trait
+│   └── types.rs          # Shared platform types
 ├── files/                # File operations
 │   └── mod.rs            # copyfile/linkfile
 └── util/                 # Utilities
     ├── mod.rs
-    ├── output.rs         # Colored output
+    ├── cmd.rs            # Command logging with credential sanitization
+    ├── output.rs         # Colored output with progress bars
+    ├── retry.rs          # Retry with exponential backoff
     └── timing.rs         # Benchmarking
 ```
 
@@ -235,25 +259,57 @@ Workspace configuration in `.gitgrip/manifests/manifest.yaml`:
 All commands use `gr` (or `gitgrip`):
 - `gr init <url>` - Initialize workspace from manifest URL
 - `gr init --from-dirs` - Initialize workspace from existing local directories
-- `gr sync` - Pull all repos + process links + run hooks
+- `gr init --from-repo` - Initialize from existing `.repo/` directory (git-repo coexistence)
+- `gr sync` - Pull all repos in parallel + process links + run hooks (includes manifest)
+  - `gr sync --sequential` - Sync repos sequentially (slower but ordered output)
+  - `gr sync --group <name>` - Sync only repos in a group
 - `gr status` - Show repo and manifest status
-- `gr branch/checkout` - Branch operations across all repos
+  - `gr status --json` - Machine-readable output
+- `gr branch <name>` - Create branch across all repos (includes manifest)
+  - `gr branch --repo <names>` - Create branch in specific repos only
+  - `gr branch --delete` - Delete branch across repos
+  - `gr branch --move` - Move commits to new branch
+- `gr checkout <branch>` - Checkout branch across all repos (includes manifest)
+  - `gr checkout -b <branch>` - Create and checkout branch in one command
+  - `gr checkout --base` - Checkout griptree base branch (griptree workspaces only)
 - `gr add` - Stage changes across all repos
-- `gr diff` - Show diff across all repos
+- `gr diff` - Show diff across all repos (includes manifest)
 - `gr commit` - Commit staged changes across all repos
-- `gr push` - Push current branch in all repos
+- `gr push` - Push current branch in all repos (includes manifest)
+- `gr pull` - Pull latest changes across repos
+  - `gr pull --rebase` - Rebase instead of merge
+- `gr rebase` - Rebase across repos
+  - `gr rebase --upstream` - Rebase onto upstream (uses griptree config if available)
+  - `gr rebase --abort` / `--continue` - Manage in-progress rebases
 - `gr pr create/status/merge/checks/diff` - Linked PR workflow
+  - `gr pr create --push --draft` - Push and create as draft
   - `gr pr merge --update` - Update branch from base if behind, then merge
   - `gr pr merge --auto` - Enable auto-merge (merges when checks pass)
   - `gr pr merge --force` - Merge even if checks pending
 - `gr repo add/list/remove` - Manage repositories
+- `gr group list` - List all groups and their repos
+  - `gr group add <group> <repos...>` - Add repos to a group
+  - `gr group remove <group> <repos...>` - Remove repos from a group
+- `gr grep <pattern>` - Search across all repos using git grep
+  - `gr grep -i` - Case insensitive search
+  - `gr grep --parallel` - Concurrent search
+- `gr prune` - Clean up merged branches (dry-run by default)
+  - `gr prune --execute` - Actually delete branches
+  - `gr prune --remote` - Also prune remote tracking refs
+- `gr gc` - Run garbage collection across repos
+  - `gr gc --aggressive` - More thorough (slower)
+  - `gr gc --dry-run` - Only report .git sizes
+- `gr cherry-pick <commit>` - Cherry-pick commits across repos
+  - `gr cherry-pick --abort` / `--continue` - Manage in-progress cherry-picks
+- `gr ci run/list/status` - CI/CD pipeline operations
+- `gr manifest import/sync/schema` - Manifest operations
+  - `gr manifest schema` - Show manifest specification (YAML/JSON/Markdown)
 - `gr link` - Manage copyfile/linkfile entries
 - `gr run` - Execute workspace scripts
 - `gr env` - Show workspace environment variables
 - `gr bench` - Run benchmarks
 - `gr forall -c "cmd"` - Run command in each repo
 - `gr tree add/list/remove` - Manage griptrees (worktree-based multi-branch workspaces)
-- `gr rebase` - Rebase across repos
 - `gr completions <shell>` - Generate shell completions (bash, zsh, fish, elvish, powershell)
 
 ### Griptrees (Multi-Branch Workspaces)
@@ -276,14 +332,27 @@ gr tree list
 # Lock a griptree to prevent accidental removal
 gr tree lock feat/auth
 
+# Return to griptree base branch
+gr checkout --base
+
 # Remove a griptree (removes worktrees, not branches)
 gr tree remove feat/auth
 ```
+
+**Upstream Tracking:**
+
+Each griptree records per-repo upstream defaults in `.gitgrip/griptree.json`. This allows repos in the same workspace to track different upstream branches (e.g., one repo tracks `origin/main`, another tracks `origin/dev`).
+
+- `gr tree add` auto-detects upstream for each repo
+- `gr sync` uses per-repo upstream when on the griptree base branch
+- `gr rebase --upstream` rebases each repo onto its configured upstream
+- Falls back to `origin/<default_branch>` when no upstream is configured
 
 **Benefits:**
 - No branch switching - work on multiple features in parallel
 - Shared git objects - worktrees share `.git/objects` with main
 - Faster than cloning - worktree creation is nearly instant
+- Per-repo upstream tracking - different repos can track different branches
 
 **Limitations:**
 - Branch exclusivity - can't checkout same branch in two worktrees
@@ -300,6 +369,7 @@ gitgrip supports multiple hosting platforms:
 - **GitHub** (github.com and GitHub Enterprise)
 - **GitLab** (gitlab.com and self-hosted)
 - **Azure DevOps** (dev.azure.com and Azure DevOps Server)
+- **Bitbucket** (bitbucket.org and self-hosted)
 
 **Platform Detection:**
 - Platform is auto-detected from git URLs
@@ -317,16 +387,20 @@ repos:
   infra:
     url: https://dev.azure.com/org/project/_git/infra
     path: ./infra
+  legacy:
+    url: git@bitbucket.org:org/legacy.git
+    path: ./legacy
 ```
 
 **Platform Architecture:**
-- `Platform` trait defines all platform operations
+- `HostingPlatform` trait defines all platform operations
 - Each platform has an adapter in `src/platform/`
 - Platform adapters handle: PR create/merge/status, reviews, status checks, URL parsing
+- Rate limiting infrastructure for API calls
 
 **Adding a New Platform:**
 1. Create adapter in `src/platform/newplatform.rs`
-2. Implement `Platform` trait
+2. Implement `HostingPlatform` trait
 3. Add detection logic in `src/platform/mod.rs`
 4. Add tests
 
