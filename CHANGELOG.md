@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] - 2026-02-08
+
+### Fixed
+- **Reference repo sync alignment** - `gr sync --reset-refs` now checks out the correct upstream branch before hard-resetting (#259)
+  - Warns before discarding uncommitted changes or unpushed commits
+  - Properly aligns reference repos to upstream branch (e.g., `origin/dev`) instead of staying on wrong branch
+  - New `checkout_branch_at_upstream` git helper with worktree conflict detection
+
+### Added
+- `gr tree return` command to switch back to main workspace (#254)
+- `gr sync --reset-refs` flag to hard-reset reference repos to upstream (#255)
+
 ## [0.11.0] - 2026-02-07
 
 ### Added
