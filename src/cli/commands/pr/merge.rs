@@ -35,30 +35,29 @@ pub async fn run_pr_merge(
         _ => MergeMethod::Merge,
     };
 
-    // Also check manifest repo if configured
-    let mut all_repos = repos.clone();
-    if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
-        // Only add manifest repo if it has changes
-        match check_repo_for_changes(&manifest_repo) {
-            Ok(true) => {
-                all_repos.push(manifest_repo);
-            }
-            Ok(false) => {
-                Output::info("manifest: no changes, skipping");
-            }
-            Err(e) => {
-                Output::warning(&format!("manifest: could not check for changes: {}", e));
-            }
-        }
-    }
-
-    // Collect PRs to merge
+    // Collect PRs to merge and track per-repo outcomes
     #[derive(Debug, Clone, Copy)]
     enum CheckStatus {
         Passing,
         Failing,
         Pending,
         Unknown,
+    }
+
+    #[derive(Debug)]
+    enum RepoOutcome {
+        Skipped { reason: String },
+        Merged { pr_number: u64 },
+        AlreadyMerged { pr_number: u64 },
+        NotMerged { pr_number: u64, reason: String },
+        Failed { pr_number: u64, reason: String },
+        AutoEnabled { pr_number: u64 },
+        AutoFailed { pr_number: u64, reason: String },
+    }
+
+    struct RepoReport {
+        repo_name: String,
+        outcome: RepoOutcome,
     }
 
     struct PRToMerge {
@@ -73,24 +72,80 @@ pub async fn run_pr_merge(
     }
 
     let mut prs_to_merge: Vec<PRToMerge> = Vec::new();
+    let mut reports: Vec<RepoReport> = Vec::new();
+
+    // Also check manifest repo if configured
+    let mut all_repos = repos.clone();
+    if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
+        // Only add manifest repo if it has changes
+        match check_repo_for_changes(&manifest_repo) {
+            Ok(true) => {
+                all_repos.push(manifest_repo);
+            }
+            Ok(false) => {
+                reports.push(RepoReport {
+                    repo_name: "manifest".to_string(),
+                    outcome: RepoOutcome::Skipped {
+                        reason: "no changes".to_string(),
+                    },
+                });
+            }
+            Err(e) => {
+                reports.push(RepoReport {
+                    repo_name: "manifest".to_string(),
+                    outcome: RepoOutcome::Skipped {
+                        reason: format!("could not check for changes: {}", e),
+                    },
+                });
+            }
+        }
+    }
 
     for repo in &all_repos {
         if !path_exists(&repo.absolute_path) {
+            reports.push(RepoReport {
+                repo_name: repo.name.clone(),
+                outcome: RepoOutcome::Skipped {
+                    reason: "not cloned".to_string(),
+                },
+            });
             continue;
         }
 
         let git_repo = match open_repo(&repo.absolute_path) {
             Ok(r) => r,
-            Err(_) => continue,
+            Err(e) => {
+                reports.push(RepoReport {
+                    repo_name: repo.name.clone(),
+                    outcome: RepoOutcome::Skipped {
+                        reason: format!("not a git repo - {}", e),
+                    },
+                });
+                continue;
+            }
         };
 
         let branch = match get_current_branch(&git_repo) {
             Ok(b) => b,
-            Err(_) => continue,
+            Err(e) => {
+                reports.push(RepoReport {
+                    repo_name: repo.name.clone(),
+                    outcome: RepoOutcome::Skipped {
+                        reason: format!("failed to get current branch - {}", e),
+                    },
+                });
+                continue;
+            }
         };
 
         // Skip if on default branch
         if branch == repo.default_branch {
+            reports.push(RepoReport {
+                repo_name: repo.name.clone(),
+                outcome: RepoOutcome::Skipped {
+                    reason: "on default branch".to_string(),
+                },
+            });
             continue;
         }
 
@@ -102,7 +157,7 @@ pub async fn run_pr_merge(
         {
             Ok(Some(pr)) => {
                 // Get PR details
-                let (approved, mergeable) = match platform
+                let (approved, mergeable, already_merged) = match platform
                     .get_pull_request(&repo.owner, &repo.repo, pr.number)
                     .await
                 {
@@ -111,9 +166,13 @@ pub async fn run_pr_merge(
                             .is_pull_request_approved(&repo.owner, &repo.repo, pr.number)
                             .await
                             .unwrap_or(false);
-                        (is_approved, full_pr.mergeable.unwrap_or(false))
+                        (
+                            is_approved,
+                            full_pr.mergeable.unwrap_or(false),
+                            full_pr.merged,
+                        )
                     }
-                    Err(_) => (false, false),
+                    Err(_) => (false, false, false),
                 };
 
                 // Get status checks
@@ -144,6 +203,16 @@ pub async fn run_pr_merge(
                     }
                 };
 
+                if already_merged {
+                    reports.push(RepoReport {
+                        repo_name: repo.name.clone(),
+                        outcome: RepoOutcome::AlreadyMerged {
+                            pr_number: pr.number,
+                        },
+                    });
+                    continue;
+                }
+
                 prs_to_merge.push(PRToMerge {
                     repo_name: repo.name.clone(),
                     owner: repo.owner.clone(),
@@ -156,10 +225,20 @@ pub async fn run_pr_merge(
                 });
             }
             Ok(None) => {
-                Output::info(&format!("{}: no open PR for this branch", repo.name));
+                reports.push(RepoReport {
+                    repo_name: repo.name.clone(),
+                    outcome: RepoOutcome::Skipped {
+                        reason: format!("no open PR for branch '{}'", branch),
+                    },
+                });
             }
             Err(e) => {
-                Output::error(&format!("{}: {}", repo.name, e));
+                reports.push(RepoReport {
+                    repo_name: repo.name.clone(),
+                    outcome: RepoOutcome::Skipped {
+                        reason: format!("failed to find PR - {}", e),
+                    },
+                });
             }
         }
     }
@@ -167,25 +246,40 @@ pub async fn run_pr_merge(
     if prs_to_merge.is_empty() {
         println!("No open PRs found for any repository.");
         println!("Repositories checked: {}", all_repos.len());
+        if !reports.is_empty() {
+            println!();
+            Output::header("Repository summary");
+            for report in &reports {
+                match &report.outcome {
+                    RepoOutcome::Skipped { reason } => {
+                        Output::info(&format!("{}: skipped — {}", report.repo_name, reason));
+                    }
+                    RepoOutcome::AlreadyMerged { pr_number } => {
+                        Output::info(&format!(
+                            "{}: already merged PR #{}",
+                            report.repo_name, pr_number
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
         return Ok(());
     }
 
-    // Show which repos have PRs and which don't
-    let repos_with_prs: Vec<String> = prs_to_merge.iter().map(|p| p.repo_name.clone()).collect();
-    let repos_without_prs: Vec<String> = all_repos
-        .iter()
-        .filter(|r| !repos_with_prs.contains(&r.name))
-        .map(|r| r.name.clone())
-        .collect();
-
-    if !repos_without_prs.is_empty() {
+    if !reports.is_empty() {
         Output::info(&format!(
-            "Merging {} repo(s) with open PRs. {} repo(s) have no open PRs and will be skipped.",
+            "Merging {} repo(s) with open PRs. {} repo(s) will be skipped.",
             prs_to_merge.len(),
-            repos_without_prs.len()
+            reports
+                .iter()
+                .filter(|r| matches!(r.outcome, RepoOutcome::Skipped { .. }))
+                .count()
         ));
-        for repo_name in &repos_without_prs {
-            Output::info(&format!("  - {}: skipped (no open PR)", repo_name));
+        for report in &reports {
+            if let RepoOutcome::Skipped { reason } = &report.outcome {
+                Output::info(&format!("  - {}: skipped — {}", report.repo_name, reason));
+            }
         }
         println!();
     }
@@ -243,8 +337,8 @@ pub async fn run_pr_merge(
 
     // Auto-merge flow: enable auto-merge and return early
     if auto {
-        let mut success_count = 0;
-        let mut error_count = 0;
+        let mut auto_enabled = 0;
+        let mut auto_failed = 0;
 
         for pr in prs_to_merge {
             let spinner = Output::spinner(&format!(
@@ -262,41 +356,93 @@ pub async fn run_pr_merge(
                         "{}: PR #{} will auto-merge when checks pass",
                         pr.repo_name, pr.pr_number
                     ));
-                    success_count += 1;
+                    auto_enabled += 1;
+                    reports.push(RepoReport {
+                        repo_name: pr.repo_name.clone(),
+                        outcome: RepoOutcome::AutoEnabled {
+                            pr_number: pr.pr_number,
+                        },
+                    });
                 }
                 Ok(false) => {
                     spinner.finish_with_message(format!(
                         "{}: PR #{} auto-merge could not be enabled",
                         pr.repo_name, pr.pr_number
                     ));
-                    error_count += 1;
+                    auto_failed += 1;
+                    reports.push(RepoReport {
+                        repo_name: pr.repo_name.clone(),
+                        outcome: RepoOutcome::AutoFailed {
+                            pr_number: pr.pr_number,
+                            reason: "auto-merge not enabled".to_string(),
+                        },
+                    });
                 }
                 Err(e) => {
                     spinner.finish_with_message(format!("{}: failed - {}", pr.repo_name, e));
-                    error_count += 1;
+                    auto_failed += 1;
+                    reports.push(RepoReport {
+                        repo_name: pr.repo_name.clone(),
+                        outcome: RepoOutcome::AutoFailed {
+                            pr_number: pr.pr_number,
+                            reason: e.to_string(),
+                        },
+                    });
                 }
             }
         }
 
         println!();
-        if error_count == 0 {
+        if auto_failed == 0 {
             Output::success(&format!(
                 "Auto-merge enabled for {} PR(s). They will merge when all checks pass.",
-                success_count
+                auto_enabled
             ));
         } else {
             Output::warning(&format!(
                 "{} auto-merge enabled, {} failed",
-                success_count, error_count
+                auto_enabled, auto_failed
             ));
+        }
+
+        if !reports.is_empty() {
+            println!();
+            Output::header("Repository summary");
+            for report in &reports {
+                match &report.outcome {
+                    RepoOutcome::AutoEnabled { pr_number } => {
+                        Output::success(&format!(
+                            "{}: auto-merge enabled for PR #{}",
+                            report.repo_name, pr_number
+                        ));
+                    }
+                    RepoOutcome::AutoFailed { pr_number, reason } => {
+                        Output::warning(&format!(
+                            "{}: auto-merge failed for PR #{} — {}",
+                            report.repo_name, pr_number, reason
+                        ));
+                    }
+                    RepoOutcome::Skipped { reason } => {
+                        Output::info(&format!("{}: skipped — {}", report.repo_name, reason));
+                    }
+                    RepoOutcome::AlreadyMerged { pr_number } => {
+                        Output::info(&format!(
+                            "{}: already merged PR #{}",
+                            report.repo_name, pr_number
+                        ));
+                    }
+                    _ => {}
+                }
+            }
         }
 
         return Ok(());
     }
 
     // Merge PRs
-    let mut success_count = 0;
-    let mut error_count = 0;
+    let mut merged_count = 0;
+    let mut not_merged_count = 0;
+    let mut failed_count = 0;
 
     for pr in prs_to_merge {
         let spinner = Output::spinner(&format!("Merging {} PR #{}...", pr.repo_name, pr.pr_number));
@@ -360,15 +506,28 @@ pub async fn run_pr_merge(
                                     "{}: merged PR #{}",
                                     pr.repo_name, pr.pr_number
                                 ));
-                                success_count += 1;
+                                merged_count += 1;
+                                reports.push(RepoReport {
+                                    repo_name: pr.repo_name.clone(),
+                                    outcome: RepoOutcome::Merged {
+                                        pr_number: pr.pr_number,
+                                    },
+                                });
                                 continue;
                             }
                             Ok(false) => {
                                 retry_spinner.finish_with_message(format!(
-                                    "{}: PR #{} was already merged",
+                                    "{}: PR #{} not merged (platform reported merged=false)",
                                     pr.repo_name, pr.pr_number
                                 ));
-                                success_count += 1;
+                                not_merged_count += 1;
+                                reports.push(RepoReport {
+                                    repo_name: pr.repo_name.clone(),
+                                    outcome: RepoOutcome::NotMerged {
+                                        pr_number: pr.pr_number,
+                                        reason: "platform returned merged=false".to_string(),
+                                    },
+                                });
                                 continue;
                             }
                             Err(e) => Err(e),
@@ -401,13 +560,26 @@ pub async fn run_pr_merge(
                         "{}: merged PR #{}",
                         pr.repo_name, pr.pr_number
                     ));
-                    success_count += 1;
+                    merged_count += 1;
+                    reports.push(RepoReport {
+                        repo_name: pr.repo_name.clone(),
+                        outcome: RepoOutcome::Merged {
+                            pr_number: pr.pr_number,
+                        },
+                    });
                 } else {
                     spinner.finish_with_message(format!(
-                        "{}: PR #{} was already merged",
+                        "{}: PR #{} not merged (platform reported merged=false)",
                         pr.repo_name, pr.pr_number
                     ));
-                    success_count += 1;
+                    not_merged_count += 1;
+                    reports.push(RepoReport {
+                        repo_name: pr.repo_name.clone(),
+                        outcome: RepoOutcome::NotMerged {
+                            pr_number: pr.pr_number,
+                            reason: "platform returned merged=false".to_string(),
+                        },
+                    });
                 }
             }
             Err(PlatformError::BranchBehind(_)) => {
@@ -416,7 +588,14 @@ pub async fn run_pr_merge(
                     pr.repo_name, pr.pr_number
                 ));
                 Output::info("  Hint: use 'gr pr merge --update' to update the branch and retry");
-                error_count += 1;
+                failed_count += 1;
+                reports.push(RepoReport {
+                    repo_name: pr.repo_name.clone(),
+                    outcome: RepoOutcome::Failed {
+                        pr_number: pr.pr_number,
+                        reason: "branch behind base".to_string(),
+                    },
+                });
             }
             Err(PlatformError::BranchProtected(ref msg)) => {
                 spinner.finish_with_message(format!("{}: {}", pr.repo_name, msg));
@@ -427,11 +606,25 @@ pub async fn run_pr_merge(
                     "  Or:   gh pr merge {} --admin --repo {}/{}",
                     pr.pr_number, pr.owner, pr.repo
                 ));
-                error_count += 1;
+                failed_count += 1;
+                reports.push(RepoReport {
+                    repo_name: pr.repo_name.clone(),
+                    outcome: RepoOutcome::Failed {
+                        pr_number: pr.pr_number,
+                        reason: msg.clone(),
+                    },
+                });
             }
             Err(e) => {
                 spinner.finish_with_message(format!("{}: failed - {}", pr.repo_name, e));
-                error_count += 1;
+                failed_count += 1;
+                reports.push(RepoReport {
+                    repo_name: pr.repo_name.clone(),
+                    outcome: RepoOutcome::Failed {
+                        pr_number: pr.pr_number,
+                        reason: e.to_string(),
+                    },
+                });
 
                 // Check for all-or-nothing merge strategy (unless forcing)
                 if !force
@@ -459,10 +652,67 @@ pub async fn run_pr_merge(
 
     // Summary
     println!();
-    if error_count == 0 {
-        Output::success(&format!("Successfully merged {} PR(s).", success_count));
+    let skipped_count = reports
+        .iter()
+        .filter(|r| matches!(r.outcome, RepoOutcome::Skipped { .. }))
+        .count();
+    let already_merged_count = reports
+        .iter()
+        .filter(|r| matches!(r.outcome, RepoOutcome::AlreadyMerged { .. }))
+        .count();
+    if failed_count == 0 && not_merged_count == 0 {
+        Output::success(&format!(
+            "Merged {} PR(s). {} already merged. {} skipped.",
+            merged_count, already_merged_count, skipped_count
+        ));
     } else {
-        Output::warning(&format!("{} merged, {} failed", success_count, error_count));
+        Output::warning(&format!(
+            "{} merged, {} already merged, {} not merged, {} failed, {} skipped",
+            merged_count, already_merged_count, not_merged_count, failed_count, skipped_count
+        ));
+    }
+
+    println!();
+    Output::header("Repository summary");
+    for report in &reports {
+        match &report.outcome {
+            RepoOutcome::Skipped { reason } => {
+                Output::info(&format!("{}: skipped — {}", report.repo_name, reason));
+            }
+            RepoOutcome::Merged { pr_number } => {
+                Output::success(&format!("{}: merged PR #{}", report.repo_name, pr_number));
+            }
+            RepoOutcome::AlreadyMerged { pr_number } => {
+                Output::info(&format!(
+                    "{}: already merged PR #{}",
+                    report.repo_name, pr_number
+                ));
+            }
+            RepoOutcome::NotMerged { pr_number, reason } => {
+                Output::warning(&format!(
+                    "{}: PR #{} not merged — {}",
+                    report.repo_name, pr_number, reason
+                ));
+            }
+            RepoOutcome::Failed { pr_number, reason } => {
+                Output::error(&format!(
+                    "{}: PR #{} failed — {}",
+                    report.repo_name, pr_number, reason
+                ));
+            }
+            RepoOutcome::AutoEnabled { pr_number } => {
+                Output::success(&format!(
+                    "{}: auto-merge enabled for PR #{}",
+                    report.repo_name, pr_number
+                ));
+            }
+            RepoOutcome::AutoFailed { pr_number, reason } => {
+                Output::warning(&format!(
+                    "{}: auto-merge failed for PR #{} — {}",
+                    report.repo_name, pr_number, reason
+                ));
+            }
+        }
     }
 
     Ok(())
