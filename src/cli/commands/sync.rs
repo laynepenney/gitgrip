@@ -4,8 +4,9 @@ use crate::cli::output::Output;
 use crate::core::griptree::GriptreeConfig;
 use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
-use crate::git::branch::has_commits_ahead;
+use crate::git::branch::{checkout_branch_at_upstream, has_commits_ahead};
 use crate::git::remote::{fetch_remote, pull_latest_from_upstream, reset_hard, safe_pull_latest};
+use crate::git::status::has_uncommitted_changes;
 use crate::git::{clone_repo, get_current_branch, open_repo, path_exists};
 use git2::Repository;
 use indicatif::ProgressBar;
@@ -216,7 +217,25 @@ fn sync_griptree_upstream(
         None => format!("origin/{}", repo.default_branch),
     };
 
-    let remote = upstream.split('/').next().unwrap_or("origin");
+    let mut upstream_parts = upstream.splitn(2, '/');
+    let remote = upstream_parts.next().unwrap_or("origin");
+    let upstream_branch = upstream_parts.next().unwrap_or(&repo.default_branch);
+
+    if let Ok(is_dirty) = has_uncommitted_changes(git_repo) {
+        if is_dirty {
+            Output::warning(&format!(
+                "{}: --reset-refs will discard local changes",
+                repo.name
+            ));
+        }
+    }
+    if let Ok(true) = has_commits_ahead(git_repo, &upstream) {
+        Output::warning(&format!(
+            "{}: --reset-refs will discard local commits not in {}",
+            repo.name, upstream
+        ));
+    }
+
     if let Err(e) = fetch_remote(git_repo, remote) {
         let msg = format!("error - {}", e);
         if let Some(s) = spinner {
@@ -324,6 +343,19 @@ fn sync_reference_reset(
 
     let remote = upstream.split('/').next().unwrap_or("origin");
     if let Err(e) = fetch_remote(git_repo, remote) {
+        let msg = format!("error - {}", e);
+        if let Some(s) = spinner {
+            s.finish_with_message(format!("{}: {}", repo.name, msg));
+        }
+        return SyncResult {
+            name: repo.name.clone(),
+            success: false,
+            message: msg,
+            was_cloned: false,
+        };
+    }
+
+    if let Err(e) = checkout_branch_at_upstream(git_repo, upstream_branch, &upstream) {
         let msg = format!("error - {}", e);
         if let Some(s) = spinner {
             s.finish_with_message(format!("{}: {}", repo.name, msg));
