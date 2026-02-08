@@ -7,6 +7,7 @@ use crate::cli::output::Output;
 use crate::core::griptree::{GriptreeConfig, GriptreePointer, GriptreeRepoInfo};
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
+use crate::git::remote::get_upstream_branch;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
@@ -244,8 +245,27 @@ pub fn run_tree_add(
             (None, None)
         };
 
-    // Save griptree config in the griptree directory
-    let griptree_config = GriptreeConfig::new(branch, &tree_path.to_string_lossy());
+    // Save griptree config in the griptree directory (include upstream mapping)
+    let mut repo_upstreams: HashMap<String, String> = HashMap::new();
+    for repo in &repos {
+        let worktree_path = tree_path.join(&repo.path);
+        if !worktree_path.exists() {
+            continue;
+        }
+
+        let upstream = match open_repo(&worktree_path) {
+            Ok(repo_handle) => match get_upstream_branch(&repo_handle, Some(branch)) {
+                Ok(Some(name)) => name,
+                _ => format!("origin/{}", repo.default_branch),
+            },
+            Err(_) => format!("origin/{}", repo.default_branch),
+        };
+
+        repo_upstreams.insert(repo.name.clone(), upstream);
+    }
+
+    let mut griptree_config = GriptreeConfig::new(branch, &tree_path.to_string_lossy());
+    griptree_config.repo_upstreams = repo_upstreams;
     let griptree_config_path = tree_gitgrip.join("griptree.json");
     griptree_config.save(&griptree_config_path)?;
 

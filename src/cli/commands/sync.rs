@@ -1,10 +1,14 @@
 //! Sync command implementation
 
 use crate::cli::output::Output;
+use crate::core::griptree::GriptreeConfig;
 use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
-use crate::git::remote::safe_pull_latest;
+use crate::git::branch::has_commits_ahead;
+use crate::git::remote::{fetch_remote, pull_latest_from_upstream, safe_pull_latest};
 use crate::git::{clone_repo, get_current_branch, open_repo, path_exists};
+use git2::Repository;
+use indicatif::ProgressBar;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinSet;
@@ -33,14 +37,29 @@ pub async fn run_sync(
     if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
         repos.insert(0, manifest_repo);
     }
+    let griptree_config = GriptreeConfig::load_from_workspace(workspace_root)?;
+    let griptree_branch = griptree_config.as_ref().map(|cfg| cfg.branch.clone());
 
     Output::header(&format!("Syncing {} repositories...", repos.len()));
     println!();
 
     let results = if sequential {
-        sync_sequential(&repos, force, quiet)?
+        sync_sequential(
+            &repos,
+            force,
+            quiet,
+            griptree_config.as_ref(),
+            griptree_branch.as_deref(),
+        )?
     } else {
-        sync_parallel(&repos, force, quiet).await?
+        sync_parallel(
+            &repos,
+            force,
+            quiet,
+            griptree_config.clone(),
+            griptree_branch.clone(),
+        )
+        .await?
     };
 
     // Display results
@@ -82,11 +101,13 @@ fn sync_sequential(
     repos: &[RepoInfo],
     force: bool,
     quiet: bool,
+    griptree_config: Option<&GriptreeConfig>,
+    griptree_branch: Option<&str>,
 ) -> anyhow::Result<Vec<SyncResult>> {
     let mut results = Vec::new();
 
     for repo in repos {
-        let result = sync_single_repo(repo, force, quiet, true)?;
+        let result = sync_single_repo(repo, force, quiet, true, griptree_config, griptree_branch)?;
         results.push(result);
     }
 
@@ -99,6 +120,8 @@ async fn sync_parallel(
     repos: &[RepoInfo],
     force: bool,
     quiet: bool,
+    griptree_config: Option<GriptreeConfig>,
+    griptree_branch: Option<String>,
 ) -> anyhow::Result<Vec<SyncResult>> {
     let results: Arc<Mutex<Vec<SyncResult>>> = Arc::new(Mutex::new(Vec::new()));
     let mut join_set: JoinSet<anyhow::Result<()>> = JoinSet::new();
@@ -108,9 +131,18 @@ async fn sync_parallel(
 
     for repo in repos.to_vec() {
         let results = Arc::clone(&results);
+        let griptree_config = griptree_config.clone();
+        let griptree_branch = griptree_branch.clone();
 
         join_set.spawn_blocking(move || {
-            let result = sync_single_repo(&repo, force, quiet, false)?;
+            let result = sync_single_repo(
+                &repo,
+                force,
+                quiet,
+                false,
+                griptree_config.as_ref(),
+                griptree_branch.as_deref(),
+            )?;
             results.lock().unwrap().push(result);
             Ok(())
         });
@@ -143,12 +175,121 @@ async fn sync_parallel(
     Ok(results)
 }
 
+fn sync_griptree_upstream(
+    repo: &RepoInfo,
+    git_repo: &Repository,
+    current_branch: Option<&str>,
+    griptree_config: Option<&GriptreeConfig>,
+    spinner: Option<&ProgressBar>,
+    quiet: bool,
+) -> SyncResult {
+    let upstream = match griptree_config {
+        Some(cfg) => match cfg.upstream_for_repo(&repo.name, &repo.default_branch) {
+            Ok(upstream) => upstream,
+            Err(e) => {
+                let msg = format!("error - {}", e);
+                if let Some(s) = spinner {
+                    s.finish_with_message(format!("{}: {}", repo.name, msg));
+                }
+                return SyncResult {
+                    name: repo.name.clone(),
+                    success: false,
+                    message: msg,
+                    was_cloned: false,
+                };
+            }
+        },
+        None => format!("origin/{}", repo.default_branch),
+    };
+
+    let remote = upstream.split('/').next().unwrap_or("origin");
+    if let Err(e) = fetch_remote(git_repo, remote) {
+        let msg = format!("error - {}", e);
+        if let Some(s) = spinner {
+            s.finish_with_message(format!("{}: {}", repo.name, msg));
+        }
+        return SyncResult {
+            name: repo.name.clone(),
+            success: false,
+            message: msg,
+            was_cloned: false,
+        };
+    }
+
+    if let Some(current) = current_branch {
+        match has_commits_ahead(git_repo, &upstream) {
+            Ok(true) => {
+                let msg = format!(
+                    "skipped - branch '{}' has local commits not in '{}'",
+                    current, upstream
+                );
+                if let Some(s) = spinner {
+                    s.finish_with_message(format!("{}: {}", repo.name, msg));
+                }
+                return SyncResult {
+                    name: repo.name.clone(),
+                    success: true,
+                    message: msg,
+                    was_cloned: false,
+                };
+            }
+            Ok(false) => {}
+            Err(e) => {
+                let msg = format!("error - {}", e);
+                if let Some(s) = spinner {
+                    s.finish_with_message(format!("{}: {}", repo.name, msg));
+                }
+                return SyncResult {
+                    name: repo.name.clone(),
+                    success: false,
+                    message: msg,
+                    was_cloned: false,
+                };
+            }
+        }
+    }
+
+    match pull_latest_from_upstream(git_repo, &upstream) {
+        Ok(()) => {
+            let msg = format!("pulled ({})", upstream);
+            if let Some(s) = spinner {
+                if !quiet {
+                    s.finish_with_message(format!("{}: {}", repo.name, msg));
+                } else {
+                    s.finish_and_clear();
+                }
+            }
+
+            SyncResult {
+                name: repo.name.clone(),
+                success: true,
+                message: msg,
+                was_cloned: false,
+            }
+        }
+        Err(e) => {
+            let msg = format!("error - {}", e);
+            if let Some(s) = spinner {
+                s.finish_with_message(format!("{}: {}", repo.name, msg));
+            }
+            SyncResult {
+                name: repo.name.clone(),
+                success: false,
+                message: msg,
+                was_cloned: false,
+            }
+        }
+    }
+}
+
 /// Sync a single repository
 fn sync_single_repo(
     repo: &RepoInfo,
     force: bool,
     quiet: bool,
     show_spinner: bool,
+    griptree_config: Option<&GriptreeConfig>,
+    griptree_branch: Option<&str>,
 ) -> anyhow::Result<SyncResult> {
     let spinner = if show_spinner {
         Some(Output::spinner(&format!("Pulling {}...", repo.name)))
@@ -211,60 +352,78 @@ fn sync_single_repo(
     // Pull existing repo
     match open_repo(&repo.absolute_path) {
         Ok(git_repo) => {
-            let result = safe_pull_latest(&git_repo, &repo.default_branch, "origin");
+            let current_branch = get_current_branch(&git_repo).ok();
+            let use_griptree_upstream = match (griptree_branch, current_branch.as_deref()) {
+                (Some(base), Some(current)) => current == base,
+                _ => false,
+            };
 
-            match result {
-                Ok(pull_result) => {
-                    let (success, message) = if pull_result.pulled {
-                        if pull_result.recovered {
-                            (
-                                true,
-                                pull_result
-                                    .message
-                                    .unwrap_or_else(|| "pulled (recovered)".to_string()),
-                            )
-                        } else {
-                            (
-                                true,
-                                pull_result.message.unwrap_or_else(|| "pulled".to_string()),
-                            )
-                        }
-                    } else if let Some(msg) = pull_result.message {
-                        if force {
-                            (true, format!("skipped - {}", msg))
-                        } else {
-                            (true, msg)
-                        }
-                    } else {
-                        (true, "up to date".to_string())
-                    };
+            if use_griptree_upstream {
+                let result = sync_griptree_upstream(
+                    repo,
+                    &git_repo,
+                    current_branch.as_deref(),
+                    griptree_config,
+                    spinner.as_ref(),
+                    quiet,
+                );
+                Ok(result)
+            } else {
+                let result = safe_pull_latest(&git_repo, &repo.default_branch, "origin");
 
-                    if let Some(s) = spinner {
-                        if !quiet || !success {
-                            s.finish_with_message(format!("{}: {}", repo.name, message));
+                match result {
+                    Ok(pull_result) => {
+                        let (success, message) = if pull_result.pulled {
+                            if pull_result.recovered {
+                                (
+                                    true,
+                                    pull_result
+                                        .message
+                                        .unwrap_or_else(|| "pulled (recovered)".to_string()),
+                                )
+                            } else {
+                                (
+                                    true,
+                                    pull_result.message.unwrap_or_else(|| "pulled".to_string()),
+                                )
+                            }
+                        } else if let Some(msg) = pull_result.message {
+                            if force {
+                                (true, format!("skipped - {}", msg))
+                            } else {
+                                (true, msg)
+                            }
                         } else {
-                            s.finish_and_clear();
+                            (true, "up to date".to_string())
+                        };
+
+                        if let Some(s) = spinner {
+                            if !quiet || !success {
+                                s.finish_with_message(format!("{}: {}", repo.name, message));
+                            } else {
+                                s.finish_and_clear();
+                            }
                         }
+
+                        Ok(SyncResult {
+                            name: repo.name.clone(),
+                            success,
+                            message,
+                            was_cloned: false,
+                        })
                     }
-
-                    Ok(SyncResult {
-                        name: repo.name.clone(),
-                        success,
-                        message,
-                        was_cloned: false,
-                    })
-                }
-                Err(e) => {
-                    let msg = format!("error - {}", e);
-                    if let Some(s) = spinner {
-                        s.finish_with_message(format!("{}: {}", repo.name, msg));
+                    Err(e) => {
+                        let msg = format!("error - {}", e);
+                        if let Some(s) = spinner {
+                            s.finish_with_message(format!("{}: {}", repo.name, msg));
+                        }
+                        Ok(SyncResult {
+                            name: repo.name.clone(),
+                            success: false,
+                            message: msg,
+                            was_cloned: false,
+                        })
                     }
-                    Ok(SyncResult {
-                        name: repo.name.clone(),
-                        success: false,
-                        message: msg,
-                        was_cloned: false,
-                    })
                 }
             }
         }

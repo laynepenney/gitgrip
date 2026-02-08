@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::fixtures::WorkspaceBuilder;
+use common::fixtures::{write_griptree_config, WorkspaceBuilder};
 use common::git_helpers;
 
 #[test]
@@ -63,43 +63,42 @@ fn test_rebase_on_feature_branch() {
 }
 
 #[test]
-fn test_rebase_uses_upstream_when_no_target() {
+fn test_rebase_uses_griptree_upstream_mapping() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "dev");
+    git_helpers::commit_file(&ws.repo_path("app"), "dev-only.txt", "dev", "Add dev file");
+    git_helpers::push_branch(&ws.repo_path("app"), "origin", "dev");
+    git_helpers::fetch(&ws.repo_path("app"), "origin", Some("dev"));
+    git_helpers::checkout(&ws.repo_path("app"), "main");
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/rebase-upstream");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "feature.txt",
+        "feature content",
+        "Add feature",
+    );
+
+    write_griptree_config(&ws.workspace_root, "feat/griptree", "app", "origin/dev");
     let manifest = ws.load_manifest();
-
-    let repo_path = ws.repo_path("app");
-
-    // Create dev branch and push upstream
-    git_helpers::create_branch(&repo_path, "dev");
-    git_helpers::commit_file(&repo_path, "dev.txt", "dev", "Add dev");
-    git_helpers::push_upstream(&repo_path, "origin", "dev");
-
-    // Create feature branch from main
-    git_helpers::checkout(&repo_path, "main");
-    git_helpers::create_branch(&repo_path, "feat/rebase-upstream");
-    git_helpers::commit_file(&repo_path, "feature.txt", "feature", "Add feature");
-
-    // Point feature branch upstream at origin/dev
-    git_helpers::set_upstream(&repo_path, "origin/dev");
 
     let result = gitgrip::cli::commands::rebase::run_rebase(
         &ws.workspace_root,
         &manifest,
         None,
-        false,
+        true,
         false,
         false,
     );
     assert!(
         result.is_ok(),
-        "rebase on upstream should succeed: {:?}",
+        "rebase on upstream mapping should succeed: {:?}",
         result.err()
     );
 
-    assert!(
-        git_helpers::log_contains(&repo_path, "Add dev"),
-        "expected rebase to include upstream dev commit"
-    );
+    assert!(ws.repo_path("app").join("dev-only.txt").exists());
+    assert!(ws.repo_path("app").join("feature.txt").exists());
 }
 
 #[test]
