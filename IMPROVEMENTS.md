@@ -85,6 +85,15 @@ Added `gr completions <shell>` command using clap_complete crate.
 
 ## Pending Review
 
+### Friction: No `gr issue comment` / `gr issue edit`
+
+**Discovered**: 2026-02-08
+
+**Problem**: Needed to update issue #253 with the concrete command design, but had to use raw `gh issue comment` since `gr` has no issue commenting/editing command.
+
+**Suggested fix**:
+- Add `gr issue comment` and `gr issue edit` wrappers (or a minimal `gr issue` subcommand).
+
 ### Missing: `gr sync` shows which repos failed ✓
 
 **Status**: ✅ **COMPLETED** - Implemented in PR #131 (v0.5.6)

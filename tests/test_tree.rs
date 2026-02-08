@@ -11,7 +11,7 @@ use std::path::Path;
 use serde_yaml::Value;
 
 use common::assertions;
-use common::fixtures::WorkspaceBuilder;
+use common::fixtures::{write_griptree_config, WorkspaceBuilder};
 use common::git_helpers;
 
 fn set_default_branch(manifest_path: &Path, repo: &str, branch: &str) {
@@ -447,4 +447,72 @@ fn test_tree_original_repos_unaffected() {
     // Original repos should still be on main
     assertions::assert_on_branch(&ws.repo_path("app"), "main");
     assertions::assert_on_branch(&ws.repo_path("lib"), "main");
+}
+
+// ── Tree Return ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_tree_return_checks_out_base_branch() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "griptree-base");
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/return");
+
+    write_griptree_config(&ws.workspace_root, "griptree-base", "app", "origin/main");
+
+    let result = gitgrip::cli::commands::tree::run_tree_return(
+        &ws.workspace_root,
+        &manifest,
+        None,
+        true,
+        false,
+        None,
+        false,
+        false,
+        false,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "tree return should succeed: {:?}",
+        result.err()
+    );
+    assertions::assert_on_branch(&ws.repo_path("app"), "griptree-base");
+}
+
+#[tokio::test]
+async fn test_tree_return_prunes_current_branch() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "griptree-base");
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/prune");
+
+    write_griptree_config(&ws.workspace_root, "griptree-base", "app", "origin/main");
+
+    let result = gitgrip::cli::commands::tree::run_tree_return(
+        &ws.workspace_root,
+        &manifest,
+        None,
+        true,
+        false,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "tree return should succeed: {:?}",
+        result.err()
+    );
+    assert!(!git_helpers::branch_exists(
+        &ws.repo_path("app"),
+        "feat/prune"
+    ));
+    assertions::assert_on_branch(&ws.repo_path("app"), "griptree-base");
 }
