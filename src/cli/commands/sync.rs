@@ -217,24 +217,7 @@ fn sync_griptree_upstream(
         None => format!("origin/{}", repo.default_branch),
     };
 
-    let mut upstream_parts = upstream.splitn(2, '/');
-    let remote = upstream_parts.next().unwrap_or("origin");
-    let upstream_branch = upstream_parts.next().unwrap_or(&repo.default_branch);
-
-    if let Ok(is_dirty) = has_uncommitted_changes(git_repo) {
-        if is_dirty {
-            Output::warning(&format!(
-                "{}: --reset-refs will discard local changes",
-                repo.name
-            ));
-        }
-    }
-    if let Ok(true) = has_commits_ahead(git_repo, &upstream) {
-        Output::warning(&format!(
-            "{}: --reset-refs will discard local commits not in {}",
-            repo.name, upstream
-        ));
-    }
+    let remote = upstream.split('/').next().unwrap_or("origin");
 
     if let Err(e) = fetch_remote(git_repo, remote) {
         let msg = format!("error - {}", e);
@@ -341,7 +324,24 @@ fn sync_reference_reset(
         None => format!("origin/{}", repo.default_branch),
     };
 
-    let remote = upstream.split('/').next().unwrap_or("origin");
+    let mut upstream_parts = upstream.splitn(2, '/');
+    let remote = upstream_parts.next().unwrap_or("origin");
+    let upstream_branch = upstream_parts.next().unwrap_or(&repo.default_branch);
+
+    if let Ok(is_dirty) = has_uncommitted_changes(git_repo) {
+        if is_dirty {
+            Output::warning(&format!(
+                "{}: --reset-refs will discard local changes",
+                repo.name
+            ));
+        }
+    }
+    if let Ok(true) = has_commits_ahead(git_repo, &upstream) {
+        Output::warning(&format!(
+            "{}: --reset-refs will discard local commits not in {}",
+            repo.name, upstream
+        ));
+    }
     if let Err(e) = fetch_remote(git_repo, remote) {
         let msg = format!("error - {}", e);
         if let Some(s) = spinner {
