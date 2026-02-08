@@ -351,7 +351,8 @@ pub fn run_tree_list(workspace_root: &PathBuf) -> anyhow::Result<()> {
     Output::header("Griptrees");
     println!();
 
-    let config_path = workspace_root.join(".gitgrip").join("griptrees.json");
+    let griptrees_root = resolve_griptrees_workspace_root(workspace_root);
+    let config_path = griptrees_root.join(".gitgrip").join("griptrees.json");
     let griptrees: GriptreesList = if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)?;
         serde_json::from_str(&content)?
@@ -380,7 +381,7 @@ pub fn run_tree_list(workspace_root: &PathBuf) -> anyhow::Result<()> {
     }
 
     // Discover unregistered griptrees
-    let discovered = discover_legacy_griptrees(workspace_root, &griptrees)?;
+    let discovered = discover_legacy_griptrees(&griptrees_root, &griptrees)?;
     if !discovered.is_empty() {
         println!();
         Output::warning("Found unregistered griptrees:");
@@ -652,12 +653,33 @@ fn discover_legacy_griptrees(
     Ok(discovered)
 }
 
+fn resolve_griptrees_workspace_root(workspace_root: &PathBuf) -> PathBuf {
+    let local_registry = workspace_root.join(".gitgrip").join("griptrees.json");
+    if local_registry.exists() {
+        return workspace_root.clone();
+    }
+
+    let pointer_path = workspace_root.join(".griptree");
+    if pointer_path.exists() {
+        if let Ok(pointer) = GriptreePointer::load(&pointer_path) {
+            let main_workspace = PathBuf::from(pointer.main_workspace);
+            let main_registry = main_workspace.join(".gitgrip").join("griptrees.json");
+            if main_registry.exists() {
+                return main_workspace;
+            }
+        }
+    }
+
+    workspace_root.clone()
+}
+
 /// Run tree remove command
 pub fn run_tree_remove(workspace_root: &PathBuf, branch: &str, force: bool) -> anyhow::Result<()> {
     Output::header(&format!("Removing griptree for '{}'", branch));
     println!();
 
-    let config_path = workspace_root.join(".gitgrip").join("griptrees.json");
+    let griptrees_root = resolve_griptrees_workspace_root(workspace_root);
+    let config_path = griptrees_root.join(".gitgrip").join("griptrees.json");
     if !config_path.exists() {
         anyhow::bail!("No griptrees configured");
     }
@@ -758,7 +780,8 @@ pub fn run_tree_lock(
     branch: &str,
     reason: Option<&str>,
 ) -> anyhow::Result<()> {
-    let config_path = workspace_root.join(".gitgrip").join("griptrees.json");
+    let griptrees_root = resolve_griptrees_workspace_root(workspace_root);
+    let config_path = griptrees_root.join(".gitgrip").join("griptrees.json");
     if !config_path.exists() {
         anyhow::bail!("No griptrees configured");
     }
@@ -794,7 +817,8 @@ pub fn run_tree_lock(
 
 /// Run tree unlock command
 pub fn run_tree_unlock(workspace_root: &PathBuf, branch: &str) -> anyhow::Result<()> {
-    let config_path = workspace_root.join(".gitgrip").join("griptrees.json");
+    let griptrees_root = resolve_griptrees_workspace_root(workspace_root);
+    let config_path = griptrees_root.join(".gitgrip").join("griptrees.json");
     if !config_path.exists() {
         anyhow::bail!("No griptrees configured");
     }
