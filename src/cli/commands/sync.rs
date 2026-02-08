@@ -441,13 +441,8 @@ fn sync_single_repo(
     match open_repo(&repo.absolute_path) {
         Ok(git_repo) => {
             if repo.reference && reset_refs {
-                let result = sync_reference_reset(
-                    repo,
-                    &git_repo,
-                    griptree_config,
-                    spinner.as_ref(),
-                    quiet,
-                );
+                let result =
+                    sync_reference_reset(repo, &git_repo, griptree_config, spinner.as_ref(), quiet);
                 return Ok(result);
             }
 
