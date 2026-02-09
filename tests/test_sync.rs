@@ -6,6 +6,23 @@ use common::assertions::{assert_file_exists, assert_on_branch};
 use common::fixtures::{write_griptree_config, WorkspaceBuilder};
 use common::git_helpers;
 use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+fn git(dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+    assert!(
+        output.status.success(),
+        "git {:?} failed in {}: {}",
+        args,
+        dir.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
 
 #[tokio::test]
 async fn test_sync_clones_missing_repos() {
@@ -226,6 +243,67 @@ async fn test_sync_reset_refs_checks_out_upstream_branch() {
 
     assert_on_branch(&ws.repo_path("ref"), "dev");
     assert_file_exists(&ws.repo_path("ref").join("dev-only.txt"));
+}
+
+#[tokio::test]
+async fn test_sync_reset_refs_falls_back_to_detached_when_branch_locked_in_worktree() {
+    let ws = WorkspaceBuilder::new().add_reference_repo("ref").build();
+
+    let staging = ws._temp.path().join("sync-ref-locked-branch-staging");
+    git_helpers::clone_repo(&ws.remote_url("ref"), &staging);
+    git_helpers::create_branch(&staging, "dev");
+    git_helpers::commit_file(&staging, "dev-only.txt", "dev", "Add dev file");
+    git_helpers::push_branch(&staging, "origin", "dev");
+
+    let ref_repo = ws.repo_path("ref");
+    git(&ref_repo, &["fetch", "origin", "dev:dev"]);
+
+    let locked_worktree = ws._temp.path().join("ref-dev-worktree");
+    git(
+        &ref_repo,
+        &["worktree", "add", locked_worktree.to_str().unwrap(), "dev"],
+    );
+
+    git_helpers::commit_file(&ref_repo, "local-only.txt", "local", "Add local-only file");
+
+    write_griptree_config(&ws.workspace_root, "feat/griptree", "ref", "origin/dev");
+    let manifest = ws.load_manifest();
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+        true,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
+
+    assert_file_exists(&ref_repo.join("dev-only.txt"));
+    assert!(
+        !ref_repo.join("local-only.txt").exists(),
+        "expected reset to discard local changes"
+    );
+
+    let repo = gitgrip::git::open_repo(&ref_repo).expect("open repo");
+    let head = gitgrip::git::get_current_branch(&repo).expect("current branch");
+    assert!(
+        head.starts_with("(HEAD detached at "),
+        "expected detached HEAD fallback, got: {}",
+        head
+    );
+
+    git(
+        &ref_repo,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            locked_worktree.to_str().unwrap(),
+        ],
+    );
 }
 
 #[tokio::test]
