@@ -150,7 +150,8 @@ mod github_tests {
         );
 
         // Verify manifest
-        let manifest_path = gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
+        let manifest_path =
+            gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
                 .expect("manifest not found");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
         assert!(manifest.contains("repo1"), "repo1 not in manifest");
@@ -337,7 +338,8 @@ mod gitlab_tests {
             String::from_utf8_lossy(&output.stderr)
         );
 
-        let manifest_path = gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
+        let manifest_path =
+            gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
                 .expect("manifest not found");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
         assert!(manifest.contains("repo1"));
@@ -451,7 +453,8 @@ mod gitlab_tests {
         println!("Init output: {}", String::from_utf8_lossy(&output.stdout));
 
         // Read and print the manifest
-        let manifest_path = gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
+        let manifest_path =
+            gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
                 .expect("manifest not found");
         if manifest_path.exists() {
             let manifest_content = fs::read_to_string(&manifest_path).unwrap();
@@ -629,7 +632,8 @@ mod azure_tests {
             String::from_utf8_lossy(&output.stderr)
         );
 
-        let manifest_path = gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
+        let manifest_path =
+            gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
                 .expect("manifest not found");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
         assert!(manifest.contains("repo1"));
@@ -848,7 +852,8 @@ mod mixed_platform_tests {
             String::from_utf8_lossy(&output.stderr)
         );
 
-        let manifest_path = gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
+        let manifest_path =
+            gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
                 .expect("manifest not found");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
 

@@ -195,16 +195,16 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
     }
 
     // Verify a supported manifest filename exists in the space repo.
-    let manifest_path = if let Some(path) = manifest_paths::resolve_manifest_file_in_dir(&manifests_dir)
-    {
-        path
-    } else {
-        let _ = std::fs::remove_dir_all(&target_dir);
-        anyhow::bail!(
-            "No workspace manifest found in repository. \
+    let manifest_path =
+        if let Some(path) = manifest_paths::resolve_manifest_file_in_dir(&manifests_dir) {
+            path
+        } else {
+            let _ = std::fs::remove_dir_all(&target_dir);
+            anyhow::bail!(
+                "No workspace manifest found in repository. \
              Expected gripspace.yml (preferred) or manifest.yaml/manifest.yml at repo root."
-        );
-    };
+            );
+        };
 
     // Create state file
     let state_path = gitgrip_dir.join("state.json");
@@ -217,10 +217,7 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
     if let Some(ref gripspaces) = manifest.gripspaces {
         if !gripspaces.is_empty() {
             let spaces_dir = manifest_paths::spaces_dir(&target_dir);
-            let spinner = Output::spinner(&format!(
-                "Cloning {} gripspace(s)...",
-                gripspaces.len()
-            ));
+            let spinner = Output::spinner(&format!("Cloning {} gripspace(s)...", gripspaces.len()));
 
             for gs_config in gripspaces {
                 if let Err(e) = ensure_gripspace(&spaces_dir, gs_config) {

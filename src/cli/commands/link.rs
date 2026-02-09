@@ -107,11 +107,7 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
         if let Some(ref copyfiles) = manifest_config.copyfile {
             for copyfile in copyfiles {
                 total_links += 1;
-                let source = match resolve_file_source(
-                    &copyfile.src,
-                    &manifests_dir,
-                    &spaces_dir,
-                ) {
+                let source = match resolve_file_source(&copyfile.src, &manifests_dir, &spaces_dir) {
                     Ok(p) => p,
                     Err(e) => {
                         broken_links += 1;
@@ -141,10 +137,7 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
                     "✗ (dest missing)"
                 };
 
-                println!(
-                    "  [copy] {} -> {} {}",
-                    label, copyfile.dest, status
-                );
+                println!("  [copy] {} -> {} {}", label, copyfile.dest, status);
             }
         }
 
@@ -152,11 +145,7 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
         if let Some(ref linkfiles) = manifest_config.linkfile {
             for linkfile in linkfiles {
                 total_links += 1;
-                let source = match resolve_file_source(
-                    &linkfile.src,
-                    &manifests_dir,
-                    &spaces_dir,
-                ) {
+                let source = match resolve_file_source(&linkfile.src, &manifests_dir, &spaces_dir) {
                     Ok(p) => p,
                     Err(e) => {
                         broken_links += 1;
@@ -189,10 +178,7 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
                     "✗ (not a symlink)"
                 };
 
-                println!(
-                    "  [link] {} -> {} {}",
-                    label, linkfile.dest, status
-                );
+                println!("  [link] {} -> {} {}", label, linkfile.dest, status);
             }
         }
 
@@ -387,18 +373,15 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
             // Apply manifest copyfiles
             if let Some(ref copyfiles) = manifest_config.copyfile {
                 for copyfile in copyfiles {
-                    let source = match resolve_file_source(
-                        &copyfile.src,
-                        &manifests_dir,
-                        &spaces_dir,
-                    ) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            Output::warning(&format!("Invalid source path: {}", e));
-                            errors += 1;
-                            continue;
-                        }
-                    };
+                    let source =
+                        match resolve_file_source(&copyfile.src, &manifests_dir, &spaces_dir) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                Output::warning(&format!("Invalid source path: {}", e));
+                                errors += 1;
+                                continue;
+                            }
+                        };
                     let dest = workspace_root.join(&copyfile.dest);
 
                     if !source.exists() {
@@ -420,10 +403,7 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
 
                     match std::fs::copy(&source, &dest) {
                         Ok(_) => {
-                            Output::success(&format!(
-                                "[copy] {} -> {}",
-                                label, copyfile.dest
-                            ));
+                            Output::success(&format!("[copy] {} -> {}", label, copyfile.dest));
                             applied += 1;
                         }
                         Err(e) => {
@@ -437,18 +417,15 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
             // Apply manifest linkfiles
             if let Some(ref linkfiles) = manifest_config.linkfile {
                 for linkfile in linkfiles {
-                    let source = match resolve_file_source(
-                        &linkfile.src,
-                        &manifests_dir,
-                        &spaces_dir,
-                    ) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            Output::warning(&format!("Invalid source path: {}", e));
-                            errors += 1;
-                            continue;
-                        }
-                    };
+                    let source =
+                        match resolve_file_source(&linkfile.src, &manifests_dir, &spaces_dir) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                Output::warning(&format!("Invalid source path: {}", e));
+                                errors += 1;
+                                continue;
+                            }
+                        };
                     let dest = workspace_root.join(&linkfile.dest);
 
                     if !source.exists() {
@@ -477,10 +454,7 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                     {
                         match std::os::unix::fs::symlink(&source, &dest) {
                             Ok(_) => {
-                                Output::success(&format!(
-                                    "[link] {} -> {}",
-                                    label, linkfile.dest
-                                ));
+                                Output::success(&format!("[link] {} -> {}", label, linkfile.dest));
                                 applied += 1;
                             }
                             Err(e) => {
@@ -528,7 +502,12 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
             // Apply composefiles
             if let Some(ref composefiles) = manifest_config.composefile {
                 if !composefiles.is_empty() {
-                    match process_composefiles(workspace_root, &manifests_dir, &spaces_dir, composefiles) {
+                    match process_composefiles(
+                        workspace_root,
+                        &manifests_dir,
+                        &spaces_dir,
+                        composefiles,
+                    ) {
                         Ok(()) => {
                             for compose in composefiles {
                                 Output::success(&format!("[compose] -> {}", compose.dest));

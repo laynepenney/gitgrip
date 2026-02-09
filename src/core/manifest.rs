@@ -373,56 +373,8 @@ impl Manifest {
                 &manifest_config.copyfile,
                 &manifest_config.linkfile,
             )?;
-            // Validate composefiles
             if let Some(ref composefiles) = manifest_config.composefile {
-                for cf in composefiles {
-                    if cf.dest.is_empty() {
-                        return Err(ManifestError::ValidationError(
-                            "Composefile has empty dest".to_string(),
-                        ));
-                    }
-                    if path_escapes_boundary(&cf.dest) {
-                        return Err(ManifestError::PathTraversal(format!(
-                            "Composefile dest escapes boundary: {}",
-                            cf.dest
-                        )));
-                    }
-                    if cf.parts.is_empty() {
-                        return Err(ManifestError::ValidationError(format!(
-                            "Composefile '{}' has no parts",
-                            cf.dest
-                        )));
-                    }
-                    for part in &cf.parts {
-                        if part.src.is_empty() {
-                            return Err(ManifestError::ValidationError(format!(
-                                "Composefile '{}' has a part with empty src",
-                                cf.dest
-                            )));
-                        }
-                        if path_escapes_boundary(&part.src) {
-                            return Err(ManifestError::PathTraversal(format!(
-                                "Composefile '{}' part src escapes boundary: {}",
-                                cf.dest, part.src
-                            )));
-                        }
-                        // Validate gripspace name if present
-                        if let Some(ref gs_name) = part.gripspace {
-                            if gs_name.is_empty() {
-                                return Err(ManifestError::ValidationError(format!(
-                                    "Composefile '{}' has a part with empty gripspace name",
-                                    cf.dest
-                                )));
-                            }
-                            if gs_name.contains("..") || gs_name.contains('/') || gs_name.contains('\\') {
-                                return Err(ManifestError::PathTraversal(format!(
-                                    "Composefile '{}' gripspace name contains invalid characters: {}",
-                                    cf.dest, gs_name
-                                )));
-                            }
-                        }
-                    }
-                }
+                self.validate_composefiles(composefiles)?;
             }
         }
 
@@ -461,33 +413,7 @@ impl Manifest {
                 &manifest_config.linkfile,
             )?;
             if let Some(ref composefiles) = manifest_config.composefile {
-                for cf in composefiles {
-                    if cf.dest.is_empty() {
-                        return Err(ManifestError::ValidationError(
-                            "Composefile has empty dest".to_string(),
-                        ));
-                    }
-                    if path_escapes_boundary(&cf.dest) {
-                        return Err(ManifestError::PathTraversal(format!(
-                            "Composefile dest escapes boundary: {}",
-                            cf.dest
-                        )));
-                    }
-                    for part in &cf.parts {
-                        if part.src.is_empty() {
-                            return Err(ManifestError::ValidationError(format!(
-                                "Composefile '{}' has a part with empty src",
-                                cf.dest
-                            )));
-                        }
-                        if path_escapes_boundary(&part.src) {
-                            return Err(ManifestError::PathTraversal(format!(
-                                "Composefile '{}' part src escapes boundary: {}",
-                                cf.dest, part.src
-                            )));
-                        }
-                    }
-                }
+                self.validate_composefiles(composefiles)?;
             }
         }
 
@@ -639,6 +565,67 @@ impl Manifest {
 
         Ok(())
     }
+
+    fn validate_composefiles(
+        &self,
+        composefiles: &[ComposeFileConfig],
+    ) -> Result<(), ManifestError> {
+        for cf in composefiles {
+            if cf.dest.is_empty() {
+                return Err(ManifestError::ValidationError(
+                    "Composefile has empty dest".to_string(),
+                ));
+            }
+            if path_escapes_boundary(&cf.dest) {
+                return Err(ManifestError::PathTraversal(format!(
+                    "Composefile dest escapes boundary: {}",
+                    cf.dest
+                )));
+            }
+            if cf.parts.is_empty() {
+                return Err(ManifestError::ValidationError(format!(
+                    "Composefile '{}' has no parts",
+                    cf.dest
+                )));
+            }
+            for part in &cf.parts {
+                if part.src.is_empty() {
+                    return Err(ManifestError::ValidationError(format!(
+                        "Composefile '{}' has a part with empty src",
+                        cf.dest
+                    )));
+                }
+                if path_escapes_boundary(&part.src) {
+                    return Err(ManifestError::PathTraversal(format!(
+                        "Composefile '{}' part src escapes boundary: {}",
+                        cf.dest, part.src
+                    )));
+                }
+                if let Some(ref gs_name) = part.gripspace {
+                    if gs_name.is_empty() {
+                        return Err(ManifestError::ValidationError(format!(
+                            "Composefile '{}' has a part with empty gripspace name",
+                            cf.dest
+                        )));
+                    }
+                    if gs_name.contains("..") || gs_name.contains('/') || gs_name.contains('\\') {
+                        return Err(ManifestError::PathTraversal(format!(
+                            "Composefile '{}' gripspace name contains invalid characters: {}",
+                            cf.dest, gs_name
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn is_windows_absolute(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+        || path.starts_with("\\\\")
 }
 
 /// Check if a path escapes the workspace boundary
@@ -646,11 +633,13 @@ fn path_escapes_boundary(path: &str) -> bool {
     // Normalize path separators
     let normalized = path.replace('\\', "/");
 
-    // Reject: paths starting with "..", "/", containing "/../", or ending with "/.."
+    // Reject: paths starting with "..", "/", containing "/../", ending with "/..",
+    // or Windows absolute/UNC paths.
     if normalized.starts_with("..")
         || normalized.starts_with('/')
         || normalized.contains("/../")
         || normalized.ends_with("/..")
+        || is_windows_absolute(path)
     {
         return true;
     }
@@ -771,6 +760,10 @@ workspace:
         assert!(path_escapes_boundary("foo/../../../etc"));
         assert!(path_escapes_boundary("foo/.."));
         assert!(path_escapes_boundary("foo/bar/.."));
+        assert!(path_escapes_boundary("C:\\Windows\\System32\\drivers\\etc"));
+        assert!(path_escapes_boundary("C:/Windows/System32/drivers/etc"));
+        assert!(path_escapes_boundary("C:relative\\path"));
+        assert!(path_escapes_boundary("\\\\server\\share\\folder"));
         assert!(!path_escapes_boundary("foo"));
         assert!(!path_escapes_boundary("foo/bar"));
         assert!(!path_escapes_boundary("./foo"));
@@ -1038,6 +1031,38 @@ repos:
 "#;
         let result = Manifest::parse(yaml);
         assert!(matches!(result, Err(ManifestError::ValidationError(_))));
+    }
+
+    #[test]
+    fn test_validate_as_gripspace_composefile_empty_parts_fails() {
+        let yaml = r#"
+manifest:
+  url: git@github.com:user/manifest.git
+  composefile:
+    - dest: output.md
+      parts: []
+repos: {}
+"#;
+        let manifest = Manifest::parse_raw(yaml).unwrap();
+        let result = manifest.validate_as_gripspace();
+        assert!(matches!(result, Err(ManifestError::ValidationError(_))));
+    }
+
+    #[test]
+    fn test_validate_as_gripspace_composefile_invalid_gripspace_name_fails() {
+        let yaml = r#"
+manifest:
+  url: git@github.com:user/manifest.git
+  composefile:
+    - dest: output.md
+      parts:
+        - gripspace: "../evil"
+          src: file.md
+repos: {}
+"#;
+        let manifest = Manifest::parse_raw(yaml).unwrap();
+        let result = manifest.validate_as_gripspace();
+        assert!(matches!(result, Err(ManifestError::PathTraversal(_))));
     }
 
     #[test]

@@ -343,8 +343,11 @@ mod tests {
     fn test_resolve_file_source_path_traversal_path() {
         let repo_path = Path::new("/workspace/repo");
         let gripspaces_dir = Path::new("/workspace/.gitgrip/spaces");
-        let result =
-            resolve_file_source("gripspace:valid:../../etc/passwd", repo_path, gripspaces_dir);
+        let result = resolve_file_source(
+            "gripspace:valid:../../etc/passwd",
+            repo_path,
+            gripspaces_dir,
+        );
         assert!(result.is_err());
     }
 

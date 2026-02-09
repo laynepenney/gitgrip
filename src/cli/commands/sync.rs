@@ -115,7 +115,12 @@ pub async fn run_sync(
                 let manifests_dir = manifest_paths::resolve_manifest_content_dir(workspace_root);
                 let spaces_dir = manifest_paths::spaces_dir(workspace_root);
 
-                match process_composefiles(workspace_root, &manifests_dir, &spaces_dir, composefiles) {
+                match process_composefiles(
+                    workspace_root,
+                    &manifests_dir,
+                    &spaces_dir,
+                    composefiles,
+                ) {
                     Ok(()) => {
                         if !quiet {
                             Output::success(&format!(
