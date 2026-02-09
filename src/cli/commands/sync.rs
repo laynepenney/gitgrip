@@ -201,7 +201,8 @@ fn sync_gripspaces(
 
     if let Err(e) = resolved.validate() {
         Output::warning(&format!(
-            "Resolved manifest validation failed after gripspace sync: {}",
+            "Resolved manifest validation failed after gripspace sync: {}. \
+Using the pre-sync manifest; check gripspace manifests/includes.",
             e
         ));
         return Ok(manifest.clone());

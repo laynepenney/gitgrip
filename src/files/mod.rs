@@ -44,7 +44,7 @@ fn validate_gripspace_name(name: &str) -> Result<(), String> {
 ///
 /// Each composefile concatenates parts in order. Parts can come from:
 /// - A gripspace: reads from `.gitgrip/gripspaces/<name>/<src>`
-/// - The local manifest: reads from `.gitgrip/manifests/<src>`
+/// - The local manifest content directory (resolved by `manifest_paths`)
 pub fn process_composefiles(
     workspace_root: &Path,
     manifests_dir: &Path,

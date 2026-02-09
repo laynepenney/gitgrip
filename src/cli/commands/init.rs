@@ -449,10 +449,12 @@ async fn run_init_from_dirs(
         println!();
         println!("Next steps:");
         println!("  1. Review the manifest: cat .gitgrip/spaces/main/gripspace.yml");
+        println!("     (legacy mirror at .gitgrip/manifests/manifest.yaml for compatibility)");
         println!("  2. Run 'gr status' to verify your workspace");
     } else {
         println!("Next steps:");
         println!("  1. Review the manifest: cat .gitgrip/spaces/main/gripspace.yml");
+        println!("     (legacy mirror at .gitgrip/manifests/manifest.yaml for compatibility)");
         println!("  2. Add a remote to the manifest repo:");
         println!("     cd .gitgrip/spaces/main && git remote add origin <your-manifest-url>");
         println!("  3. Run 'gr status' to verify your workspace");

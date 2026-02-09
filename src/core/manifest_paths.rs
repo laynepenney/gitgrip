@@ -92,7 +92,18 @@ pub fn resolve_manifest_content_dir(workspace_root: &Path) -> PathBuf {
         return legacy_dir;
     }
 
-    resolve_manifest_repo_dir(workspace_root).unwrap_or_else(|| main_space_dir(workspace_root))
+    main_space_dir(workspace_root)
+}
+
+fn same_file_path(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a_canon), Ok(b_canon)) => a_canon == b_canon,
+        _ => false,
+    }
 }
 
 pub fn sync_legacy_mirror_if_present(
@@ -103,7 +114,9 @@ pub fn sync_legacy_mirror_if_present(
     let legacy_primary = legacy_manifest_dir(workspace_root).join(LEGACY_FILE_NAMES[0]);
     let legacy_alt = legacy_manifest_dir(workspace_root).join(LEGACY_FILE_NAMES[1]);
 
-    if updated_manifest_path == legacy_primary || updated_manifest_path == legacy_alt {
+    if same_file_path(updated_manifest_path, &legacy_primary)
+        || same_file_path(updated_manifest_path, &legacy_alt)
+    {
         return Ok(());
     }
 
@@ -227,5 +240,21 @@ mod tests {
 
         sync_legacy_mirror_if_present(root, &updated, "content").unwrap();
         assert_eq!(std::fs::read_to_string(legacy).unwrap(), "content");
+    }
+
+    #[test]
+    fn sync_legacy_mirror_skips_same_file_when_path_lexically_differs() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let legacy_dir = legacy_manifest_dir(root);
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        let legacy = legacy_dir.join("manifest.yaml");
+        std::fs::write(&legacy, "original").unwrap();
+
+        let updated = legacy_dir.join(".").join("manifest.yaml");
+        sync_legacy_mirror_if_present(root, &updated, "new-content").unwrap();
+
+        // Should not rewrite when updated path points to the same file.
+        assert_eq!(std::fs::read_to_string(legacy).unwrap(), "original");
     }
 }
