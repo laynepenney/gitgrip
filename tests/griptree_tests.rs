@@ -95,7 +95,7 @@ fn test_main_manifests_dir_path() {
     let temp = TempDir::new().unwrap();
     let workspace_root = PathBuf::from(temp.path());
 
-    let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+    let manifests_dir = workspace_root.join(".gitgrip").join("spaces").join("main");
 
     // Create the directory structure
     fs::create_dir_all(&manifests_dir).unwrap();
@@ -109,7 +109,7 @@ fn test_griptree_manifest_path() {
     let temp = TempDir::new().unwrap();
     let griptree_path = PathBuf::from(temp.path());
 
-    let griptree_manifest_dir = griptree_path.join(".gitgrip").join("manifests");
+    let griptree_manifest_dir = griptree_path.join(".gitgrip").join("spaces").join("main");
 
     // Create the directory structure
     fs::create_dir_all(&griptree_manifest_dir).unwrap();

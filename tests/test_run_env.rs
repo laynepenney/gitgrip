@@ -7,11 +7,9 @@ use std::fs;
 
 /// Helper: append workspace config with env and/or scripts to the manifest.
 fn write_workspace_manifest(ws: &common::fixtures::WorkspaceFixture, workspace_yaml: &str) {
-    let manifest_path = ws
-        .workspace_root
-        .join(".gitgrip")
-        .join("manifests")
-        .join("manifest.yaml");
+    let manifest_path =
+        gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&ws.workspace_root)
+            .expect("workspace manifest path should resolve");
     let existing = fs::read_to_string(&manifest_path).unwrap();
     let full = format!("{}\nworkspace:\n{}", existing, workspace_yaml);
     fs::write(&manifest_path, full).unwrap();

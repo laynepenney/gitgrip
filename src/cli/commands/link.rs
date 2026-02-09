@@ -4,6 +4,7 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
+use crate::core::manifest_paths;
 use crate::core::repo::RepoInfo;
 use crate::git::path_exists;
 use std::path::PathBuf;
@@ -98,7 +99,7 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
 
     // Process manifest repo links
     if let Some(ref manifest_config) = manifest.manifest {
-        let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+        let manifests_dir = manifest_paths::resolve_manifest_content_dir(workspace_root);
 
         // Check manifest copyfiles
         if let Some(ref copyfiles) = manifest_config.copyfile {
@@ -303,7 +304,7 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
 
     // Apply manifest repo links
     if let Some(ref manifest_config) = manifest.manifest {
-        let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+        let manifests_dir = manifest_paths::resolve_manifest_content_dir(workspace_root);
 
         if manifests_dir.exists() {
             // Apply manifest copyfiles
@@ -617,7 +618,7 @@ mod tests {
         let workspace = temp.path().to_path_buf();
 
         // Create manifest directory and source file
-        let manifests_dir = workspace.join(".gitgrip").join("manifests");
+        let manifests_dir = workspace.join(".gitgrip").join("spaces").join("main");
         std::fs::create_dir_all(&manifests_dir).unwrap();
         std::fs::write(manifests_dir.join("CLAUDE.md"), "# Claude Guide").unwrap();
 
