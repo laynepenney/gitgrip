@@ -143,7 +143,12 @@ pub fn run_status(
                     Ok(dir_name) => dir_name,
                     Err(e) => {
                         let rev = "—".to_string();
-                        let status_str = format!("error: {}", e);
+                        // Extract the inner message from ManifestError::GripspaceError
+                        let msg = match &e {
+                            crate::core::manifest::ManifestError::GripspaceError(msg) => msg.clone(),
+                            other => other.to_string(),
+                        };
+                        let status_str = format!("error: {}", msg);
                         gs_table.add_row(vec![&Output::repo_name(&name), &rev, &status_str]);
                         continue;
                     }

@@ -76,6 +76,14 @@ pub fn resolve_space_name(url: &str, spaces_dir: &Path) -> Result<String, Manife
         return Ok(candidate);
     }
 
+    // Warn when an unrecognized directory occupies the expected name
+    if !candidate_path.join(".git").exists() {
+        eprintln!(
+            "Warning: '{}' exists but is not a git repository; using alternate name",
+            candidate_path.display()
+        );
+    }
+
     // Auto-increment to find a free name
     for i in 2..100 {
         let suffixed = format!("{}-{}", base, i);
@@ -125,17 +133,17 @@ fn is_same_remote(dir: &Path, url: &str) -> bool {
 fn normalize_url(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches('/').trim_end_matches(".git");
 
-    // SCP-like SSH URL: git@host:org/repo
+    // SCP-like SSH URL: git@host:org/repo  (or bare host:path)
     if !trimmed.contains("://") {
         if let Some((user_host, path)) = trimmed.split_once(':') {
-            if let Some(host) = user_host.rsplit('@').next() {
-                if !host.is_empty() && !path.is_empty() {
-                    return format!(
-                        "{}:{}",
-                        host.to_ascii_lowercase(),
-                        path.trim_start_matches('/')
-                    );
-                }
+            // Extract host from "user@host" or use the whole segment if no '@'
+            let host = user_host.rsplit('@').next().unwrap_or(user_host);
+            if !host.is_empty() && !path.is_empty() {
+                return format!(
+                    "{}:{}",
+                    host.to_ascii_lowercase(),
+                    path.trim_start_matches('/')
+                );
             }
         }
     }
@@ -1228,16 +1236,7 @@ repos:
 
         let existing = spaces.join("my-repo");
         std::fs::create_dir_all(&existing).unwrap();
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(&existing)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["remote", "add", "origin", "git@github.com:user/my-repo.git"])
-            .current_dir(&existing)
-            .output()
-            .unwrap();
+        init_git_with_origin(&existing, "git@github.com:user/my-repo.git");
 
         let name =
             resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
