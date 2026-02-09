@@ -17,14 +17,48 @@ pub fn process_composefiles(
     composefiles: &[ComposeFileConfig],
 ) -> anyhow::Result<()> {
     for compose in composefiles {
+        // Validate dest doesn't escape workspace
+        if compose.dest.contains("..") || compose.dest.starts_with('/') {
+            anyhow::bail!(
+                "Composefile dest escapes workspace boundary: {}",
+                compose.dest
+            );
+        }
+
         let separator = compose.separator.as_deref().unwrap_or("\n\n");
         let mut parts_content: Vec<String> = Vec::new();
 
         for part in &compose.parts {
             let source_path = if let Some(ref gs_name) = part.gripspace {
+                // Validate gripspace name doesn't contain traversal
+                if gs_name.contains("..")
+                    || gs_name.contains('/')
+                    || gs_name.contains('\\')
+                    || gs_name.is_empty()
+                {
+                    eprintln!(
+                        "Warning: composefile '{}' has invalid gripspace name: '{}'",
+                        compose.dest, gs_name
+                    );
+                    continue;
+                }
+                if part.src.contains("..") || part.src.starts_with('/') {
+                    eprintln!(
+                        "Warning: composefile '{}' has invalid part src: '{}'",
+                        compose.dest, part.src
+                    );
+                    continue;
+                }
                 // Source from gripspace
                 gripspaces_dir.join(gs_name).join(&part.src)
             } else {
+                if part.src.contains("..") || part.src.starts_with('/') {
+                    eprintln!(
+                        "Warning: composefile '{}' has invalid part src: '{}'",
+                        compose.dest, part.src
+                    );
+                    continue;
+                }
                 // Source from local manifest repo
                 manifests_dir.join(&part.src)
             };
@@ -69,20 +103,35 @@ pub fn process_composefiles(
 ///
 /// Gripspace-sourced files have src prefixed with `gripspace:<name>:<path>`.
 /// This function resolves those to their actual filesystem path.
+///
+/// Returns `Err` if the gripspace name or path contains path traversal components.
 pub fn resolve_file_source(
     src: &str,
     repo_path: &Path,
     gripspaces_dir: &Path,
-) -> std::path::PathBuf {
+) -> Result<std::path::PathBuf, String> {
     if let Some(rest) = src.strip_prefix("gripspace:") {
         // Format: gripspace:<name>:<path>
         if let Some(colon_pos) = rest.find(':') {
             let name = &rest[..colon_pos];
             let path = &rest[colon_pos + 1..];
-            return gripspaces_dir.join(name).join(path);
+
+            // Validate gripspace name and path don't contain traversal
+            if name.contains("..") || name.contains('/') || name.contains('\\') || name.is_empty()
+            {
+                return Err(format!("Invalid gripspace name: '{}'", name));
+            }
+            if path.contains("..") || path.starts_with('/') || path.starts_with('\\') {
+                return Err(format!(
+                    "Invalid gripspace path: '{}' (path traversal)",
+                    path
+                ));
+            }
+
+            return Ok(gripspaces_dir.join(name).join(path));
         }
     }
-    repo_path.join(src)
+    Ok(repo_path.join(src))
 }
 
 #[cfg(test)]
@@ -235,7 +284,7 @@ mod tests {
     fn test_resolve_file_source_local() {
         let repo_path = Path::new("/workspace/repo");
         let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
-        let result = resolve_file_source("README.md", repo_path, gripspaces_dir);
+        let result = resolve_file_source("README.md", repo_path, gripspaces_dir).unwrap();
         assert_eq!(result, Path::new("/workspace/repo/README.md"));
     }
 
@@ -243,10 +292,98 @@ mod tests {
     fn test_resolve_file_source_gripspace() {
         let repo_path = Path::new("/workspace/.gitgrip/manifests");
         let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
-        let result = resolve_file_source("gripspace:base:CLAUDE.md", repo_path, gripspaces_dir);
+        let result =
+            resolve_file_source("gripspace:base:CLAUDE.md", repo_path, gripspaces_dir).unwrap();
         assert_eq!(
             result,
             Path::new("/workspace/.gitgrip/gripspaces/base/CLAUDE.md")
         );
+    }
+
+    #[test]
+    fn test_resolve_file_source_path_traversal_name() {
+        let repo_path = Path::new("/workspace/repo");
+        let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
+        let result =
+            resolve_file_source("gripspace:../../../etc:passwd", repo_path, gripspaces_dir);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_file_source_path_traversal_path() {
+        let repo_path = Path::new("/workspace/repo");
+        let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
+        let result =
+            resolve_file_source("gripspace:valid:../../etc/passwd", repo_path, gripspaces_dir);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_file_source_empty_name() {
+        let repo_path = Path::new("/workspace/repo");
+        let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
+        let result = resolve_file_source("gripspace::file.md", repo_path, gripspaces_dir);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_composefiles_dest_path_traversal() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path();
+        let manifests_dir = workspace.join(".gitgrip").join("manifests");
+        let gripspaces_dir = workspace.join(".gitgrip").join("gripspaces");
+
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+        std::fs::create_dir_all(&gripspaces_dir).unwrap();
+        std::fs::write(manifests_dir.join("file.md"), "content").unwrap();
+
+        let composefiles = vec![ComposeFileConfig {
+            dest: "../escaped.md".to_string(),
+            parts: vec![ComposeFilePart {
+                gripspace: None,
+                src: "file.md".to_string(),
+            }],
+            separator: None,
+        }];
+
+        let result =
+            process_composefiles(workspace, &manifests_dir, &gripspaces_dir, &composefiles);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_composefiles_invalid_gripspace_name() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path();
+        let manifests_dir = workspace.join(".gitgrip").join("manifests");
+        let gripspaces_dir = workspace.join(".gitgrip").join("gripspaces");
+
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+        std::fs::create_dir_all(&gripspaces_dir).unwrap();
+        std::fs::write(manifests_dir.join("fallback.md"), "ok").unwrap();
+
+        // A composefile part with invalid gripspace name should be skipped
+        let composefiles = vec![ComposeFileConfig {
+            dest: "output.md".to_string(),
+            parts: vec![
+                ComposeFilePart {
+                    gripspace: Some("../evil".to_string()),
+                    src: "file.md".to_string(),
+                },
+                ComposeFilePart {
+                    gripspace: None,
+                    src: "fallback.md".to_string(),
+                },
+            ],
+            separator: None,
+        }];
+
+        let result =
+            process_composefiles(workspace, &manifests_dir, &gripspaces_dir, &composefiles);
+        assert!(result.is_ok());
+
+        // Only the valid part should be written
+        let content = std::fs::read_to_string(workspace.join("output.md")).unwrap();
+        assert_eq!(content, "ok");
     }
 }

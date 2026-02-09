@@ -202,6 +202,11 @@ fn sync_gripspaces(
         return Ok(manifest.clone());
     }
 
+    // Validate the merged manifest
+    if let Err(e) = resolved.validate() {
+        Output::warning(&format!("Merged manifest validation: {}", e));
+    }
+
     Ok(resolved)
 }
 

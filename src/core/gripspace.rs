@@ -37,6 +37,12 @@ pub fn ensure_gripspace(
     config: &GripspaceConfig,
 ) -> Result<PathBuf, ManifestError> {
     let name = gripspace_name(&config.url);
+    if name.is_empty() {
+        return Err(ManifestError::GripspaceError(format!(
+            "Could not extract gripspace name from URL: '{}'",
+            config.url
+        )));
+    }
     let gripspace_path = gripspaces_dir.join(&name);
 
     if gripspace_path.exists() {
@@ -110,18 +116,11 @@ pub fn update_gripspace(
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             // Non-fatal: gripspace may be on a detached HEAD or have diverged
-            // Try a reset to origin/HEAD instead
-            let _ = Command::new("git")
-                .args(["reset", "--hard", "origin/HEAD"])
-                .current_dir(gripspace_path)
-                .output();
-            // Only error if this is genuinely problematic
-            if stderr.contains("fatal") {
-                return Err(ManifestError::GripspaceError(format!(
-                    "Failed to update gripspace: {}",
-                    stderr.trim()
-                )));
-            }
+            // Warn but don't silently reset — that could discard local changes
+            return Err(ManifestError::GripspaceError(format!(
+                "Failed to pull gripspace (try specifying a rev): {}",
+                stderr.trim()
+            )));
         }
     }
 
@@ -306,15 +305,23 @@ fn resolve_gripspace_recursive(
         )));
     }
 
-    // Cycle detection
-    if !visited.insert(config.url.clone()) {
+    let name = gripspace_name(&config.url);
+
+    // Validate gripspace name is non-empty
+    if name.is_empty() {
         return Err(ManifestError::GripspaceError(format!(
-            "Circular gripspace include detected: '{}'",
+            "Could not extract gripspace name from URL: '{}'",
             config.url
         )));
     }
 
-    let name = gripspace_name(&config.url);
+    // Cycle detection using normalized name (different URLs can map to same name)
+    if !visited.insert(name.clone()) {
+        return Err(ManifestError::GripspaceError(format!(
+            "Circular gripspace include detected: '{}' (from URL: '{}')",
+            name, config.url
+        )));
+    }
     let gripspace_path = gripspaces_dir.join(&name);
 
     // Load the gripspace's manifest
@@ -335,9 +342,12 @@ fn resolve_gripspace_recursive(
         },
     )?)?;
 
-    // Recursively resolve nested gripspaces first
+    // Recursively resolve nested gripspaces first — ensure they are cloned
     if let Some(ref nested_gripspaces) = gs_manifest.gripspaces {
         for nested_config in nested_gripspaces {
+            // Clone the nested gripspace if it doesn't exist yet
+            ensure_gripspace(gripspaces_dir, nested_config)?;
+
             resolve_gripspace_recursive(
                 nested_config,
                 gripspaces_dir,
@@ -644,6 +654,121 @@ repos:
         let repo = manifest.repos.get("my-repo").unwrap();
         assert_eq!(repo.url, "https://github.com/user/local-version.git");
         assert_eq!(repo.path, "./my-repo-local");
+    }
+
+    #[test]
+    fn test_gripspace_name_empty_input() {
+        // Edge case: empty or just .git should produce empty
+        assert_eq!(gripspace_name(""), "");
+        assert_eq!(gripspace_name(".git"), "");
+    }
+
+    #[test]
+    fn test_ensure_gripspace_empty_name_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = GripspaceConfig {
+            url: ".git".to_string(),
+            rev: None,
+        };
+        let result = ensure_gripspace(temp.path(), &config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Could not extract"));
+    }
+
+    #[test]
+    fn test_cycle_detection_normalized_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let gripspaces_dir = temp.path();
+
+        // Create a gripspace that references itself (different URL, same name)
+        let gs_dir = gripspaces_dir.join("self-ref");
+        std::fs::create_dir_all(&gs_dir).unwrap();
+        std::fs::write(
+            gs_dir.join("manifest.yaml"),
+            r#"
+version: 1
+gripspaces:
+  - url: https://github.com/user/self-ref
+repos:
+  r:
+    url: https://example.com/r.git
+    path: ./r
+"#,
+        )
+        .unwrap();
+
+        let mut manifest = Manifest {
+            version: 1,
+            gripspaces: Some(vec![GripspaceConfig {
+                url: "https://github.com/user/self-ref.git".to_string(),
+                rev: None,
+            }]),
+            manifest: None,
+            repos: HashMap::new(),
+            settings: Default::default(),
+            workspace: None,
+        };
+
+        let result = resolve_all_gripspaces(&mut manifest, gripspaces_dir);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Circular gripspace"));
+    }
+
+    #[test]
+    fn test_max_depth_exceeded() {
+        let temp = tempfile::tempdir().unwrap();
+        let gripspaces_dir = temp.path();
+
+        // Create a chain of gripspaces that exceeds max depth
+        // gs-0 -> gs-1 -> gs-2 -> gs-3 -> gs-4 -> gs-5 (exceeds MAX_GRIPSPACE_DEPTH=5)
+        for i in 0..=5 {
+            let gs_dir = gripspaces_dir.join(format!("gs-{}", i));
+            std::fs::create_dir_all(&gs_dir).unwrap();
+            let next_gs = if i < 5 {
+                format!(
+                    r#"
+gripspaces:
+  - url: https://github.com/user/gs-{}.git
+"#,
+                    i + 1
+                )
+            } else {
+                String::new()
+            };
+            std::fs::write(
+                gs_dir.join("manifest.yaml"),
+                format!(
+                    r#"
+version: 1
+{}
+repos:
+  r{}:
+    url: https://example.com/r{}.git
+    path: ./r{}
+"#,
+                    next_gs, i, i, i
+                ),
+            )
+            .unwrap();
+        }
+
+        let mut manifest = Manifest {
+            version: 1,
+            gripspaces: Some(vec![GripspaceConfig {
+                url: "https://github.com/user/gs-0.git".to_string(),
+                rev: None,
+            }]),
+            manifest: None,
+            repos: HashMap::new(),
+            settings: Default::default(),
+            workspace: None,
+        };
+
+        let result = resolve_all_gripspaces(&mut manifest, gripspaces_dir);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Maximum gripspace include depth"));
     }
 
     #[test]

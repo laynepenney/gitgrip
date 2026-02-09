@@ -406,6 +406,21 @@ impl Manifest {
                                 cf.dest, part.src
                             )));
                         }
+                        // Validate gripspace name if present
+                        if let Some(ref gs_name) = part.gripspace {
+                            if gs_name.is_empty() {
+                                return Err(ManifestError::ValidationError(format!(
+                                    "Composefile '{}' has a part with empty gripspace name",
+                                    cf.dest
+                                )));
+                            }
+                            if gs_name.contains("..") || gs_name.contains('/') || gs_name.contains('\\') {
+                                return Err(ManifestError::PathTraversal(format!(
+                                    "Composefile '{}' gripspace name contains invalid characters: {}",
+                                    cf.dest, gs_name
+                                )));
+                            }
+                        }
                     }
                 }
             }
@@ -914,6 +929,44 @@ repos:
 "#;
         let result = Manifest::parse(yaml);
         assert!(matches!(result, Err(ManifestError::PathTraversal(_))));
+    }
+
+    #[test]
+    fn test_composefile_gripspace_name_traversal_fails() {
+        let yaml = r#"
+manifest:
+  url: git@github.com:user/manifest.git
+  composefile:
+    - dest: output.md
+      parts:
+        - gripspace: "../evil"
+          src: file.md
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+"#;
+        let result = Manifest::parse(yaml);
+        assert!(matches!(result, Err(ManifestError::PathTraversal(_))));
+    }
+
+    #[test]
+    fn test_composefile_empty_gripspace_name_fails() {
+        let yaml = r#"
+manifest:
+  url: git@github.com:user/manifest.git
+  composefile:
+    - dest: output.md
+      parts:
+        - gripspace: ""
+          src: file.md
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+"#;
+        let result = Manifest::parse(yaml);
+        assert!(matches!(result, Err(ManifestError::ValidationError(_))));
     }
 
     #[test]

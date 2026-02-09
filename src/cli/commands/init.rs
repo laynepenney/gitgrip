@@ -219,10 +219,12 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
 
             for gs_config in gripspaces {
                 if let Err(e) = ensure_gripspace(&gripspaces_dir, gs_config) {
-                    spinner.finish_with_message(format!("Failed to clone gripspace: {}", e));
-                    Output::warning(&format!("Gripspace clone failed: {}", e));
-                    // Continue without gripspaces
-                    break;
+                    Output::warning(&format!(
+                        "Gripspace '{}' clone failed: {}",
+                        gs_config.url, e
+                    ));
+                    // Continue with remaining gripspaces
+                    continue;
                 }
             }
 
