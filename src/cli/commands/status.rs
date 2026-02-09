@@ -138,8 +138,16 @@ pub fn run_status(
 
             for gs in gripspaces {
                 let name = gripspace_name(&gs.url);
-                let dir_name = crate::core::gripspace::resolve_space_name(&gs.url, &spaces_dir)
-                    .unwrap_or_else(|_| name.clone());
+                let dir_name = match crate::core::gripspace::resolve_space_name(&gs.url, &spaces_dir)
+                {
+                    Ok(dir_name) => dir_name,
+                    Err(e) => {
+                        let rev = "—".to_string();
+                        let status_str = format!("error: {}", e);
+                        gs_table.add_row(vec![&Output::repo_name(&name), &rev, &status_str]);
+                        continue;
+                    }
+                };
                 let gs_path = spaces_dir.join(&dir_name);
 
                 let (rev, status_str) = if gs_path.exists() {
