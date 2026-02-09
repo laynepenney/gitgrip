@@ -4,6 +4,7 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
+use crate::core::manifest_paths;
 use crate::core::repo::RepoInfo;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -229,31 +230,16 @@ pub fn run_group_create(_workspace_root: &PathBuf, name: &str) -> anyhow::Result
     Ok(())
 }
 
-/// Find the manifest.yaml path
+/// Find the workspace manifest path.
 fn find_manifest_path(workspace_root: &PathBuf) -> anyhow::Result<PathBuf> {
-    // Check .gitgrip/manifests/manifest.yaml first
-    let gitgrip_path = workspace_root
-        .join(".gitgrip")
-        .join("manifests")
-        .join("manifest.yaml");
-
-    if gitgrip_path.exists() {
-        return Ok(gitgrip_path);
+    if let Some(path) = manifest_paths::resolve_workspace_manifest_path(workspace_root) {
+        return Ok(path);
     }
-
-    // Check .repo/manifests/manifest.yaml
-    let repo_path = workspace_root
-        .join(".repo")
-        .join("manifests")
-        .join("manifest.yaml");
-
-    if repo_path.exists() {
-        return Ok(repo_path);
+    if let Some(path) = manifest_paths::resolve_repo_manifest_path(workspace_root) {
+        return Ok(path);
     }
 
     anyhow::bail!(
-        "No manifest.yaml found. Expected at:\n  {}\n  {}",
-        gitgrip_path.display(),
-        repo_path.display()
+        "No workspace manifest found in .gitgrip/spaces/main, .gitgrip/manifests, or .repo/manifests"
     )
 }

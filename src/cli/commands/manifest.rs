@@ -33,7 +33,7 @@ pub fn run_manifest_import(path: &str, output_path: Option<&str>) -> anyhow::Res
     let yaml = serde_yaml::to_string(&result.manifest)?;
 
     // Write output
-    let dest = output_path.unwrap_or("manifest.yaml");
+    let dest = output_path.unwrap_or("gripspace.yml");
     std::fs::write(dest, &yaml)?;
 
     println!();
@@ -63,11 +63,12 @@ pub fn run_manifest_sync(workspace_root: &std::path::PathBuf) -> anyhow::Result<
         result.total_projects, result.gerrit_skipped, result.non_gerrit_imported
     ));
 
-    // Write to .repo/manifests/manifest.yaml
+    // Write to .repo/manifests/gripspace.yml (with legacy mirror)
     let yaml = serde_yaml::to_string(&result.manifest)?;
     let manifests_dir = repo_dir.join("manifests");
-    let yaml_path = manifests_dir.join("manifest.yaml");
+    let yaml_path = manifests_dir.join("gripspace.yml");
     std::fs::write(&yaml_path, &yaml)?;
+    std::fs::write(manifests_dir.join("manifest.yaml"), &yaml)?;
 
     println!();
     Output::success(&format!("Updated: {}", yaml_path.display()));
@@ -107,8 +108,8 @@ fn print_schema_markdown() {
 
 ## Overview
 
-The manifest file (`manifest.yaml`) defines a multi-repository workspace configuration.
-It is typically located at `.gitgrip/manifests/manifest.yaml`.
+The workspace file (`gripspace.yml`) defines a multi-repository workspace configuration.
+It is typically located at `.gitgrip/spaces/main/gripspace.yml`.
 
 ## Top-Level Fields
 

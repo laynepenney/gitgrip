@@ -99,11 +99,9 @@ fn test_tree_add_writes_repo_upstreams() {
     git_helpers::push_branch(&ws.repo_path("lib"), "origin", "dev");
     git_helpers::checkout(&ws.repo_path("lib"), "main");
 
-    let manifest_path = ws
-        .workspace_root
-        .join(".gitgrip")
-        .join("manifests")
-        .join("manifest.yaml");
+    let manifest_path =
+        gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&ws.workspace_root)
+            .expect("workspace manifest path should resolve");
     set_default_branch(&manifest_path, "lib", "dev");
     let manifest = ws.load_manifest();
 
@@ -160,11 +158,13 @@ fn test_tree_add_with_manifest_repo() {
         .join("feat-with-manifest");
 
     // Manifest worktree should be created in griptree
-    let tree_manifest_dir = tree_path.join(".gitgrip").join("manifests");
+    let tree_manifest_dir = tree_path.join(".gitgrip").join("spaces").join("main");
     assertions::assert_file_exists(&tree_manifest_dir);
 
-    // manifest.yaml should exist in griptree's manifest dir
-    assertions::assert_file_exists(&tree_manifest_dir.join("manifest.yaml"));
+    // A supported manifest filename should exist in the griptree manifest dir.
+    assert!(
+        gitgrip::core::manifest_paths::resolve_manifest_file_in_dir(&tree_manifest_dir).is_some()
+    );
 
     // Pointer should reference the manifest worktree
     let pointer_path = tree_path.join(".griptree");
