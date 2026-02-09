@@ -10,7 +10,7 @@ use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::git::branch::{
     branch_exists, checkout_branch, delete_local_branch, remote_branch_exists,
 };
-use crate::git::remote::{delete_remote_branch, get_upstream_branch};
+use crate::git::remote::{delete_remote_branch, get_upstream_branch, set_branch_upstream_ref};
 use crate::git::status::get_cached_status;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::util::log_cmd;
@@ -175,6 +175,17 @@ pub fn run_tree_add(
             Some(&repo.default_branch),
         ) {
             Ok(_) => {
+                let expected_upstream = format!("origin/{}", repo.default_branch);
+                let upstream_warning = match open_repo(&worktree_path) {
+                    Ok(repo_handle) => {
+                        match set_branch_upstream_ref(&repo_handle, branch, &expected_upstream) {
+                            Ok(()) => None,
+                            Err(e) => Some(format!("upstream not set ({})", e)),
+                        }
+                    }
+                    Err(e) => Some(format!("upstream not set ({})", e)),
+                };
+
                 // Record for rollback (use sanitized name matching create_worktree)
                 let worktree_name = branch.replace('/', "-");
                 ctx.record_worktree(repo.absolute_path.clone(), worktree_name.clone());
@@ -189,7 +200,7 @@ pub fn run_tree_add(
                     main_repo_path: Some(repo.absolute_path.to_string_lossy().to_string()),
                 });
 
-                let status_msg = if repo.reference {
+                let mut status_msg = if repo.reference {
                     if let Some(ref warning) = sync_warning {
                         format!("{}: created on {} ({})", repo.name, branch, warning)
                     } else {
@@ -201,6 +212,9 @@ pub fn run_tree_add(
                         repo.name, branch, repo.default_branch
                     )
                 };
+                if let Some(warning) = upstream_warning {
+                    status_msg.push_str(&format!(" ({})", warning));
+                }
                 spinner.finish_with_message(status_msg);
                 success_count += 1;
             }

@@ -113,6 +113,37 @@ async fn test_sync_uses_griptree_upstream_mapping() {
 }
 
 #[tokio::test]
+async fn test_sync_sets_tracking_upstream_for_griptree_base_branch() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/griptree");
+    assert_eq!(
+        git_helpers::branch_upstream(&ws.repo_path("app"), "feat/griptree"),
+        None
+    );
+
+    write_griptree_config(&ws.workspace_root, "feat/griptree", "app", "origin/main");
+    let manifest = ws.load_manifest();
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+        false,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
+
+    assert_eq!(
+        git_helpers::branch_upstream(&ws.repo_path("app"), "feat/griptree"),
+        Some("origin/main".to_string())
+    );
+}
+
+#[tokio::test]
 async fn test_sync_handles_up_to_date() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 

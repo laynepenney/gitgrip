@@ -122,6 +122,15 @@ fn test_tree_add_writes_repo_upstreams() {
 
     assert_eq!(config["repoUpstreams"]["app"], "origin/main");
     assert_eq!(config["repoUpstreams"]["lib"], "origin/dev");
+
+    assert_eq!(
+        git_helpers::branch_upstream(&tree_path.join("app"), "feat/upstream"),
+        Some("origin/main".to_string())
+    );
+    assert_eq!(
+        git_helpers::branch_upstream(&tree_path.join("lib"), "feat/upstream"),
+        Some("origin/dev".to_string())
+    );
 }
 
 #[test]
