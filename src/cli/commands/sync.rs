@@ -4,7 +4,7 @@ use crate::cli::output::Output;
 use crate::core::griptree::GriptreeConfig;
 use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
-use crate::git::branch::{checkout_branch_at_upstream, has_commits_ahead};
+use crate::git::branch::{checkout_branch_at_upstream, checkout_detached, has_commits_ahead};
 use crate::git::remote::{fetch_remote, pull_latest_from_upstream, reset_hard, safe_pull_latest};
 use crate::git::status::has_uncommitted_changes;
 use crate::git::{clone_repo, get_current_branch, open_repo, path_exists};
@@ -355,22 +355,47 @@ fn sync_reference_reset(
         };
     }
 
+    let mut used_detached_fallback = false;
     if let Err(e) = checkout_branch_at_upstream(git_repo, upstream_branch, &upstream) {
-        let msg = format!("error - {}", e);
-        if let Some(s) = spinner {
-            s.finish_with_message(format!("{}: {}", repo.name, msg));
+        let err_msg = e.to_string();
+        if is_worktree_branch_lock_error(&err_msg) {
+            if let Err(detach_err) = checkout_detached(git_repo, &upstream) {
+                let msg = format!(
+                    "error - {} (fallback detach failed: {})",
+                    err_msg, detach_err
+                );
+                if let Some(s) = spinner {
+                    s.finish_with_message(format!("{}: {}", repo.name, msg));
+                }
+                return SyncResult {
+                    name: repo.name.clone(),
+                    success: false,
+                    message: msg,
+                    was_cloned: false,
+                };
+            }
+            used_detached_fallback = true;
+        } else {
+            let msg = format!("error - {}", err_msg);
+            if let Some(s) = spinner {
+                s.finish_with_message(format!("{}: {}", repo.name, msg));
+            }
+            return SyncResult {
+                name: repo.name.clone(),
+                success: false,
+                message: msg,
+                was_cloned: false,
+            };
         }
-        return SyncResult {
-            name: repo.name.clone(),
-            success: false,
-            message: msg,
-            was_cloned: false,
-        };
     }
 
     match reset_hard(git_repo, &upstream) {
         Ok(()) => {
-            let msg = format!("reset ({})", upstream);
+            let msg = if used_detached_fallback {
+                format!("reset ({}, detached fallback)", upstream)
+            } else {
+                format!("reset ({})", upstream)
+            };
             if let Some(s) = spinner {
                 if !quiet {
                     s.finish_with_message(format!("{}: {}", repo.name, msg));
@@ -399,6 +424,12 @@ fn sync_reference_reset(
             }
         }
     }
+}
+
+fn is_worktree_branch_lock_error(message: &str) -> bool {
+    message.contains("checked out in another worktree")
+        || message.contains("already checked out in another worktree")
+        || message.contains("already used by worktree")
 }
 
 /// Sync a single repository

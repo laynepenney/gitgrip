@@ -141,6 +141,28 @@ pub fn checkout_branch_at_upstream(
     Ok(())
 }
 
+/// Checkout a target in detached HEAD mode.
+///
+/// Useful when the corresponding local branch is locked in another worktree.
+pub fn checkout_detached(repo: &Repository, target: &str) -> Result<(), GitError> {
+    let repo_path = super::get_workdir(repo);
+
+    let mut cmd = Command::new("git");
+    cmd.args(["checkout", "--detach", "-f", target])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::OperationFailed(stderr.to_string()));
+    }
+
+    Ok(())
+}
+
 /// Check if a local branch exists
 pub fn branch_exists(repo: &Repository, branch_name: &str) -> bool {
     let repo_path = super::get_workdir(repo);
