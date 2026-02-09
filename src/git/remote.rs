@@ -437,6 +437,31 @@ pub fn set_upstream_branch(repo: &Repository, remote: &str) -> Result<(), GitErr
     Ok(())
 }
 
+/// Set upstream tracking for a specific local branch.
+pub fn set_branch_upstream_ref(
+    repo: &Repository,
+    branch_name: &str,
+    upstream: &str,
+) -> Result<(), GitError> {
+    split_upstream_ref(upstream)?;
+
+    let repo_path = super::get_workdir(repo);
+    let mut cmd = Command::new("git");
+    cmd.args(["branch", "--set-upstream-to", upstream, branch_name])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::OperationFailed(stderr.to_string()));
+    }
+
+    Ok(())
+}
+
 /// Hard reset to a target
 pub fn reset_hard(repo: &Repository, target: &str) -> Result<(), GitError> {
     let repo_path = super::get_workdir(repo);

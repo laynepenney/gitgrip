@@ -88,6 +88,25 @@ pub fn current_branch(repo_path: &Path) -> String {
     git_output(repo_path, &["rev-parse", "--abbrev-ref", "HEAD"])
 }
 
+/// Get upstream tracking branch for a local branch.
+pub fn branch_upstream(repo_path: &Path, branch_name: &str) -> Option<String> {
+    let output = Command::new("git")
+        .current_dir(repo_path)
+        .args([
+            "rev-parse",
+            "--abbrev-ref",
+            &format!("{}@{{upstream}}", branch_name),
+        ])
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run git rev-parse for upstream: {}", e));
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// Check if recent log output contains a message.
 pub fn log_contains(repo_path: &Path, message: &str) -> bool {
     git_output(repo_path, &["log", "--oneline", "-n", "10"]).contains(message)

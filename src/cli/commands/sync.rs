@@ -5,7 +5,9 @@ use crate::core::griptree::GriptreeConfig;
 use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::git::branch::{checkout_branch_at_upstream, checkout_detached, has_commits_ahead};
-use crate::git::remote::{fetch_remote, pull_latest_from_upstream, reset_hard, safe_pull_latest};
+use crate::git::remote::{
+    fetch_remote, pull_latest_from_upstream, reset_hard, safe_pull_latest, set_branch_upstream_ref,
+};
 use crate::git::status::has_uncommitted_changes;
 use crate::git::{clone_repo, get_current_branch, open_repo, path_exists};
 use git2::Repository;
@@ -218,6 +220,7 @@ fn sync_griptree_upstream(
     };
 
     let remote = upstream.split('/').next().unwrap_or("origin");
+    let mut upstream_set_warning: Option<String> = None;
 
     if let Err(e) = fetch_remote(git_repo, remote) {
         let msg = format!("error - {}", e);
@@ -233,12 +236,21 @@ fn sync_griptree_upstream(
     }
 
     if let Some(current) = current_branch {
+        if let Err(e) = set_branch_upstream_ref(git_repo, current, &upstream) {
+            upstream_set_warning = Some(format!("upstream tracking not updated: {}", e));
+        }
+    }
+
+    if let Some(current) = current_branch {
         match has_commits_ahead(git_repo, &upstream) {
             Ok(true) => {
-                let msg = format!(
+                let mut msg = format!(
                     "skipped - branch '{}' has local commits not in '{}'",
                     current, upstream
                 );
+                if let Some(warning) = upstream_set_warning.as_ref() {
+                    msg.push_str(&format!(" ({})", warning));
+                }
                 if let Some(s) = spinner {
                     s.finish_with_message(format!("{}: {}", repo.name, msg));
                 }
@@ -267,7 +279,10 @@ fn sync_griptree_upstream(
 
     match pull_latest_from_upstream(git_repo, &upstream) {
         Ok(()) => {
-            let msg = format!("pulled ({})", upstream);
+            let mut msg = format!("pulled ({})", upstream);
+            if let Some(warning) = upstream_set_warning.as_ref() {
+                msg.push_str(&format!(" ({})", warning));
+            }
             if let Some(s) = spinner {
                 if !quiet {
                     s.finish_with_message(format!("{}: {}", repo.name, msg));
