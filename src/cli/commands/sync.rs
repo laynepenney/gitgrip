@@ -6,6 +6,7 @@ use crate::core::gripspace::{
 };
 use crate::core::griptree::GriptreeConfig;
 use crate::core::manifest::Manifest;
+use crate::core::manifest_paths;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::files::process_composefiles;
 use crate::git::branch::{checkout_branch_at_upstream, checkout_detached, has_commits_ahead};
@@ -111,10 +112,10 @@ pub async fn run_sync(
     if let Some(ref manifest_config) = manifest.manifest {
         if let Some(ref composefiles) = manifest_config.composefile {
             if !composefiles.is_empty() {
-                let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
-                let gripspaces_dir = workspace_root.join(".gitgrip").join("gripspaces");
+                let manifests_dir = manifest_paths::resolve_manifest_content_dir(workspace_root);
+                let spaces_dir = manifest_paths::spaces_dir(workspace_root);
 
-                match process_composefiles(workspace_root, &manifests_dir, &gripspaces_dir, composefiles) {
+                match process_composefiles(workspace_root, &manifests_dir, &spaces_dir, composefiles) {
                     Ok(()) => {
                         if !quiet {
                             Output::success(&format!(
@@ -145,7 +146,7 @@ fn sync_gripspaces(
         _ => return Ok(manifest.clone()),
     };
 
-    let gripspaces_dir = workspace_root.join(".gitgrip").join("gripspaces");
+    let spaces_dir = manifest_paths::spaces_dir(workspace_root);
 
     if !quiet {
         Output::header(&format!("Syncing {} gripspace(s)...", gripspaces.len()));
@@ -154,7 +155,19 @@ fn sync_gripspaces(
 
     for gs_config in gripspaces {
         let name = gripspace_name(&gs_config.url);
-        let gs_path = gripspaces_dir.join(&name);
+        // Use resolve_space_name to find the actual directory (handles reserved names)
+        let dir_name = match crate::core::gripspace::resolve_space_name(&gs_config.url, &spaces_dir)
+        {
+            Ok(dir_name) => dir_name,
+            Err(e) => {
+                Output::warning(&format!(
+                    "gripspace '{}': name resolution failed: {}",
+                    gs_config.url, e
+                ));
+                continue;
+            }
+        };
+        let gs_path = spaces_dir.join(&dir_name);
 
         if gs_path.exists() {
             match update_gripspace(&gs_path, gs_config) {
@@ -168,7 +181,7 @@ fn sync_gripspaces(
                 }
             }
         } else {
-            match ensure_gripspace(&gripspaces_dir, gs_config) {
+            match ensure_gripspace(&spaces_dir, gs_config) {
                 Ok(_) => {
                     if !quiet {
                         Output::success(&format!("gripspace '{}': cloned", name));
@@ -185,26 +198,26 @@ fn sync_gripspaces(
         println!();
     }
 
-    // Re-resolve the merged manifest
-    let manifest_path = workspace_root
-        .join(".gitgrip")
-        .join("manifests")
-        .join("manifest.yaml");
-
-    let mut resolved = if manifest_path.exists() {
-        Manifest::parse_raw(&std::fs::read_to_string(&manifest_path)?)?
+    // Re-resolve the merged manifest from whichever layout is present.
+    let manifest_path = manifest_paths::resolve_workspace_manifest_path(workspace_root);
+    let mut resolved = if let Some(path) = manifest_path {
+        Manifest::parse_raw(&std::fs::read_to_string(path)?)?
     } else {
         manifest.clone()
     };
 
-    if let Err(e) = resolve_all_gripspaces(&mut resolved, &gripspaces_dir) {
+    if let Err(e) = resolve_all_gripspaces(&mut resolved, &spaces_dir) {
         Output::warning(&format!("Gripspace resolution failed: {}", e));
         return Ok(manifest.clone());
     }
 
-    // Validate the merged manifest
     if let Err(e) = resolved.validate() {
-        Output::warning(&format!("Merged manifest validation: {}", e));
+        Output::warning(&format!(
+            "Resolved manifest validation failed after gripspace sync: {}. \
+Using the pre-sync manifest; check gripspace manifests/includes.",
+            e
+        ));
+        return Ok(manifest.clone());
     }
 
     Ok(resolved)

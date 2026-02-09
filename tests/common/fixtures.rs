@@ -44,11 +44,9 @@ impl WorkspaceFixture {
 
     /// Load the manifest from this workspace.
     pub fn load_manifest(&self) -> gitgrip::core::manifest::Manifest {
-        let manifest_path = self
-            .workspace_root
-            .join(".gitgrip")
-            .join("manifests")
-            .join("manifest.yaml");
+        let manifest_path =
+            gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&self.workspace_root)
+                .expect("workspace manifest path should resolve");
         let content = fs::read_to_string(&manifest_path).unwrap_or_else(|e| {
             panic!(
                 "failed to read manifest at {}: {}",
@@ -196,17 +194,25 @@ impl WorkspaceBuilder {
         // Generate manifest YAML
         let manifest_yaml = generate_manifest(&self.repos, &remotes_dir);
 
-        // Write manifest
-        let manifest_dir = workspace_root.join(".gitgrip").join("manifests");
+        // Write canonical manifest layout.
+        let manifest_dir = workspace_root.join(".gitgrip").join("spaces").join("main");
         fs::create_dir_all(&manifest_dir).unwrap();
-        fs::write(manifest_dir.join("manifest.yaml"), &manifest_yaml).unwrap();
+        fs::write(manifest_dir.join("gripspace.yml"), &manifest_yaml).unwrap();
+
+        // Keep legacy mirror for tests that still reference .gitgrip/manifests.
+        let legacy_manifest_dir = workspace_root.join(".gitgrip").join("manifests");
+        fs::create_dir_all(&legacy_manifest_dir).unwrap();
+        fs::write(legacy_manifest_dir.join("manifest.yaml"), &manifest_yaml).unwrap();
+
+        // Create local overlay directory for future local space tests.
+        fs::create_dir_all(workspace_root.join(".gitgrip").join("spaces").join("local")).unwrap();
 
         // Optionally init the manifests dir as a git repo
         if self.with_manifest_repo {
             git_helpers::init_repo(&manifest_dir);
             git_helpers::commit_file(
                 &manifest_dir,
-                "manifest.yaml",
+                "gripspace.yml",
                 &manifest_yaml,
                 "Initial manifest",
             );

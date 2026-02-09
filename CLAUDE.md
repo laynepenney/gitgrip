@@ -248,7 +248,7 @@ src/
 ## Key Concepts
 
 ### Manifest
-Workspace configuration in `.gitgrip/manifests/manifest.yaml`:
+Workspace configuration in `.gitgrip/spaces/main/gripspace.yml`:
 - `repos`: Repository definitions with URL, path, default_branch
 - `manifest`: Self-tracking for the manifest repo itself
 - `workspace`: Scripts, hooks, and environment variables
@@ -324,7 +324,7 @@ gr tree add feat/auth
 # ../feat-auth/
 #   ├── codi/           # worktree of main/codi on feat/auth
 #   ├── codi-private/   # worktree of main/codi-private on feat/auth
-#   └── .gitgrip/manifests/  # worktree of manifest on feat/auth
+#   └── .gitgrip/spaces/main/  # worktree of manifest on feat/auth
 
 # List all griptrees
 gr tree list

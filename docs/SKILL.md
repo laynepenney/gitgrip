@@ -198,7 +198,7 @@ gr pr create -t "title"
 
 ## Manifest Location
 
-The workspace manifest is at `.gitgrip/manifests/manifest.yaml`. Use `gr manifest schema` to view the schema.
+The canonical workspace manifest is `.gitgrip/spaces/main/gripspace.yml` (legacy `.gitgrip/manifests/manifest.yaml` is still supported). Use `gr manifest schema` to view the schema.
 
 ## Multi-Platform Support
 

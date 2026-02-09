@@ -4,6 +4,7 @@ mod common;
 
 use common::assertions::assert_on_branch;
 use common::fixtures::WorkspaceBuilder;
+use std::fs;
 
 #[test]
 fn test_group_list_shows_groups() {
@@ -128,4 +129,32 @@ repos:
 
     let docs = manifest.repos.get("docs").unwrap();
     assert!(docs.groups.is_empty());
+}
+
+#[test]
+fn test_group_add_updates_legacy_manifest_mirror() {
+    let ws = WorkspaceBuilder::new().add_repo("frontend").build();
+    let repos = vec!["frontend".to_string()];
+
+    let result = gitgrip::cli::commands::group::run_group_add(&ws.workspace_root, "core", &repos);
+    assert!(
+        result.is_ok(),
+        "group add should succeed: {:?}",
+        result.err()
+    );
+
+    let legacy_manifest = ws
+        .workspace_root
+        .join(".gitgrip")
+        .join("manifests")
+        .join("manifest.yaml");
+    let legacy_content = fs::read_to_string(legacy_manifest).unwrap();
+    assert!(
+        legacy_content.contains("groups"),
+        "legacy manifest mirror should be updated with group changes"
+    );
+    assert!(
+        legacy_content.contains("core"),
+        "legacy manifest mirror should contain added group"
+    );
 }

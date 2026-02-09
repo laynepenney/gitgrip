@@ -7,6 +7,7 @@
 use crate::core::manifest::{
     GripspaceConfig, HookCommand, Manifest, ManifestError, WorkspaceConfig, WorkspaceHooks,
 };
+use crate::core::manifest_paths;
 use crate::git::clone_repo;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -33,22 +34,144 @@ pub fn gripspace_name(url: &str) -> String {
     last.trim_end_matches(".git").to_string()
 }
 
+fn gripspace_identity(config: &GripspaceConfig) -> String {
+    let url = normalize_url(&config.url);
+    match &config.rev {
+        Some(rev) if !rev.is_empty() => format!("{}#{}", url, rev),
+        _ => url,
+    }
+}
+
+/// Resolve the directory name for a gripspace within `.gitgrip/spaces/`.
+///
+/// Handles reserved name conflicts (`main`, `local`) and duplicate names by
+/// auto-suffixing with `-1`, `-2`, etc. If the directory already exists and
+/// has the same git remote, it is reused.
+pub fn resolve_space_name(url: &str, spaces_dir: &Path) -> Result<String, ManifestError> {
+    let base = gripspace_name(url);
+    if base.is_empty() {
+        return Err(ManifestError::GripspaceError(format!(
+            "Could not extract gripspace name from URL: '{}'",
+            url
+        )));
+    }
+
+    // If the base name is reserved, start from suffix -1
+    let candidate = if manifest_paths::RESERVED_SPACE_NAMES.contains(&base.as_str()) {
+        format!("{}-1", base)
+    } else {
+        base.clone()
+    };
+
+    let candidate_path = spaces_dir.join(&candidate);
+    if !candidate_path.exists() {
+        return Ok(candidate);
+    }
+
+    // Directory exists — reuse if it's the same remote
+    if is_same_remote(&candidate_path, url) {
+        return Ok(candidate);
+    }
+
+    // Warn when an unrecognized directory occupies the expected name
+    if !candidate_path.join(".git").exists() {
+        eprintln!(
+            "Warning: '{}' exists but is not a git repository; using alternate name",
+            candidate_path.display()
+        );
+    }
+
+    // Auto-increment to find a free name
+    for i in 2..100 {
+        let suffixed = format!("{}-{}", base, i);
+        let path = spaces_dir.join(&suffixed);
+        if !path.exists() || is_same_remote(&path, url) {
+            return Ok(suffixed);
+        }
+    }
+
+    Err(ManifestError::GripspaceError(format!(
+        "Could not allocate a space name for '{}' (too many collisions)",
+        url
+    )))
+}
+
+/// Check whether an existing directory should be reused for the given URL.
+///
+/// Returns `true` if:
+/// - The directory is a git repository and its origin remote URL matches
+///   after normalization.
+fn is_same_remote(dir: &Path, url: &str) -> bool {
+    if !dir.join(".git").exists() {
+        return false;
+    }
+
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(dir)
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let existing = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            normalize_url(&existing) == normalize_url(url)
+        }
+        Ok(_) => false,
+        _ => false,
+    }
+}
+
+/// Normalize a git URL for comparison.
+///
+/// For known remote URL forms, this canonicalizes to `<host>:<path>`:
+/// - `https://host/org/repo.git`
+/// - `ssh://git@host/org/repo.git`
+/// - `git@host:org/repo.git`
+fn normalize_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/').trim_end_matches(".git");
+
+    // SCP-like SSH URL: git@host:org/repo  (or bare host:path)
+    if !trimmed.contains("://") {
+        if let Some((user_host, path)) = trimmed.split_once(':') {
+            // Extract host from "user@host" or use the whole segment if no '@'
+            let host = user_host.rsplit('@').next().unwrap_or(user_host);
+            if !host.is_empty() && !path.is_empty() {
+                return format!(
+                    "{}:{}",
+                    host.to_ascii_lowercase(),
+                    path.trim_start_matches('/')
+                );
+            }
+        }
+    }
+
+    // Scheme URL: https://host/org/repo or ssh://git@host/org/repo
+    if let Some((_, rest)) = trimmed.split_once("://") {
+        if let Some((host_user, path)) = rest.split_once('/') {
+            let host = host_user.rsplit('@').next().unwrap_or(host_user);
+            if !host.is_empty() && !path.is_empty() {
+                return format!(
+                    "{}:{}",
+                    host.to_ascii_lowercase(),
+                    path.trim_start_matches('/')
+                );
+            }
+        }
+    }
+
+    trimmed.to_string()
+}
+
 /// Ensure a gripspace is cloned locally. Returns the path to the gripspace directory.
 ///
 /// If the gripspace is already cloned, this is a no-op.
-/// The gripspace is cloned into `gripspaces_dir/<name>/`.
+/// The gripspace is cloned into `spaces_dir/<resolved_name>/`.
 pub fn ensure_gripspace(
-    gripspaces_dir: &Path,
+    spaces_dir: &Path,
     config: &GripspaceConfig,
 ) -> Result<PathBuf, ManifestError> {
-    let name = gripspace_name(&config.url);
-    if name.is_empty() {
-        return Err(ManifestError::GripspaceError(format!(
-            "Could not extract gripspace name from URL: '{}'",
-            config.url
-        )));
-    }
-    let gripspace_path = gripspaces_dir.join(&name);
+    let dir_name = resolve_space_name(&config.url, spaces_dir)?;
+    let gripspace_path = spaces_dir.join(&dir_name);
 
     if gripspace_path.exists() {
         // Already cloned, just checkout the right rev if specified
@@ -59,8 +182,8 @@ pub fn ensure_gripspace(
     }
 
     // Clone the gripspace
-    std::fs::create_dir_all(gripspaces_dir).map_err(|e| {
-        ManifestError::GripspaceError(format!("Failed to create gripspaces dir: {}", e))
+    std::fs::create_dir_all(spaces_dir).map_err(|e| {
+        ManifestError::GripspaceError(format!("Failed to create spaces dir: {}", e))
     })?;
 
     clone_repo(&config.url, &gripspace_path, None).map_err(|e| {
@@ -179,14 +302,15 @@ fn checkout_rev(path: &Path, rev: &str) -> Result<(), ManifestError> {
 /// Local manifest values always win on conflicts.
 pub fn resolve_all_gripspaces(
     manifest: &mut Manifest,
-    gripspaces_dir: &Path,
+    spaces_dir: &Path,
 ) -> Result<(), ManifestError> {
     let gripspaces = match manifest.gripspaces.take() {
         Some(gs) if !gs.is_empty() => gs,
         _ => return Ok(()),
     };
 
-    let mut visited = HashSet::new();
+    let mut active_stack = HashSet::new();
+    let mut resolved = HashSet::new();
     let mut merged_repos = HashMap::new();
     let mut merged_scripts = HashMap::new();
     let mut merged_env = HashMap::new();
@@ -199,8 +323,9 @@ pub fn resolve_all_gripspaces(
     for gs_config in &gripspaces {
         resolve_gripspace_recursive(
             gs_config,
-            gripspaces_dir,
-            &mut visited,
+            spaces_dir,
+            &mut active_stack,
+            &mut resolved,
             0,
             &mut merged_repos,
             &mut merged_scripts,
@@ -300,8 +425,9 @@ pub fn resolve_all_gripspaces(
 #[allow(clippy::too_many_arguments)]
 fn resolve_gripspace_recursive(
     config: &GripspaceConfig,
-    gripspaces_dir: &Path,
-    visited: &mut HashSet<String>,
+    spaces_dir: &Path,
+    active_stack: &mut HashSet<String>,
+    resolved: &mut HashSet<String>,
     depth: usize,
     merged_repos: &mut HashMap<String, crate::core::manifest::RepoConfig>,
     merged_scripts: &mut HashMap<String, crate::core::manifest::WorkspaceScript>,
@@ -328,23 +454,32 @@ fn resolve_gripspace_recursive(
         )));
     }
 
-    // Cycle detection using normalized name (different URLs can map to same name)
-    if !visited.insert(name.clone()) {
+    let identity_key = gripspace_identity(config);
+    if resolved.contains(&identity_key) {
+        return Ok(());
+    }
+
+    // Cycle detection uses normalized gripspace identity so distinct remotes
+    // with the same basename (e.g., org1/foo vs org2/foo) don't false-positive.
+    if !active_stack.insert(identity_key.clone()) {
         return Err(ManifestError::GripspaceError(format!(
             "Circular gripspace include detected: '{}' (from URL: '{}')",
             name, config.url
         )));
     }
-    let gripspace_path = gripspaces_dir.join(&name);
+
+    let gripspace_path = ensure_gripspace(spaces_dir, config)?;
+    // Resolve the actual directory name (may differ from `name` due to reserved name suffixing)
+    let dir_name = resolve_space_name(&config.url, spaces_dir)?;
 
     // Load the gripspace's manifest
-    let manifest_path = gripspace_path.join("manifest.yaml");
-    if !manifest_path.exists() {
+    let Some(manifest_path) = manifest_paths::resolve_manifest_file_in_dir(&gripspace_path) else {
+        active_stack.remove(&identity_key);
         return Err(ManifestError::GripspaceError(format!(
-            "Gripspace '{}' has no manifest.yaml",
+            "Gripspace '{}' has no gripspace manifest (expected gripspace.yml or manifest.yaml)",
             name
         )));
-    }
+    };
 
     let gs_manifest = Manifest::parse_raw(&std::fs::read_to_string(&manifest_path).map_err(
         |e| {
@@ -359,12 +494,13 @@ fn resolve_gripspace_recursive(
     if let Some(ref nested_gripspaces) = gs_manifest.gripspaces {
         for nested_config in nested_gripspaces {
             // Clone the nested gripspace if it doesn't exist yet
-            ensure_gripspace(gripspaces_dir, nested_config)?;
+            ensure_gripspace(spaces_dir, nested_config)?;
 
             resolve_gripspace_recursive(
                 nested_config,
-                gripspaces_dir,
-                visited,
+                spaces_dir,
+                active_stack,
+                resolved,
                 depth + 1,
                 merged_repos,
                 merged_scripts,
@@ -411,13 +547,13 @@ fn resolve_gripspace_recursive(
     }
 
     // Merge linkfiles and copyfiles from gripspace manifest config
-    // These need path adjustment: source from .gitgrip/gripspaces/<name>/
+    // These need path adjustment: source from .gitgrip/spaces/<dir_name>/
     if let Some(ref manifest_config) = gs_manifest.manifest {
         if let Some(ref linkfiles) = manifest_config.linkfile {
             for lf in linkfiles {
                 merged_linkfiles.push(crate::core::manifest::LinkFileConfig {
-                    // Prefix src with gripspace name so link.rs knows where to find it
-                    src: format!("gripspace:{}:{}", name, lf.src),
+                    // Prefix src with resolved dir name so link.rs knows where to find it
+                    src: format!("gripspace:{}:{}", dir_name, lf.src),
                     dest: lf.dest.clone(),
                 });
             }
@@ -425,12 +561,15 @@ fn resolve_gripspace_recursive(
         if let Some(ref copyfiles) = manifest_config.copyfile {
             for cf in copyfiles {
                 merged_copyfiles.push(crate::core::manifest::CopyFileConfig {
-                    src: format!("gripspace:{}:{}", name, cf.src),
+                    src: format!("gripspace:{}:{}", dir_name, cf.src),
                     dest: cf.dest.clone(),
                 });
             }
         }
     }
+
+    active_stack.remove(&identity_key);
+    resolved.insert(identity_key);
 
     Ok(())
 }
@@ -464,6 +603,20 @@ pub fn get_gripspace_rev(gripspace_path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    fn init_git_with_origin(repo_dir: &Path, origin: &str) {
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(repo_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin", origin])
+            .current_dir(repo_dir)
+            .output()
+            .unwrap();
+    }
 
     #[test]
     fn test_gripspace_name_https() {
@@ -532,9 +685,11 @@ mod tests {
     #[test]
     fn test_resolve_missing_gripspace_manifest() {
         let temp = tempfile::tempdir().unwrap();
-        let gripspaces_dir = temp.path().join("gripspaces");
-        // Create gripspace dir but no manifest.yaml
-        std::fs::create_dir_all(gripspaces_dir.join("test-gripspace")).unwrap();
+        let gripspaces_dir = temp.path().join("spaces");
+        // Create gripspace dir but no manifest file
+        let test_dir = gripspaces_dir.join("test-gripspace");
+        std::fs::create_dir_all(&test_dir).unwrap();
+        init_git_with_origin(&test_dir, "https://github.com/user/test-gripspace.git");
 
         let mut manifest = Manifest {
             version: 1,
@@ -551,7 +706,7 @@ mod tests {
         let result = resolve_all_gripspaces(&mut manifest, &gripspaces_dir);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("no manifest.yaml"));
+        assert!(err.contains("no gripspace manifest"));
     }
 
     #[test]
@@ -562,6 +717,7 @@ mod tests {
         // Create gripspace with a repo
         let gs_dir = gripspaces_dir.join("base-gripspace");
         std::fs::create_dir_all(&gs_dir).unwrap();
+        init_git_with_origin(&gs_dir, "https://github.com/user/base-gripspace.git");
         std::fs::write(
             gs_dir.join("manifest.yaml"),
             r#"
@@ -619,6 +775,7 @@ repos:
         // Create gripspace with a repo
         let gs_dir = gripspaces_dir.join("base-gripspace");
         std::fs::create_dir_all(&gs_dir).unwrap();
+        init_git_with_origin(&gs_dir, "https://github.com/user/base-gripspace.git");
         std::fs::write(
             gs_dir.join("manifest.yaml"),
             r#"
@@ -696,6 +853,7 @@ repos:
         // Create a gripspace that references itself (different URL, same name)
         let gs_dir = gripspaces_dir.join("self-ref");
         std::fs::create_dir_all(&gs_dir).unwrap();
+        init_git_with_origin(&gs_dir, "https://github.com/user/self-ref.git");
         std::fs::write(
             gs_dir.join("manifest.yaml"),
             r#"
@@ -738,6 +896,7 @@ repos:
         for i in 0..=5 {
             let gs_dir = gripspaces_dir.join(format!("gs-{}", i));
             std::fs::create_dir_all(&gs_dir).unwrap();
+            init_git_with_origin(&gs_dir, &format!("https://github.com/user/gs-{}.git", i));
             let next_gs = if i < 5 {
                 format!(
                     r#"
@@ -791,6 +950,7 @@ repos:
 
         let gs_dir = gripspaces_dir.join("base-gripspace");
         std::fs::create_dir_all(&gs_dir).unwrap();
+        init_git_with_origin(&gs_dir, "https://github.com/user/base-gripspace.git");
         std::fs::write(
             gs_dir.join("manifest.yaml"),
             r#"
@@ -858,6 +1018,305 @@ workspace:
     }
 
     #[test]
+    fn test_resolve_shared_nested_include_not_treated_as_cycle() {
+        let temp = tempfile::tempdir().unwrap();
+        let gripspaces_dir = temp.path();
+
+        for name in ["a", "b", "c", "d"] {
+            std::fs::create_dir_all(gripspaces_dir.join(name)).unwrap();
+        }
+        init_git_with_origin(
+            &gripspaces_dir.join("a"),
+            "https://github.com/org/a.git",
+        );
+        init_git_with_origin(
+            &gripspaces_dir.join("b"),
+            "https://github.com/org/b.git",
+        );
+        init_git_with_origin(
+            &gripspaces_dir.join("c"),
+            "https://github.com/org/c.git",
+        );
+        init_git_with_origin(
+            &gripspaces_dir.join("d"),
+            "https://github.com/org/d.git",
+        );
+
+        // A -> [B, C], B -> [D], C -> [D] should be valid (DAG, not a cycle).
+        std::fs::write(
+            gripspaces_dir.join("a").join("gripspace.yml"),
+            r#"
+version: 1
+gripspaces:
+  - url: https://github.com/org/b.git
+  - url: https://github.com/org/c.git
+repos:
+  a-repo:
+    url: https://github.com/org/a-repo.git
+    path: ./a-repo
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            gripspaces_dir.join("b").join("gripspace.yml"),
+            r#"
+version: 1
+gripspaces:
+  - url: https://github.com/org/d.git
+repos:
+  b-repo:
+    url: https://github.com/org/b-repo.git
+    path: ./b-repo
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            gripspaces_dir.join("c").join("gripspace.yml"),
+            r#"
+version: 1
+gripspaces:
+  - url: https://github.com/org/d.git
+repos:
+  c-repo:
+    url: https://github.com/org/c-repo.git
+    path: ./c-repo
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            gripspaces_dir.join("d").join("gripspace.yml"),
+            r#"
+version: 1
+repos:
+  d-repo:
+    url: https://github.com/org/d-repo.git
+    path: ./d-repo
+"#,
+        )
+        .unwrap();
+
+        let mut manifest = Manifest {
+            version: 1,
+            gripspaces: Some(vec![GripspaceConfig {
+                url: "https://github.com/org/a.git".to_string(),
+                rev: None,
+            }]),
+            manifest: None,
+            repos: HashMap::new(),
+            settings: Default::default(),
+            workspace: None,
+        };
+
+        let result = resolve_all_gripspaces(&mut manifest, gripspaces_dir);
+        assert!(result.is_ok(), "{}", result.unwrap_err());
+        assert!(manifest.repos.contains_key("a-repo"));
+        assert!(manifest.repos.contains_key("b-repo"));
+        assert!(manifest.repos.contains_key("c-repo"));
+        assert!(manifest.repos.contains_key("d-repo"));
+    }
+
+    #[test]
+    fn test_nested_distinct_remotes_same_basename_not_cycle() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces_dir = temp.path();
+
+        // root-space includes two different remotes that both end in "common.git".
+        std::fs::create_dir_all(spaces_dir.join("root-space")).unwrap();
+        std::fs::create_dir_all(spaces_dir.join("common")).unwrap();
+        std::fs::create_dir_all(spaces_dir.join("common-2")).unwrap();
+
+        init_git_with_origin(
+            &spaces_dir.join("root-space"),
+            "https://github.com/root/root-space.git",
+        );
+        init_git_with_origin(&spaces_dir.join("common"), "https://github.com/org1/common.git");
+        init_git_with_origin(&spaces_dir.join("common-2"), "https://github.com/org2/common.git");
+
+        std::fs::write(
+            spaces_dir.join("root-space").join("gripspace.yml"),
+            r#"
+version: 1
+gripspaces:
+  - url: https://github.com/org1/common.git
+  - url: https://github.com/org2/common.git
+repos:
+  root-repo:
+    url: https://github.com/root/repo.git
+    path: ./root
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            spaces_dir.join("common").join("gripspace.yml"),
+            r#"
+version: 1
+repos:
+  common-one:
+    url: https://github.com/org1/repo.git
+    path: ./one
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            spaces_dir.join("common-2").join("gripspace.yml"),
+            r#"
+version: 1
+repos:
+  common-two:
+    url: https://github.com/org2/repo.git
+    path: ./two
+"#,
+        )
+        .unwrap();
+
+        let mut manifest = Manifest {
+            version: 1,
+            gripspaces: Some(vec![GripspaceConfig {
+                url: "https://github.com/root/root-space.git".to_string(),
+                rev: None,
+            }]),
+            manifest: None,
+            repos: HashMap::new(),
+            settings: Default::default(),
+            workspace: None,
+        };
+
+        let result = resolve_all_gripspaces(&mut manifest, spaces_dir);
+        assert!(result.is_ok(), "{}", result.unwrap_err());
+        assert!(manifest.repos.contains_key("root-repo"));
+        assert!(manifest.repos.contains_key("common-one"));
+        assert!(manifest.repos.contains_key("common-two"));
+    }
+
+    #[test]
+    fn test_resolve_space_name_normal() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces = temp.path();
+        let name =
+            resolve_space_name("https://github.com/user/my-gripspace.git", spaces).unwrap();
+        assert_eq!(name, "my-gripspace");
+    }
+
+    #[test]
+    fn test_resolve_space_name_reserved_main() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces = temp.path();
+        // "main" is reserved — should auto-suffix to "main-1"
+        let name = resolve_space_name("https://github.com/user/main.git", spaces).unwrap();
+        assert_eq!(name, "main-1");
+    }
+
+    #[test]
+    fn test_resolve_space_name_reserved_local() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces = temp.path();
+        let name = resolve_space_name("https://github.com/user/local.git", spaces).unwrap();
+        assert_eq!(name, "local-1");
+    }
+
+    #[test]
+    fn test_resolve_space_name_duplicate_increments() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces = temp.path();
+
+        // Create an existing dir with a different remote
+        let existing = spaces.join("my-repo");
+        std::fs::create_dir_all(&existing).unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&existing)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin", "https://github.com/other/my-repo.git"])
+            .current_dir(&existing)
+            .output()
+            .unwrap();
+
+        // A different URL producing the same name should auto-increment
+        let name =
+            resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        assert_eq!(name, "my-repo-2");
+    }
+
+    #[test]
+    fn test_resolve_space_name_same_remote_reuses() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces = temp.path();
+
+        // Create an existing dir with the same remote
+        let existing = spaces.join("my-repo");
+        std::fs::create_dir_all(&existing).unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&existing)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin", "https://github.com/user/my-repo.git"])
+            .current_dir(&existing)
+            .output()
+            .unwrap();
+
+        // Same URL should reuse the existing directory name
+        let name =
+            resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        assert_eq!(name, "my-repo");
+    }
+
+    #[test]
+    fn test_resolve_space_name_non_git_dir_does_not_reuse() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces = temp.path();
+
+        // Existing folder without git metadata should not be reused.
+        let existing = spaces.join("my-repo");
+        std::fs::create_dir_all(&existing).unwrap();
+        std::fs::write(existing.join("README.md"), "local").unwrap();
+
+        let name =
+            resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        assert_eq!(name, "my-repo-2");
+    }
+
+    #[test]
+    fn test_resolve_space_name_git_dir_without_origin_does_not_reuse() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces = temp.path();
+
+        let existing = spaces.join("my-repo");
+        std::fs::create_dir_all(&existing).unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&existing)
+            .output()
+            .unwrap();
+
+        let name =
+            resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        assert_eq!(name, "my-repo-2");
+    }
+
+    #[test]
+    fn test_resolve_space_name_reuses_equivalent_ssh_https_remote() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces = temp.path();
+
+        let existing = spaces.join("my-repo");
+        std::fs::create_dir_all(&existing).unwrap();
+        init_git_with_origin(&existing, "git@github.com:user/my-repo.git");
+
+        let name =
+            resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        assert_eq!(name, "my-repo");
+    }
+
+    #[test]
     fn test_checkout_rev_rejects_flags() {
         // checkout_rev is private, so test via ensure_gripspace with a rev that looks like a flag
         let temp = tempfile::tempdir().unwrap();
@@ -866,6 +1325,11 @@ workspace:
         // Initialize a bare git repo so the path exists
         std::process::Command::new("git")
             .args(["init"])
+            .current_dir(&gs_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin", "https://github.com/user/test-repo.git"])
             .current_dir(&gs_dir)
             .output()
             .unwrap();
@@ -889,6 +1353,11 @@ workspace:
             .current_dir(&gs_dir)
             .output()
             .unwrap();
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin", "https://github.com/user/test-repo.git"])
+            .current_dir(&gs_dir)
+            .output()
+            .unwrap();
 
         let config = GripspaceConfig {
             url: "https://github.com/user/test-repo.git".to_string(),
@@ -906,6 +1375,11 @@ workspace:
         std::fs::create_dir_all(&gs_dir).unwrap();
         std::process::Command::new("git")
             .args(["init"])
+            .current_dir(&gs_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin", "https://github.com/user/test-repo.git"])
             .current_dir(&gs_dir)
             .output()
             .unwrap();

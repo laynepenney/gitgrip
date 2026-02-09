@@ -8,6 +8,7 @@
 use crate::cli::output::Output;
 use crate::core::gripspace::{ensure_gripspace, resolve_all_gripspaces};
 use crate::core::manifest::{Manifest, PlatformType, RepoConfig};
+use crate::core::manifest_paths;
 use crate::git::clone_repo;
 use crate::platform;
 use crate::util::log_cmd;
@@ -174,8 +175,10 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
 
     // Create .gitgrip directory structure
     let gitgrip_dir = target_dir.join(".gitgrip");
-    let manifests_dir = gitgrip_dir.join("manifests");
+    let manifests_dir = manifest_paths::main_space_dir(&target_dir);
+    let local_space_dir = manifest_paths::local_space_dir(&target_dir);
     std::fs::create_dir_all(&manifests_dir)?;
+    std::fs::create_dir_all(&local_space_dir)?;
 
     // Clone manifest repository
     let spinner = Output::spinner("Cloning manifest repository...");
@@ -191,15 +194,17 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
         }
     }
 
-    // Verify manifest.yaml exists
-    let manifest_path = manifests_dir.join("manifest.yaml");
-    if !manifest_path.exists() {
+    // Verify a supported manifest filename exists in the space repo.
+    let manifest_path = if let Some(path) = manifest_paths::resolve_manifest_file_in_dir(&manifests_dir)
+    {
+        path
+    } else {
         let _ = std::fs::remove_dir_all(&target_dir);
         anyhow::bail!(
-            "No manifest.yaml found in repository. \
-             Ensure the repository contains a manifest.yaml file at its root."
+            "No workspace manifest found in repository. \
+             Expected gripspace.yml (preferred) or manifest.yaml/manifest.yml at repo root."
         );
-    }
+    };
 
     // Create state file
     let state_path = gitgrip_dir.join("state.json");
@@ -211,14 +216,14 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
 
     if let Some(ref gripspaces) = manifest.gripspaces {
         if !gripspaces.is_empty() {
-            let gripspaces_dir = gitgrip_dir.join("gripspaces");
+            let spaces_dir = manifest_paths::spaces_dir(&target_dir);
             let spinner = Output::spinner(&format!(
                 "Cloning {} gripspace(s)...",
                 gripspaces.len()
             ));
 
             for gs_config in gripspaces {
-                if let Err(e) = ensure_gripspace(&gripspaces_dir, gs_config) {
+                if let Err(e) = ensure_gripspace(&spaces_dir, gs_config) {
                     Output::warning(&format!(
                         "Gripspace '{}' clone failed: {}",
                         gs_config.url, e
@@ -231,7 +236,7 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
             spinner.finish_with_message("Gripspaces cloned");
 
             // Resolve gripspace includes
-            if let Err(e) = resolve_all_gripspaces(&mut manifest, &gripspaces_dir) {
+            if let Err(e) = resolve_all_gripspaces(&mut manifest, &spaces_dir) {
                 Output::warning(&format!("Gripspace resolution failed: {}", e));
             }
         }
@@ -317,13 +322,23 @@ async fn run_init_from_dirs(
     };
 
     // Create .gitgrip directory structure
-    let manifests_dir = gitgrip_dir.join("manifests");
+    let manifests_dir = manifest_paths::main_space_dir(&workspace_root);
+    let local_space_dir = manifest_paths::local_space_dir(&workspace_root);
     std::fs::create_dir_all(&manifests_dir)?;
+    std::fs::create_dir_all(&local_space_dir)?;
 
     // Write manifest
-    let manifest_path = manifests_dir.join("manifest.yaml");
+    let manifest_path = manifests_dir.join(manifest_paths::PRIMARY_FILE_NAME);
     let yaml_content = manifest_to_yaml(&manifest)?;
     std::fs::write(&manifest_path, &yaml_content)?;
+
+    // Compatibility mirror for legacy tooling/scripts.
+    let legacy_manifest_path = manifest_paths::legacy_manifest_dir(&workspace_root)
+        .join(manifest_paths::LEGACY_FILE_NAMES[0]);
+    if let Some(parent) = legacy_manifest_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&legacy_manifest_path, &yaml_content)?;
 
     // Create state file
     let state_path = gitgrip_dir.join("state.json");
@@ -433,13 +448,15 @@ async fn run_init_from_dirs(
         println!("Manifest remote: {}", url);
         println!();
         println!("Next steps:");
-        println!("  1. Review the manifest: cat .gitgrip/manifests/manifest.yaml");
+        println!("  1. Review the manifest: cat .gitgrip/spaces/main/gripspace.yml");
+        println!("     (legacy mirror at .gitgrip/manifests/manifest.yaml for compatibility)");
         println!("  2. Run 'gr status' to verify your workspace");
     } else {
         println!("Next steps:");
-        println!("  1. Review the manifest: cat .gitgrip/manifests/manifest.yaml");
+        println!("  1. Review the manifest: cat .gitgrip/spaces/main/gripspace.yml");
+        println!("     (legacy mirror at .gitgrip/manifests/manifest.yaml for compatibility)");
         println!("  2. Add a remote to the manifest repo:");
-        println!("     cd .gitgrip/manifests && git remote add origin <your-manifest-url>");
+        println!("     cd .gitgrip/spaces/main && git remote add origin <your-manifest-url>");
         println!("  3. Run 'gr status' to verify your workspace");
     }
 
@@ -675,7 +692,7 @@ fn run_interactive_init(
                 let yaml = manifest_to_yaml(&manifest)?;
 
                 println!();
-                println!("Generated manifest.yaml:");
+                println!("Generated gripspace.yml:");
                 println!("─────────────────────────────────────────");
                 println!("{}", yaml);
                 println!("─────────────────────────────────────────");
@@ -785,16 +802,19 @@ fn init_manifest_repo(manifests_dir: &Path) -> anyhow::Result<()> {
         anyhow::bail!("Failed to initialize manifest git repo: {}", stderr);
     }
 
-    // Stage manifest.yaml
+    let manifest_file = manifest_paths::resolve_manifest_file_in_dir(manifests_dir)
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| manifest_paths::PRIMARY_FILE_NAME.to_string());
+
+    // Stage manifest file
     let mut cmd = Command::new("git");
-    cmd.args(["add", "manifest.yaml"])
-        .current_dir(manifests_dir);
+    cmd.args(["add", &manifest_file]).current_dir(manifests_dir);
     log_cmd(&cmd);
     let output = cmd.output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to stage manifest.yaml: {}", stderr);
+        anyhow::bail!("Failed to stage {}: {}", manifest_file, stderr);
     }
 
     // Create initial commit

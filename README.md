@@ -62,7 +62,7 @@ cargo install --path .
 
 ### 1. Create a manifest repository
 
-Create a new repo to hold your workspace manifest (e.g., `my-workspace`), then add a `manifest.yaml`:
+Create a new repo to hold your workspace config (e.g., `my-workspace`), then add a `gripspace.yml`:
 
 ```yaml
 version: 1
@@ -110,7 +110,7 @@ gr init --from-dirs --dirs ./frontend ./backend
 gr init --from-dirs --interactive
 ```
 
-This creates `.gitgrip/manifests/` with the manifest configuration.
+This creates `.gitgrip/spaces/main/gripspace.yml` (with legacy `.gitgrip/manifests/manifest.yaml` compatibility).
 
 ### 3. Start working
 
@@ -283,9 +283,9 @@ Environment variables available in command:
 - `REPO_PATH` - Absolute path to repo
 - `REPO_URL` - Repository URL
 
-## Manifest Format
+## Gripspace Format
 
-The manifest file (`manifest.yaml`) defines your workspace:
+The workspace file (`gripspace.yml`) defines your workspace:
 
 ```yaml
 version: 1
