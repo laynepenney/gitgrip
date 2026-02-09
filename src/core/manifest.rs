@@ -581,8 +581,12 @@ fn path_escapes_boundary(path: &str) -> bool {
     // Normalize path separators
     let normalized = path.replace('\\', "/");
 
-    // Reject: paths starting with "..", "/", or containing "/../"
-    if normalized.starts_with("..") || normalized.starts_with('/') || normalized.contains("/../") {
+    // Reject: paths starting with "..", "/", containing "/../", or ending with "/.."
+    if normalized.starts_with("..")
+        || normalized.starts_with('/')
+        || normalized.contains("/../")
+        || normalized.ends_with("/..")
+    {
         return true;
     }
 
@@ -700,6 +704,8 @@ workspace:
         assert!(path_escapes_boundary("../foo"));
         assert!(path_escapes_boundary("/etc"));
         assert!(path_escapes_boundary("foo/../../../etc"));
+        assert!(path_escapes_boundary("foo/.."));
+        assert!(path_escapes_boundary("foo/bar/.."));
         assert!(!path_escapes_boundary("foo"));
         assert!(!path_escapes_boundary("foo/bar"));
         assert!(!path_escapes_boundary("./foo"));

@@ -114,8 +114,10 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
                     Ok(p) => p,
                     Err(e) => {
                         broken_links += 1;
-                        total_links += 1;
-                        println!("  [copy] {} -> {} ✗ ({})", copyfile.src, copyfile.dest, e);
+                        Output::warning(&format!(
+                            "[copy] {} -> {} ({})",
+                            copyfile.src, copyfile.dest, e
+                        ));
                         continue;
                     }
                 };
@@ -157,10 +159,10 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
                     Ok(p) => p,
                     Err(e) => {
                         broken_links += 1;
-                        println!(
-                            "  [link] {} -> {} ✗ ({})",
+                        Output::warning(&format!(
+                            "[link] {} -> {} ({})",
                             linkfile.src, linkfile.dest, e
-                        );
+                        ));
                         continue;
                     }
                 };

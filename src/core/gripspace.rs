@@ -19,6 +19,11 @@ const MAX_GRIPSPACE_DEPTH: usize = 5;
 ///
 /// Takes the last path component without `.git` suffix.
 /// e.g., `https://github.com/user/codi-gripspace.git` -> `codi-gripspace`
+///
+/// Note: For SSH URLs like `git@host:org/group/repo.git`, only the final
+/// component `repo` is extracted. If two gripspaces share the same repo name
+/// under different groups, they will collide. Use `rev` to disambiguate or
+/// rename one of the repositories.
 pub fn gripspace_name(url: &str) -> String {
     let url = url.trim_end_matches('/');
     let last = url.rsplit('/').next().unwrap_or(url);
@@ -129,6 +134,14 @@ pub fn update_gripspace(
 
 /// Checkout a specific revision (branch, tag, or SHA) in a gripspace.
 fn checkout_rev(path: &Path, rev: &str) -> Result<(), ManifestError> {
+    // Reject revs that look like flags or contain whitespace
+    if rev.starts_with('-') || rev.chars().any(|c| c.is_whitespace()) || rev.is_empty() {
+        return Err(ManifestError::GripspaceError(format!(
+            "Invalid rev '{}': must not be empty, start with '-', or contain whitespace",
+            rev
+        )));
+    }
+
     let output = Command::new("git")
         .args(["checkout", rev])
         .current_dir(path)
@@ -364,7 +377,7 @@ fn resolve_gripspace_recursive(
         }
     }
 
-    // Merge repos (later gripspaces override earlier, but local always wins last)
+    // Merge repos (first-encountered wins among gripspaces; local always wins last in resolve_all_gripspaces)
     for (repo_name, repo_config) in gs_manifest.repos {
         merged_repos.entry(repo_name).or_insert(repo_config);
     }
@@ -842,5 +855,67 @@ workspace:
             scripts.get("test").unwrap().command.as_deref(),
             Some("echo test from gripspace")
         );
+    }
+
+    #[test]
+    fn test_checkout_rev_rejects_flags() {
+        // checkout_rev is private, so test via ensure_gripspace with a rev that looks like a flag
+        let temp = tempfile::tempdir().unwrap();
+        let gs_dir = temp.path().join("test-repo");
+        std::fs::create_dir_all(&gs_dir).unwrap();
+        // Initialize a bare git repo so the path exists
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&gs_dir)
+            .output()
+            .unwrap();
+
+        let config = GripspaceConfig {
+            url: "https://github.com/user/test-repo.git".to_string(),
+            rev: Some("--orphan".to_string()),
+        };
+        let result = ensure_gripspace(temp.path(), &config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid rev"));
+    }
+
+    #[test]
+    fn test_checkout_rev_rejects_whitespace() {
+        let temp = tempfile::tempdir().unwrap();
+        let gs_dir = temp.path().join("test-repo");
+        std::fs::create_dir_all(&gs_dir).unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&gs_dir)
+            .output()
+            .unwrap();
+
+        let config = GripspaceConfig {
+            url: "https://github.com/user/test-repo.git".to_string(),
+            rev: Some("main ; rm -rf /".to_string()),
+        };
+        let result = ensure_gripspace(temp.path(), &config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid rev"));
+    }
+
+    #[test]
+    fn test_checkout_rev_rejects_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let gs_dir = temp.path().join("test-repo");
+        std::fs::create_dir_all(&gs_dir).unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&gs_dir)
+            .output()
+            .unwrap();
+
+        let config = GripspaceConfig {
+            url: "https://github.com/user/test-repo.git".to_string(),
+            rev: Some("".to_string()),
+        };
+        let result = ensure_gripspace(temp.path(), &config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid rev"));
     }
 }
