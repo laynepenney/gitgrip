@@ -29,6 +29,17 @@ pub fn gripspace_name(url: &str) -> String {
     last.trim_end_matches(".git").to_string()
 }
 
+fn gripspace_identity(config: &GripspaceConfig) -> String {
+    let mut url = config.url.trim_end_matches('/').to_string();
+    if let Some(stripped) = url.strip_suffix(".git") {
+        url = stripped.to_string();
+    }
+    match &config.rev {
+        Some(rev) if !rev.is_empty() => format!("{}#{}", url, rev),
+        _ => url,
+    }
+}
+
 /// Ensure a gripspace is cloned locally. Returns the path to the gripspace directory.
 ///
 /// If the gripspace is already cloned, this is a no-op.
@@ -319,7 +330,8 @@ fn resolve_gripspace_recursive(
         )));
     }
 
-    if resolved.contains(&name) {
+    let resolved_key = gripspace_identity(config);
+    if resolved.contains(&resolved_key) {
         return Ok(());
     }
 
@@ -430,7 +442,7 @@ fn resolve_gripspace_recursive(
     }
 
     active_stack.remove(&name);
-    resolved.insert(name);
+    resolved.insert(resolved_key);
 
     Ok(())
 }
