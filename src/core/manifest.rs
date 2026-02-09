@@ -21,6 +21,9 @@ pub enum ManifestError {
 
     #[error("Path escapes workspace boundary: {0}")]
     PathTraversal(String),
+
+    #[error("Gripspace error: {0}")]
+    GripspaceError(String),
 }
 
 /// Hosting platform type
@@ -77,6 +80,38 @@ pub struct LinkFileConfig {
     pub dest: String,
 }
 
+/// Gripspace include configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GripspaceConfig {
+    /// Git URL for the gripspace repository
+    pub url: String,
+    /// Optional revision (branch, tag, or commit SHA) to pin
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
+}
+
+/// A part of a composed file
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComposeFilePart {
+    /// Source path relative to the gripspace or manifest repo
+    pub src: String,
+    /// Name of the gripspace to source from (if omitted, sources from local manifest)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gripspace: Option<String>,
+}
+
+/// Composed file configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComposeFileConfig {
+    /// Destination path relative to workspace root
+    pub dest: String,
+    /// Ordered parts to concatenate
+    pub parts: Vec<ComposeFilePart>,
+    /// Separator between parts (default: "\n\n")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub separator: Option<String>,
+}
+
 /// Repository configuration in the manifest
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
@@ -122,6 +157,9 @@ pub struct ManifestRepoConfig {
     /// Optional symlinks
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linkfile: Option<Vec<LinkFileConfig>>,
+    /// Optional composed files (concatenated from gripspace + local parts)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub composefile: Option<Vec<ComposeFileConfig>>,
     /// Optional platform override
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<PlatformConfig>,
@@ -271,6 +309,9 @@ pub struct Manifest {
     /// Schema version
     #[serde(default = "default_version")]
     pub version: u32,
+    /// Gripspace includes (composable manifest inheritance)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gripspaces: Option<Vec<GripspaceConfig>>,
     /// Self-tracking manifest config (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest: Option<ManifestRepoConfig>,
@@ -295,9 +336,18 @@ impl Manifest {
         Self::parse(&content)
     }
 
-    /// Parse a manifest from a YAML string
-    pub fn parse(yaml: &str) -> Result<Self, ManifestError> {
+    /// Parse a manifest from a YAML string (deserialize only, no validation)
+    ///
+    /// Use this when you need to process the manifest before validation,
+    /// e.g., resolving gripspace includes that merge additional repos.
+    pub fn parse_raw(yaml: &str) -> Result<Self, ManifestError> {
         let manifest: Manifest = serde_yaml::from_str(yaml)?;
+        Ok(manifest)
+    }
+
+    /// Parse a manifest from a YAML string (deserialize + validate)
+    pub fn parse(yaml: &str) -> Result<Self, ManifestError> {
+        let manifest = Self::parse_raw(yaml)?;
         manifest.validate()?;
         Ok(manifest)
     }
@@ -323,6 +373,53 @@ impl Manifest {
                 &manifest_config.copyfile,
                 &manifest_config.linkfile,
             )?;
+            // Validate composefiles
+            if let Some(ref composefiles) = manifest_config.composefile {
+                for cf in composefiles {
+                    if cf.dest.is_empty() {
+                        return Err(ManifestError::ValidationError(
+                            "Composefile has empty dest".to_string(),
+                        ));
+                    }
+                    if path_escapes_boundary(&cf.dest) {
+                        return Err(ManifestError::PathTraversal(format!(
+                            "Composefile dest escapes boundary: {}",
+                            cf.dest
+                        )));
+                    }
+                    if cf.parts.is_empty() {
+                        return Err(ManifestError::ValidationError(format!(
+                            "Composefile '{}' has no parts",
+                            cf.dest
+                        )));
+                    }
+                    for part in &cf.parts {
+                        if part.src.is_empty() {
+                            return Err(ManifestError::ValidationError(format!(
+                                "Composefile '{}' has a part with empty src",
+                                cf.dest
+                            )));
+                        }
+                        if path_escapes_boundary(&part.src) {
+                            return Err(ManifestError::PathTraversal(format!(
+                                "Composefile '{}' part src escapes boundary: {}",
+                                cf.dest, part.src
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Validate gripspace configs
+        if let Some(ref gripspaces) = self.gripspaces {
+            for gs in gripspaces {
+                if gs.url.is_empty() {
+                    return Err(ManifestError::ValidationError(
+                        "Gripspace has empty URL".to_string(),
+                    ));
+                }
+            }
         }
 
         // Validate workspace scripts
@@ -668,5 +765,166 @@ repos:
         let manifest = Manifest::parse(yaml).unwrap();
         let repo = manifest.repos.get("myrepo").unwrap();
         assert!(!repo.reference); // Should default to false
+    }
+
+    #[test]
+    fn test_parse_gripspaces() {
+        let yaml = r#"
+gripspaces:
+  - url: https://github.com/user/base-gripspace.git
+    rev: main
+  - url: https://github.com/user/other-gripspace.git
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        let gripspaces = manifest.gripspaces.unwrap();
+        assert_eq!(gripspaces.len(), 2);
+        assert_eq!(
+            gripspaces[0].url,
+            "https://github.com/user/base-gripspace.git"
+        );
+        assert_eq!(gripspaces[0].rev.as_deref(), Some("main"));
+        assert_eq!(
+            gripspaces[1].url,
+            "https://github.com/user/other-gripspace.git"
+        );
+        assert!(gripspaces[1].rev.is_none());
+    }
+
+    #[test]
+    fn test_parse_composefile() {
+        let yaml = r#"
+manifest:
+  url: git@github.com:user/manifest.git
+  composefile:
+    - dest: CLAUDE.md
+      parts:
+        - gripspace: base-gripspace
+          src: CODI.md
+        - src: PRIVATE_DOCS.md
+      separator: "\n\n---\n\n"
+    - dest: envsetup.sh
+      parts:
+        - gripspace: base-gripspace
+          src: envsetup.sh
+        - src: private-envsetup.sh
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        let manifest_config = manifest.manifest.unwrap();
+        let composefiles = manifest_config.composefile.unwrap();
+        assert_eq!(composefiles.len(), 2);
+
+        let cf1 = &composefiles[0];
+        assert_eq!(cf1.dest, "CLAUDE.md");
+        assert_eq!(cf1.parts.len(), 2);
+        assert_eq!(cf1.parts[0].gripspace.as_deref(), Some("base-gripspace"));
+        assert_eq!(cf1.parts[0].src, "CODI.md");
+        assert!(cf1.parts[1].gripspace.is_none());
+        assert_eq!(cf1.parts[1].src, "PRIVATE_DOCS.md");
+        assert_eq!(cf1.separator.as_deref(), Some("\n\n---\n\n"));
+
+        let cf2 = &composefiles[1];
+        assert_eq!(cf2.dest, "envsetup.sh");
+        assert_eq!(cf2.parts.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_raw_does_not_validate() {
+        let yaml = r#"
+repos: {}
+"#;
+        // parse_raw should succeed even with empty repos (no validation)
+        let manifest = Manifest::parse_raw(yaml).unwrap();
+        assert!(manifest.repos.is_empty());
+
+        // parse should fail with validation
+        let result = Manifest::parse(yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_gripspace_empty_url_fails() {
+        let yaml = r#"
+gripspaces:
+  - url: ""
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+"#;
+        let result = Manifest::parse(yaml);
+        assert!(matches!(result, Err(ManifestError::ValidationError(_))));
+    }
+
+    #[test]
+    fn test_composefile_empty_dest_fails() {
+        let yaml = r#"
+manifest:
+  url: git@github.com:user/manifest.git
+  composefile:
+    - dest: ""
+      parts:
+        - src: file.md
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+"#;
+        let result = Manifest::parse(yaml);
+        assert!(matches!(result, Err(ManifestError::ValidationError(_))));
+    }
+
+    #[test]
+    fn test_composefile_empty_parts_fails() {
+        let yaml = r#"
+manifest:
+  url: git@github.com:user/manifest.git
+  composefile:
+    - dest: output.md
+      parts: []
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+"#;
+        let result = Manifest::parse(yaml);
+        assert!(matches!(result, Err(ManifestError::ValidationError(_))));
+    }
+
+    #[test]
+    fn test_composefile_path_traversal_fails() {
+        let yaml = r#"
+manifest:
+  url: git@github.com:user/manifest.git
+  composefile:
+    - dest: ../outside.md
+      parts:
+        - src: file.md
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+"#;
+        let result = Manifest::parse(yaml);
+        assert!(matches!(result, Err(ManifestError::PathTraversal(_))));
+    }
+
+    #[test]
+    fn test_manifest_with_no_gripspaces() {
+        let yaml = r#"
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        assert!(manifest.gripspaces.is_none());
     }
 }

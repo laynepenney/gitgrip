@@ -409,6 +409,7 @@ impl XmlManifest {
 
         let manifest = Manifest {
             version: 1,
+            gripspaces: None,
             manifest: None,
             repos,
             settings: ManifestSettings::default(),

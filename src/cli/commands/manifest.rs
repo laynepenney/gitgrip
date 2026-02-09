@@ -115,10 +115,32 @@ It is typically located at `.gitgrip/manifests/manifest.yaml`.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `version` | integer | Yes | Schema version (currently `1`) |
+| `gripspaces` | array | No | Gripspace includes for manifest inheritance |
 | `manifest` | object | No | Self-tracking manifest repo config |
 | `repos` | object | Yes | Repository definitions |
 | `settings` | object | No | Global workspace settings |
 | `workspace` | object | No | Scripts, hooks, and environment |
+
+## Gripspace Includes
+
+Include repos, scripts, env, hooks, and linkfiles from other gripspace repos.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `url` | string | Yes | Git URL for the gripspace repository |
+| `rev` | string | No | Branch, tag, or commit to pin (default: remote HEAD) |
+
+### Composefile (in manifest section)
+
+Generate files by concatenating parts from gripspaces and local manifest.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `dest` | string | Yes | Destination path relative to workspace root |
+| `separator` | string | No | Separator between parts (default: `\n\n`) |
+| `parts` | array | Yes | Ordered list of content sources |
+| `parts[].src` | string | Yes | Source file path |
+| `parts[].gripspace` | string | No | Gripspace name (omit for local manifest) |
 
 ## Repository Configuration
 
@@ -154,9 +176,19 @@ Each repository under `repos` supports:
 ```yaml
 version: 1
 
+gripspaces:
+  - url: https://github.com/org/base-gripspace.git
+    rev: main
+
 manifest:
   url: git@github.com:org/manifest.git
   default_branch: main
+  composefile:
+    - dest: CLAUDE.md
+      parts:
+        - gripspace: base-gripspace
+          src: CODI.md
+        - src: PRIVATE_DOCS.md
 
 repos:
   frontend:

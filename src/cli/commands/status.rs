@@ -1,6 +1,7 @@
 //! Status command implementation
 
 use crate::cli::output::{Output, Table};
+use crate::core::gripspace::{get_gripspace_rev, gripspace_name};
 use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::path_exists;
@@ -119,6 +120,40 @@ pub fn run_status(
             &main_str,
         ]);
         manifest_table.print();
+    }
+
+    // Show gripspace status
+    if let Some(ref gripspaces) = manifest.gripspaces {
+        if !gripspaces.is_empty() && !quiet {
+            let gripspaces_dir = workspace_root.join(".gitgrip").join("gripspaces");
+            println!();
+            let mut gs_table = Table::new(vec!["Gripspace", "Rev", "Status"]);
+
+            for gs in gripspaces {
+                let name = gripspace_name(&gs.url);
+                let gs_path = gripspaces_dir.join(&name);
+
+                let (rev, status_str) = if gs_path.exists() {
+                    let rev = get_gripspace_rev(&gs_path).unwrap_or_else(|| "unknown".to_string());
+                    let pinned = gs
+                        .rev
+                        .as_deref()
+                        .map(|r| format!(" (pinned: {})", r))
+                        .unwrap_or_default();
+                    (rev, format!("✓{}", pinned))
+                } else {
+                    ("—".to_string(), "not cloned".to_string())
+                };
+
+                gs_table.add_row(vec![
+                    &Output::repo_name(&name),
+                    &rev,
+                    &status_str,
+                ]);
+            }
+
+            gs_table.print();
+        }
     }
 
     // Summary

@@ -6,6 +6,7 @@
 //! - Existing local directories (--from-dirs)
 
 use crate::cli::output::Output;
+use crate::core::gripspace::{ensure_gripspace, resolve_all_gripspaces};
 use crate::core::manifest::{Manifest, PlatformType, RepoConfig};
 use crate::git::clone_repo;
 use crate::platform;
@@ -203,6 +204,41 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
     // Create state file
     let state_path = gitgrip_dir.join("state.json");
     std::fs::write(&state_path, "{}")?;
+
+    // Clone gripspaces if manifest includes them
+    let manifest_content = std::fs::read_to_string(&manifest_path)?;
+    let mut manifest = Manifest::parse_raw(&manifest_content)?;
+
+    if let Some(ref gripspaces) = manifest.gripspaces {
+        if !gripspaces.is_empty() {
+            let gripspaces_dir = gitgrip_dir.join("gripspaces");
+            let spinner = Output::spinner(&format!(
+                "Cloning {} gripspace(s)...",
+                gripspaces.len()
+            ));
+
+            for gs_config in gripspaces {
+                if let Err(e) = ensure_gripspace(&gripspaces_dir, gs_config) {
+                    spinner.finish_with_message(format!("Failed to clone gripspace: {}", e));
+                    Output::warning(&format!("Gripspace clone failed: {}", e));
+                    // Continue without gripspaces
+                    break;
+                }
+            }
+
+            spinner.finish_with_message("Gripspaces cloned");
+
+            // Resolve gripspace includes
+            if let Err(e) = resolve_all_gripspaces(&mut manifest, &gripspaces_dir) {
+                Output::warning(&format!("Gripspace resolution failed: {}", e));
+            }
+        }
+    }
+
+    // Validate the (possibly merged) manifest
+    if let Err(e) = manifest.validate() {
+        Output::warning(&format!("Manifest validation: {}", e));
+    }
 
     println!();
     Output::success("Workspace initialized successfully!");
@@ -595,6 +631,7 @@ fn generate_manifest(repos: &[DiscoveredRepo]) -> Manifest {
 
     Manifest {
         version: 1,
+        gripspaces: None,
         manifest: None,
         repos: repo_configs,
         settings: Default::default(),

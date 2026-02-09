@@ -354,6 +354,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let manifest = Manifest {
             version: 1,
+            gripspaces: None,
             manifest: None,
             repos: HashMap::new(),
             settings: Default::default(),
@@ -373,11 +374,13 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let manifest = Manifest {
             version: 1,
+            gripspaces: None,
             manifest: Some(ManifestRepoConfig {
                 url: "git@github.com:user/manifest.git".to_string(),
                 default_branch: "main".to_string(),
                 copyfile: None,
                 linkfile: None,
+                composefile: None,
                 platform: None,
             }),
             repos: HashMap::new(),
@@ -405,11 +408,13 @@ mod tests {
 
         let manifest = Manifest {
             version: 1,
+            gripspaces: None,
             manifest: Some(ManifestRepoConfig {
                 url: "git@github.com:user/manifest.git".to_string(),
                 default_branch: "main".to_string(),
                 copyfile: None,
                 linkfile: None,
+                composefile: None,
                 platform: None,
             }),
             repos: HashMap::new(),
