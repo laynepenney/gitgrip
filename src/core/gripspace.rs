@@ -3,6 +3,14 @@
 //! Gripspaces allow composable manifest inheritance. A workspace manifest can
 //! include one or more gripspace repositories, inheriting their repos, scripts,
 //! env vars, hooks, and linkfiles. Local values always win on conflict.
+//!
+//! ## Merge ordering
+//!
+//! Resolution is depth-first. For hooks (post_sync, post_checkout), the ordering
+//! is: deepest gripspace hooks first, then their parent's hooks, then the local
+//! workspace hooks last. Maps (repos, scripts, env) use `entry().or_insert()` so
+//! the first definition wins — local definitions take priority because they are
+//! inserted after gripspace values, overriding by key.
 
 use crate::core::manifest::{
     GripspaceConfig, HookCommand, Manifest, ManifestError, WorkspaceConfig, WorkspaceHooks,
@@ -186,12 +194,14 @@ pub fn ensure_gripspace(
         ManifestError::GripspaceError(format!("Failed to create spaces dir: {}", e))
     })?;
 
-    clone_repo(&config.url, &gripspace_path, None).map_err(|e| {
-        ManifestError::GripspaceError(format!(
+    if let Err(e) = clone_repo(&config.url, &gripspace_path, None) {
+        // Clean up partial clone to avoid confusing subsequent runs
+        let _ = std::fs::remove_dir_all(&gripspace_path);
+        return Err(ManifestError::GripspaceError(format!(
             "Failed to clone gripspace '{}': {}",
             config.url, e
-        ))
-    })?;
+        )));
+    }
 
     // Checkout specific revision if specified
     if let Some(ref rev) = config.rev {
@@ -382,6 +392,18 @@ pub fn resolve_all_gripspaces(
 
     // Linkfiles from gripspaces are tracked separately — they'll be applied by the link command
     // We store them as manifest-level linkfiles, with local ones overriding by dest
+    // Create the manifest config if it doesn't exist and there are gripspace files to merge
+    if manifest.manifest.is_none() && (!merged_linkfiles.is_empty() || !merged_copyfiles.is_empty())
+    {
+        manifest.manifest = Some(crate::core::manifest::ManifestRepoConfig {
+            url: String::new(),
+            default_branch: "main".to_string(),
+            copyfile: None,
+            linkfile: None,
+            composefile: None,
+            platform: None,
+        });
+    }
     if let Some(ref mut manifest_config) = manifest.manifest {
         if !merged_linkfiles.is_empty() {
             let local_linkfiles = manifest_config.linkfile.take().unwrap_or_default();
@@ -481,14 +503,19 @@ fn resolve_gripspace_recursive(
         )));
     };
 
-    let gs_manifest = Manifest::parse_raw(&std::fs::read_to_string(&manifest_path).map_err(
-        |e| {
-            ManifestError::GripspaceError(format!(
-                "Failed to read gripspace '{}' manifest: {}",
-                name, e
-            ))
-        },
-    )?)?;
+    let gs_content = std::fs::read_to_string(&manifest_path).map_err(|e| {
+        ManifestError::GripspaceError(format!(
+            "Failed to read gripspace '{}' manifest: {}",
+            name, e
+        ))
+    })?;
+    let gs_manifest = Manifest::parse_raw(&gs_content)?;
+    gs_manifest.validate_as_gripspace().map_err(|e| {
+        ManifestError::GripspaceError(format!(
+            "Gripspace '{}' manifest validation failed: {}",
+            name, e
+        ))
+    })?;
 
     // Recursively resolve nested gripspaces first — ensure they are cloned
     if let Some(ref nested_gripspaces) = gs_manifest.gripspaces {

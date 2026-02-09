@@ -10,7 +10,13 @@
   - Command path resolution now prefers canonical layout and falls back to legacy.
 - Not yet implemented:
   - Loading and merging `.gitgrip/spaces/local/gripspace.yml`
-  - `include:` expansion across gripspace files
+  - `include:` expansion across local gripspace files (see below)
+- Implemented (PR #270):
+  - `gripspaces:` directive for composable manifest inheritance via external git repos
+  - Gripspace repos cloned into `.gitgrip/spaces/<name>/` alongside `main/` and `local/`
+  - Reserved name handling (`main`, `local` auto-suffixed to `main-1`, etc.)
+  - DAG-aware resolution with cycle detection
+  - `composefile:` for concatenating parts from gripspaces and local manifest
 
 ## Goals
 
@@ -52,9 +58,23 @@ Proposed merge rules:
   - `groups`: union with stable order (main first, then new local entries).
   - `copyfile` / `linkfile`: concatenate with de-dup by `(src,dest)`, local wins on duplicate.
 
-## `include:` Design
+## `gripspaces:` — Remote Includes (Implemented)
 
-Proposed schema extension (top-level):
+Gripspaces are external git repos that contribute repos, scripts, env, hooks, and file configs
+to a workspace. They are declared at the top level:
+
+```yaml
+gripspaces:
+  - url: "https://github.com/org/base-gripspace.git"
+    rev: "v1.0"  # optional pin
+```
+
+Resolution happens at `gr sync` / `gr init` time. Gripspace repos are cloned into
+`.gitgrip/spaces/<name>/` and their manifests are merged depth-first with local-wins semantics.
+
+## `include:` — Local File Includes (Not Yet Implemented)
+
+Proposed schema extension for splitting a large manifest into local files without a separate repo:
 
 ```yaml
 include:
@@ -69,6 +89,9 @@ Rules:
 - Current file overrides included content.
 - Cycles are rejected with a clear error chain.
 - Missing include file is a hard error by default.
+
+Note: This is distinct from `gripspaces:` which clones external repos. `include:` is for
+local file composition only and does not require network access.
 
 ## Validation and Guardrails
 

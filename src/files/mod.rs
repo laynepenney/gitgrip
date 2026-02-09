@@ -29,11 +29,19 @@ fn validate_relative_source_path(path: &str, field: &str) -> Result<(), String> 
 }
 
 fn validate_gripspace_name(name: &str) -> Result<(), String> {
-    if name.is_empty() {
-        return Err("Invalid gripspace name: empty".to_string());
+    if name.is_empty() || name == "." {
+        return Err(format!("Invalid gripspace name: '{}'", name));
     }
 
-    if name.contains("..") || name.contains('/') || name.contains('\\') {
+    // Allowlist: alphanumeric, hyphens, underscores, dots
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(format!("Invalid gripspace name: '{}'", name));
+    }
+
+    if name.contains("..") {
         return Err(format!("Invalid gripspace name: '{}'", name));
     }
 

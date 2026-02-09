@@ -445,6 +445,71 @@ impl Manifest {
         Ok(())
     }
 
+    /// Validate a gripspace manifest (allows empty repos since gripspaces may only contribute
+    /// scripts, hooks, env, or file configs).
+    pub fn validate_as_gripspace(&self) -> Result<(), ManifestError> {
+        // Validate each repo config (if any)
+        for (name, repo) in &self.repos {
+            self.validate_repo_config(name, repo)?;
+        }
+
+        // Validate manifest config if present
+        if let Some(ref manifest_config) = self.manifest {
+            self.validate_file_configs(
+                "manifest",
+                &manifest_config.copyfile,
+                &manifest_config.linkfile,
+            )?;
+            if let Some(ref composefiles) = manifest_config.composefile {
+                for cf in composefiles {
+                    if cf.dest.is_empty() {
+                        return Err(ManifestError::ValidationError(
+                            "Composefile has empty dest".to_string(),
+                        ));
+                    }
+                    if path_escapes_boundary(&cf.dest) {
+                        return Err(ManifestError::PathTraversal(format!(
+                            "Composefile dest escapes boundary: {}",
+                            cf.dest
+                        )));
+                    }
+                    for part in &cf.parts {
+                        if part.src.is_empty() {
+                            return Err(ManifestError::ValidationError(format!(
+                                "Composefile '{}' has a part with empty src",
+                                cf.dest
+                            )));
+                        }
+                        if path_escapes_boundary(&part.src) {
+                            return Err(ManifestError::PathTraversal(format!(
+                                "Composefile '{}' part src escapes boundary: {}",
+                                cf.dest, part.src
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Validate gripspace configs
+        if let Some(ref gripspaces) = self.gripspaces {
+            for gs in gripspaces {
+                if gs.url.is_empty() {
+                    return Err(ManifestError::ValidationError(
+                        "Gripspace has empty URL".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Validate workspace scripts
+        if let Some(ref workspace) = self.workspace {
+            self.validate_workspace_config(workspace)?;
+        }
+
+        Ok(())
+    }
+
     fn validate_repo_config(&self, name: &str, repo: &RepoConfig) -> Result<(), ManifestError> {
         // URL must be non-empty
         if repo.url.is_empty() {

@@ -42,9 +42,9 @@ manifest:
     - dest: "CLAUDE.md"           # Destination path relative to workspace root
       separator: "\n\n"           # Optional separator between parts (default: "\n\n")
       parts:
-        - gripspace: "base-gripspace"  # Read from .gitgrip/gripspaces/base-gripspace/
+        - gripspace: "base-gripspace"  # Read from .gitgrip/spaces/base-gripspace/
           src: "CODI.md"               # Source path relative to gripspace root
-        - src: "PRIVATE_DOCS.md"       # Read from .gitgrip/manifests/ (local manifest)
+        - src: "PRIVATE_DOCS.md"       # Read from manifest content dir (spaces/main/ or manifests/)
 
   # Platform override for self-hosted instances (optional)
   platform:

@@ -101,7 +101,7 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
     // Process manifest repo links
     if let Some(ref manifest_config) = manifest.manifest {
         let manifests_dir = manifest_paths::resolve_manifest_content_dir(workspace_root);
-        let gripspaces_dir = manifest_paths::spaces_dir(workspace_root);
+        let spaces_dir = manifest_paths::spaces_dir(workspace_root);
 
         // Check manifest copyfiles
         if let Some(ref copyfiles) = manifest_config.copyfile {
@@ -110,7 +110,7 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
                 let source = match resolve_file_source(
                     &copyfile.src,
                     &manifests_dir,
-                    &gripspaces_dir,
+                    &spaces_dir,
                 ) {
                     Ok(p) => p,
                     Err(e) => {
@@ -155,7 +155,7 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
                 let source = match resolve_file_source(
                     &linkfile.src,
                     &manifests_dir,
-                    &gripspaces_dir,
+                    &spaces_dir,
                 ) {
                     Ok(p) => p,
                     Err(e) => {
@@ -381,7 +381,7 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
     // Apply manifest repo links
     if let Some(ref manifest_config) = manifest.manifest {
         let manifests_dir = manifest_paths::resolve_manifest_content_dir(workspace_root);
-        let gripspaces_dir = manifest_paths::spaces_dir(workspace_root);
+        let spaces_dir = manifest_paths::spaces_dir(workspace_root);
 
         if manifests_dir.exists() {
             // Apply manifest copyfiles
@@ -390,7 +390,7 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                     let source = match resolve_file_source(
                         &copyfile.src,
                         &manifests_dir,
-                        &gripspaces_dir,
+                        &spaces_dir,
                     ) {
                         Ok(p) => p,
                         Err(e) => {
@@ -440,7 +440,7 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                     let source = match resolve_file_source(
                         &linkfile.src,
                         &manifests_dir,
-                        &gripspaces_dir,
+                        &spaces_dir,
                     ) {
                         Ok(p) => p,
                         Err(e) => {
@@ -528,7 +528,7 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
             // Apply composefiles
             if let Some(ref composefiles) = manifest_config.composefile {
                 if !composefiles.is_empty() {
-                    match process_composefiles(workspace_root, &manifests_dir, &gripspaces_dir, composefiles) {
+                    match process_composefiles(workspace_root, &manifests_dir, &spaces_dir, composefiles) {
                         Ok(()) => {
                             for compose in composefiles {
                                 Output::success(&format!("[compose] -> {}", compose.dest));
