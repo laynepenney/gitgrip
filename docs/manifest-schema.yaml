@@ -1,8 +1,8 @@
 # gitgrip Manifest Schema Specification
 # Version: 1
 #
-# This document describes the structure of a gitgrip manifest.yaml file.
-# The manifest defines a multi-repository workspace configuration.
+# This document describes the structure of a gitgrip gripspace.yml file.
+# The workspace file defines a multi-repository workspace configuration.
 
 # Schema version (required)
 version: 1

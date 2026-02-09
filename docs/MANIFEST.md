@@ -1,6 +1,8 @@
-# Manifest Reference
+# Gripspace Reference
 
-The manifest file (`manifest.yaml`) defines your multi-repository workspace configuration. It is typically located at `.gitgrip/manifests/manifest.yaml`.
+The workspace file (`gripspace.yml`) defines your multi-repository workspace configuration. The canonical location is `.gitgrip/spaces/main/gripspace.yml`.
+
+Legacy locations (`.gitgrip/manifests/manifest.yaml` and `.gitgrip/manifests/manifest.yml`) are still read for backward compatibility.
 
 ## Quick Start
 

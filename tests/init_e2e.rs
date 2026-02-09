@@ -51,6 +51,10 @@ fn run_init_from_dirs(workspace_dir: &std::path::Path) -> std::process::Output {
         .expect("Failed to run gr init")
 }
 
+fn workspace_manifest_path(workspace: &std::path::Path) -> std::path::PathBuf {
+    workspace.join(".gitgrip/spaces/main/gripspace.yml")
+}
+
 #[test]
 fn test_init_from_dirs_discovers_repos() {
     let temp = TempDir::new().unwrap();
@@ -72,8 +76,8 @@ fn test_init_from_dirs_discovers_repos() {
     assert!(output.status.success(), "init failed: {:?}", output);
 
     // Verify manifest created
-    let manifest_path = workspace.join(".gitgrip/manifests/manifest.yaml");
-    assert!(manifest_path.exists(), "manifest.yaml not created");
+    let manifest_path = workspace_manifest_path(workspace);
+    assert!(manifest_path.exists(), "gripspace.yml not created");
 
     // Verify manifest content
     let manifest_content = fs::read_to_string(&manifest_path).unwrap();
@@ -116,8 +120,8 @@ fn test_init_from_dirs_handles_mixed_platforms() {
     );
 
     // Verify manifest created
-    let manifest_path = workspace.join(".gitgrip/manifests/manifest.yaml");
-    assert!(manifest_path.exists(), "manifest.yaml not created");
+    let manifest_path = workspace_manifest_path(workspace);
+    assert!(manifest_path.exists(), "gripspace.yml not created");
 
     // Both repos should be included
     let manifest_content = fs::read_to_string(&manifest_path).unwrap();
@@ -166,8 +170,8 @@ fn test_init_from_dirs_handles_repos_without_remotes() {
     );
 
     // Verify manifest created
-    let manifest_path = workspace.join(".gitgrip/manifests/manifest.yaml");
-    assert!(manifest_path.exists(), "manifest.yaml not created");
+    let manifest_path = workspace_manifest_path(workspace);
+    assert!(manifest_path.exists(), "gripspace.yml not created");
 
     // Local repo should be included with placeholder URL
     let manifest_content = fs::read_to_string(&manifest_path).unwrap();
@@ -212,8 +216,8 @@ fn test_init_from_dirs_detects_azure_repos() {
     );
 
     // Verify manifest created
-    let manifest_path = workspace.join(".gitgrip/manifests/manifest.yaml");
-    assert!(manifest_path.exists(), "manifest.yaml not created");
+    let manifest_path = workspace_manifest_path(workspace);
+    assert!(manifest_path.exists(), "gripspace.yml not created");
 
     // Both repos should be included
     let manifest_content = fs::read_to_string(&manifest_path).unwrap();
@@ -299,7 +303,7 @@ fn test_init_skips_hidden_directories() {
     assert!(output.status.success(), "init failed: {:?}", output);
 
     // Verify manifest only includes visible repo
-    let manifest_path = workspace.join(".gitgrip/manifests/manifest.yaml");
+    let manifest_path = workspace_manifest_path(workspace);
     let manifest_content = fs::read_to_string(&manifest_path).unwrap();
 
     assert!(

@@ -3,6 +3,7 @@
 use crate::cli::output::{Output, Table};
 use crate::core::gripspace::{get_gripspace_rev, gripspace_name};
 use crate::core::manifest::Manifest;
+use crate::core::manifest_paths;
 use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::path_exists;
 use crate::git::status::{get_repo_status, RepoStatus};
@@ -89,37 +90,43 @@ pub fn run_status(
     }
 
     // Show manifest worktree status if it exists
-    let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
-    let manifests_git_dir = manifests_dir.join(".git");
-    if manifests_git_dir.exists() && path_exists(&manifests_dir) {
-        println!();
-        // Create a minimal RepoInfo for the manifest
-        let manifest_repo_info = RepoInfo {
-            name: "manifest".to_string(),
-            url: String::new(),
-            path: ".gitgrip/manifests".to_string(),
-            absolute_path: manifests_dir.clone(),
-            default_branch: "main".to_string(),
-            owner: String::new(),
-            repo: "manifests".to_string(),
-            platform_type: crate::core::manifest::PlatformType::GitHub,
-            platform_base_url: None,
-            project: None,
-            reference: false,
-            groups: Vec::new(),
-        };
+    if let Some(manifests_dir) = manifest_paths::resolve_manifest_repo_dir(workspace_root) {
+        let manifests_git_dir = manifests_dir.join(".git");
+        if manifests_git_dir.exists() && path_exists(&manifests_dir) {
+            println!();
+            let rel_path = manifests_dir
+                .strip_prefix(workspace_root)
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| manifest_paths::MAIN_SPACE_DIR.to_string());
+            // Create a minimal RepoInfo for the manifest
+            let manifest_repo_info = RepoInfo {
+                name: "manifest".to_string(),
+                url: String::new(),
+                path: rel_path,
+                absolute_path: manifests_dir.clone(),
+                default_branch: "main".to_string(),
+                owner: String::new(),
+                repo: "manifests".to_string(),
+                platform_type: crate::core::manifest::PlatformType::GitHub,
+                platform_base_url: None,
+                project: None,
+                reference: false,
+                groups: Vec::new(),
+            };
 
-        let status = get_repo_status(&manifest_repo_info);
-        let status_str = format_status(&status, verbose);
-        let main_str = format_main_comparison(&status, &manifest_repo_info.default_branch);
-        let mut manifest_table = Table::new(vec!["Repo", "Branch", "Status", "vs main"]);
-        manifest_table.add_row(vec![
-            &Output::repo_name("manifest"),
-            &Output::branch_name(&status.branch),
-            &status_str,
-            &main_str,
-        ]);
-        manifest_table.print();
+            let status = get_repo_status(&manifest_repo_info);
+            let status_str = format_status(&status, verbose);
+            let main_str = format_main_comparison(&status, &manifest_repo_info.default_branch);
+            let mut manifest_table = Table::new(vec!["Repo", "Branch", "Status", "vs main"]);
+            manifest_table.add_row(vec![
+                &Output::repo_name("manifest"),
+                &Output::branch_name(&status.branch),
+                &status_str,
+                &main_str,
+            ]);
+            manifest_table.print();
+        }
     }
 
     // Show gripspace status

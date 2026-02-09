@@ -7,6 +7,7 @@
 use crate::core::manifest::{
     GripspaceConfig, HookCommand, Manifest, ManifestError, WorkspaceConfig, WorkspaceHooks,
 };
+use crate::core::manifest_paths;
 use crate::git::clone_repo;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -174,7 +175,8 @@ pub fn resolve_all_gripspaces(
         _ => return Ok(()),
     };
 
-    let mut visited = HashSet::new();
+    let mut active_stack = HashSet::new();
+    let mut resolved = HashSet::new();
     let mut merged_repos = HashMap::new();
     let mut merged_scripts = HashMap::new();
     let mut merged_env = HashMap::new();
@@ -188,7 +190,8 @@ pub fn resolve_all_gripspaces(
         resolve_gripspace_recursive(
             gs_config,
             gripspaces_dir,
-            &mut visited,
+            &mut active_stack,
+            &mut resolved,
             0,
             &mut merged_repos,
             &mut merged_scripts,
@@ -289,7 +292,8 @@ pub fn resolve_all_gripspaces(
 fn resolve_gripspace_recursive(
     config: &GripspaceConfig,
     gripspaces_dir: &Path,
-    visited: &mut HashSet<String>,
+    active_stack: &mut HashSet<String>,
+    resolved: &mut HashSet<String>,
     depth: usize,
     merged_repos: &mut HashMap<String, crate::core::manifest::RepoConfig>,
     merged_scripts: &mut HashMap<String, crate::core::manifest::WorkspaceScript>,
@@ -306,8 +310,12 @@ fn resolve_gripspace_recursive(
         )));
     }
 
-    // Cycle detection
-    if !visited.insert(config.url.clone()) {
+    if resolved.contains(&config.url) {
+        return Ok(());
+    }
+
+    // Cycle detection uses the current DFS stack only.
+    if !active_stack.insert(config.url.clone()) {
         return Err(ManifestError::GripspaceError(format!(
             "Circular gripspace include detected: '{}'",
             config.url
@@ -315,16 +323,16 @@ fn resolve_gripspace_recursive(
     }
 
     let name = gripspace_name(&config.url);
-    let gripspace_path = gripspaces_dir.join(&name);
+    let gripspace_path = ensure_gripspace(gripspaces_dir, config)?;
 
     // Load the gripspace's manifest
-    let manifest_path = gripspace_path.join("manifest.yaml");
-    if !manifest_path.exists() {
+    let Some(manifest_path) = manifest_paths::resolve_manifest_file_in_dir(&gripspace_path) else {
+        active_stack.remove(&config.url);
         return Err(ManifestError::GripspaceError(format!(
-            "Gripspace '{}' has no manifest.yaml",
+            "Gripspace '{}' has no gripspace manifest (expected gripspace.yml or manifest.yaml)",
             name
         )));
-    }
+    };
 
     let gs_manifest = Manifest::parse_raw(&std::fs::read_to_string(&manifest_path).map_err(
         |e| {
@@ -341,7 +349,8 @@ fn resolve_gripspace_recursive(
             resolve_gripspace_recursive(
                 nested_config,
                 gripspaces_dir,
-                visited,
+                active_stack,
+                resolved,
                 depth + 1,
                 merged_repos,
                 merged_scripts,
@@ -408,6 +417,9 @@ fn resolve_gripspace_recursive(
             }
         }
     }
+
+    active_stack.remove(&config.url);
+    resolved.insert(config.url.clone());
 
     Ok(())
 }
@@ -510,7 +522,7 @@ mod tests {
     fn test_resolve_missing_gripspace_manifest() {
         let temp = tempfile::tempdir().unwrap();
         let gripspaces_dir = temp.path().join("gripspaces");
-        // Create gripspace dir but no manifest.yaml
+        // Create gripspace dir but no manifest file
         std::fs::create_dir_all(gripspaces_dir.join("test-gripspace")).unwrap();
 
         let mut manifest = Manifest {
@@ -528,7 +540,7 @@ mod tests {
         let result = resolve_all_gripspaces(&mut manifest, &gripspaces_dir);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("no manifest.yaml"));
+        assert!(err.contains("no gripspace manifest"));
     }
 
     #[test]
@@ -717,5 +729,90 @@ workspace:
             scripts.get("test").unwrap().command.as_deref(),
             Some("echo test from gripspace")
         );
+    }
+
+    #[test]
+    fn test_resolve_shared_nested_include_not_treated_as_cycle() {
+        let temp = tempfile::tempdir().unwrap();
+        let gripspaces_dir = temp.path();
+
+        for name in ["a", "b", "c", "d"] {
+            std::fs::create_dir_all(gripspaces_dir.join(name)).unwrap();
+        }
+
+        // A -> [B, C], B -> [D], C -> [D] should be valid (DAG, not a cycle).
+        std::fs::write(
+            gripspaces_dir.join("a").join("gripspace.yml"),
+            r#"
+version: 1
+gripspaces:
+  - url: https://github.com/org/b.git
+  - url: https://github.com/org/c.git
+repos:
+  a-repo:
+    url: https://github.com/org/a-repo.git
+    path: ./a-repo
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            gripspaces_dir.join("b").join("gripspace.yml"),
+            r#"
+version: 1
+gripspaces:
+  - url: https://github.com/org/d.git
+repos:
+  b-repo:
+    url: https://github.com/org/b-repo.git
+    path: ./b-repo
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            gripspaces_dir.join("c").join("gripspace.yml"),
+            r#"
+version: 1
+gripspaces:
+  - url: https://github.com/org/d.git
+repos:
+  c-repo:
+    url: https://github.com/org/c-repo.git
+    path: ./c-repo
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            gripspaces_dir.join("d").join("gripspace.yml"),
+            r#"
+version: 1
+repos:
+  d-repo:
+    url: https://github.com/org/d-repo.git
+    path: ./d-repo
+"#,
+        )
+        .unwrap();
+
+        let mut manifest = Manifest {
+            version: 1,
+            gripspaces: Some(vec![GripspaceConfig {
+                url: "https://github.com/org/a.git".to_string(),
+                rev: None,
+            }]),
+            manifest: None,
+            repos: HashMap::new(),
+            settings: Default::default(),
+            workspace: None,
+        };
+
+        let result = resolve_all_gripspaces(&mut manifest, gripspaces_dir);
+        assert!(result.is_ok(), "{}", result.unwrap_err());
+        assert!(manifest.repos.contains_key("a-repo"));
+        assert!(manifest.repos.contains_key("b-repo"));
+        assert!(manifest.repos.contains_key("c-repo"));
+        assert!(manifest.repos.contains_key("d-repo"));
     }
 }

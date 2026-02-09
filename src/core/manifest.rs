@@ -1,6 +1,6 @@
 //! Manifest parsing and validation
 //!
-//! The manifest file (manifest.yaml) defines the multi-repo workspace configuration.
+//! The workspace file (gripspace.yml) defines the multi-repo workspace configuration.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

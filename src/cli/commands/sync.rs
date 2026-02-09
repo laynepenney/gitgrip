@@ -6,6 +6,7 @@ use crate::core::gripspace::{
 };
 use crate::core::griptree::GriptreeConfig;
 use crate::core::manifest::Manifest;
+use crate::core::manifest_paths;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::files::process_composefiles;
 use crate::git::branch::{checkout_branch_at_upstream, checkout_detached, has_commits_ahead};
@@ -185,20 +186,24 @@ fn sync_gripspaces(
         println!();
     }
 
-    // Re-resolve the merged manifest
-    let manifest_path = workspace_root
-        .join(".gitgrip")
-        .join("manifests")
-        .join("manifest.yaml");
-
-    let mut resolved = if manifest_path.exists() {
-        Manifest::parse_raw(&std::fs::read_to_string(&manifest_path)?)?
+    // Re-resolve the merged manifest from whichever layout is present.
+    let manifest_path = manifest_paths::resolve_workspace_manifest_path(workspace_root);
+    let mut resolved = if let Some(path) = manifest_path {
+        Manifest::parse_raw(&std::fs::read_to_string(path)?)?
     } else {
         manifest.clone()
     };
 
     if let Err(e) = resolve_all_gripspaces(&mut resolved, &gripspaces_dir) {
         Output::warning(&format!("Gripspace resolution failed: {}", e));
+        return Ok(manifest.clone());
+    }
+
+    if let Err(e) = resolved.validate() {
+        Output::warning(&format!(
+            "Resolved manifest validation failed after gripspace sync: {}",
+            e
+        ));
         return Ok(manifest.clone());
     }
 

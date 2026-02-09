@@ -35,7 +35,7 @@ pub fn run_run(
             _ => {
                 println!("  No scripts defined in manifest.");
                 println!();
-                println!("Define scripts in manifest.yaml:");
+                println!("Define scripts in gripspace.yml:");
                 println!("  workspace:");
                 println!("    scripts:");
                 println!("      build:");
@@ -83,7 +83,7 @@ pub fn run_run(
     } else {
         anyhow::bail!(
             "Script '{}' has no command or steps defined. \
-             Check your manifest.yaml workspace.scripts section.",
+             Check your gripspace.yml workspace.scripts section.",
             name
         );
     }

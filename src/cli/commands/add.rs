@@ -2,6 +2,7 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
+use crate::core::manifest_paths;
 use crate::core::repo::RepoInfo;
 use crate::git::cache::invalidate_status_cache;
 use crate::git::{get_workdir, open_repo, path_exists};
@@ -48,20 +49,21 @@ pub fn run_add(
     }
 
     // Also handle manifest worktree if it exists (in griptree scenario)
-    let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
-    let manifests_git_dir = manifests_dir.join(".git");
-    if manifests_git_dir.exists() && path_exists(&manifests_dir) {
-        match open_repo(&manifests_dir) {
-            Ok(git_repo) => {
-                let staged = stage_files(&git_repo, &manifests_dir, files)?;
-                if staged > 0 {
-                    Output::success(&format!("manifest: staged {} file(s)", staged));
-                    total_staged += staged;
-                    repos_with_changes += 1;
-                    invalidate_status_cache(&manifests_dir);
+    if let Some(manifests_dir) = manifest_paths::resolve_manifest_repo_dir(workspace_root) {
+        let manifests_git_dir = manifests_dir.join(".git");
+        if manifests_git_dir.exists() && path_exists(&manifests_dir) {
+            match open_repo(&manifests_dir) {
+                Ok(git_repo) => {
+                    let staged = stage_files(&git_repo, &manifests_dir, files)?;
+                    if staged > 0 {
+                        Output::success(&format!("manifest: staged {} file(s)", staged));
+                        total_staged += staged;
+                        repos_with_changes += 1;
+                        invalidate_status_cache(&manifests_dir);
+                    }
                 }
+                Err(e) => Output::warning(&format!("manifest: {}", e)),
             }
-            Err(e) => Output::warning(&format!("manifest: {}", e)),
         }
     }
 
