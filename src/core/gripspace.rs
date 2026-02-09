@@ -35,10 +35,7 @@ pub fn gripspace_name(url: &str) -> String {
 }
 
 fn gripspace_identity(config: &GripspaceConfig) -> String {
-    let mut url = config.url.trim_end_matches('/').to_string();
-    if let Some(stripped) = url.strip_suffix(".git") {
-        url = stripped.to_string();
-    }
+    let url = normalize_url(&config.url);
     match &config.rev {
         Some(rev) if !rev.is_empty() => format!("{}#{}", url, rev),
         _ => url,
@@ -457,13 +454,14 @@ fn resolve_gripspace_recursive(
         )));
     }
 
-    let resolved_key = gripspace_identity(config);
-    if resolved.contains(&resolved_key) {
+    let identity_key = gripspace_identity(config);
+    if resolved.contains(&identity_key) {
         return Ok(());
     }
 
-    // Cycle detection uses normalized gripspace name on the active DFS stack.
-    if !active_stack.insert(name.clone()) {
+    // Cycle detection uses normalized gripspace identity so distinct remotes
+    // with the same basename (e.g., org1/foo vs org2/foo) don't false-positive.
+    if !active_stack.insert(identity_key.clone()) {
         return Err(ManifestError::GripspaceError(format!(
             "Circular gripspace include detected: '{}' (from URL: '{}')",
             name, config.url
@@ -476,7 +474,7 @@ fn resolve_gripspace_recursive(
 
     // Load the gripspace's manifest
     let Some(manifest_path) = manifest_paths::resolve_manifest_file_in_dir(&gripspace_path) else {
-        active_stack.remove(&name);
+        active_stack.remove(&identity_key);
         return Err(ManifestError::GripspaceError(format!(
             "Gripspace '{}' has no gripspace manifest (expected gripspace.yml or manifest.yaml)",
             name
@@ -570,8 +568,8 @@ fn resolve_gripspace_recursive(
         }
     }
 
-    active_stack.remove(&name);
-    resolved.insert(resolved_key);
+    active_stack.remove(&identity_key);
+    resolved.insert(identity_key);
 
     Ok(())
 }
@@ -1118,6 +1116,81 @@ repos:
         assert!(manifest.repos.contains_key("b-repo"));
         assert!(manifest.repos.contains_key("c-repo"));
         assert!(manifest.repos.contains_key("d-repo"));
+    }
+
+    #[test]
+    fn test_nested_distinct_remotes_same_basename_not_cycle() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces_dir = temp.path();
+
+        // root-space includes two different remotes that both end in "common.git".
+        std::fs::create_dir_all(spaces_dir.join("root-space")).unwrap();
+        std::fs::create_dir_all(spaces_dir.join("common")).unwrap();
+        std::fs::create_dir_all(spaces_dir.join("common-2")).unwrap();
+
+        init_git_with_origin(
+            &spaces_dir.join("root-space"),
+            "https://github.com/root/root-space.git",
+        );
+        init_git_with_origin(&spaces_dir.join("common"), "https://github.com/org1/common.git");
+        init_git_with_origin(&spaces_dir.join("common-2"), "https://github.com/org2/common.git");
+
+        std::fs::write(
+            spaces_dir.join("root-space").join("gripspace.yml"),
+            r#"
+version: 1
+gripspaces:
+  - url: https://github.com/org1/common.git
+  - url: https://github.com/org2/common.git
+repos:
+  root-repo:
+    url: https://github.com/root/repo.git
+    path: ./root
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            spaces_dir.join("common").join("gripspace.yml"),
+            r#"
+version: 1
+repos:
+  common-one:
+    url: https://github.com/org1/repo.git
+    path: ./one
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            spaces_dir.join("common-2").join("gripspace.yml"),
+            r#"
+version: 1
+repos:
+  common-two:
+    url: https://github.com/org2/repo.git
+    path: ./two
+"#,
+        )
+        .unwrap();
+
+        let mut manifest = Manifest {
+            version: 1,
+            gripspaces: Some(vec![GripspaceConfig {
+                url: "https://github.com/root/root-space.git".to_string(),
+                rev: None,
+            }]),
+            manifest: None,
+            repos: HashMap::new(),
+            settings: Default::default(),
+            workspace: None,
+        };
+
+        let result = resolve_all_gripspaces(&mut manifest, spaces_dir);
+        assert!(result.is_ok(), "{}", result.unwrap_err());
+        assert!(manifest.repos.contains_key("root-repo"));
+        assert!(manifest.repos.contains_key("common-one"));
+        assert!(manifest.repos.contains_key("common-two"));
     }
 
     #[test]
