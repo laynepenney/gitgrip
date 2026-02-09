@@ -146,6 +146,11 @@ pub fn resolve_file_source(
 
             return Ok(gripspaces_dir.join(name).join(path));
         }
+        // Has "gripspace:" prefix but no second colon — malformed
+        return Err(format!(
+            "Malformed gripspace source '{}': expected format 'gripspace:<name>:<path>'",
+            src
+        ));
     }
     validate_relative_source_path(src, "manifest path")?;
     Ok(repo_path.join(src))
@@ -443,5 +448,48 @@ mod tests {
         // Only the valid part should be written
         let content = std::fs::read_to_string(workspace.join("output.md")).unwrap();
         assert_eq!(content, "ok");
+    }
+
+    #[test]
+    fn test_resolve_file_source_malformed_gripspace_no_second_colon() {
+        let repo_path = Path::new("/workspace/repo");
+        let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
+        let result = resolve_file_source("gripspace:only-name", repo_path, gripspaces_dir);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Malformed gripspace source"));
+    }
+
+    #[test]
+    fn test_resolve_file_source_backslash_path() {
+        let repo_path = Path::new("/workspace/repo");
+        let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
+        let result =
+            resolve_file_source("gripspace:valid:\\etc\\passwd", repo_path, gripspaces_dir);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_composefiles_dest_backslash_rejected() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path();
+        let manifests_dir = workspace.join(".gitgrip").join("manifests");
+        let gripspaces_dir = workspace.join(".gitgrip").join("gripspaces");
+
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+        std::fs::create_dir_all(&gripspaces_dir).unwrap();
+        std::fs::write(manifests_dir.join("file.md"), "content").unwrap();
+
+        let composefiles = vec![ComposeFileConfig {
+            dest: "\\escaped.md".to_string(),
+            parts: vec![ComposeFilePart {
+                gripspace: None,
+                src: "file.md".to_string(),
+            }],
+            separator: None,
+        }];
+
+        let result =
+            process_composefiles(workspace, &manifests_dir, &gripspaces_dir, &composefiles);
+        assert!(result.is_err());
     }
 }
