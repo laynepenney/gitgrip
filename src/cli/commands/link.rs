@@ -107,8 +107,18 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
         if let Some(ref copyfiles) = manifest_config.copyfile {
             for copyfile in copyfiles {
                 total_links += 1;
-                let source =
-                    resolve_file_source(&copyfile.src, &manifests_dir, &gripspaces_dir);
+                let source = match resolve_file_source(
+                    &copyfile.src,
+                    &manifests_dir,
+                    &gripspaces_dir,
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        broken_links += 1;
+                        println!("  [copy] {} -> {} ✗ ({})", copyfile.src, copyfile.dest, e);
+                        continue;
+                    }
+                };
                 let dest = workspace_root.join(&copyfile.dest);
 
                 let label = if copyfile.src.starts_with("gripspace:") {
@@ -139,8 +149,21 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
         if let Some(ref linkfiles) = manifest_config.linkfile {
             for linkfile in linkfiles {
                 total_links += 1;
-                let source =
-                    resolve_file_source(&linkfile.src, &manifests_dir, &gripspaces_dir);
+                let source = match resolve_file_source(
+                    &linkfile.src,
+                    &manifests_dir,
+                    &gripspaces_dir,
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        broken_links += 1;
+                        println!(
+                            "  [link] {} -> {} ✗ ({})",
+                            linkfile.src, linkfile.dest, e
+                        );
+                        continue;
+                    }
+                };
                 let dest = workspace_root.join(&linkfile.dest);
 
                 let label = if linkfile.src.starts_with("gripspace:") {
@@ -361,8 +384,18 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
             // Apply manifest copyfiles
             if let Some(ref copyfiles) = manifest_config.copyfile {
                 for copyfile in copyfiles {
-                    let source =
-                        resolve_file_source(&copyfile.src, &manifests_dir, &gripspaces_dir);
+                    let source = match resolve_file_source(
+                        &copyfile.src,
+                        &manifests_dir,
+                        &gripspaces_dir,
+                    ) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            Output::warning(&format!("Invalid source path: {}", e));
+                            errors += 1;
+                            continue;
+                        }
+                    };
                     let dest = workspace_root.join(&copyfile.dest);
 
                     if !source.exists() {
@@ -401,8 +434,18 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
             // Apply manifest linkfiles
             if let Some(ref linkfiles) = manifest_config.linkfile {
                 for linkfile in linkfiles {
-                    let source =
-                        resolve_file_source(&linkfile.src, &manifests_dir, &gripspaces_dir);
+                    let source = match resolve_file_source(
+                        &linkfile.src,
+                        &manifests_dir,
+                        &gripspaces_dir,
+                    ) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            Output::warning(&format!("Invalid source path: {}", e));
+                            errors += 1;
+                            continue;
+                        }
+                    };
                     let dest = workspace_root.join(&linkfile.dest);
 
                     if !source.exists() {
