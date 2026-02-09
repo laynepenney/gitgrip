@@ -8,6 +8,8 @@ mod common;
 use std::fs;
 use std::path::Path;
 
+use assert_cmd::Command;
+use predicates::str::contains;
 use serde_yaml::Value;
 
 use common::assertions;
@@ -225,6 +227,24 @@ fn test_tree_list_after_add() {
     assert!(registry["griptrees"]["feat/listed"].is_object());
 }
 
+#[test]
+fn test_tree_list_from_griptree_workspace_shows_registered_tree() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    gitgrip::cli::commands::tree::run_tree_add(&ws.workspace_root, &manifest, "feat/listed")
+        .expect("tree add should succeed");
+
+    let tree_path = ws.workspace_root.parent().unwrap().join("feat-listed");
+
+    let mut cmd = Command::cargo_bin("gr").expect("gr binary should build");
+    cmd.current_dir(&tree_path)
+        .args(["tree", "list"])
+        .assert()
+        .success()
+        .stdout(contains("feat/listed"));
+}
+
 // ── Tree Remove ──────────────────────────────────────────────────
 
 #[test]
@@ -261,6 +281,34 @@ fn test_tree_remove() {
         registry["griptrees"]["feat/removeme"].is_null(),
         "registry should not contain removed griptree"
     );
+}
+
+#[test]
+fn test_tree_remove_from_griptree_workspace() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    gitgrip::cli::commands::tree::run_tree_add(
+        &ws.workspace_root,
+        &manifest,
+        "feat/remove-from-tree",
+    )
+    .expect("tree add should succeed");
+
+    let tree_path = ws
+        .workspace_root
+        .parent()
+        .unwrap()
+        .join("feat-remove-from-tree");
+    let result =
+        gitgrip::cli::commands::tree::run_tree_remove(&tree_path, "feat/remove-from-tree", false);
+
+    assert!(
+        result.is_ok(),
+        "tree remove from griptree workspace should succeed: {:?}",
+        result.err()
+    );
+    assert!(!tree_path.exists(), "griptree directory should be removed");
 }
 
 #[test]
@@ -355,6 +403,42 @@ fn test_tree_lock_prevents_remove() {
     assert!(
         !tree_path.exists(),
         "griptree dir should be removed after force"
+    );
+}
+
+#[test]
+fn test_tree_lock_from_griptree_workspace() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    gitgrip::cli::commands::tree::run_tree_add(
+        &ws.workspace_root,
+        &manifest,
+        "feat/lock-from-tree",
+    )
+    .expect("tree add should succeed");
+
+    let tree_path = ws
+        .workspace_root
+        .parent()
+        .unwrap()
+        .join("feat-lock-from-tree");
+    let lock_result =
+        gitgrip::cli::commands::tree::run_tree_lock(&tree_path, "feat/lock-from-tree", None);
+    assert!(
+        lock_result.is_ok(),
+        "tree lock from griptree workspace should succeed: {:?}",
+        lock_result.err()
+    );
+
+    let registry_path = ws.workspace_root.join(".gitgrip").join("griptrees.json");
+    let registry: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&registry_path).unwrap()).unwrap();
+    assert!(
+        registry["griptrees"]["feat/lock-from-tree"]["locked"]
+            .as_bool()
+            .unwrap(),
+        "registry should show locked after lock from griptree workspace"
     );
 }
 
