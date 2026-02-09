@@ -78,6 +78,10 @@ pub fn resolve_manifest_repo_dir(workspace_root: &Path) -> Option<PathBuf> {
 }
 
 pub fn resolve_manifest_content_dir(workspace_root: &Path) -> PathBuf {
+    if let Some(repo_dir) = resolve_manifest_repo_dir(workspace_root) {
+        return repo_dir;
+    }
+
     let new_dir = main_space_dir(workspace_root);
     if new_dir.exists() {
         return new_dir;
@@ -89,6 +93,27 @@ pub fn resolve_manifest_content_dir(workspace_root: &Path) -> PathBuf {
     }
 
     resolve_manifest_repo_dir(workspace_root).unwrap_or_else(|| main_space_dir(workspace_root))
+}
+
+pub fn sync_legacy_mirror_if_present(
+    workspace_root: &Path,
+    updated_manifest_path: &Path,
+    content: &str,
+) -> std::io::Result<()> {
+    let legacy_primary = legacy_manifest_dir(workspace_root).join(LEGACY_FILE_NAMES[0]);
+    let legacy_alt = legacy_manifest_dir(workspace_root).join(LEGACY_FILE_NAMES[1]);
+
+    if updated_manifest_path == legacy_primary || updated_manifest_path == legacy_alt {
+        return Ok(());
+    }
+
+    if legacy_primary.exists() {
+        std::fs::write(legacy_primary, content)?;
+    } else if legacy_alt.exists() {
+        std::fs::write(legacy_alt, content)?;
+    }
+
+    Ok(())
 }
 
 pub fn resolve_manifest_path_for_update(workspace_root: &Path) -> Option<PathBuf> {
@@ -164,6 +189,18 @@ mod tests {
     }
 
     #[test]
+    fn resolve_manifest_content_dir_prefers_git_repo_dir() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let new_dir = main_space_dir(root);
+        let legacy_dir = legacy_manifest_dir(root);
+        std::fs::create_dir_all(&new_dir).unwrap();
+        std::fs::create_dir_all(legacy_dir.join(".git")).unwrap();
+
+        assert_eq!(resolve_manifest_content_dir(root), legacy_dir);
+    }
+
+    #[test]
     fn resolve_manifest_path_for_update_uses_existing_file() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
@@ -173,5 +210,22 @@ mod tests {
         std::fs::write(&path, "version: 1\nrepos:\n  a:\n    url: x\n    path: a\n").unwrap();
 
         assert_eq!(resolve_manifest_path_for_update(root), Some(path));
+    }
+
+    #[test]
+    fn sync_legacy_mirror_updates_existing_legacy_file() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let new_dir = main_space_dir(root);
+        let legacy_dir = legacy_manifest_dir(root);
+        std::fs::create_dir_all(&new_dir).unwrap();
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        let updated = new_dir.join(PRIMARY_FILE_NAME);
+        let legacy = legacy_dir.join("manifest.yaml");
+        std::fs::write(&updated, "new").unwrap();
+        std::fs::write(&legacy, "old").unwrap();
+
+        sync_legacy_mirror_if_present(root, &updated, "content").unwrap();
+        assert_eq!(std::fs::read_to_string(legacy).unwrap(), "content");
     }
 }

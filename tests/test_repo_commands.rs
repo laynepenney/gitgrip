@@ -92,6 +92,17 @@ fn test_repo_add_https_url() {
         content.contains("new-repo"),
         "manifest should contain new repo"
     );
+
+    let legacy_manifest = ws
+        .workspace_root
+        .join(".gitgrip")
+        .join("manifests")
+        .join("manifest.yaml");
+    let legacy_content = fs::read_to_string(legacy_manifest).unwrap();
+    assert!(
+        legacy_content.contains("new-repo"),
+        "legacy manifest mirror should also contain new repo"
+    );
 }
 
 #[test]
@@ -210,6 +221,17 @@ fn test_repo_remove_from_manifest() {
     assert!(
         content.contains("  frontend:"),
         "manifest should still contain frontend"
+    );
+
+    let legacy_manifest = ws
+        .workspace_root
+        .join(".gitgrip")
+        .join("manifests")
+        .join("manifest.yaml");
+    let legacy_content = fs::read_to_string(legacy_manifest).unwrap();
+    assert!(
+        !legacy_content.contains("  backend:"),
+        "legacy manifest mirror should not contain backend repo entry"
     );
 }
 

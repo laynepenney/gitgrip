@@ -109,7 +109,12 @@ pub fn run_repo_add(
         format!("{}repos:{}", content, new_repo_yaml)
     };
 
-    std::fs::write(&manifest_path, updated_content)?;
+    std::fs::write(&manifest_path, &updated_content)?;
+    manifest_paths::sync_legacy_mirror_if_present(
+        workspace_root,
+        &manifest_path,
+        &updated_content,
+    )?;
 
     Output::success(&format!("Added repository '{}' to manifest", repo_name));
     println!();
@@ -177,7 +182,13 @@ pub fn run_repo_remove(
         }
     }
 
-    std::fs::write(&manifest_path, new_lines.join("\n"))?;
+    let updated_content = new_lines.join("\n");
+    std::fs::write(&manifest_path, &updated_content)?;
+    manifest_paths::sync_legacy_mirror_if_present(
+        workspace_root,
+        &manifest_path,
+        &updated_content,
+    )?;
 
     Output::success(&format!("Removed repository '{}' from manifest", name));
     Ok(())

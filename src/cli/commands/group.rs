@@ -121,7 +121,8 @@ pub fn run_group_add(
 
     // Write back
     let yaml = serde_yaml::to_string(&manifest)?;
-    std::fs::write(&manifest_path, yaml)?;
+    std::fs::write(&manifest_path, &yaml)?;
+    manifest_paths::sync_legacy_mirror_if_present(workspace_root, &manifest_path, &yaml)?;
 
     println!();
     if added_count > 0 {
@@ -200,7 +201,8 @@ pub fn run_group_remove(
 
     // Write back
     let yaml = serde_yaml::to_string(&manifest)?;
-    std::fs::write(&manifest_path, yaml)?;
+    std::fs::write(&manifest_path, &yaml)?;
+    manifest_paths::sync_legacy_mirror_if_present(workspace_root, &manifest_path, &yaml)?;
 
     println!();
     if removed_count > 0 {
