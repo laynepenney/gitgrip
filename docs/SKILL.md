@@ -17,6 +17,7 @@ gr branch feat/name          # Create branch across all repos
 gr checkout feat/name        # Switch branch across all repos
 gr checkout -b feat/name     # Create and switch to new branch
 gr checkout --base           # Return to griptree base branch
+gr tree return               # Return + sync + optional prune flow
 gr add .                     # Stage all changes
 gr diff                      # Show diff across all repos
 gr commit -m "message"       # Commit staged changes
@@ -44,6 +45,7 @@ gr prune --execute           # Actually delete merged branches
 gr sync                      # Pull + process links + run hooks (parallel)
 gr sync --sequential         # Sync repos one at a time
 gr sync --group core         # Sync only repos in 'core' group
+gr sync --reset-refs         # Hard-reset reference repos to upstream
 ```
 
 ### Branching
@@ -122,9 +124,10 @@ gr tree lock feat/auth       # Prevent accidental removal
 gr tree unlock feat/auth     # Allow removal
 gr tree remove feat/auth     # Remove when done
 gr checkout --base           # Return to griptree base branch
+gr tree return --prune-current --prune-remote # Return + cleanup
 ```
 
-**Upstream Tracking:** Each griptree records per-repo upstream defaults. `gr sync` and `gr rebase --upstream` use these automatically when on the griptree base branch.
+**Upstream Tracking:** Each griptree records per-repo upstream defaults. `gr tree add` sets tracking for the griptree branch, and `gr sync`/`gr rebase --upstream` use this mapping automatically when on the griptree base branch.
 
 ### Maintenance
 ```bash
@@ -175,7 +178,7 @@ gr pr create -t "feat: my feature"
 # Wait for CI, review
 gr pr merge
 gr sync
-gr checkout main
+gr checkout --base
 gr prune --execute           # Clean up merged branches
 ```
 

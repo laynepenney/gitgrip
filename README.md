@@ -160,6 +160,7 @@ gr sync
 | `gr tree add <branch>` | Create a worktree-based workspace |
 | `gr tree list` | List all griptrees |
 | `gr tree remove <branch>` | Remove a griptree |
+| `gr tree return` | Return to griptree base branch, sync, and optionally prune feature branch |
 | `gr pull` | Pull latest changes across repos |
 | `gr rebase` | Rebase across repos |
 | `gr rebase --upstream` | Rebase onto per-repo upstream (griptree-aware) |
@@ -206,6 +207,7 @@ Pull latest changes from the manifest and all repositories. Syncs in parallel by
 | `--sequential` | Sync repos one at a time (slower but ordered output) |
 | `--group <name>` | Only sync repos in this group |
 | `-f, --force` | Force sync even with local changes |
+| `--reset-refs` | Hard-reset reference repos to configured upstream branches |
 
 #### `gr status`
 
@@ -424,7 +426,11 @@ gr tree remove feat/new-feature
 Each griptree records per-repo upstream defaults so repos can track different branches:
 
 ```bash
+# tree add sets branch tracking to each repo's configured upstream
+gr tree add feat/new-feature
+
 # Sync uses per-repo upstream when on the griptree base branch
+# and repairs missing upstream tracking automatically
 gr sync
 
 # Rebase onto each repo's configured upstream
@@ -432,6 +438,9 @@ gr rebase --upstream
 
 # Return to the griptree base branch
 gr checkout --base
+
+# Optional all-in-one post-merge return flow
+gr tree return --autostash --prune-current --prune-remote
 ```
 
 **Benefits:**
