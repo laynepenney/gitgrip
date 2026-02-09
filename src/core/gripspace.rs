@@ -45,22 +45,93 @@ fn gripspace_identity(config: &GripspaceConfig) -> String {
     }
 }
 
+/// Resolve the directory name for a gripspace within `.gitgrip/spaces/`.
+///
+/// Handles reserved name conflicts (`main`, `local`) and duplicate names by
+/// auto-suffixing with `-1`, `-2`, etc. If the directory already exists and
+/// has the same git remote, it is reused.
+pub fn resolve_space_name(url: &str, spaces_dir: &Path) -> Result<String, ManifestError> {
+    let base = gripspace_name(url);
+    if base.is_empty() {
+        return Err(ManifestError::GripspaceError(format!(
+            "Could not extract gripspace name from URL: '{}'",
+            url
+        )));
+    }
+
+    // If the base name is reserved, start from suffix -1
+    let candidate = if manifest_paths::RESERVED_SPACE_NAMES.contains(&base.as_str()) {
+        format!("{}-1", base)
+    } else {
+        base.clone()
+    };
+
+    let candidate_path = spaces_dir.join(&candidate);
+    if !candidate_path.exists() {
+        return Ok(candidate);
+    }
+
+    // Directory exists — reuse if it's the same remote
+    if is_same_remote(&candidate_path, url) {
+        return Ok(candidate);
+    }
+
+    // Auto-increment to find a free name
+    for i in 2..100 {
+        let suffixed = format!("{}-{}", base, i);
+        let path = spaces_dir.join(&suffixed);
+        if !path.exists() || is_same_remote(&path, url) {
+            return Ok(suffixed);
+        }
+    }
+
+    Err(ManifestError::GripspaceError(format!(
+        "Could not allocate a space name for '{}' (too many collisions)",
+        url
+    )))
+}
+
+/// Check whether an existing directory should be reused for the given URL.
+///
+/// Returns `true` if:
+/// - The directory has no `.git` (not a clone — assume reusable)
+/// - The origin remote URL matches after normalization
+/// - The git repo has no origin remote (locally initialized — assume reusable)
+fn is_same_remote(dir: &Path, url: &str) -> bool {
+    if !dir.join(".git").exists() {
+        return true;
+    }
+
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(dir)
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let existing = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            normalize_url(&existing) == normalize_url(url)
+        }
+        Ok(_) => true, // No origin remote configured — reuse
+        _ => false,
+    }
+}
+
+/// Normalize a git URL for comparison (strip trailing `/` and `.git`).
+fn normalize_url(url: &str) -> String {
+    url.trim_end_matches('/').trim_end_matches(".git").to_string()
+}
+
 /// Ensure a gripspace is cloned locally. Returns the path to the gripspace directory.
 ///
 /// If the gripspace is already cloned, this is a no-op.
-/// The gripspace is cloned into `gripspaces_dir/<name>/`.
+/// The gripspace is cloned into `spaces_dir/<resolved_name>/`.
 pub fn ensure_gripspace(
-    gripspaces_dir: &Path,
+    spaces_dir: &Path,
     config: &GripspaceConfig,
 ) -> Result<PathBuf, ManifestError> {
-    let name = gripspace_name(&config.url);
-    if name.is_empty() {
-        return Err(ManifestError::GripspaceError(format!(
-            "Could not extract gripspace name from URL: '{}'",
-            config.url
-        )));
-    }
-    let gripspace_path = gripspaces_dir.join(&name);
+    let dir_name = resolve_space_name(&config.url, spaces_dir)?;
+    let gripspace_path = spaces_dir.join(&dir_name);
 
     if gripspace_path.exists() {
         // Already cloned, just checkout the right rev if specified
@@ -71,8 +142,8 @@ pub fn ensure_gripspace(
     }
 
     // Clone the gripspace
-    std::fs::create_dir_all(gripspaces_dir).map_err(|e| {
-        ManifestError::GripspaceError(format!("Failed to create gripspaces dir: {}", e))
+    std::fs::create_dir_all(spaces_dir).map_err(|e| {
+        ManifestError::GripspaceError(format!("Failed to create spaces dir: {}", e))
     })?;
 
     clone_repo(&config.url, &gripspace_path, None).map_err(|e| {
@@ -191,7 +262,7 @@ fn checkout_rev(path: &Path, rev: &str) -> Result<(), ManifestError> {
 /// Local manifest values always win on conflicts.
 pub fn resolve_all_gripspaces(
     manifest: &mut Manifest,
-    gripspaces_dir: &Path,
+    spaces_dir: &Path,
 ) -> Result<(), ManifestError> {
     let gripspaces = match manifest.gripspaces.take() {
         Some(gs) if !gs.is_empty() => gs,
@@ -212,7 +283,7 @@ pub fn resolve_all_gripspaces(
     for gs_config in &gripspaces {
         resolve_gripspace_recursive(
             gs_config,
-            gripspaces_dir,
+            spaces_dir,
             &mut active_stack,
             &mut resolved,
             0,
@@ -314,7 +385,7 @@ pub fn resolve_all_gripspaces(
 #[allow(clippy::too_many_arguments)]
 fn resolve_gripspace_recursive(
     config: &GripspaceConfig,
-    gripspaces_dir: &Path,
+    spaces_dir: &Path,
     active_stack: &mut HashSet<String>,
     resolved: &mut HashSet<String>,
     depth: usize,
@@ -356,7 +427,9 @@ fn resolve_gripspace_recursive(
         )));
     }
 
-    let gripspace_path = ensure_gripspace(gripspaces_dir, config)?;
+    let gripspace_path = ensure_gripspace(spaces_dir, config)?;
+    // Resolve the actual directory name (may differ from `name` due to reserved name suffixing)
+    let dir_name = resolve_space_name(&config.url, spaces_dir)?;
 
     // Load the gripspace's manifest
     let Some(manifest_path) = manifest_paths::resolve_manifest_file_in_dir(&gripspace_path) else {
@@ -380,11 +453,11 @@ fn resolve_gripspace_recursive(
     if let Some(ref nested_gripspaces) = gs_manifest.gripspaces {
         for nested_config in nested_gripspaces {
             // Clone the nested gripspace if it doesn't exist yet
-            ensure_gripspace(gripspaces_dir, nested_config)?;
+            ensure_gripspace(spaces_dir, nested_config)?;
 
             resolve_gripspace_recursive(
                 nested_config,
-                gripspaces_dir,
+                spaces_dir,
                 active_stack,
                 resolved,
                 depth + 1,
@@ -433,13 +506,13 @@ fn resolve_gripspace_recursive(
     }
 
     // Merge linkfiles and copyfiles from gripspace manifest config
-    // These need path adjustment: source from .gitgrip/gripspaces/<name>/
+    // These need path adjustment: source from .gitgrip/spaces/<dir_name>/
     if let Some(ref manifest_config) = gs_manifest.manifest {
         if let Some(ref linkfiles) = manifest_config.linkfile {
             for lf in linkfiles {
                 merged_linkfiles.push(crate::core::manifest::LinkFileConfig {
-                    // Prefix src with gripspace name so link.rs knows where to find it
-                    src: format!("gripspace:{}:{}", name, lf.src),
+                    // Prefix src with resolved dir name so link.rs knows where to find it
+                    src: format!("gripspace:{}:{}", dir_name, lf.src),
                     dest: lf.dest.clone(),
                 });
             }
@@ -447,7 +520,7 @@ fn resolve_gripspace_recursive(
         if let Some(ref copyfiles) = manifest_config.copyfile {
             for cf in copyfiles {
                 merged_copyfiles.push(crate::core::manifest::CopyFileConfig {
-                    src: format!("gripspace:{}:{}", name, cf.src),
+                    src: format!("gripspace:{}:{}", dir_name, cf.src),
                     dest: cf.dest.clone(),
                 });
             }
@@ -557,7 +630,7 @@ mod tests {
     #[test]
     fn test_resolve_missing_gripspace_manifest() {
         let temp = tempfile::tempdir().unwrap();
-        let gripspaces_dir = temp.path().join("gripspaces");
+        let gripspaces_dir = temp.path().join("spaces");
         // Create gripspace dir but no manifest file
         std::fs::create_dir_all(gripspaces_dir.join("test-gripspace")).unwrap();
 
@@ -965,6 +1038,82 @@ repos:
         assert!(manifest.repos.contains_key("b-repo"));
         assert!(manifest.repos.contains_key("c-repo"));
         assert!(manifest.repos.contains_key("d-repo"));
+    }
+
+    #[test]
+    fn test_resolve_space_name_normal() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces = temp.path();
+        let name =
+            resolve_space_name("https://github.com/user/my-gripspace.git", spaces).unwrap();
+        assert_eq!(name, "my-gripspace");
+    }
+
+    #[test]
+    fn test_resolve_space_name_reserved_main() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces = temp.path();
+        // "main" is reserved — should auto-suffix to "main-1"
+        let name = resolve_space_name("https://github.com/user/main.git", spaces).unwrap();
+        assert_eq!(name, "main-1");
+    }
+
+    #[test]
+    fn test_resolve_space_name_reserved_local() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces = temp.path();
+        let name = resolve_space_name("https://github.com/user/local.git", spaces).unwrap();
+        assert_eq!(name, "local-1");
+    }
+
+    #[test]
+    fn test_resolve_space_name_duplicate_increments() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces = temp.path();
+
+        // Create an existing dir with a different remote
+        let existing = spaces.join("my-repo");
+        std::fs::create_dir_all(&existing).unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&existing)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin", "https://github.com/other/my-repo.git"])
+            .current_dir(&existing)
+            .output()
+            .unwrap();
+
+        // A different URL producing the same name should auto-increment
+        let name =
+            resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        assert_eq!(name, "my-repo-2");
+    }
+
+    #[test]
+    fn test_resolve_space_name_same_remote_reuses() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaces = temp.path();
+
+        // Create an existing dir with the same remote
+        let existing = spaces.join("my-repo");
+        std::fs::create_dir_all(&existing).unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&existing)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin", "https://github.com/user/my-repo.git"])
+            .current_dir(&existing)
+            .output()
+            .unwrap();
+
+        // Same URL should reuse the existing directory name
+        let name =
+            resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        assert_eq!(name, "my-repo");
     }
 
     #[test]

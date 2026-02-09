@@ -101,7 +101,7 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
     // Process manifest repo links
     if let Some(ref manifest_config) = manifest.manifest {
         let manifests_dir = manifest_paths::resolve_manifest_content_dir(workspace_root);
-        let gripspaces_dir = workspace_root.join(".gitgrip").join("gripspaces");
+        let gripspaces_dir = manifest_paths::spaces_dir(workspace_root);
 
         // Check manifest copyfiles
         if let Some(ref copyfiles) = manifest_config.copyfile {
@@ -381,7 +381,7 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
     // Apply manifest repo links
     if let Some(ref manifest_config) = manifest.manifest {
         let manifests_dir = manifest_paths::resolve_manifest_content_dir(workspace_root);
-        let gripspaces_dir = workspace_root.join(".gitgrip").join("gripspaces");
+        let gripspaces_dir = manifest_paths::spaces_dir(workspace_root);
 
         if manifests_dir.exists() {
             // Apply manifest copyfiles

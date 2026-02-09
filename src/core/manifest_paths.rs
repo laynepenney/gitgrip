@@ -6,11 +6,20 @@
 
 use std::path::{Path, PathBuf};
 
+pub const SPACES_DIR: &str = ".gitgrip/spaces";
 pub const MAIN_SPACE_DIR: &str = ".gitgrip/spaces/main";
 pub const LOCAL_SPACE_DIR: &str = ".gitgrip/spaces/local";
 pub const LEGACY_MANIFEST_DIR: &str = ".gitgrip/manifests";
 pub const PRIMARY_FILE_NAME: &str = "gripspace.yml";
 pub const LEGACY_FILE_NAMES: [&str; 2] = ["manifest.yaml", "manifest.yml"];
+
+/// Names reserved for internal use within `.gitgrip/spaces/`.
+/// Included gripspaces that derive one of these names will be auto-suffixed.
+pub const RESERVED_SPACE_NAMES: [&str; 2] = ["main", "local"];
+
+pub fn spaces_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(SPACES_DIR)
+}
 
 pub fn main_space_dir(workspace_root: &Path) -> PathBuf {
     workspace_root.join(MAIN_SPACE_DIR)

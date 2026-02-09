@@ -43,12 +43,12 @@ fn validate_gripspace_name(name: &str) -> Result<(), String> {
 /// Process composefile entries, writing composed files to the workspace root.
 ///
 /// Each composefile concatenates parts in order. Parts can come from:
-/// - A gripspace: reads from `.gitgrip/gripspaces/<name>/<src>`
-/// - The local manifest content directory (resolved by `manifest_paths`)
+/// - A gripspace: reads from `.gitgrip/spaces/<name>/<src>`
+/// - The local manifest: reads from the manifest content directory
 pub fn process_composefiles(
     workspace_root: &Path,
     manifests_dir: &Path,
-    gripspaces_dir: &Path,
+    spaces_dir: &Path,
     composefiles: &[ComposeFileConfig],
 ) -> anyhow::Result<()> {
     for compose in composefiles {
@@ -75,7 +75,7 @@ pub fn process_composefiles(
                     continue;
                 }
                 // Source from gripspace
-                gripspaces_dir.join(gs_name).join(&part.src)
+                spaces_dir.join(gs_name).join(&part.src)
             } else {
                 if let Err(e) = validate_relative_source_path(&part.src, "composefile part src") {
                     eprintln!(
@@ -127,13 +127,13 @@ pub fn process_composefiles(
 /// Resolve a linkfile/copyfile source path that may reference a gripspace.
 ///
 /// Gripspace-sourced files have src prefixed with `gripspace:<name>:<path>`.
-/// This function resolves those to their actual filesystem path.
+/// This function resolves those to their actual filesystem path under `.gitgrip/spaces/`.
 ///
 /// Returns `Err` if the gripspace name or path contains path traversal components.
 pub fn resolve_file_source(
     src: &str,
     repo_path: &Path,
-    gripspaces_dir: &Path,
+    spaces_dir: &Path,
 ) -> Result<std::path::PathBuf, String> {
     if let Some(rest) = src.strip_prefix("gripspace:") {
         // Format: gripspace:<name>:<path>
@@ -144,7 +144,7 @@ pub fn resolve_file_source(
             validate_gripspace_name(name)?;
             validate_relative_source_path(path, "gripspace path")?;
 
-            return Ok(gripspaces_dir.join(name).join(path));
+            return Ok(spaces_dir.join(name).join(path));
         }
         // Has "gripspace:" prefix but no second colon — malformed
         return Err(format!(
@@ -167,7 +167,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let workspace = temp.path();
         let manifests_dir = workspace.join(".gitgrip").join("manifests");
-        let gripspaces_dir = workspace.join(".gitgrip").join("gripspaces");
+        let gripspaces_dir = workspace.join(".gitgrip").join("spaces");
 
         std::fs::create_dir_all(&manifests_dir).unwrap();
         std::fs::create_dir_all(gripspaces_dir.join("base-space")).unwrap();
@@ -208,7 +208,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let workspace = temp.path();
         let manifests_dir = workspace.join(".gitgrip").join("manifests");
-        let gripspaces_dir = workspace.join(".gitgrip").join("gripspaces");
+        let gripspaces_dir = workspace.join(".gitgrip").join("spaces");
 
         std::fs::create_dir_all(&manifests_dir).unwrap();
         std::fs::create_dir_all(&gripspaces_dir).unwrap();
@@ -244,7 +244,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let workspace = temp.path();
         let manifests_dir = workspace.join(".gitgrip").join("manifests");
-        let gripspaces_dir = workspace.join(".gitgrip").join("gripspaces");
+        let gripspaces_dir = workspace.join(".gitgrip").join("spaces");
 
         std::fs::create_dir_all(&manifests_dir).unwrap();
         std::fs::create_dir_all(&gripspaces_dir).unwrap();
@@ -280,7 +280,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let workspace = temp.path();
         let manifests_dir = workspace.join(".gitgrip").join("manifests");
-        let gripspaces_dir = workspace.join(".gitgrip").join("gripspaces");
+        let gripspaces_dir = workspace.join(".gitgrip").join("spaces");
 
         std::fs::create_dir_all(&manifests_dir).unwrap();
         std::fs::create_dir_all(&gripspaces_dir).unwrap();
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn test_resolve_file_source_local() {
         let repo_path = Path::new("/workspace/repo");
-        let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
+        let gripspaces_dir = Path::new("/workspace/.gitgrip/spaces");
         let result = resolve_file_source("README.md", repo_path, gripspaces_dir).unwrap();
         assert_eq!(result, Path::new("/workspace/repo/README.md"));
     }
@@ -313,19 +313,19 @@ mod tests {
     #[test]
     fn test_resolve_file_source_gripspace() {
         let repo_path = Path::new("/workspace/.gitgrip/manifests");
-        let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
+        let gripspaces_dir = Path::new("/workspace/.gitgrip/spaces");
         let result =
             resolve_file_source("gripspace:base:CLAUDE.md", repo_path, gripspaces_dir).unwrap();
         assert_eq!(
             result,
-            Path::new("/workspace/.gitgrip/gripspaces/base/CLAUDE.md")
+            Path::new("/workspace/.gitgrip/spaces/base/CLAUDE.md")
         );
     }
 
     #[test]
     fn test_resolve_file_source_path_traversal_name() {
         let repo_path = Path::new("/workspace/repo");
-        let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
+        let gripspaces_dir = Path::new("/workspace/.gitgrip/spaces");
         let result =
             resolve_file_source("gripspace:../../../etc:passwd", repo_path, gripspaces_dir);
         assert!(result.is_err());
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn test_resolve_file_source_path_traversal_path() {
         let repo_path = Path::new("/workspace/repo");
-        let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
+        let gripspaces_dir = Path::new("/workspace/.gitgrip/spaces");
         let result =
             resolve_file_source("gripspace:valid:../../etc/passwd", repo_path, gripspaces_dir);
         assert!(result.is_err());
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn test_resolve_file_source_empty_name() {
         let repo_path = Path::new("/workspace/repo");
-        let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
+        let gripspaces_dir = Path::new("/workspace/.gitgrip/spaces");
         let result = resolve_file_source("gripspace::file.md", repo_path, gripspaces_dir);
         assert!(result.is_err());
     }
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn test_resolve_file_source_local_path_traversal() {
         let repo_path = Path::new("/workspace/repo");
-        let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
+        let gripspaces_dir = Path::new("/workspace/.gitgrip/spaces");
         let result = resolve_file_source("../outside.txt", repo_path, gripspaces_dir);
         assert!(result.is_err());
     }
@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn test_resolve_file_source_local_windows_absolute_path() {
         let repo_path = Path::new("/workspace/repo");
-        let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
+        let gripspaces_dir = Path::new("/workspace/.gitgrip/spaces");
         let result = resolve_file_source("C:\\Windows\\System32\\etc", repo_path, gripspaces_dir);
         assert!(result.is_err());
     }
@@ -369,7 +369,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let workspace = temp.path();
         let manifests_dir = workspace.join(".gitgrip").join("manifests");
-        let gripspaces_dir = workspace.join(".gitgrip").join("gripspaces");
+        let gripspaces_dir = workspace.join(".gitgrip").join("spaces");
 
         std::fs::create_dir_all(&manifests_dir).unwrap();
         std::fs::create_dir_all(&gripspaces_dir).unwrap();
@@ -394,7 +394,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let workspace = temp.path();
         let manifests_dir = workspace.join(".gitgrip").join("manifests");
-        let gripspaces_dir = workspace.join(".gitgrip").join("gripspaces");
+        let gripspaces_dir = workspace.join(".gitgrip").join("spaces");
 
         std::fs::create_dir_all(&manifests_dir).unwrap();
         std::fs::create_dir_all(&gripspaces_dir).unwrap();
@@ -419,7 +419,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let workspace = temp.path();
         let manifests_dir = workspace.join(".gitgrip").join("manifests");
-        let gripspaces_dir = workspace.join(".gitgrip").join("gripspaces");
+        let gripspaces_dir = workspace.join(".gitgrip").join("spaces");
 
         std::fs::create_dir_all(&manifests_dir).unwrap();
         std::fs::create_dir_all(&gripspaces_dir).unwrap();
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn test_resolve_file_source_malformed_gripspace_no_second_colon() {
         let repo_path = Path::new("/workspace/repo");
-        let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
+        let gripspaces_dir = Path::new("/workspace/.gitgrip/spaces");
         let result = resolve_file_source("gripspace:only-name", repo_path, gripspaces_dir);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Malformed gripspace source"));
@@ -462,7 +462,7 @@ mod tests {
     #[test]
     fn test_resolve_file_source_backslash_path() {
         let repo_path = Path::new("/workspace/repo");
-        let gripspaces_dir = Path::new("/workspace/.gitgrip/gripspaces");
+        let gripspaces_dir = Path::new("/workspace/.gitgrip/spaces");
         let result =
             resolve_file_source("gripspace:valid:\\etc\\passwd", repo_path, gripspaces_dir);
         assert!(result.is_err());
@@ -473,7 +473,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let workspace = temp.path();
         let manifests_dir = workspace.join(".gitgrip").join("manifests");
-        let gripspaces_dir = workspace.join(".gitgrip").join("gripspaces");
+        let gripspaces_dir = workspace.join(".gitgrip").join("spaces");
 
         std::fs::create_dir_all(&manifests_dir).unwrap();
         std::fs::create_dir_all(&gripspaces_dir).unwrap();

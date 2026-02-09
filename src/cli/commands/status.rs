@@ -132,13 +132,15 @@ pub fn run_status(
     // Show gripspace status
     if let Some(ref gripspaces) = manifest.gripspaces {
         if !gripspaces.is_empty() && !quiet {
-            let gripspaces_dir = workspace_root.join(".gitgrip").join("gripspaces");
+            let spaces_dir = manifest_paths::spaces_dir(workspace_root);
             println!();
             let mut gs_table = Table::new(vec!["Gripspace", "Rev", "Status"]);
 
             for gs in gripspaces {
                 let name = gripspace_name(&gs.url);
-                let gs_path = gripspaces_dir.join(&name);
+                let dir_name = crate::core::gripspace::resolve_space_name(&gs.url, &spaces_dir)
+                    .unwrap_or_else(|_| name.clone());
+                let gs_path = spaces_dir.join(&dir_name);
 
                 let (rev, status_str) = if gs_path.exists() {
                     let rev = get_gripspace_rev(&gs_path).unwrap_or_else(|| "unknown".to_string());

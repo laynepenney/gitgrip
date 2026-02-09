@@ -216,14 +216,14 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
 
     if let Some(ref gripspaces) = manifest.gripspaces {
         if !gripspaces.is_empty() {
-            let gripspaces_dir = gitgrip_dir.join("gripspaces");
+            let spaces_dir = manifest_paths::spaces_dir(&target_dir);
             let spinner = Output::spinner(&format!(
                 "Cloning {} gripspace(s)...",
                 gripspaces.len()
             ));
 
             for gs_config in gripspaces {
-                if let Err(e) = ensure_gripspace(&gripspaces_dir, gs_config) {
+                if let Err(e) = ensure_gripspace(&spaces_dir, gs_config) {
                     Output::warning(&format!(
                         "Gripspace '{}' clone failed: {}",
                         gs_config.url, e
@@ -236,7 +236,7 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
             spinner.finish_with_message("Gripspaces cloned");
 
             // Resolve gripspace includes
-            if let Err(e) = resolve_all_gripspaces(&mut manifest, &gripspaces_dir) {
+            if let Err(e) = resolve_all_gripspaces(&mut manifest, &spaces_dir) {
                 Output::warning(&format!("Gripspace resolution failed: {}", e));
             }
         }
