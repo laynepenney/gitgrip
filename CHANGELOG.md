@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.3] - 2026-02-09
+
+### Changed
+- **Griptree branch tracking at creation** - `gr tree add` now sets each repo's griptree branch to track its upstream default (`origin/main`, `origin/dev`, etc.) (#267)
+- **Griptree sync self-healing** - `gr sync` now repairs branch upstream tracking when on the griptree base branch, using per-repo mapping from `griptree.json` (#267)
+
+### Documentation
+- Updated workflow docs to prefer `gr checkout --base` after merge cleanup
+- Updated command docs to include `gr tree return` and `gr sync --reset-refs`
+
+### Testing
+- Added integration coverage for upstream tracking during `gr tree add`
+- Added integration coverage for upstream tracking repair during `gr sync`
+
 ## [0.11.2] - 2026-02-09
 
 ### Fixed
