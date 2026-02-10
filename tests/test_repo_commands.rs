@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn workspace_manifest_path(workspace_root: &std::path::Path) -> PathBuf {
-    gitgrip::core::manifest_paths::resolve_workspace_manifest_path(workspace_root)
+    gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(workspace_root)
         .expect("workspace manifest path should resolve")
 }
 

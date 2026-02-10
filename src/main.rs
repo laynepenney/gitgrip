@@ -538,7 +538,7 @@ async fn main() -> anyhow::Result<()> {
             group,
             json,
         }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::status::run_status(
                 &workspace_root,
                 &manifest,
@@ -554,7 +554,7 @@ async fn main() -> anyhow::Result<()> {
             group,
             sequential,
         }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::sync::run_sync(
                 &workspace_root,
                 &manifest,
@@ -575,7 +575,7 @@ async fn main() -> anyhow::Result<()> {
             group,
             json,
         }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::branch::run_branch(
                 gitgrip::cli::commands::branch::BranchOptions {
                     workspace_root: &workspace_root,
@@ -590,7 +590,7 @@ async fn main() -> anyhow::Result<()> {
             )?;
         }
         Some(Commands::Checkout { name, create, base }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             let branch = if base {
                 let config =
                     gitgrip::core::griptree::GriptreeConfig::load_from_workspace(&workspace_root)?
@@ -608,15 +608,15 @@ async fn main() -> anyhow::Result<()> {
             )?;
         }
         Some(Commands::Add { files }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::add::run_add(&workspace_root, &manifest, &files)?;
         }
         Some(Commands::Diff { staged, json }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::diff::run_diff(&workspace_root, &manifest, staged, json)?;
         }
         Some(Commands::Commit { message, amend }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             let msg = message.unwrap_or_else(|| {
                 eprintln!("Error: commit message required (-m)");
                 std::process::exit(1);
@@ -627,7 +627,7 @@ async fn main() -> anyhow::Result<()> {
             set_upstream,
             force,
         }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::push::run_push(
                 &workspace_root,
                 &manifest,
@@ -641,7 +641,7 @@ async fn main() -> anyhow::Result<()> {
             remote,
             group,
         }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::prune::run_prune(
                 &workspace_root,
                 &manifest,
@@ -651,7 +651,7 @@ async fn main() -> anyhow::Result<()> {
             )?;
         }
         Some(Commands::Pr { action }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             match action {
                 PrCommands::Create {
                     title,
@@ -726,7 +726,7 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         }
         Some(Commands::Tree { action }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             match action {
                 TreeCommands::Add { branch } => {
                     gitgrip::cli::commands::tree::run_tree_add(
@@ -782,7 +782,7 @@ async fn main() -> anyhow::Result<()> {
             pathspec,
             group,
         }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::grep::run_grep(
                 &workspace_root,
                 &manifest,
@@ -800,7 +800,7 @@ async fn main() -> anyhow::Result<()> {
             no_intercept,
             group,
         }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::forall::run_forall(
                 &workspace_root,
                 &manifest,
@@ -817,7 +817,7 @@ async fn main() -> anyhow::Result<()> {
             abort,
             continue_rebase,
         }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::rebase::run_rebase(
                 &workspace_root,
                 &manifest,
@@ -832,7 +832,7 @@ async fn main() -> anyhow::Result<()> {
             group,
             sequential,
         }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::pull::run_pull(
                 &workspace_root,
                 &manifest,
@@ -844,11 +844,11 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         }
         Some(Commands::Link { status, apply }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::link::run_link(&workspace_root, &manifest, status, apply)?;
         }
         Some(Commands::Run { name, list }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::run::run_run(
                 &workspace_root,
                 &manifest,
@@ -857,11 +857,11 @@ async fn main() -> anyhow::Result<()> {
             )?;
         }
         Some(Commands::Env) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::env::run_env(&workspace_root, &manifest)?;
         }
         Some(Commands::Repo { action }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             match action {
                 RepoCommands::List => {
                     gitgrip::cli::commands::repo::run_repo_list(&workspace_root, &manifest)?;
@@ -880,7 +880,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Some(Commands::Group { action }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             match action {
                 GroupCommands::List => {
                     gitgrip::cli::commands::group::run_group_list(&workspace_root, &manifest)?;
@@ -906,7 +906,7 @@ async fn main() -> anyhow::Result<()> {
             repo,
             group,
         }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::gc::run_gc(
                 &workspace_root,
                 &manifest,
@@ -923,7 +923,7 @@ async fn main() -> anyhow::Result<()> {
             repo,
             group,
         }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::cherry_pick::run_cherry_pick(
                 &workspace_root,
                 &manifest,
@@ -935,7 +935,7 @@ async fn main() -> anyhow::Result<()> {
             )?;
         }
         Some(Commands::Ci { action }) => {
-            let (workspace_root, manifest) = load_workspace()?;
+            let (workspace_root, manifest) = load_gripspace()?;
             match action {
                 CiCommands::Run { name, json } => {
                     gitgrip::cli::commands::ci::run_ci_run(
@@ -958,7 +958,7 @@ async fn main() -> anyhow::Result<()> {
                 gitgrip::cli::commands::manifest::run_manifest_import(&path, output.as_deref())?;
             }
             ManifestCommands::Sync => {
-                let (workspace_root, _manifest) = load_workspace()?;
+                let (workspace_root, _manifest) = load_gripspace()?;
                 gitgrip::cli::commands::manifest::run_manifest_sync(&workspace_root)?;
             }
             ManifestCommands::Schema { format } => {
@@ -981,8 +981,8 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Load the workspace manifest
-fn load_workspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manifest::Manifest)> {
+/// Load the gripspace manifest
+fn load_gripspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manifest::Manifest)> {
     let current = std::env::current_dir()?;
 
     // First, check if we're in a griptree (has .griptree pointer file)
@@ -991,14 +991,14 @@ fn load_workspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manife
     {
         // In a griptree: prefer griptree-local space manifest, then fall back to main workspace.
         let griptree_manifest_path =
-            gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&griptree_path);
+            gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(&griptree_path);
 
         let content = if let Some(path) = griptree_manifest_path {
             std::fs::read_to_string(path)?
         } else {
             let main_workspace = std::path::PathBuf::from(&pointer.main_workspace);
             let main_manifest_path =
-                gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&main_workspace);
+                gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(&main_workspace);
 
             let main_path = main_manifest_path.ok_or_else(|| {
                 anyhow::anyhow!(
@@ -1009,7 +1009,12 @@ fn load_workspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manife
             std::fs::read_to_string(main_path)?
         };
 
-        let manifest = gitgrip::core::manifest::Manifest::parse(&content)?;
+        let mut manifest = gitgrip::core::manifest::Manifest::parse(&content)?;
+        // Resolve gripspace includes (merge inherited repos/scripts/env/hooks)
+        let spaces_dir = gitgrip::core::manifest_paths::spaces_dir(&griptree_path);
+        if spaces_dir.exists() {
+            let _ = gitgrip::core::gripspace::resolve_all_gripspaces(&mut manifest, &spaces_dir);
+        }
         // Return griptree path as workspace root - repos are located here, not in main workspace
         return Ok((griptree_path, manifest));
     }
@@ -1020,10 +1025,18 @@ fn load_workspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manife
         let gitgrip_dir = search_path.join(".gitgrip");
         if gitgrip_dir.exists() {
             if let Some(manifest_path) =
-                gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&search_path)
+                gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(&search_path)
             {
                 let content = std::fs::read_to_string(&manifest_path)?;
-                let manifest = gitgrip::core::manifest::Manifest::parse(&content)?;
+                let mut manifest = gitgrip::core::manifest::Manifest::parse(&content)?;
+                // Resolve gripspace includes (merge inherited repos/scripts/env/hooks)
+                let spaces_dir = gitgrip::core::manifest_paths::spaces_dir(&search_path);
+                if spaces_dir.exists() {
+                    let _ = gitgrip::core::gripspace::resolve_all_gripspaces(
+                        &mut manifest,
+                        &spaces_dir,
+                    );
+                }
                 return Ok((search_path, manifest));
             }
         }
@@ -1032,7 +1045,13 @@ fn load_workspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manife
             gitgrip::core::manifest_paths::resolve_repo_manifest_path(&search_path)
         {
             let content = std::fs::read_to_string(repo_yaml)?;
-            let manifest = gitgrip::core::manifest::Manifest::parse(&content)?;
+            let mut manifest = gitgrip::core::manifest::Manifest::parse(&content)?;
+            // Resolve gripspace includes (merge inherited repos/scripts/env/hooks)
+            let spaces_dir = gitgrip::core::manifest_paths::spaces_dir(&search_path);
+            if spaces_dir.exists() {
+                let _ =
+                    gitgrip::core::gripspace::resolve_all_gripspaces(&mut manifest, &spaces_dir);
+            }
             return Ok((search_path, manifest));
         }
 

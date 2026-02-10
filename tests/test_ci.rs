@@ -8,7 +8,7 @@ use std::fs;
 /// Helper: append workspace CI config to the existing manifest YAML.
 fn write_ci_manifest(ws: &common::fixtures::WorkspaceFixture, ci_yaml: &str) {
     let manifest_path =
-        gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&ws.workspace_root)
+        gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(&ws.workspace_root)
             .expect("workspace manifest path should resolve");
     let existing = fs::read_to_string(&manifest_path).unwrap();
     let full = format!(

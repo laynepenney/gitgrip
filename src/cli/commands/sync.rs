@@ -204,7 +204,7 @@ fn sync_gripspaces(
     }
 
     // Re-resolve the merged manifest from whichever layout is present.
-    let manifest_path = manifest_paths::resolve_workspace_manifest_path(workspace_root);
+    let manifest_path = manifest_paths::resolve_gripspace_manifest_path(workspace_root);
     let mut resolved = if let Some(path) = manifest_path {
         Manifest::parse_raw(&std::fs::read_to_string(path)?)?
     } else {
