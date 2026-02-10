@@ -234,7 +234,11 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
     Ok(())
 }
 
-pub fn apply_links(workspace_root: &PathBuf, manifest: &Manifest, quiet: bool) -> anyhow::Result<()> {
+pub fn apply_links(
+    workspace_root: &PathBuf,
+    manifest: &Manifest,
+    quiet: bool,
+) -> anyhow::Result<()> {
     if !quiet {
         Output::header("Applying File Links");
         println!();
@@ -278,7 +282,10 @@ pub fn apply_links(workspace_root: &PathBuf, manifest: &Manifest, quiet: bool) -
                 match std::fs::copy(&source, &dest) {
                     Ok(_) => {
                         if !quiet {
-                            Output::success(&format!("[copy] {} -> {}", copyfile.src, copyfile.dest));
+                            Output::success(&format!(
+                                "[copy] {} -> {}",
+                                copyfile.src, copyfile.dest
+                            ));
                         }
                         applied += 1;
                     }
@@ -467,7 +474,10 @@ pub fn apply_links(workspace_root: &PathBuf, manifest: &Manifest, quiet: bool) -
                         match std::os::unix::fs::symlink(&source, &dest) {
                             Ok(_) => {
                                 if !quiet {
-                                    Output::success(&format!("[link] {} -> {}", label, linkfile.dest));
+                                    Output::success(&format!(
+                                        "[link] {} -> {}",
+                                        label, linkfile.dest
+                                    ));
                                 }
                                 applied += 1;
                             }

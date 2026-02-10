@@ -139,7 +139,7 @@ pub async fn run_sync(
     }
 
     // Apply linkfiles and copyfiles after repos and composefiles
-    match apply_links(workspace_root, &manifest, quiet) {
+    match apply_links(workspace_root, manifest, quiet) {
         Ok(()) => {}
         Err(e) => {
             Output::warning(&format!("Link application failed: {}", e));
