@@ -1049,10 +1049,8 @@ fn load_gripspace() -> anyhow::Result<(std::path::PathBuf, gitgrip::core::manife
             // Resolve gripspace includes (merge inherited repos/scripts/env/hooks)
             let spaces_dir = gitgrip::core::manifest_paths::spaces_dir(&search_path);
             if spaces_dir.exists() {
-                let _ = gitgrip::core::gripspace::resolve_all_gripspaces(
-                    &mut manifest,
-                    &spaces_dir,
-                );
+                let _ =
+                    gitgrip::core::gripspace::resolve_all_gripspaces(&mut manifest, &spaces_dir);
             }
             return Ok((search_path, manifest));
         }
