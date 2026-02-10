@@ -234,7 +234,7 @@ pub fn run_group_create(_workspace_root: &PathBuf, name: &str) -> anyhow::Result
 
 /// Find the workspace manifest path.
 fn find_manifest_path(workspace_root: &PathBuf) -> anyhow::Result<PathBuf> {
-    if let Some(path) = manifest_paths::resolve_workspace_manifest_path(workspace_root) {
+    if let Some(path) = manifest_paths::resolve_gripspace_manifest_path(workspace_root) {
         return Ok(path);
     }
     if let Some(path) = manifest_paths::resolve_repo_manifest_path(workspace_root) {

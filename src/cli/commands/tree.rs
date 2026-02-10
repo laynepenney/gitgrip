@@ -341,7 +341,7 @@ pub fn run_tree_add(
     }
 
     // Apply links in the new griptree
-    if let Some(tree_manifest_path) = manifest_paths::resolve_workspace_manifest_path(&tree_path) {
+    if let Some(tree_manifest_path) = manifest_paths::resolve_gripspace_manifest_path(&tree_path) {
         println!();
         if let Ok(tree_manifest) = Manifest::load(&tree_manifest_path) {
             if let Err(e) = run_link(&tree_path, &tree_manifest, false, true) {

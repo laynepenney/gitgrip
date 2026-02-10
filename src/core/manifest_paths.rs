@@ -1,4 +1,4 @@
-//! Workspace manifest path/layout helpers.
+//! Gripspace manifest path/layout helpers.
 //!
 //! Supports both:
 //! - New layout: `.gitgrip/spaces/main/gripspace.yml`
@@ -33,7 +33,7 @@ pub fn legacy_manifest_dir(workspace_root: &Path) -> PathBuf {
     workspace_root.join(LEGACY_MANIFEST_DIR)
 }
 
-pub fn default_workspace_manifest_path(workspace_root: &Path) -> PathBuf {
+pub fn default_gripspace_manifest_path(workspace_root: &Path) -> PathBuf {
     main_space_dir(workspace_root).join(PRIMARY_FILE_NAME)
 }
 
@@ -57,7 +57,7 @@ pub fn resolve_manifest_file_in_dir(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-pub fn resolve_workspace_manifest_path(workspace_root: &Path) -> Option<PathBuf> {
+pub fn resolve_gripspace_manifest_path(workspace_root: &Path) -> Option<PathBuf> {
     let new_dir = main_space_dir(workspace_root);
     if let Some(path) = resolve_manifest_file_in_dir(&new_dir) {
         return Some(path);
@@ -139,7 +139,7 @@ pub fn sync_legacy_mirror_if_present(
 }
 
 pub fn resolve_manifest_path_for_update(workspace_root: &Path) -> Option<PathBuf> {
-    if let Some(path) = resolve_workspace_manifest_path(workspace_root) {
+    if let Some(path) = resolve_gripspace_manifest_path(workspace_root) {
         return Some(path);
     }
 
@@ -156,7 +156,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn resolve_workspace_manifest_prefers_new_layout() {
+    fn resolve_gripspace_manifest_prefers_new_layout() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
 
@@ -177,11 +177,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(resolve_workspace_manifest_path(root), Some(new_path));
+        assert_eq!(resolve_gripspace_manifest_path(root), Some(new_path));
     }
 
     #[test]
-    fn resolve_workspace_manifest_falls_back_to_legacy() {
+    fn resolve_gripspace_manifest_falls_back_to_legacy() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
 
@@ -194,7 +194,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(resolve_workspace_manifest_path(root), Some(legacy_path));
+        assert_eq!(resolve_gripspace_manifest_path(root), Some(legacy_path));
     }
 
     #[test]

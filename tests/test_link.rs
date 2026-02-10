@@ -8,7 +8,7 @@ use std::fs;
 /// Helper: append copyfile/linkfile entries to a repo's manifest config.
 fn write_link_manifest(ws: &common::fixtures::WorkspaceFixture, repo_name: &str, link_yaml: &str) {
     let manifest_path =
-        gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&ws.workspace_root)
+        gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(&ws.workspace_root)
             .expect("workspace manifest path should resolve");
     let content = fs::read_to_string(&manifest_path).unwrap();
 
