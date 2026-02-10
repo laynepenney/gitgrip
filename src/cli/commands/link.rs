@@ -20,7 +20,7 @@ pub fn run_link(
     if status {
         show_link_status(workspace_root, manifest)?;
     } else if apply {
-        apply_links(workspace_root, manifest)?;
+        apply_links(workspace_root, manifest, false)?;
     } else {
         // Default: show status
         show_link_status(workspace_root, manifest)?;
@@ -234,9 +234,11 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
     Ok(())
 }
 
-fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<()> {
-    Output::header("Applying File Links");
-    println!();
+pub fn apply_links(workspace_root: &PathBuf, manifest: &Manifest, quiet: bool) -> anyhow::Result<()> {
+    if !quiet {
+        Output::header("Applying File Links");
+        println!();
+    }
 
     let repos: Vec<RepoInfo> = manifest
         .repos
@@ -275,7 +277,9 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
 
                 match std::fs::copy(&source, &dest) {
                     Ok(_) => {
-                        Output::success(&format!("[copy] {} -> {}", copyfile.src, copyfile.dest));
+                        if !quiet {
+                            Output::success(&format!("[copy] {} -> {}", copyfile.src, copyfile.dest));
+                        }
                         applied += 1;
                     }
                     Err(e) => {
@@ -314,10 +318,12 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                 {
                     match std::os::unix::fs::symlink(&source, &dest) {
                         Ok(_) => {
-                            Output::success(&format!(
-                                "[link] {} -> {}",
-                                linkfile.src, linkfile.dest
-                            ));
+                            if !quiet {
+                                Output::success(&format!(
+                                    "[link] {} -> {}",
+                                    linkfile.src, linkfile.dest
+                                ));
+                            }
                             applied += 1;
                         }
                         Err(e) => {
@@ -333,10 +339,12 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                     if source.is_dir() {
                         match std::os::windows::fs::symlink_dir(&source, &dest) {
                             Ok(_) => {
-                                Output::success(&format!(
-                                    "[link] {} -> {}",
-                                    linkfile.src, linkfile.dest
-                                ));
+                                if !quiet {
+                                    Output::success(&format!(
+                                        "[link] {} -> {}",
+                                        linkfile.src, linkfile.dest
+                                    ));
+                                }
                                 applied += 1;
                             }
                             Err(e) => {
@@ -347,10 +355,12 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                     } else {
                         match std::os::windows::fs::symlink_file(&source, &dest) {
                             Ok(_) => {
-                                Output::success(&format!(
-                                    "[link] {} -> {}",
-                                    linkfile.src, linkfile.dest
-                                ));
+                                if !quiet {
+                                    Output::success(&format!(
+                                        "[link] {} -> {}",
+                                        linkfile.src, linkfile.dest
+                                    ));
+                                }
                                 applied += 1;
                             }
                             Err(e) => {
@@ -403,7 +413,9 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
 
                     match std::fs::copy(&source, &dest) {
                         Ok(_) => {
-                            Output::success(&format!("[copy] {} -> {}", label, copyfile.dest));
+                            if !quiet {
+                                Output::success(&format!("[copy] {} -> {}", label, copyfile.dest));
+                            }
                             applied += 1;
                         }
                         Err(e) => {
@@ -454,7 +466,9 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                     {
                         match std::os::unix::fs::symlink(&source, &dest) {
                             Ok(_) => {
-                                Output::success(&format!("[link] {} -> {}", label, linkfile.dest));
+                                if !quiet {
+                                    Output::success(&format!("[link] {} -> {}", label, linkfile.dest));
+                                }
                                 applied += 1;
                             }
                             Err(e) => {
@@ -469,10 +483,12 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                         if source.is_dir() {
                             match std::os::windows::fs::symlink_dir(&source, &dest) {
                                 Ok(_) => {
-                                    Output::success(&format!(
-                                        "[link] {} -> {}",
-                                        label, linkfile.dest
-                                    ));
+                                    if !quiet {
+                                        Output::success(&format!(
+                                            "[link] {} -> {}",
+                                            label, linkfile.dest
+                                        ));
+                                    }
                                     applied += 1;
                                 }
                                 Err(e) => {
@@ -483,10 +499,12 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                         } else {
                             match std::os::windows::fs::symlink_file(&source, &dest) {
                                 Ok(_) => {
-                                    Output::success(&format!(
-                                        "[link] {} -> {}",
-                                        label, linkfile.dest
-                                    ));
+                                    if !quiet {
+                                        Output::success(&format!(
+                                            "[link] {} -> {}",
+                                            label, linkfile.dest
+                                        ));
+                                    }
                                     applied += 1;
                                 }
                                 Err(e) => {
@@ -510,7 +528,9 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                     ) {
                         Ok(()) => {
                             for compose in composefiles {
-                                Output::success(&format!("[compose] -> {}", compose.dest));
+                                if !quiet {
+                                    Output::success(&format!("[compose] -> {}", compose.dest));
+                                }
                                 applied += 1;
                             }
                         }
@@ -524,7 +544,9 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
         }
     }
 
-    println!();
+    if !quiet {
+        println!();
+    }
     if errors == 0 {
         Output::success(&format!("Applied {} link(s)", applied));
     } else {
@@ -603,7 +625,7 @@ mod tests {
 
         let manifest = create_test_manifest(Some(copyfiles), None);
 
-        let result = apply_links(&workspace, &manifest);
+        let result = apply_links(&workspace, &manifest, true);
         assert!(result.is_ok());
 
         // Verify the file was copied
@@ -631,7 +653,7 @@ mod tests {
 
         let manifest = create_test_manifest(None, Some(linkfiles));
 
-        let result = apply_links(&workspace, &manifest);
+        let result = apply_links(&workspace, &manifest, true);
         assert!(result.is_ok());
 
         // Verify the symlink was created
@@ -661,7 +683,7 @@ mod tests {
         let manifest = create_test_manifest(Some(copyfiles), None);
 
         // Should succeed but skip the missing file
-        let result = apply_links(&workspace, &manifest);
+        let result = apply_links(&workspace, &manifest, true);
         assert!(result.is_ok());
 
         // Dest should not exist
@@ -685,7 +707,7 @@ mod tests {
 
         let manifest = create_test_manifest(Some(copyfiles), None);
 
-        let result = apply_links(&workspace, &manifest);
+        let result = apply_links(&workspace, &manifest, true);
         assert!(result.is_ok());
 
         // Verify nested directory was created
@@ -713,7 +735,7 @@ mod tests {
 
         let manifest = create_test_manifest(Some(copyfiles), None);
 
-        let result = apply_links(&workspace, &manifest);
+        let result = apply_links(&workspace, &manifest, true);
         assert!(result.is_ok());
 
         // Verify the file was overwritten
@@ -769,7 +791,7 @@ mod tests {
             workspace: None,
         };
 
-        let result = apply_links(&workspace, &manifest);
+        let result = apply_links(&workspace, &manifest, true);
         assert!(result.is_ok());
 
         // Verify the manifest file was copied to workspace root
@@ -797,7 +819,7 @@ mod tests {
 
         let manifest = create_test_manifest(None, Some(linkfiles));
 
-        let result = apply_links(&workspace, &manifest);
+        let result = apply_links(&workspace, &manifest, true);
         assert!(result.is_ok());
 
         // Verify symlink points to the source file
@@ -834,7 +856,7 @@ mod tests {
 
         let manifest = create_test_manifest(None, Some(linkfiles));
 
-        let result = apply_links(&workspace, &manifest);
+        let result = apply_links(&workspace, &manifest, true);
         assert!(result.is_ok());
 
         // Verify the destination is now a symlink

@@ -1,5 +1,6 @@
 //! Sync command implementation
 
+use crate::cli::commands::link::apply_links;
 use crate::cli::output::Output;
 use crate::core::gripspace::{
     ensure_gripspace, gripspace_name, resolve_all_gripspaces, update_gripspace,
@@ -134,6 +135,14 @@ pub async fn run_sync(
                     }
                 }
             }
+        }
+    }
+
+    // Apply linkfiles and copyfiles after repos and composefiles
+    match apply_links(workspace_root, &manifest, quiet) {
+        Ok(()) => {}
+        Err(e) => {
+            Output::warning(&format!("Link application failed: {}", e));
         }
     }
 
