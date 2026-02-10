@@ -2,6 +2,7 @@
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
+use colored::Colorize;
 
 #[derive(Parser)]
 #[command(name = "gr")]
@@ -973,8 +974,33 @@ async fn main() -> anyhow::Result<()> {
             generate(shell, &mut cmd, "gr", &mut std::io::stdout());
         }
         None => {
-            println!("gitgrip - Multi-repo workflow tool");
-            println!("Run 'gr --help' for usage");
+            let logo = r#"
+                *    *
+           *    |    |
+           |    |    |
+      *    |    |    |
+      |    \    \    \
+       \    \    \    \       *
+        *    *    *    *       \
+         \    \    \    \      *
+          \    \    \    \    /
+           *----*----*----*--*
+            \        |      /
+             \       |     /
+              *------*----*
+"#;
+            let wordmark = r#"
+        __ _ _ _              _
+       / _` (_) |_ __ _ _ _ _(_)_ __
+      | (_| | |  _/ _` | '_| | '_ \
+       \__, |_|\__\__, |_| |_| .__/
+       |___/      |___/      |_|
+"#;
+            print!("{}", logo.truecolor(251, 146, 60));
+            print!("{}", wordmark.bold());
+            println!("{}", "              git a grip.".truecolor(251, 146, 60));
+            println!();
+            println!("  Run {} for usage", "'gr --help'".dimmed());
         }
     }
 
