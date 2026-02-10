@@ -1,9 +1,14 @@
 //! Sync command implementation
 
 use crate::cli::output::Output;
+use crate::core::gripspace::{
+    ensure_gripspace, gripspace_name, resolve_all_gripspaces, update_gripspace,
+};
 use crate::core::griptree::GriptreeConfig;
 use crate::core::manifest::Manifest;
+use crate::core::manifest_paths;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
+use crate::files::process_composefiles;
 use crate::git::branch::{checkout_branch_at_upstream, checkout_detached, has_commits_ahead};
 use crate::git::remote::{
     fetch_remote, pull_latest_from_upstream, reset_hard, safe_pull_latest, set_branch_upstream_ref,
@@ -35,6 +40,10 @@ pub async fn run_sync(
     sequential: bool,
     reset_refs: bool,
 ) -> anyhow::Result<()> {
+    // Re-load and resolve gripspaces before syncing repos
+    let manifest = sync_gripspaces(workspace_root, manifest, quiet)?;
+    let manifest = &manifest;
+
     let mut repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
 
     // Include manifest repo at the beginning (sync it first)
@@ -99,7 +108,124 @@ pub async fn run_sync(
         }
     }
 
+    // Process composefiles after sync
+    if let Some(ref manifest_config) = manifest.manifest {
+        if let Some(ref composefiles) = manifest_config.composefile {
+            if !composefiles.is_empty() {
+                let manifests_dir = manifest_paths::resolve_manifest_content_dir(workspace_root);
+                let spaces_dir = manifest_paths::spaces_dir(workspace_root);
+
+                match process_composefiles(
+                    workspace_root,
+                    &manifests_dir,
+                    &spaces_dir,
+                    composefiles,
+                ) {
+                    Ok(()) => {
+                        if !quiet {
+                            Output::success(&format!(
+                                "Processed {} composefile(s)",
+                                composefiles.len()
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        Output::warning(&format!("Composefile processing failed: {}", e));
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
+}
+
+/// Sync gripspaces: update existing or clone new ones, then resolve merged manifest.
+fn sync_gripspaces(
+    workspace_root: &PathBuf,
+    manifest: &Manifest,
+    quiet: bool,
+) -> anyhow::Result<Manifest> {
+    let gripspaces = match &manifest.gripspaces {
+        Some(gs) if !gs.is_empty() => gs,
+        _ => return Ok(manifest.clone()),
+    };
+
+    let spaces_dir = manifest_paths::spaces_dir(workspace_root);
+
+    if !quiet {
+        Output::header(&format!("Syncing {} gripspace(s)...", gripspaces.len()));
+        println!();
+    }
+
+    for gs_config in gripspaces {
+        let name = gripspace_name(&gs_config.url);
+        // Use resolve_space_name to find the actual directory (handles reserved names)
+        let dir_name = match crate::core::gripspace::resolve_space_name(&gs_config.url, &spaces_dir)
+        {
+            Ok(dir_name) => dir_name,
+            Err(e) => {
+                Output::warning(&format!(
+                    "gripspace '{}': name resolution failed: {}",
+                    gs_config.url, e
+                ));
+                continue;
+            }
+        };
+        let gs_path = spaces_dir.join(&dir_name);
+
+        if gs_path.exists() {
+            match update_gripspace(&gs_path, gs_config) {
+                Ok(()) => {
+                    if !quiet {
+                        Output::success(&format!("gripspace '{}': updated", name));
+                    }
+                }
+                Err(e) => {
+                    Output::warning(&format!("gripspace '{}': update failed: {}", name, e));
+                }
+            }
+        } else {
+            match ensure_gripspace(&spaces_dir, gs_config) {
+                Ok(_) => {
+                    if !quiet {
+                        Output::success(&format!("gripspace '{}': cloned", name));
+                    }
+                }
+                Err(e) => {
+                    Output::warning(&format!("gripspace '{}': clone failed: {}", name, e));
+                }
+            }
+        }
+    }
+
+    if !quiet {
+        println!();
+    }
+
+    // Re-resolve the merged manifest from whichever layout is present.
+    let manifest_path = manifest_paths::resolve_workspace_manifest_path(workspace_root);
+    let mut resolved = if let Some(path) = manifest_path {
+        Manifest::parse_raw(&std::fs::read_to_string(path)?)?
+    } else {
+        manifest.clone()
+    };
+
+    if let Err(e) = resolve_all_gripspaces(&mut resolved, &spaces_dir) {
+        Output::warning(&format!("Gripspace resolution failed: {}", e));
+        return Ok(manifest.clone());
+    }
+
+    if let Err(e) = resolved.validate() {
+        Output::warning(&format!(
+            "Resolved manifest validation failed after gripspace sync: {}. \
+Using the pre-sync manifest; check gripspace manifests/includes.",
+            e
+        ));
+        return Ok(manifest.clone());
+    }
+
+    Ok(resolved)
 }
 
 /// Sync repos sequentially (original behavior)

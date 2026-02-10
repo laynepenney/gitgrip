@@ -6,6 +6,7 @@ use crate::cli::commands::link::run_link;
 use crate::cli::output::Output;
 use crate::core::griptree::{GriptreeConfig, GriptreePointer, GriptreeRepoInfo};
 use crate::core::manifest::Manifest;
+use crate::core::manifest_paths;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::git::branch::{
     branch_exists, checkout_branch, delete_local_branch, remote_branch_exists,
@@ -234,13 +235,13 @@ pub fn run_tree_add(
     std::fs::write(&state_path, "{}")?;
 
     // Create manifest worktree if main workspace has a manifest repo
-    let main_manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+    let main_manifests_dir = manifest_paths::resolve_manifest_repo_dir(workspace_root);
     let (manifest_branch_option, manifest_worktree_name): (Option<String>, Option<String>) =
-        if main_manifests_dir.exists() {
+        if let Some(main_manifests_dir) = main_manifests_dir {
             let main_manifest_git_dir = main_manifests_dir.join(".git");
             if main_manifest_git_dir.exists() {
                 // Main workspace has a manifest git repo - create worktree in griptree
-                let tree_manifests_dir = tree_gitgrip.join("manifests");
+                let tree_manifests_dir = tree_gitgrip.join("spaces").join("main");
                 let manifest_spinner = Output::spinner("manifest");
 
                 match create_manifest_worktree(&main_manifests_dir, &tree_manifests_dir, branch) {
@@ -340,11 +341,7 @@ pub fn run_tree_add(
     }
 
     // Apply links in the new griptree
-    let tree_manifest_path = tree_path
-        .join(".gitgrip")
-        .join("manifests")
-        .join("manifest.yaml");
-    if tree_manifest_path.exists() {
+    if let Some(tree_manifest_path) = manifest_paths::resolve_workspace_manifest_path(&tree_path) {
         println!();
         if let Ok(tree_manifest) = Manifest::load(&tree_manifest_path) {
             if let Err(e) = run_link(&tree_path, &tree_manifest, false, true) {
@@ -752,11 +749,13 @@ pub fn run_tree_remove(workspace_root: &PathBuf, branch: &str, force: bool) -> a
 
         // Remove manifest worktree
         if let Some(ref manifest_wt_name) = ptr.manifest_worktree_name {
-            let main_manifest_path = PathBuf::from(&ptr.main_workspace)
-                .join(".gitgrip")
-                .join("manifests");
-            if let Ok(repo) = open_repo(&main_manifest_path) {
-                prune_worktree(&repo, manifest_wt_name);
+            let main_workspace = PathBuf::from(&ptr.main_workspace);
+            if let Some(main_manifest_path) =
+                manifest_paths::resolve_manifest_repo_dir(&main_workspace)
+            {
+                if let Ok(repo) = open_repo(&main_manifest_path) {
+                    prune_worktree(&repo, manifest_wt_name);
+                }
             }
         }
 
@@ -877,19 +876,19 @@ fn create_manifest_worktree(
     // Get current branch from main manifests (unused but kept for context)
     let _current_branch = get_current_branch(&repo)?;
 
-    // Create worktree at griptree's .gitgrip/manifests/
+    // Create worktree at griptree's .gitgrip/spaces/main/
     // Use the griptree branch name for the manifest worktree
     // Manifest worktrees create from HEAD since there's no "default branch" concept
     let worktree_name = format!("griptree-{}", branch.replace('/', "-"));
     create_worktree(main_manifests_dir, tree_manifests_dir, &worktree_name, None)?;
 
-    // Check if manifest.yaml exists in the new worktree
-    let manifest_yaml = tree_manifests_dir.join("manifest.yaml");
-    if !manifest_yaml.exists() {
-        // Copy manifest.yaml from main if it doesn't exist
-        let main_manifest = main_manifests_dir.join("manifest.yaml");
-        if main_manifest.exists() {
-            std::fs::copy(&main_manifest, &manifest_yaml)?;
+    // Ensure a supported workspace manifest file exists in the new worktree.
+    if manifest_paths::resolve_manifest_file_in_dir(tree_manifests_dir).is_none() {
+        if let Some(main_manifest) =
+            manifest_paths::resolve_manifest_file_in_dir(main_manifests_dir)
+        {
+            let target_manifest = tree_manifests_dir.join(manifest_paths::PRIMARY_FILE_NAME);
+            std::fs::copy(main_manifest, target_manifest)?;
         }
     }
 

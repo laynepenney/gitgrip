@@ -4,6 +4,12 @@ mod common;
 
 use common::fixtures::WorkspaceBuilder;
 use std::fs;
+use std::path::PathBuf;
+
+fn workspace_manifest_path(workspace_root: &std::path::Path) -> PathBuf {
+    gitgrip::core::manifest_paths::resolve_workspace_manifest_path(workspace_root)
+        .expect("workspace manifest path should resolve")
+}
 
 // ── repo list ──────────────────────────────────────────────────────
 
@@ -80,15 +86,22 @@ fn test_repo_add_https_url() {
     );
 
     // Verify the manifest was updated
-    let manifest_path = ws
-        .workspace_root
-        .join(".gitgrip")
-        .join("manifests")
-        .join("manifest.yaml");
+    let manifest_path = workspace_manifest_path(&ws.workspace_root);
     let content = fs::read_to_string(&manifest_path).unwrap();
     assert!(
         content.contains("new-repo"),
         "manifest should contain new repo"
+    );
+
+    let legacy_manifest = ws
+        .workspace_root
+        .join(".gitgrip")
+        .join("manifests")
+        .join("manifest.yaml");
+    let legacy_content = fs::read_to_string(legacy_manifest).unwrap();
+    assert!(
+        legacy_content.contains("new-repo"),
+        "legacy manifest mirror should also contain new repo"
     );
 }
 
@@ -108,11 +121,7 @@ fn test_repo_add_ssh_url() {
         result.err()
     );
 
-    let manifest_path = ws
-        .workspace_root
-        .join(".gitgrip")
-        .join("manifests")
-        .join("manifest.yaml");
+    let manifest_path = workspace_manifest_path(&ws.workspace_root);
     let content = fs::read_to_string(&manifest_path).unwrap();
     assert!(
         content.contains("ssh-repo"),
@@ -136,11 +145,7 @@ fn test_repo_add_custom_path() {
         result.err()
     );
 
-    let manifest_path = ws
-        .workspace_root
-        .join(".gitgrip")
-        .join("manifests")
-        .join("manifest.yaml");
+    let manifest_path = workspace_manifest_path(&ws.workspace_root);
     let content = fs::read_to_string(&manifest_path).unwrap();
     assert!(
         content.contains("custom/path"),
@@ -164,11 +169,7 @@ fn test_repo_add_custom_branch() {
         result.err()
     );
 
-    let manifest_path = ws
-        .workspace_root
-        .join(".gitgrip")
-        .join("manifests")
-        .join("manifest.yaml");
+    let manifest_path = workspace_manifest_path(&ws.workspace_root);
     let content = fs::read_to_string(&manifest_path).unwrap();
     assert!(
         content.contains("develop"),
@@ -210,11 +211,7 @@ fn test_repo_remove_from_manifest() {
     );
 
     // Verify backend is no longer in manifest
-    let manifest_path = ws
-        .workspace_root
-        .join(".gitgrip")
-        .join("manifests")
-        .join("manifest.yaml");
+    let manifest_path = workspace_manifest_path(&ws.workspace_root);
     let content = fs::read_to_string(&manifest_path).unwrap();
     assert!(
         !content.contains("  backend:"),
@@ -224,6 +221,17 @@ fn test_repo_remove_from_manifest() {
     assert!(
         content.contains("  frontend:"),
         "manifest should still contain frontend"
+    );
+
+    let legacy_manifest = ws
+        .workspace_root
+        .join(".gitgrip")
+        .join("manifests")
+        .join("manifest.yaml");
+    let legacy_content = fs::read_to_string(legacy_manifest).unwrap();
+    assert!(
+        !legacy_content.contains("  backend:"),
+        "legacy manifest mirror should not contain backend repo entry"
     );
 }
 

@@ -150,9 +150,9 @@ mod github_tests {
         );
 
         // Verify manifest
-        let manifest_path = workspace.join(".gitgrip/manifests/manifest.yaml");
-        assert!(manifest_path.exists(), "manifest.yaml not created");
-
+        let manifest_path =
+            gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
+                .expect("manifest not found");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
         assert!(manifest.contains("repo1"), "repo1 not in manifest");
         assert!(manifest.contains("repo2"), "repo2 not in manifest");
@@ -338,9 +338,9 @@ mod gitlab_tests {
             String::from_utf8_lossy(&output.stderr)
         );
 
-        let manifest_path = workspace.join(".gitgrip/manifests/manifest.yaml");
-        assert!(manifest_path.exists());
-
+        let manifest_path =
+            gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
+                .expect("manifest not found");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
         assert!(manifest.contains("repo1"));
         assert!(manifest.contains("repo2"));
@@ -453,7 +453,9 @@ mod gitlab_tests {
         println!("Init output: {}", String::from_utf8_lossy(&output.stdout));
 
         // Read and print the manifest
-        let manifest_path = workspace.join(".gitgrip/manifests/manifest.yaml");
+        let manifest_path =
+            gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
+                .expect("manifest not found");
         if manifest_path.exists() {
             let manifest_content = fs::read_to_string(&manifest_path).unwrap();
             println!("Manifest content:\n{}", manifest_content);
@@ -630,9 +632,9 @@ mod azure_tests {
             String::from_utf8_lossy(&output.stderr)
         );
 
-        let manifest_path = workspace.join(".gitgrip/manifests/manifest.yaml");
-        assert!(manifest_path.exists());
-
+        let manifest_path =
+            gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
+                .expect("manifest not found");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
         assert!(manifest.contains("repo1"));
         assert!(manifest.contains("repo2"));
@@ -850,9 +852,9 @@ mod mixed_platform_tests {
             String::from_utf8_lossy(&output.stderr)
         );
 
-        let manifest_path = workspace.join(".gitgrip/manifests/manifest.yaml");
-        assert!(manifest_path.exists());
-
+        let manifest_path =
+            gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&workspace)
+                .expect("manifest not found");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
 
         // All repos should be in manifest
