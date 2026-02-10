@@ -4,7 +4,7 @@ use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::{get_current_branch, open_repo, path_exists};
-use crate::platform::{detect_platform, get_platform_adapter};
+use crate::platform::get_platform_adapter;
 use std::path::PathBuf;
 
 /// Run the PR diff command
@@ -48,8 +48,7 @@ pub async fn run_pr_diff(
             continue;
         }
 
-        let platform_type = detect_platform(&repo.url);
-        let platform = get_platform_adapter(platform_type, None);
+        let platform = get_platform_adapter(repo.platform_type, repo.platform_base_url.as_deref());
 
         match platform
             .find_pr_by_branch(&repo.owner, &repo.repo, &branch)

@@ -1,11 +1,20 @@
 # gitgrip Manifest Schema Specification
 # Version: 1
 #
-# This document describes the structure of a gitgrip manifest.yaml file.
-# The manifest defines a multi-repository workspace configuration.
+# This document describes the structure of a gitgrip gripspace.yml file.
+# The workspace file defines a multi-repository workspace configuration.
 
 # Schema version (required)
 version: 1
+
+# Gripspace includes (optional)
+# Include repos, scripts, env, hooks, and linkfiles from other gripspace repositories.
+# Gripspaces are cloned into .gitgrip/spaces/<name>/ and their manifests are merged.
+# Local manifest values always win on conflict.
+# Supports recursive includes (max depth: 5) with cycle detection.
+gripspaces:
+  - url: "https://github.com/org/base-gripspace.git"
+    rev: "main"                   # Optional: pin to branch/tag/commit (default: remote HEAD)
 
 # Manifest repository self-tracking (optional)
 # If specified, gitgrip will include the manifest repo in sync/branch/push operations
@@ -25,6 +34,17 @@ manifest:
   linkfile:
     - src: "config/shared.yaml"
       dest: ".config/shared.yaml"
+
+  # Composed files (optional)
+  # Generate files by concatenating parts from gripspaces and/or local manifest repo.
+  # Processed on every `gr sync` and `gr link --apply`.
+  composefile:
+    - dest: "CLAUDE.md"           # Destination path relative to workspace root
+      separator: "\n\n"           # Optional separator between parts (default: "\n\n")
+      parts:
+        - gripspace: "base-gripspace"  # Read from .gitgrip/spaces/base-gripspace/
+          src: "CODI.md"               # Source path relative to gripspace root
+        - src: "PRIVATE_DOCS.md"       # Read from manifest content dir (spaces/main/ or manifests/)
 
   # Platform override for self-hosted instances (optional)
   platform:

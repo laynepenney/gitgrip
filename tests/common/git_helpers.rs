@@ -54,6 +54,15 @@ pub fn push_branch(repo_path: &Path, remote: &str, branch: &str) {
     git(repo_path, &["push", remote, branch]);
 }
 
+/// Fetch from a remote (optionally a single branch).
+pub fn fetch(repo_path: &Path, remote: &str, branch: Option<&str>) {
+    let mut args = vec!["fetch", remote];
+    if let Some(branch) = branch {
+        args.push(branch);
+    }
+    git(repo_path, &args);
+}
+
 /// Push with set-upstream.
 pub fn push_upstream(repo_path: &Path, remote: &str, branch: &str) {
     git(repo_path, &["push", "-u", remote, branch]);
@@ -69,9 +78,33 @@ pub fn add_remote(repo_path: &Path, name: &str, url: &str) {
     git(repo_path, &["remote", "add", name, url]);
 }
 
+/// Remove a remote from a repository.
+pub fn remove_remote(repo_path: &Path, name: &str) {
+    git(repo_path, &["remote", "remove", name]);
+}
+
 /// Get the current branch name.
 pub fn current_branch(repo_path: &Path) -> String {
     git_output(repo_path, &["rev-parse", "--abbrev-ref", "HEAD"])
+}
+
+/// Get upstream tracking branch for a local branch.
+pub fn branch_upstream(repo_path: &Path, branch_name: &str) -> Option<String> {
+    let output = Command::new("git")
+        .current_dir(repo_path)
+        .args([
+            "rev-parse",
+            "--abbrev-ref",
+            &format!("{}@{{upstream}}", branch_name),
+        ])
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run git rev-parse for upstream: {}", e));
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Check if recent log output contains a message.

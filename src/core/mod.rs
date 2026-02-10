@@ -1,7 +1,9 @@
 //! Core business logic for gitgrip
 
+pub mod gripspace;
 pub mod griptree;
 pub mod manifest;
+pub mod manifest_paths;
 pub mod repo;
 pub mod repo_manifest;
 pub mod state;

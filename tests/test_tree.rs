@@ -5,8 +5,28 @@
 
 mod common;
 
+use std::fs;
+use std::path::Path;
+
+use assert_cmd::Command;
+use predicates::str::contains;
+use serde_yaml::Value;
+
 use common::assertions;
-use common::fixtures::WorkspaceBuilder;
+use common::fixtures::{write_griptree_config, WorkspaceBuilder};
+use common::git_helpers;
+
+fn set_default_branch(manifest_path: &Path, repo: &str, branch: &str) {
+    let content = fs::read_to_string(manifest_path).unwrap();
+    let mut doc: Value = serde_yaml::from_str(&content).unwrap();
+    assert!(
+        !doc["repos"][repo].is_null(),
+        "repo {} missing from manifest",
+        repo
+    );
+    doc["repos"][repo]["default_branch"] = Value::String(branch.to_string());
+    fs::write(manifest_path, serde_yaml::to_string(&doc).unwrap()).unwrap();
+}
 
 // ── Tree Add ──────────────────────────────────────────────────────
 
@@ -68,6 +88,50 @@ fn test_tree_add_creates_worktrees() {
 }
 
 #[test]
+fn test_tree_add_writes_repo_upstreams() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo("app")
+        .add_repo("lib")
+        .build();
+
+    git_helpers::create_branch(&ws.repo_path("lib"), "dev");
+    git_helpers::commit_file(&ws.repo_path("lib"), "dev.txt", "dev", "Add dev");
+    git_helpers::push_branch(&ws.repo_path("lib"), "origin", "dev");
+    git_helpers::checkout(&ws.repo_path("lib"), "main");
+
+    let manifest_path =
+        gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(&ws.workspace_root)
+            .expect("workspace manifest path should resolve");
+    set_default_branch(&manifest_path, "lib", "dev");
+    let manifest = ws.load_manifest();
+
+    let result =
+        gitgrip::cli::commands::tree::run_tree_add(&ws.workspace_root, &manifest, "feat/upstream");
+    assert!(
+        result.is_ok(),
+        "tree add should succeed: {:?}",
+        result.err()
+    );
+
+    let tree_path = ws.workspace_root.parent().unwrap().join("feat-upstream");
+    let config_path = tree_path.join(".gitgrip").join("griptree.json");
+    let config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+
+    assert_eq!(config["repoUpstreams"]["app"], "origin/main");
+    assert_eq!(config["repoUpstreams"]["lib"], "origin/dev");
+
+    assert_eq!(
+        git_helpers::branch_upstream(&tree_path.join("app"), "feat/upstream"),
+        Some("origin/main".to_string())
+    );
+    assert_eq!(
+        git_helpers::branch_upstream(&tree_path.join("lib"), "feat/upstream"),
+        Some("origin/dev".to_string())
+    );
+}
+
+#[test]
 fn test_tree_add_with_manifest_repo() {
     let ws = WorkspaceBuilder::new()
         .add_repo("app")
@@ -94,11 +158,13 @@ fn test_tree_add_with_manifest_repo() {
         .join("feat-with-manifest");
 
     // Manifest worktree should be created in griptree
-    let tree_manifest_dir = tree_path.join(".gitgrip").join("manifests");
+    let tree_manifest_dir = tree_path.join(".gitgrip").join("spaces").join("main");
     assertions::assert_file_exists(&tree_manifest_dir);
 
-    // manifest.yaml should exist in griptree's manifest dir
-    assertions::assert_file_exists(&tree_manifest_dir.join("manifest.yaml"));
+    // A supported manifest filename should exist in the griptree manifest dir.
+    assert!(
+        gitgrip::core::manifest_paths::resolve_manifest_file_in_dir(&tree_manifest_dir).is_some()
+    );
 
     // Pointer should reference the manifest worktree
     let pointer_path = tree_path.join(".griptree");
@@ -170,6 +236,24 @@ fn test_tree_list_after_add() {
     assert!(registry["griptrees"]["feat/listed"].is_object());
 }
 
+#[test]
+fn test_tree_list_from_griptree_workspace_shows_registered_tree() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    gitgrip::cli::commands::tree::run_tree_add(&ws.workspace_root, &manifest, "feat/listed")
+        .expect("tree add should succeed");
+
+    let tree_path = ws.workspace_root.parent().unwrap().join("feat-listed");
+
+    let mut cmd = Command::cargo_bin("gr").expect("gr binary should build");
+    cmd.current_dir(&tree_path)
+        .args(["tree", "list"])
+        .assert()
+        .success()
+        .stdout(contains("feat/listed"));
+}
+
 // ── Tree Remove ──────────────────────────────────────────────────
 
 #[test]
@@ -206,6 +290,34 @@ fn test_tree_remove() {
         registry["griptrees"]["feat/removeme"].is_null(),
         "registry should not contain removed griptree"
     );
+}
+
+#[test]
+fn test_tree_remove_from_griptree_workspace() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    gitgrip::cli::commands::tree::run_tree_add(
+        &ws.workspace_root,
+        &manifest,
+        "feat/remove-from-tree",
+    )
+    .expect("tree add should succeed");
+
+    let tree_path = ws
+        .workspace_root
+        .parent()
+        .unwrap()
+        .join("feat-remove-from-tree");
+    let result =
+        gitgrip::cli::commands::tree::run_tree_remove(&tree_path, "feat/remove-from-tree", false);
+
+    assert!(
+        result.is_ok(),
+        "tree remove from griptree workspace should succeed: {:?}",
+        result.err()
+    );
+    assert!(!tree_path.exists(), "griptree directory should be removed");
 }
 
 #[test]
@@ -304,6 +416,42 @@ fn test_tree_lock_prevents_remove() {
 }
 
 #[test]
+fn test_tree_lock_from_griptree_workspace() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    gitgrip::cli::commands::tree::run_tree_add(
+        &ws.workspace_root,
+        &manifest,
+        "feat/lock-from-tree",
+    )
+    .expect("tree add should succeed");
+
+    let tree_path = ws
+        .workspace_root
+        .parent()
+        .unwrap()
+        .join("feat-lock-from-tree");
+    let lock_result =
+        gitgrip::cli::commands::tree::run_tree_lock(&tree_path, "feat/lock-from-tree", None);
+    assert!(
+        lock_result.is_ok(),
+        "tree lock from griptree workspace should succeed: {:?}",
+        lock_result.err()
+    );
+
+    let registry_path = ws.workspace_root.join(".gitgrip").join("griptrees.json");
+    let registry: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&registry_path).unwrap()).unwrap();
+    assert!(
+        registry["griptrees"]["feat/lock-from-tree"]["locked"]
+            .as_bool()
+            .unwrap(),
+        "registry should show locked after lock from griptree workspace"
+    );
+}
+
+#[test]
 fn test_tree_unlock_allows_remove() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
     let manifest = ws.load_manifest();
@@ -392,4 +540,72 @@ fn test_tree_original_repos_unaffected() {
     // Original repos should still be on main
     assertions::assert_on_branch(&ws.repo_path("app"), "main");
     assertions::assert_on_branch(&ws.repo_path("lib"), "main");
+}
+
+// ── Tree Return ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_tree_return_checks_out_base_branch() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "griptree-base");
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/return");
+
+    write_griptree_config(&ws.workspace_root, "griptree-base", "app", "origin/main");
+
+    let result = gitgrip::cli::commands::tree::run_tree_return(
+        &ws.workspace_root,
+        &manifest,
+        None,
+        true,
+        false,
+        None,
+        false,
+        false,
+        false,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "tree return should succeed: {:?}",
+        result.err()
+    );
+    assertions::assert_on_branch(&ws.repo_path("app"), "griptree-base");
+}
+
+#[tokio::test]
+async fn test_tree_return_prunes_current_branch() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "griptree-base");
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/prune");
+
+    write_griptree_config(&ws.workspace_root, "griptree-base", "app", "origin/main");
+
+    let result = gitgrip::cli::commands::tree::run_tree_return(
+        &ws.workspace_root,
+        &manifest,
+        None,
+        true,
+        false,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "tree return should succeed: {:?}",
+        result.err()
+    );
+    assert!(!git_helpers::branch_exists(
+        &ws.repo_path("app"),
+        "feat/prune"
+    ));
+    assertions::assert_on_branch(&ws.repo_path("app"), "griptree-base");
 }

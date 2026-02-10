@@ -4,6 +4,7 @@
 
 use crate::cli::output::{Output, Table};
 use crate::core::manifest::Manifest;
+use crate::core::manifest_paths;
 use crate::core::repo::RepoInfo;
 use crate::git::path_exists;
 use std::path::PathBuf;
@@ -64,7 +65,8 @@ pub fn run_repo_add(
     let branch = default_branch.unwrap_or("main").to_string();
 
     // Load manifest
-    let manifest_path = workspace_root.join(".gitgrip/manifests/manifest.yaml");
+    let manifest_path = manifest_paths::resolve_manifest_path_for_update(workspace_root)
+        .ok_or_else(|| anyhow::anyhow!("No workspace manifest found to update"))?;
     let content = std::fs::read_to_string(&manifest_path)?;
 
     // Simple YAML append (for a proper implementation, use serde_yaml to read/write)
@@ -107,7 +109,12 @@ pub fn run_repo_add(
         format!("{}repos:{}", content, new_repo_yaml)
     };
 
-    std::fs::write(&manifest_path, updated_content)?;
+    std::fs::write(&manifest_path, &updated_content)?;
+    manifest_paths::sync_legacy_mirror_if_present(
+        workspace_root,
+        &manifest_path,
+        &updated_content,
+    )?;
 
     Output::success(&format!("Added repository '{}' to manifest", repo_name));
     println!();
@@ -126,7 +133,8 @@ pub fn run_repo_remove(
     println!();
 
     // Load manifest to get repo path
-    let manifest_path = workspace_root.join(".gitgrip/manifests/manifest.yaml");
+    let manifest_path = manifest_paths::resolve_manifest_path_for_update(workspace_root)
+        .ok_or_else(|| anyhow::anyhow!("No workspace manifest found to update"))?;
     let content = std::fs::read_to_string(&manifest_path)?;
     let manifest = Manifest::parse(&content)?;
 
@@ -174,7 +182,13 @@ pub fn run_repo_remove(
         }
     }
 
-    std::fs::write(&manifest_path, new_lines.join("\n"))?;
+    let updated_content = new_lines.join("\n");
+    std::fs::write(&manifest_path, &updated_content)?;
+    manifest_paths::sync_legacy_mirror_if_present(
+        workspace_root,
+        &manifest_path,
+        &updated_content,
+    )?;
 
     Output::success(&format!("Removed repository '{}' from manifest", name));
     Ok(())

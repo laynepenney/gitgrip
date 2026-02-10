@@ -167,6 +167,76 @@ fn pull_latest_with_mode(repo: &Repository, remote: &str, mode: PullMode) -> Res
     Ok(())
 }
 
+/// Pull latest changes from a specific upstream ref (e.g., origin/main)
+#[cfg_attr(
+    feature = "telemetry",
+    instrument(skip(repo), fields(upstream, success))
+)]
+pub fn pull_latest_from_upstream(repo: &Repository, upstream: &str) -> Result<(), GitError> {
+    let repo_path = super::get_workdir(repo);
+    let (remote, branch) = split_upstream_ref(upstream)?;
+
+    #[cfg(feature = "telemetry")]
+    let start = Instant::now();
+
+    let mut cmd = Command::new("git");
+    cmd.args(["pull", &remote, &branch]).current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
+
+    let success = output.status.success();
+
+    #[cfg(feature = "telemetry")]
+    {
+        let duration = start.elapsed();
+        GLOBAL_METRICS.record_git("pull", duration, success);
+        debug!(
+            upstream,
+            success,
+            duration_ms = duration.as_millis() as u64,
+            "Git pull complete"
+        );
+    }
+
+    if !success {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("CONFLICT") {
+            return Err(GitError::OperationFailed(
+                "Merge conflict occurred. Resolve conflicts manually.".to_string(),
+            ));
+        }
+        if stderr.contains("non-fast-forward") {
+            return Err(GitError::OperationFailed(
+                "Non-fast-forward merge required. Please merge manually.".to_string(),
+            ));
+        }
+        return Err(GitError::OperationFailed(stderr.to_string()));
+    }
+
+    // Invalidate cache
+    invalidate_status_cache(&repo_path.to_path_buf());
+
+    Ok(())
+}
+
+fn split_upstream_ref(upstream: &str) -> Result<(String, String), GitError> {
+    let (remote, branch) = upstream.split_once('/').ok_or_else(|| {
+        GitError::OperationFailed(format!(
+            "Invalid upstream ref '{}'. Expected '<remote>/<branch>'.",
+            upstream
+        ))
+    })?;
+    if remote.is_empty() || branch.is_empty() {
+        return Err(GitError::OperationFailed(format!(
+            "Invalid upstream ref '{}'. Expected '<remote>/<branch>'.",
+            upstream
+        )));
+    }
+    Ok((remote.to_string(), branch.to_string()))
+}
+
 /// Push branch to remote
 #[cfg_attr(
     feature = "telemetry",
@@ -354,6 +424,31 @@ pub fn set_upstream_branch(repo: &Repository, remote: &str) -> Result<(), GitErr
         &format!("{}/{}", remote, branch_name),
     ])
     .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::OperationFailed(stderr.to_string()));
+    }
+
+    Ok(())
+}
+
+/// Set upstream tracking for a specific local branch.
+pub fn set_branch_upstream_ref(
+    repo: &Repository,
+    branch_name: &str,
+    upstream: &str,
+) -> Result<(), GitError> {
+    split_upstream_ref(upstream)?;
+
+    let repo_path = super::get_workdir(repo);
+    let mut cmd = Command::new("git");
+    cmd.args(["branch", "--set-upstream-to", upstream, branch_name])
+        .current_dir(repo_path);
     log_cmd(&cmd);
     let output = cmd
         .output()
@@ -587,6 +682,22 @@ mod tests {
         assert_eq!(
             get_remote_url(&repo, "origin").unwrap(),
             Some("https://github.com/test/repo2.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_pull_latest_missing_remote_errors() {
+        let (_temp, repo) = setup_test_repo();
+
+        let err = pull_latest(&repo, "origin").expect_err("pull should fail without remote");
+        let message = err.to_string();
+        assert!(
+            message.contains("remote")
+                || message.contains("NotFound")
+                || message.contains("fatal")
+                || message.contains("not found"),
+            "unexpected error message: {}",
+            message
         );
     }
 }

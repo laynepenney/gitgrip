@@ -4,7 +4,9 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
+use crate::core::manifest_paths;
 use crate::core::repo::RepoInfo;
+use crate::files::{process_composefiles, resolve_file_source};
 use crate::git::path_exists;
 use std::path::PathBuf;
 
@@ -98,14 +100,31 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
 
     // Process manifest repo links
     if let Some(ref manifest_config) = manifest.manifest {
-        let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+        let manifests_dir = manifest_paths::resolve_manifest_content_dir(workspace_root);
+        let spaces_dir = manifest_paths::spaces_dir(workspace_root);
 
         // Check manifest copyfiles
         if let Some(ref copyfiles) = manifest_config.copyfile {
             for copyfile in copyfiles {
                 total_links += 1;
-                let source = manifests_dir.join(&copyfile.src);
+                let source = match resolve_file_source(&copyfile.src, &manifests_dir, &spaces_dir) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        broken_links += 1;
+                        Output::warning(&format!(
+                            "[copy] {} -> {} ({})",
+                            copyfile.src, copyfile.dest, e
+                        ));
+                        continue;
+                    }
+                };
                 let dest = workspace_root.join(&copyfile.dest);
+
+                let label = if copyfile.src.starts_with("gripspace:") {
+                    copyfile.src.clone()
+                } else {
+                    format!("manifest:{}", copyfile.src)
+                };
 
                 let status = if source.exists() && dest.exists() {
                     valid_links += 1;
@@ -118,10 +137,7 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
                     "✗ (dest missing)"
                 };
 
-                println!(
-                    "  [copy] manifest:{} -> {} {}",
-                    copyfile.src, copyfile.dest, status
-                );
+                println!("  [copy] {} -> {} {}", label, copyfile.dest, status);
             }
         }
 
@@ -129,8 +145,24 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
         if let Some(ref linkfiles) = manifest_config.linkfile {
             for linkfile in linkfiles {
                 total_links += 1;
-                let source = manifests_dir.join(&linkfile.src);
+                let source = match resolve_file_source(&linkfile.src, &manifests_dir, &spaces_dir) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        broken_links += 1;
+                        Output::warning(&format!(
+                            "[link] {} -> {} ({})",
+                            linkfile.src, linkfile.dest, e
+                        ));
+                        continue;
+                    }
+                };
                 let dest = workspace_root.join(&linkfile.dest);
+
+                let label = if linkfile.src.starts_with("gripspace:") {
+                    linkfile.src.clone()
+                } else {
+                    format!("manifest:{}", linkfile.src)
+                };
 
                 let status = if source.exists() && dest.exists() && dest.is_symlink() {
                     valid_links += 1;
@@ -146,9 +178,40 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
                     "✗ (not a symlink)"
                 };
 
+                println!("  [link] {} -> {} {}", label, linkfile.dest, status);
+            }
+        }
+
+        // Show composefile status
+        if let Some(ref composefiles) = manifest_config.composefile {
+            for compose in composefiles {
+                total_links += 1;
+                let dest = workspace_root.join(&compose.dest);
+
+                let status = if dest.exists() {
+                    valid_links += 1;
+                    "✓"
+                } else {
+                    broken_links += 1;
+                    "✗ (not generated)"
+                };
+
+                let parts_desc: Vec<String> = compose
+                    .parts
+                    .iter()
+                    .map(|p| {
+                        if let Some(ref gs) = p.gripspace {
+                            format!("{}:{}", gs, p.src)
+                        } else {
+                            p.src.clone()
+                        }
+                    })
+                    .collect();
                 println!(
-                    "  [link] manifest:{} -> {} {}",
-                    linkfile.src, linkfile.dest, status
+                    "  [compose] [{}] -> {} {}",
+                    parts_desc.join(" + "),
+                    compose.dest,
+                    status
                 );
             }
         }
@@ -303,13 +366,22 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
 
     // Apply manifest repo links
     if let Some(ref manifest_config) = manifest.manifest {
-        let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+        let manifests_dir = manifest_paths::resolve_manifest_content_dir(workspace_root);
+        let spaces_dir = manifest_paths::spaces_dir(workspace_root);
 
         if manifests_dir.exists() {
             // Apply manifest copyfiles
             if let Some(ref copyfiles) = manifest_config.copyfile {
                 for copyfile in copyfiles {
-                    let source = manifests_dir.join(&copyfile.src);
+                    let source =
+                        match resolve_file_source(&copyfile.src, &manifests_dir, &spaces_dir) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                Output::warning(&format!("Invalid source path: {}", e));
+                                errors += 1;
+                                continue;
+                            }
+                        };
                     let dest = workspace_root.join(&copyfile.dest);
 
                     if !source.exists() {
@@ -323,12 +395,15 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                         std::fs::create_dir_all(parent)?;
                     }
 
+                    let label = if copyfile.src.starts_with("gripspace:") {
+                        copyfile.src.clone()
+                    } else {
+                        format!("manifest:{}", copyfile.src)
+                    };
+
                     match std::fs::copy(&source, &dest) {
                         Ok(_) => {
-                            Output::success(&format!(
-                                "[copy] manifest:{} -> {}",
-                                copyfile.src, copyfile.dest
-                            ));
+                            Output::success(&format!("[copy] {} -> {}", label, copyfile.dest));
                             applied += 1;
                         }
                         Err(e) => {
@@ -342,7 +417,15 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
             // Apply manifest linkfiles
             if let Some(ref linkfiles) = manifest_config.linkfile {
                 for linkfile in linkfiles {
-                    let source = manifests_dir.join(&linkfile.src);
+                    let source =
+                        match resolve_file_source(&linkfile.src, &manifests_dir, &spaces_dir) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                Output::warning(&format!("Invalid source path: {}", e));
+                                errors += 1;
+                                continue;
+                            }
+                        };
                     let dest = workspace_root.join(&linkfile.dest);
 
                     if !source.exists() {
@@ -361,14 +444,17 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                         let _ = std::fs::remove_file(&dest);
                     }
 
+                    let label = if linkfile.src.starts_with("gripspace:") {
+                        linkfile.src.clone()
+                    } else {
+                        format!("manifest:{}", linkfile.src)
+                    };
+
                     #[cfg(unix)]
                     {
                         match std::os::unix::fs::symlink(&source, &dest) {
                             Ok(_) => {
-                                Output::success(&format!(
-                                    "[link] manifest:{} -> {}",
-                                    linkfile.src, linkfile.dest
-                                ));
+                                Output::success(&format!("[link] {} -> {}", label, linkfile.dest));
                                 applied += 1;
                             }
                             Err(e) => {
@@ -384,8 +470,8 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                             match std::os::windows::fs::symlink_dir(&source, &dest) {
                                 Ok(_) => {
                                     Output::success(&format!(
-                                        "[link] manifest:{} -> {}",
-                                        linkfile.src, linkfile.dest
+                                        "[link] {} -> {}",
+                                        label, linkfile.dest
                                     ));
                                     applied += 1;
                                 }
@@ -398,8 +484,8 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                             match std::os::windows::fs::symlink_file(&source, &dest) {
                                 Ok(_) => {
                                     Output::success(&format!(
-                                        "[link] manifest:{} -> {}",
-                                        linkfile.src, linkfile.dest
+                                        "[link] {} -> {}",
+                                        label, linkfile.dest
                                     ));
                                     applied += 1;
                                 }
@@ -408,6 +494,29 @@ fn apply_links(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
                                     errors += 1;
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            // Apply composefiles
+            if let Some(ref composefiles) = manifest_config.composefile {
+                if !composefiles.is_empty() {
+                    match process_composefiles(
+                        workspace_root,
+                        &manifests_dir,
+                        &spaces_dir,
+                        composefiles,
+                    ) {
+                        Ok(()) => {
+                            for compose in composefiles {
+                                Output::success(&format!("[compose] -> {}", compose.dest));
+                                applied += 1;
+                            }
+                        }
+                        Err(e) => {
+                            Output::error(&format!("Failed to process composefiles: {}", e));
+                            errors += 1;
                         }
                     }
                 }
@@ -456,6 +565,7 @@ mod tests {
 
         Manifest {
             version: 1,
+            gripspaces: None,
             manifest: None,
             repos,
             settings: ManifestSettings {
@@ -617,7 +727,7 @@ mod tests {
         let workspace = temp.path().to_path_buf();
 
         // Create manifest directory and source file
-        let manifests_dir = workspace.join(".gitgrip").join("manifests");
+        let manifests_dir = workspace.join(".gitgrip").join("spaces").join("main");
         std::fs::create_dir_all(&manifests_dir).unwrap();
         std::fs::write(manifests_dir.join("CLAUDE.md"), "# Claude Guide").unwrap();
 
@@ -639,6 +749,7 @@ mod tests {
 
         let manifest = Manifest {
             version: 1,
+            gripspaces: None,
             manifest: Some(ManifestRepoConfig {
                 url: "git@github.com:test/manifest.git".to_string(),
                 default_branch: "main".to_string(),
@@ -647,6 +758,7 @@ mod tests {
                     dest: "CLAUDE.md".to_string(),
                 }]),
                 linkfile: None,
+                composefile: None,
                 platform: None,
             }),
             repos,

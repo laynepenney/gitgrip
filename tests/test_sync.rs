@@ -3,8 +3,26 @@
 mod common;
 
 use common::assertions::{assert_file_exists, assert_on_branch};
-use common::fixtures::WorkspaceBuilder;
+use common::fixtures::{write_griptree_config, WorkspaceBuilder};
 use common::git_helpers;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+fn git(dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+    assert!(
+        output.status.success(),
+        "git {:?} failed in {}: {}",
+        args,
+        dir.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
 
 #[tokio::test]
 async fn test_sync_clones_missing_repos() {
@@ -26,6 +44,7 @@ async fn test_sync_clones_missing_repos() {
         false,
         None,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -40,7 +59,6 @@ async fn test_sync_pulls_existing_repos() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
     // Push a new commit to the bare remote (simulating upstream changes)
-    let bare_path = ws.remote_path("app");
     let staging = ws._temp.path().join("sync-staging");
     git_helpers::clone_repo(&ws.remote_url("app"), &staging);
     git_helpers::commit_file(&staging, "new-file.txt", "content", "Add new file");
@@ -55,12 +73,74 @@ async fn test_sync_pulls_existing_repos() {
         false,
         None,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
 
     // The new file should now exist in the workspace repo
     assert_file_exists(&ws.repo_path("app").join("new-file.txt"));
+}
+
+#[tokio::test]
+async fn test_sync_uses_griptree_upstream_mapping() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let staging = ws._temp.path().join("sync-upstream-staging");
+    git_helpers::clone_repo(&ws.remote_url("app"), &staging);
+    git_helpers::create_branch(&staging, "dev");
+    git_helpers::commit_file(&staging, "dev-only.txt", "dev", "Add dev file");
+    git_helpers::push_branch(&staging, "origin", "dev");
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/griptree");
+
+    write_griptree_config(&ws.workspace_root, "feat/griptree", "app", "origin/dev");
+    let manifest = ws.load_manifest();
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+        false,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
+
+    assert_file_exists(&ws.repo_path("app").join("dev-only.txt"));
+}
+
+#[tokio::test]
+async fn test_sync_sets_tracking_upstream_for_griptree_base_branch() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/griptree");
+    assert_eq!(
+        git_helpers::branch_upstream(&ws.repo_path("app"), "feat/griptree"),
+        None
+    );
+
+    write_griptree_config(&ws.workspace_root, "feat/griptree", "app", "origin/main");
+    let manifest = ws.load_manifest();
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+        false,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
+
+    assert_eq!(
+        git_helpers::branch_upstream(&ws.repo_path("app"), "feat/griptree"),
+        Some("origin/main".to_string())
+    );
 }
 
 #[tokio::test]
@@ -77,12 +157,183 @@ async fn test_sync_handles_up_to_date() {
         false,
         None,
         false,
+        false,
     )
     .await;
     assert!(
         result.is_ok(),
         "sync should succeed when up to date: {:?}",
         result.err()
+    );
+}
+
+#[tokio::test]
+async fn test_sync_skips_griptree_base_with_local_commits_ahead() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/griptree");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "local-only.txt",
+        "local",
+        "Add local-only file",
+    );
+
+    let staging = ws._temp.path().join("sync-diverge-staging");
+    git_helpers::clone_repo(&ws.remote_url("app"), &staging);
+    git_helpers::commit_file(&staging, "upstream.txt", "upstream", "Add upstream file");
+    git_helpers::push_branch(&staging, "origin", "main");
+
+    write_griptree_config(&ws.workspace_root, "feat/griptree", "app", "origin/main");
+    let manifest = ws.load_manifest();
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+        false,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
+
+    assert_file_exists(&ws.repo_path("app").join("local-only.txt"));
+    assert!(
+        !ws.repo_path("app").join("upstream.txt").exists(),
+        "expected sync to skip pulling upstream changes"
+    );
+    assert_on_branch(&ws.repo_path("app"), "feat/griptree");
+}
+
+#[tokio::test]
+async fn test_sync_reset_refs_hard_resets_reference_repo() {
+    let ws = WorkspaceBuilder::new().add_reference_repo("ref").build();
+
+    let remote_sha = git_helpers::get_head_sha(&ws.remote_path("ref"));
+
+    git_helpers::commit_file(
+        &ws.repo_path("ref"),
+        "local-only.txt",
+        "local",
+        "Add local-only file",
+    );
+
+    let local_sha = git_helpers::get_head_sha(&ws.repo_path("ref"));
+    assert_ne!(local_sha, remote_sha);
+
+    let manifest = ws.load_manifest();
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+        true,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
+
+    let synced_sha = git_helpers::get_head_sha(&ws.repo_path("ref"));
+    let remote_sha_after = git_helpers::get_head_sha(&ws.remote_path("ref"));
+    assert_eq!(synced_sha, remote_sha_after);
+    assert!(
+        !ws.repo_path("ref").join("local-only.txt").exists(),
+        "expected reset to discard local changes"
+    );
+}
+
+#[tokio::test]
+async fn test_sync_reset_refs_checks_out_upstream_branch() {
+    let ws = WorkspaceBuilder::new().add_reference_repo("ref").build();
+
+    let staging = ws._temp.path().join("sync-ref-staging");
+    git_helpers::clone_repo(&ws.remote_url("ref"), &staging);
+    git_helpers::create_branch(&staging, "dev");
+    git_helpers::commit_file(&staging, "dev-only.txt", "dev", "Add dev file");
+    git_helpers::push_branch(&staging, "origin", "dev");
+
+    git_helpers::create_branch(&ws.repo_path("ref"), "codi-gripspace");
+
+    write_griptree_config(&ws.workspace_root, "feat/griptree", "ref", "origin/dev");
+    let manifest = ws.load_manifest();
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+        true,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
+
+    assert_on_branch(&ws.repo_path("ref"), "dev");
+    assert_file_exists(&ws.repo_path("ref").join("dev-only.txt"));
+}
+
+#[tokio::test]
+async fn test_sync_reset_refs_falls_back_to_detached_when_branch_locked_in_worktree() {
+    let ws = WorkspaceBuilder::new().add_reference_repo("ref").build();
+
+    let staging = ws._temp.path().join("sync-ref-locked-branch-staging");
+    git_helpers::clone_repo(&ws.remote_url("ref"), &staging);
+    git_helpers::create_branch(&staging, "dev");
+    git_helpers::commit_file(&staging, "dev-only.txt", "dev", "Add dev file");
+    git_helpers::push_branch(&staging, "origin", "dev");
+
+    let ref_repo = ws.repo_path("ref");
+    git(&ref_repo, &["fetch", "origin", "dev:dev"]);
+
+    let locked_worktree = ws._temp.path().join("ref-dev-worktree");
+    git(
+        &ref_repo,
+        &["worktree", "add", locked_worktree.to_str().unwrap(), "dev"],
+    );
+
+    git_helpers::commit_file(&ref_repo, "local-only.txt", "local", "Add local-only file");
+
+    write_griptree_config(&ws.workspace_root, "feat/griptree", "ref", "origin/dev");
+    let manifest = ws.load_manifest();
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+        true,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
+
+    assert_file_exists(&ref_repo.join("dev-only.txt"));
+    assert!(
+        !ref_repo.join("local-only.txt").exists(),
+        "expected reset to discard local changes"
+    );
+
+    let repo = gitgrip::git::open_repo(&ref_repo).expect("open repo");
+    let head = gitgrip::git::get_current_branch(&repo).expect("current branch");
+    assert!(
+        head.starts_with("(HEAD detached at "),
+        "expected detached HEAD fallback, got: {}",
+        head
+    );
+
+    git(
+        &ref_repo,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            locked_worktree.to_str().unwrap(),
+        ],
     );
 }
 
@@ -106,6 +357,7 @@ async fn test_sync_multiple_repos() {
         false,
         false,
         None,
+        false,
         false,
     )
     .await;
@@ -134,6 +386,7 @@ async fn test_sync_quiet_mode() {
         true,
         None,
         false,
+        false,
     )
     .await;
     assert!(
@@ -160,11 +413,70 @@ async fn test_sync_sequential_mode() {
         false,
         None,
         true,
+        false,
     )
     .await;
     assert!(
         result.is_ok(),
         "sequential sync should succeed: {:?}",
         result.err()
+    );
+}
+
+#[tokio::test]
+async fn test_sync_clone_failure_invalid_url() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let mut manifest = ws.load_manifest();
+
+    // Force clone path: delete repo and replace URL with invalid path
+    fs::remove_dir_all(ws.repo_path("app")).unwrap();
+    assert!(!ws.repo_path("app").exists());
+    manifest.repos.get_mut("app").expect("app repo config").url =
+        "file:///does-not-exist/repo.git".to_string();
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+        false,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should not crash: {:?}", result.err());
+
+    // Clone should fail, leaving no git metadata
+    assert!(
+        !ws.repo_path("app").join(".git").exists(),
+        "expected clone to fail without .git"
+    );
+}
+
+#[tokio::test]
+async fn test_sync_existing_repo_missing_git_dir() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    // Corrupt repo by removing .git
+    fs::remove_dir_all(ws.repo_path("app").join(".git")).unwrap();
+    assert!(!ws.repo_path("app").join(".git").exists());
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        false,
+        false,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should not crash: {:?}", result.err());
+
+    // Sync should report error and leave repo unchanged (still missing .git)
+    assert!(
+        !ws.repo_path("app").join(".git").exists(),
+        "expected sync to fail for non-git directory"
     );
 }

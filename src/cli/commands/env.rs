@@ -4,6 +4,7 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
+use crate::core::manifest_paths;
 use std::path::PathBuf;
 
 /// Run the env command
@@ -13,12 +14,10 @@ pub fn run_env(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<
 
     // Built-in environment variables
     println!("  GITGRIP_WORKSPACE={}", workspace_root.display());
-    println!(
-        "  GITGRIP_MANIFEST={}",
-        workspace_root
-            .join(".gitgrip/manifests/manifest.yaml")
-            .display()
-    );
+    let manifest_path = manifest_paths::resolve_gripspace_manifest_path(workspace_root)
+        .or_else(|| manifest_paths::resolve_repo_manifest_path(workspace_root))
+        .unwrap_or_else(|| manifest_paths::default_gripspace_manifest_path(workspace_root));
+    println!("  GITGRIP_MANIFEST={}", manifest_path.display());
 
     // Workspace-defined environment variables
     if let Some(ref workspace) = manifest.workspace {

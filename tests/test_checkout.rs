@@ -139,3 +139,44 @@ fn test_checkout_create_flag() {
     assert_on_branch(&ws.repo_path("frontend"), "feat/new-feature");
     assert_on_branch(&ws.repo_path("backend"), "feat/new-feature");
 }
+#[test]
+fn test_checkout_skips_non_git_repo() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo("frontend")
+        .add_repo("backend")
+        .build();
+
+    let manifest = ws.load_manifest();
+
+    // Create branch across repos
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/checkout-safe"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
+    .unwrap();
+
+    // Corrupt backend repo by removing .git
+    std::fs::remove_dir_all(ws.repo_path("backend").join(".git")).unwrap();
+
+    let result = gitgrip::cli::commands::checkout::run_checkout(
+        &ws.workspace_root,
+        &manifest,
+        "feat/checkout-safe",
+        false,
+    );
+    assert!(
+        result.is_ok(),
+        "checkout should not crash on non-git repo: {:?}",
+        result.err()
+    );
+
+    // Healthy repo should switch; corrupted repo remains non-git
+    assert_on_branch(&ws.repo_path("frontend"), "feat/checkout-safe");
+    assert!(!ws.repo_path("backend").join(".git").exists());
+}

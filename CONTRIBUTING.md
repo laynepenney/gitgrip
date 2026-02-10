@@ -5,9 +5,8 @@ Thank you for your interest in contributing to gitgrip! This document provides g
 ## Getting Started
 
 ### Prerequisites
-- Rust toolchain (rustc, cargo)
-- Just command runner (`cargo install just`)
-- Justworks configuration (`~/.config/just/just.conf` with `gitgrip` tool)
+- Rust toolchain (rustc, cargo) — MSRV 1.80
+- Git
 
 ### Setting Up the Development Environment
 
@@ -15,10 +14,6 @@ Thank you for your interest in contributing to gitgrip! This document provides g
 # Clone the repository
 git clone git@github.com:laynepenney/gitgrip.git
 cd gitgrip
-
-# Install additional tooling
-cargo install cargo-watch  # For development
-cargo install cargo-expand # For macro debugging (optional)
 
 # Build the project
 cargo build
@@ -210,10 +205,13 @@ This creates the PR for `github.com/laynepenney/gitgrip`, not the workspace mani
 
 ## Documentation
 
-- **CLAUDE.md** - AI assistant context for this repository
-- **CODEBASE_REVIEW.md** - Architecture and code review notes
+- **CLAUDE.md** - Development guide and command reference
+- **README.md** - User-facing documentation
 - **CONTRIBUTING.md** - This file
-- **docs/** - Additional documentation
+- **CHANGELOG.md** - Version history
+- **docs/SKILL.md** - AI assistant skill definition
+- **docs/MANIFEST.md** - Manifest reference
+- **.claude/skills/gitgrip/SKILL.md** - Claude Code skill integration
 
 
 ## Worktree Conflicts

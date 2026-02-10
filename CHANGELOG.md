@@ -5,6 +5,117 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-02-10
+
+### Fixed
+- **Gripspace-inherited repos now visible to all commands** - `gr status`, `gr repo list`, `gr branch`, and all other commands now see repos inherited from gripspace includes, not just `gr sync` (#273)
+
+### Changed
+- **Renamed internal manifest loader** - `load_workspace()` → `load_gripspace()`, `resolve_workspace_manifest_path()` → `resolve_gripspace_manifest_path()` for naming consistency with gripspace terminology
+
+## [0.12.0] - 2026-02-09
+
+### Added
+- **Gripspace includes** - Composable manifest inheritance via `gripspaces:` directive (#270)
+  - Clone external gripspace repositories and merge their repos, scripts, env, hooks, linkfiles, and copyfiles into the local workspace
+  - Recursive resolution with DAG-aware cycle detection (max depth 5)
+  - Local manifest values always win on conflict
+  - `gr sync` and `gr init` resolve and clone gripspaces automatically
+  - `gr status` shows gripspace clone status with revision and dirty state
+- **Composefile support** - Generate files by concatenating parts from gripspaces and/or local manifest (`composefile:` directive)
+  - Processed on `gr sync` and `gr link --apply`
+  - Parts can reference gripspace content or local manifest content
+- **URL normalization** - SSH and HTTPS URLs to the same repo are recognized as equivalent for space reuse (`git@github.com:user/repo` ↔ `https://github.com/user/repo`)
+- **Manifest paths module** - Consistent path resolution across all commands (`manifest_paths.rs`)
+
+### Changed
+- **Unified directory layout** - `.gitgrip/spaces/` is now the single directory for all space content (gripspaces and manifest), replacing the previous split between `gripspaces/` and `spaces/`
+- Reserved space names (`main`, `local`) are auto-suffixed to avoid conflicts with the manifest space
+
+### Security
+- Gripspace name validation with allowlist (`[a-zA-Z0-9._-]`), rejecting `.`, `..`, and path traversal
+- Windows absolute path and UNC path rejection in path boundary checks
+- Gripspace manifest validation via `validate_as_gripspace()` (allows empty repos, validates all other constraints)
+- Failed clone cleanup — partial directories are removed on clone error
+- Untrusted gripspace path hardening across all validators
+
+## [0.11.3] - 2026-02-09
+
+### Changed
+- **Griptree branch tracking at creation** - `gr tree add` now sets each repo's griptree branch to track its upstream default (`origin/main`, `origin/dev`, etc.) (#267)
+- **Griptree sync self-healing** - `gr sync` now repairs branch upstream tracking when on the griptree base branch, using per-repo mapping from `griptree.json` (#267)
+
+### Documentation
+- Updated workflow docs to prefer `gr checkout --base` after merge cleanup
+- Updated command docs to include `gr tree return` and `gr sync --reset-refs`
+
+### Testing
+- Added integration coverage for upstream tracking during `gr tree add`
+- Added integration coverage for upstream tracking repair during `gr sync`
+
+## [0.11.2] - 2026-02-09
+
+### Fixed
+- **Griptree registry resolution** - `gr tree list` now resolves griptrees from the main workspace when run inside a griptree (#263)
+  - Also applies to `gr tree remove`, `gr tree lock`, and `gr tree unlock`
+  - Added regression coverage for list/remove/lock from griptree workspaces
+- **Worktree-safe ref reset** - `gr sync --reset-refs` now falls back to detached checkout when target branch is locked by another worktree (#265)
+  - Prevents false failures when refs are shared across multiple worktrees
+  - Keeps hard reset behavior and adds explicit fallback status output
+
+## [0.11.1] - 2026-02-08
+
+### Fixed
+- **Reference repo sync alignment** - `gr sync --reset-refs` now checks out the correct upstream branch before hard-resetting (#259)
+  - Warns before discarding uncommitted changes or unpushed commits
+  - Properly aligns reference repos to upstream branch (e.g., `origin/dev`) instead of staying on wrong branch
+  - New `checkout_branch_at_upstream` git helper with worktree conflict detection
+
+### Added
+- `gr tree return` command to switch back to main workspace (#254)
+- `gr sync --reset-refs` flag to hard-reset reference repos to upstream (#255)
+
+## [0.11.0] - 2026-02-07
+
+### Added
+- **Griptree upstream tracking** - Per-repo upstream branch configuration for griptrees (#246)
+  - `gr tree add` now auto-detects and records upstream for each repo in `griptree.json`
+  - `gr sync` uses per-repo upstream mapping when on griptree base branch
+  - `gr rebase --upstream` uses griptree upstream mapping instead of hardcoded `origin/main`
+  - `gr checkout --base` - new flag to checkout the griptree base branch across all repos
+  - Upstream validation with clear error messages for malformed refs
+- **Pull command** - `gr pull` for pulling changes across repos (#234)
+  - `--rebase` flag for rebase-based pulls
+  - `--sequential` flag for ordered output
+  - `--group` flag for group-scoped pulls
+- **Terminal UI improvements** - verbose mode and debug output (#232)
+- **Rate limiting** - Infrastructure for platform API rate limiting (#153)
+- **`--verbose` global flag** - Shows external commands being executed (#204)
+
+### Changed
+- `gr rebase --upstream` now uses griptree config for per-repo upstream resolution
+- Refactored `InitOptions` and `BranchOptions` into dedicated structs (#222)
+- Simplified `check_repo_for_changes` in PR merge (#221)
+- Consolidated duplicate manifest helper functions (#220)
+
+### Fixed
+- **Production readiness hardening** (#247)
+  - Replaced `process::exit(1)` with proper error propagation in commit command
+  - Poisoned mutex recovery in git status cache (4 locations)
+  - Safe `SystemTime` fallback in retry jitter
+  - Descriptive `expect()` for hardcoded progress bar templates
+  - Improved path traversal detection with depth-tracking segment walk
+  - Credential sanitization in git command logging
+  - Symlink destination validation within workspace boundaries
+  - HTTP client fallback logging in GitLab, Azure DevOps, and Bitbucket adapters
+- Fixed HTTP client recursion in platform adapters (#242)
+
+### Testing
+- 75+ new integration tests covering edge cases and error scenarios
+- Pull error handling tests (#235)
+- Unit tests for rate_limit, types, bench, and PR commands (#228)
+- PR merge command integration tests (#206)
+
 ## [0.10.0] - 2026-02-05
 
 ### Added

@@ -1,6 +1,8 @@
-# Manifest Reference
+# Gripspace Reference
 
-The manifest file (`manifest.yaml`) defines your multi-repository workspace configuration. It is typically located at `.gitgrip/manifests/manifest.yaml`.
+The workspace file (`gripspace.yml`) defines your multi-repository workspace configuration. The canonical location is `.gitgrip/spaces/main/gripspace.yml`.
+
+Legacy locations (`.gitgrip/manifests/manifest.yaml` and `.gitgrip/manifests/manifest.yml`) are still read for backward compatibility.
 
 ## Quick Start
 
@@ -52,6 +54,62 @@ When `manifest` is defined:
 - `gr branch` creates branches in the manifest repo
 - `gr push` pushes the manifest repo
 - `gr diff` shows manifest changes
+
+## Gripspace Includes
+
+Compose workspaces by inheriting configuration from shared gripspace repositories:
+
+```yaml
+gripspaces:
+  - url: git@github.com:org/base-workspace.git
+  - url: git@github.com:org/frontend-tools.git
+    rev: v2.0.0  # Pin to branch, tag, or commit (default: remote HEAD)
+```
+
+Gripspace repos are cloned into `.gitgrip/spaces/<name>/` and their `gripspace.yml` manifests are merged into the local workspace during `gr sync` and `gr init`.
+
+### What Gets Merged
+
+| Section | Merge Strategy |
+|---------|---------------|
+| `repos` | Gripspace repos added first, local repos override by key |
+| `scripts` | Gripspace scripts added first, local scripts override by key |
+| `env` | Gripspace env added first, local env overrides by key |
+| `hooks` | Gripspace hooks run first (deepest first), then local hooks |
+| `copyfile` | Gripspace entries added, local entries override by dest |
+| `linkfile` | Gripspace entries added, local entries override by dest |
+
+**Local values always win on conflict.**
+
+### Recursive Includes
+
+Gripspaces can include other gripspaces (max depth 5). Resolution is depth-first with DAG-aware cycle detection — the same gripspace referenced from multiple parents is only resolved once.
+
+### Composefiles
+
+Generate files by concatenating parts from gripspaces and/or the local manifest:
+
+```yaml
+manifest:
+  url: git@github.com:org/workspace.git
+  composefile:
+    - dest: CLAUDE.md
+      separator: "\n\n"  # Optional (default: "\n\n")
+      parts:
+        - gripspace: base-workspace  # Read from .gitgrip/spaces/base-workspace/
+          src: CODI.md
+        - src: LOCAL_DOCS.md         # Read from local manifest content dir
+```
+
+Composefiles are processed on every `gr sync` and `gr link --apply`.
+
+### URL Normalization
+
+SSH and HTTPS URLs to the same repository are recognized as equivalent. If a gripspace directory already exists with a matching remote (even via a different protocol), it is reused rather than creating a duplicate:
+
+```
+git@github.com:org/repo.git  ↔  https://github.com/org/repo.git
+```
 
 ## Repository Definitions
 

@@ -33,7 +33,7 @@ pub fn run_manifest_import(path: &str, output_path: Option<&str>) -> anyhow::Res
     let yaml = serde_yaml::to_string(&result.manifest)?;
 
     // Write output
-    let dest = output_path.unwrap_or("manifest.yaml");
+    let dest = output_path.unwrap_or("gripspace.yml");
     std::fs::write(dest, &yaml)?;
 
     println!();
@@ -63,11 +63,12 @@ pub fn run_manifest_sync(workspace_root: &std::path::PathBuf) -> anyhow::Result<
         result.total_projects, result.gerrit_skipped, result.non_gerrit_imported
     ));
 
-    // Write to .repo/manifests/manifest.yaml
+    // Write to .repo/manifests/gripspace.yml (with legacy mirror)
     let yaml = serde_yaml::to_string(&result.manifest)?;
     let manifests_dir = repo_dir.join("manifests");
-    let yaml_path = manifests_dir.join("manifest.yaml");
+    let yaml_path = manifests_dir.join("gripspace.yml");
     std::fs::write(&yaml_path, &yaml)?;
+    std::fs::write(manifests_dir.join("manifest.yaml"), &yaml)?;
 
     println!();
     Output::success(&format!("Updated: {}", yaml_path.display()));
@@ -107,18 +108,40 @@ fn print_schema_markdown() {
 
 ## Overview
 
-The manifest file (`manifest.yaml`) defines a multi-repository workspace configuration.
-It is typically located at `.gitgrip/manifests/manifest.yaml`.
+The workspace file (`gripspace.yml`) defines a multi-repository workspace configuration.
+It is typically located at `.gitgrip/spaces/main/gripspace.yml`.
 
 ## Top-Level Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `version` | integer | Yes | Schema version (currently `1`) |
+| `gripspaces` | array | No | Gripspace includes for manifest inheritance |
 | `manifest` | object | No | Self-tracking manifest repo config |
 | `repos` | object | Yes | Repository definitions |
 | `settings` | object | No | Global workspace settings |
 | `workspace` | object | No | Scripts, hooks, and environment |
+
+## Gripspace Includes
+
+Include repos, scripts, env, hooks, and linkfiles from other gripspace repos.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `url` | string | Yes | Git URL for the gripspace repository |
+| `rev` | string | No | Branch, tag, or commit to pin (default: remote HEAD) |
+
+### Composefile (in manifest section)
+
+Generate files by concatenating parts from gripspaces and local manifest.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `dest` | string | Yes | Destination path relative to workspace root |
+| `separator` | string | No | Separator between parts (default: `\n\n`) |
+| `parts` | array | Yes | Ordered list of content sources |
+| `parts[].src` | string | Yes | Source file path |
+| `parts[].gripspace` | string | No | Gripspace name (omit for local manifest) |
 
 ## Repository Configuration
 
@@ -154,9 +177,19 @@ Each repository under `repos` supports:
 ```yaml
 version: 1
 
+gripspaces:
+  - url: https://github.com/org/base-gripspace.git
+    rev: main
+
 manifest:
   url: git@github.com:org/manifest.git
   default_branch: main
+  composefile:
+    - dest: CLAUDE.md
+      parts:
+        - gripspace: base-gripspace
+          src: CODI.md
+        - src: PRIVATE_DOCS.md
 
 repos:
   frontend:

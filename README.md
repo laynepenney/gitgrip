@@ -21,7 +21,8 @@ Inspired by Android's [repo tool](https://source.android.com/docs/setup/create/r
 ## Features
 
 - **Manifest-based configuration** - Define all your repos in a single YAML file
-- **Multi-platform support** - Works with GitHub, GitLab, and Azure DevOps (even mixed in one workspace)
+- **Composable workspaces** - Inherit repos, scripts, hooks, and env from shared gripspace repositories
+- **Multi-platform support** - Works with GitHub, GitLab, Azure DevOps, and Bitbucket (even mixed in one workspace)
 - **Synchronized branches** - Create and checkout branches across all repos at once
 - **Linked PRs** - Create pull requests that reference each other across repos
 - **Atomic merges** - All-or-nothing merge strategy ensures repos stay in sync
@@ -62,7 +63,7 @@ cargo install --path .
 
 ### 1. Create a manifest repository
 
-Create a new repo to hold your workspace manifest (e.g., `my-workspace`), then add a `manifest.yaml`:
+Create a new repo to hold your workspace config (e.g., `my-workspace`), then add a `gripspace.yml`:
 
 ```yaml
 version: 1
@@ -110,7 +111,7 @@ gr init --from-dirs --dirs ./frontend ./backend
 gr init --from-dirs --interactive
 ```
 
-This creates `.gitgrip/manifests/` with the manifest configuration.
+This creates `.gitgrip/spaces/main/gripspace.yml` (with legacy `.gitgrip/manifests/manifest.yaml` compatibility).
 
 ### 3. Start working
 
@@ -160,8 +161,16 @@ gr sync
 | `gr tree add <branch>` | Create a worktree-based workspace |
 | `gr tree list` | List all griptrees |
 | `gr tree remove <branch>` | Remove a griptree |
+| `gr tree return` | Return to griptree base branch, sync, and optionally prune feature branch |
 | `gr pull` | Pull latest changes across repos |
-| `gr rebase` | Rebase across repos (defaults to upstream) |
+| `gr rebase` | Rebase across repos |
+| `gr rebase --upstream` | Rebase onto per-repo upstream (griptree-aware) |
+| `gr grep <pattern>` | Search across all repos |
+| `gr prune` | Clean up merged branches (dry-run) |
+| `gr prune --execute` | Delete merged branches |
+| `gr gc` | Run garbage collection across repos |
+| `gr cherry-pick <sha>` | Cherry-pick commits across repos |
+| `gr ci run/list/status` | CI/CD pipeline operations |
 | `gr link` | Manage file links |
 | `gr run <script>` | Run workspace scripts |
 | `gr env` | Show environment variables |
@@ -199,6 +208,7 @@ Pull latest changes from the manifest and all repositories. Syncs in parallel by
 | `--sequential` | Sync repos one at a time (slower but ordered output) |
 | `--group <name>` | Only sync repos in this group |
 | `-f, --force` | Force sync even with local changes |
+| `--reset-refs` | Hard-reset reference repos to configured upstream branches |
 
 #### `gr status`
 
@@ -211,6 +221,7 @@ Checkout a branch across all repos. Can also create branches with the `-b` flag.
 | Option | Description |
 |--------|-------------|
 | `-b` | Create branch if it doesn't exist |
+| `--base` | Checkout the griptree base branch (griptree workspaces only) |
 
 #### `gr branch [name]`
 
@@ -273,15 +284,27 @@ Environment variables available in command:
 - `REPO_PATH` - Absolute path to repo
 - `REPO_URL` - Repository URL
 
-## Manifest Format
+## Gripspace Format
 
-The manifest file (`manifest.yaml`) defines your workspace:
+The workspace file (`gripspace.yml`) defines your workspace:
 
 ```yaml
 version: 1
 
+# Inherit from shared gripspace repositories (optional)
+gripspaces:
+  - url: git@github.com:your-org/base-workspace.git
+    rev: main  # Pin to branch/tag/commit (default: remote HEAD)
+
 manifest:
   url: git@github.com:your-org/workspace.git
+  # Generate files from gripspace + local parts
+  composefile:
+    - dest: CLAUDE.md
+      parts:
+        - gripspace: base-workspace
+          src: CODI.md
+        - src: LOCAL_DOCS.md
 
 repos:
   repo-name:
@@ -292,6 +315,19 @@ repos:
 settings:
   pr_prefix: "[cross-repo]"
   merge_strategy: all-or-nothing
+```
+
+### Gripspace Includes
+
+Compose workspaces from shared base configurations using `gripspaces:`. Gripspace repos are cloned into `.gitgrip/spaces/` and their manifests are merged into the local workspace.
+
+What gets merged: repos, scripts, env, hooks, linkfiles, and copyfiles. Local values always win on conflict. Resolution is recursive (max depth 5) with cycle detection.
+
+```yaml
+gripspaces:
+  - url: git@github.com:org/platform-base.git     # Shared infra repos + hooks
+  - url: git@github.com:org/frontend-tools.git     # Frontend tooling scripts
+    rev: v2.0.0                                     # Pin to a specific version
 ```
 
 ### Merge Strategies
@@ -310,6 +346,7 @@ gitgrip supports multiple hosting platforms. The platform is auto-detected from 
 | GitHub | `git@github.com:org/repo.git`, `https://github.com/org/repo.git` |
 | GitLab | `git@gitlab.com:group/repo.git`, `https://gitlab.com/group/repo.git` |
 | Azure DevOps | `git@ssh.dev.azure.com:v3/org/project/repo`, `https://dev.azure.com/org/project/_git/repo` |
+| Bitbucket | `git@bitbucket.org:org/repo.git`, `https://bitbucket.org/org/repo.git` |
 
 ### Authentication
 
@@ -334,6 +371,11 @@ glab auth login
 export AZURE_DEVOPS_TOKEN=your-pat
 # or
 az login
+```
+
+**Bitbucket:**
+```bash
+export BITBUCKET_TOKEN=your-app-password
 ```
 
 ### Mixed-Platform Workspaces
@@ -405,10 +447,33 @@ gr tree remove feat/new-feature
   <img src="assets/griptree-workflow.svg" alt="Griptree Workflow" width="700">
 </p>
 
+**Upstream Tracking:**
+
+Each griptree records per-repo upstream defaults so repos can track different branches:
+
+```bash
+# tree add sets branch tracking to each repo's configured upstream
+gr tree add feat/new-feature
+
+# Sync uses per-repo upstream when on the griptree base branch
+# and repairs missing upstream tracking automatically
+gr sync
+
+# Rebase onto each repo's configured upstream
+gr rebase --upstream
+
+# Return to the griptree base branch
+gr checkout --base
+
+# Optional all-in-one post-merge return flow
+gr tree return --autostash --prune-current --prune-remote
+```
+
 **Benefits:**
 - No branch switching required
 - Shared git objects (fast creation, minimal disk usage)
 - Independent working directories
+- Per-repo upstream tracking (different repos can target different branches)
 
 ## Shorthand
 

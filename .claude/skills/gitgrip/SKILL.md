@@ -1,7 +1,7 @@
 ---
 name: gitgrip
 description: Multi-repository workflow using gitgrip (gr). Use this when working with multiple repos, creating branches across repos, syncing repos, creating linked pull requests, or any cross-repo operations.
-allowed-tools: Bash(gr *), Bash(gitgrip *), Bash(node */gitgrip/dist/index.js *)
+allowed-tools: Bash(gr *), Bash(gitgrip *)
 ---
 
 # gitgrip Multi-Repository Workflow
@@ -24,14 +24,16 @@ gr init <manifest-url>               # Clone manifest and all repos
 gr init --from-dirs                  # Auto-scan current dir for git repos
 gr init --from-dirs --dirs ./a ./b   # Scan specific directories only
 gr init --from-dirs --interactive    # Preview YAML and edit before saving
+
+# From existing .repo/ directory (git-repo coexistence)
+gr init --from-repo
 ```
 
 ### Syncing
 ```bash
-gr sync                      # Pull latest from all repos + process links + run hooks
-gr sync --fetch              # Fetch only (no merge)
-gr sync --no-link            # Skip file linking
-gr sync --no-hooks           # Skip post-sync hooks
+gr sync                      # Pull latest from all repos (parallel) + process links + run hooks
+gr sync --sequential         # Sync repos one at a time (ordered output)
+gr sync --group core         # Sync only repos in a specific group
 ```
 
 ### Branching
@@ -41,6 +43,9 @@ gr branch feat/x --repo tooling        # Create branch in specific repo only
 gr branch feat/x --repo a --repo b     # Create branch in multiple specific repos
 gr checkout feat/my-feature            # Switch branch across ALL repos
 gr checkout -b new-branch              # Create and switch to new branch
+gr checkout --base                     # Return to griptree base branch
+gr branch -d old-branch                # Delete branch across repos
+gr branch --move feat/new              # Move recent commits to new branch
 ```
 
 ### Git Operations Across Repos
@@ -53,16 +58,25 @@ gr add src/file.ts           # Stage specific files
 # View changes
 gr diff                      # Show diff across all repos (colored)
 gr diff --staged             # Show staged changes only
-gr diff --stat               # Show diffstat summary
-gr diff --name-only          # Show only filenames
 
 # Commit
 gr commit -m "message"       # Commit staged changes in all repos
-gr commit -a -m "message"    # Stage all and commit
 
 # Push
 gr push                      # Push all repos with commits ahead
 gr push -u                   # Set upstream tracking
+
+# Pull
+gr pull                      # Pull latest across repos
+gr pull --rebase             # Pull with rebase instead of merge
+```
+
+### Rebasing
+```bash
+gr rebase origin/main        # Rebase onto specific target
+gr rebase --upstream         # Rebase onto per-repo upstream (uses griptree config)
+gr rebase --abort            # Abort in-progress rebase
+gr rebase --continue         # Continue after conflict resolution
 ```
 
 ### Pull Request Workflow
@@ -77,9 +91,13 @@ gr pr create -t "title" --push               # Push before creating PR
 
 # 2. Check PR status
 gr pr status
-gr pr status --json
+gr pr checks                 # Check CI status
 
-# 3. Merge all linked PRs together
+# 3. View PR diff
+gr pr diff
+gr pr diff --stat            # Summary only
+
+# 4. Merge all linked PRs together
 gr pr merge                  # Default merge
 gr pr merge -m squash        # Squash merge
 gr pr merge -m rebase        # Rebase merge
@@ -88,38 +106,65 @@ gr pr merge --auto           # Enable auto-merge (merges when checks pass)
 gr pr merge --force          # Merge even if checks pending
 ```
 
-### File Linking
+### Searching
 ```bash
-gr link                      # Create/update all copyfile and linkfile entries
-gr link --status             # Show link status (valid, broken, missing)
-gr link --clean              # Remove orphaned links
-gr link --force              # Overwrite existing files/links
-gr link --dry-run            # Preview changes
+gr grep "pattern"            # Search across all repos
+gr grep -i "pattern"         # Case insensitive
+gr grep --parallel "pattern" # Concurrent search
+gr grep "pattern" -- "*.rs"  # Filter by file pattern
 ```
 
-### Adding Repositories
+### Branch Cleanup
 ```bash
+gr prune                     # Dry-run: show merged branches that can be deleted
+gr prune --execute           # Actually delete merged branches
+gr prune --remote            # Also prune remote tracking refs
+```
+
+### Repository Management
+```bash
+gr repo list                         # List all repositories
 gr repo add <url>                    # Add repo to workspace (updates manifest + clones)
 gr repo add <url> --name my-repo     # Custom name in manifest
 gr repo add <url> --path ./custom    # Custom local path
 gr repo add <url> --branch develop   # Set default branch
 gr repo add <url> --no-clone         # Only update manifest, don't clone
+gr repo remove <name>                # Remove a repository
+```
+
+### Groups
+```bash
+gr group list                # List all groups and their repos
+gr group add core backend    # Add backend to core group
+gr group remove core backend # Remove backend from core group
+gr sync --group core         # Scope operations to a group
+```
+
+### File Linking
+```bash
+gr link                      # Create/update all copyfile and linkfile entries
+gr link --status             # Show link status (valid, broken, missing)
+gr link --apply              # Apply/fix links
 ```
 
 ### Workspace Scripts
 ```bash
 gr run --list                # List available scripts
 gr run build                 # Run a named script
-gr run build -- --verbose    # Pass arguments to script
 gr env                       # Show workspace environment variables
 ```
 
-### Benchmarking & Timing
+### Maintenance
 ```bash
-gr status --timing           # Show timing breakdown for any command
-gr bench                     # Run all benchmarks
-gr bench --list              # List available benchmarks
-gr bench manifest-load -n 10 # Run specific benchmark
+gr gc                        # Garbage collect across repos
+gr gc --aggressive           # More thorough gc (slower)
+gr gc --dry-run              # Only report .git sizes
+gr cherry-pick <sha>         # Cherry-pick commits across repos
+gr cherry-pick --abort       # Abort in-progress cherry-pick
+gr cherry-pick --continue    # Continue after conflict resolution
+gr ci status                 # Check CI/CD pipeline status
+gr ci list                   # List available CI pipelines
+gr forall -c "cmd"           # Run command in each repo
 ```
 
 ### Griptrees (Multi-Branch Workspaces)
@@ -140,6 +185,15 @@ gr status                    # Works just like main workspace
 gr commit -m "changes"
 gr push
 
+# Return to griptree base branch
+gr checkout --base
+
+# Sync uses per-repo upstream when on griptree base branch
+gr sync
+
+# Rebase onto per-repo upstream
+gr rebase --upstream
+
 # Protect important griptrees
 gr tree lock feat/auth       # Prevents accidental removal
 
@@ -148,15 +202,28 @@ gr tree unlock feat/auth
 gr tree remove feat/auth     # Removes worktrees, keeps branches
 ```
 
+**Upstream Tracking:** Each griptree records per-repo upstream defaults in `.gitgrip/griptree.json`. Repos in the same workspace can track different upstream branches (e.g., `origin/main` vs `origin/dev`).
+
 **Benefits:**
 - No branch switching - work on multiple features in parallel
 - Shared git objects - minimal disk usage, instant creation
-- Independent working directories - separate node_modules, build artifacts
+- Independent working directories - separate dependencies and build artifacts
+- Per-repo upstream tracking
 
-**Options:**
+### Benchmarking
 ```bash
-gr tree add feat/x --path ./custom-path  # Custom location
-gr tree remove feat/x --force            # Remove even if locked
+gr bench                     # Run all benchmarks
+gr bench --list              # List available benchmarks
+gr bench manifest-load -n 10 # Run specific benchmark
+```
+
+### Manifest Operations
+```bash
+gr manifest schema                   # Show manifest schema (YAML)
+gr manifest schema --format json     # JSON format
+gr manifest schema --format markdown # Markdown format
+gr manifest import <path>            # Import git-repo XML manifest
+gr manifest sync                     # Re-sync from .repo/ manifest
 ```
 
 ## Workflow Rules
@@ -188,9 +255,6 @@ When you need to operate on just one repo:
 # Create branch in specific repo only
 gr branch feat/fix --repo tooling
 
-# Commit in specific repo only  
-gr commit -m "fix: something" --repo tooling
-
 # Push specific repo only
 gr push --repo tooling
 ```
@@ -202,10 +266,10 @@ Before merging a PR, always review it:
 ```bash
 # Check PR status and CI
 gr pr status
-gh pr checks <number>
+gr pr checks
 
 # Review the diff
-gh pr diff <number>
+gr pr diff
 
 # Wait for CI to pass before merging
 gr pr merge
@@ -225,16 +289,7 @@ gr pr create -t "title" -b "body"
 gr push -u
 ```
 
-If you find yourself needing raw git commands, document the friction point in `IMPROVEMENTS.md` so it can be fixed.
-
-## Contributing Improvements
-
-When you encounter friction or missing features while using `gr`:
-
-1. Add an entry to `./IMPROVEMENTS.md` under "Pending Review"
-2. Document what you expected vs what happened
-3. Include the raw commands you had to use as a workaround
-4. Ask the user if they want to create a GitHub issue
+If you find yourself needing raw git commands, it reveals a gap in `gr`. Tell the user and ask if they want a GitHub issue created.
 
 ## Typical Workflow
 
@@ -258,6 +313,7 @@ gr pr create -t "feat: my feature"
 gr pr merge
 gr sync
 gr checkout main
+gr prune --execute                  # Clean up merged branches
 ```
 
 ## Manifest Structure
@@ -270,9 +326,6 @@ version: 1
 manifest:
   url: git@github.com:org/manifest.git
   default_branch: main
-  linkfile:
-    - src: CLAUDE.md
-      dest: CLAUDE.md
 
 repos:
   repo-name:
@@ -280,29 +333,11 @@ repos:
     path: ./repo-name
     default_branch: main
     reference: false           # Set to true for read-only reference repos
-    platform: github           # Optional: github, gitlab, azure
-    copyfile:
-      - src: config.example
-        dest: config.example
-    linkfile:
-      - src: dist
-        dest: .bin/tool
-
-workspace:
-  env:
-    NODE_ENV: development
-  scripts:
-    build:
-      description: "Build all packages"
-      command: "pnpm -r build"
-  hooks:
-    post-sync:
-      - command: "pnpm install"
-        cwd: "./repo-name"
+    platform: github           # Optional: github, gitlab, azure, bitbucket
 
 settings:
   pr:
-    prefix: "[BRANCH] "        # PR title prefix with branch name placeholder
+    prefix: "[BRANCH] "
   merge_strategy: AllOrNothing  # AllOrNothing, Sequential, or Independent
 ```
 
@@ -318,62 +353,13 @@ repos:
     reference: true  # Skipped in gr branch, gr pr create, etc.
 ```
 
-Reference repos are still synced and shown in status with `[ref]` indicator, but:
-- Not included in `gr branch` operations
-- Not included in `gr checkout` operations  
-- Not included in `gr pr create/status/merge`
+Reference repos sync with `gr sync` and show in status with `[ref]` indicator, but are excluded from branch, checkout, push, and PR operations.
 
-Use this for reference implementations, documentation repos, or any repo you don't plan to modify.
+## Multi-Platform Support
 
-### Complete Manifest Schema
-
-```yaml
-version: 1                    # Manifest format version
-
-manifest:                     # Self-reference for manifest repo
-  url: <url>                  # Git URL for manifest repo
-  default_branch: <branch>    # Default branch name (e.g., main)
-  linkfile:                   # Files to link from manifest to workspace root
-    - src: <path>             # Source relative to manifest repo
-      dest: <path>            # Destination relative to workspace root
-
-repos:                        # Repository definitions
-  <repo-name>:                # Unique repo identifier
-    url: <git-url>            # Git clone URL
-    path: <relative-path>     # Local path relative to workspace root
-    default_branch: <branch>  # Default branch (e.g., main, master)
-    reference: <bool>         # Read-only reference repo (default: false)
-    platform: <platform>      # Hosting platform: github, gitlab, azure
-    copyfile:                 # Files to copy into workspace
-      - src: <path>           # Source relative to repo
-        dest: <path>          # Destination relative to workspace root
-    linkfile:                 # Symlinks to create in workspace
-      - src: <path>           # Source relative to repo
-        dest: <path>          # Destination relative to workspace root
-
-workspace:                    # Workspace-wide configuration
-  env:                        # Environment variables
-    <VAR_NAME>: <value>
-  scripts:                    # Named executable scripts
-    <script-name>:
-      description: <text>     # Human-readable description
-      command: <shell-cmd>    # Command to execute
-  hooks:                      # Lifecycle hooks
-    post-sync:                # Run after gr sync completes
-      - command: <cmd>        # Shell command
-        cwd: <path>           # Working directory (relative to workspace)
-
-settings:                     # Tool behavior settings
-  pr:
-    prefix: <string>          # PR title prefix pattern
-  merge_strategy: <strategy>  # How to merge multi-repo PRs:
-                              # - AllOrNothing: All PRs must merge together
-                              # - Sequential: Merge in order, stop on failure
-                              # - Independent: Merge each PR separately
+gitgrip supports GitHub, GitLab, Azure DevOps, and Bitbucket. Platform is auto-detected from git URLs. Can be overridden in manifest with `platform:` config.
 
 ## Error Recovery
-
-If you encounter issues:
 
 ```bash
 # Check what's happening
@@ -386,5 +372,5 @@ gr sync
 gr checkout correct-branch
 
 # If links are broken
-gr link --force
+gr link --apply
 ```

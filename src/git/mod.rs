@@ -154,6 +154,8 @@ pub fn get_current_branch(repo: &Repository) -> Result<String, GitError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::process::Command;
     use tempfile::TempDir;
 
     #[test]
@@ -183,5 +185,83 @@ mod tests {
         // Should succeed after init
         Repository::init(temp.path()).unwrap();
         assert!(open_repo(temp.path()).is_ok());
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let output = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+        assert!(
+            output.status.success(),
+            "git {:?} failed in {}: {}",
+            args,
+            dir.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn setup_bare_remote() -> (TempDir, String) {
+        let temp = TempDir::new().unwrap();
+        let bare_path = temp.path().join("remote.git");
+
+        let output = Command::new("git")
+            .args(["init", "--bare", "-b", "main", bare_path.to_str().unwrap()])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git init --bare failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let staging = temp.path().join("staging");
+        fs::create_dir_all(&staging).unwrap();
+        git(&staging, &["init", "-b", "main"]);
+        git(&staging, &["config", "user.email", "test@example.com"]);
+        git(&staging, &["config", "user.name", "Test User"]);
+        fs::write(staging.join("README.md"), "# Test").unwrap();
+        git(&staging, &["add", "README.md"]);
+        git(&staging, &["commit", "-m", "Initial commit"]);
+        git(
+            &staging,
+            &[
+                "remote",
+                "add",
+                "origin",
+                &format!("file://{}", bare_path.display()),
+            ],
+        );
+        git(&staging, &["push", "-u", "origin", "main"]);
+
+        (temp, format!("file://{}", bare_path.display()))
+    }
+
+    #[test]
+    fn test_clone_repo_invalid_url_fails() {
+        let temp = TempDir::new().unwrap();
+        let dest = temp.path().join("dest");
+
+        let result = clone_repo("file:///does-not-exist/repo.git", &dest, Some("main"));
+        assert!(result.is_err(), "expected clone to fail for bad URL");
+    }
+
+    #[test]
+    fn test_clone_repo_falls_back_when_branch_missing() {
+        let (_temp, remote_url) = setup_bare_remote();
+        let dest_root = TempDir::new().unwrap();
+        let dest = dest_root.path().join("dest");
+
+        let result = clone_repo(&remote_url, &dest, Some("does-not-exist"));
+        assert!(
+            result.is_ok(),
+            "expected clone to fall back to default branch"
+        );
+
+        let repo = open_repo(&dest).expect("open repo");
+        let branch = get_current_branch(&repo).expect("current branch");
+        assert_eq!(branch, "main");
     }
 }

@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::core::manifest::{Manifest, ManifestRepoConfig, PlatformType, RepoConfig};
+use crate::core::manifest_paths;
 
 /// Extended repository information with computed fields
 #[derive(Debug, Clone)]
@@ -23,6 +24,8 @@ pub struct RepoInfo {
     pub repo: String,
     /// Detected or configured platform type
     pub platform_type: PlatformType,
+    /// Optional base URL for self-hosted platform instances
+    pub platform_base_url: Option<String>,
     /// Project name (Azure DevOps only)
     pub project: Option<String>,
     /// Reference repo (read-only, excluded from branch/PR operations)
@@ -43,6 +46,7 @@ impl RepoInfo {
             .as_ref()
             .map(|p| p.platform_type)
             .unwrap_or_else(|| detect_platform(&config.url));
+        let platform_base_url = config.platform.as_ref().and_then(|p| p.base_url.clone());
 
         Some(Self {
             name: name.to_string(),
@@ -53,6 +57,7 @@ impl RepoInfo {
             owner: parsed.owner,
             repo: parsed.repo,
             platform_type,
+            platform_base_url,
             project: parsed.project,
             reference: config.reference,
             groups: config.groups.clone(),
@@ -208,7 +213,7 @@ pub fn filter_repos(
 /// in operations like sync, branch, checkout, push, and diff.
 pub fn get_manifest_repo_info(manifest: &Manifest, workspace_root: &Path) -> Option<RepoInfo> {
     let manifest_config = manifest.manifest.as_ref()?;
-    let manifests_dir = workspace_root.join(".gitgrip").join("manifests");
+    let manifests_dir = manifest_paths::resolve_manifest_repo_dir(workspace_root)?;
 
     // Only return if the manifest repo actually exists as a git repo
     if !manifests_dir.join(".git").exists() {
@@ -223,7 +228,13 @@ fn create_manifest_repo_info(
     config: &ManifestRepoConfig,
     workspace_root: &Path,
 ) -> Option<RepoInfo> {
-    let path = ".gitgrip/manifests".to_string();
+    let repo_dir = manifest_paths::resolve_manifest_repo_dir(workspace_root)
+        .unwrap_or_else(|| manifest_paths::main_space_dir(workspace_root));
+    let path = repo_dir
+        .strip_prefix(workspace_root)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| manifest_paths::MAIN_SPACE_DIR.to_string());
 
     RepoInfo::from_config(
         "manifest",
@@ -350,6 +361,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let manifest = Manifest {
             version: 1,
+            gripspaces: None,
             manifest: None,
             repos: HashMap::new(),
             settings: Default::default(),
@@ -369,11 +381,13 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let manifest = Manifest {
             version: 1,
+            gripspaces: None,
             manifest: Some(ManifestRepoConfig {
                 url: "git@github.com:user/manifest.git".to_string(),
                 default_branch: "main".to_string(),
                 copyfile: None,
                 linkfile: None,
+                composefile: None,
                 platform: None,
             }),
             repos: HashMap::new(),
@@ -381,7 +395,7 @@ mod tests {
             workspace: None,
         };
 
-        // No .gitgrip/manifests/.git directory exists
+        // No manifest repo git directory exists
         let result = get_manifest_repo_info(&manifest, temp.path());
         assert!(result.is_none());
     }
@@ -395,17 +409,19 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
 
-        // Create .gitgrip/manifests/.git directory
-        let manifests_dir = temp.path().join(".gitgrip").join("manifests");
+        // Create .gitgrip/spaces/main/.git directory
+        let manifests_dir = temp.path().join(".gitgrip").join("spaces").join("main");
         fs::create_dir_all(manifests_dir.join(".git")).unwrap();
 
         let manifest = Manifest {
             version: 1,
+            gripspaces: None,
             manifest: Some(ManifestRepoConfig {
                 url: "git@github.com:user/manifest.git".to_string(),
                 default_branch: "main".to_string(),
                 copyfile: None,
                 linkfile: None,
+                composefile: None,
                 platform: None,
             }),
             repos: HashMap::new(),
@@ -418,7 +434,7 @@ mod tests {
 
         let info = result.unwrap();
         assert_eq!(info.name, "manifest");
-        assert_eq!(info.path, ".gitgrip/manifests");
+        assert_eq!(info.path, ".gitgrip/spaces/main");
         assert_eq!(info.default_branch, "main");
         assert!(!info.reference);
     }

@@ -94,6 +94,75 @@ pub fn checkout_branch(repo: &Repository, branch_name: &str) -> Result<(), GitEr
     Ok(())
 }
 
+/// Checkout or reset a local branch to a specific upstream ref.
+///
+/// Uses `git checkout -B <branch> <upstream>` to ensure the local branch
+/// points at the upstream commit.
+pub fn checkout_branch_at_upstream(
+    repo: &Repository,
+    branch_name: &str,
+    upstream: &str,
+) -> Result<(), GitError> {
+    let repo_path = super::get_workdir(repo);
+
+    let mut cmd = Command::new("git");
+    cmd.args(["checkout", "-B", branch_name, upstream])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if stderr.contains("is already used by worktree at") {
+            if let Some(path_start) = stderr.find("worktree at '") {
+                let path_part = &stderr[path_start + 13..];
+                if let Some(path_end) = path_part.find('\'') {
+                    let worktree_path = &path_part[..path_end];
+                    return Err(GitError::OperationFailed(format!(
+                        "Branch '{}' is checked out in another worktree at '{}'. \
+                         Use that worktree or choose a different branch.",
+                        branch_name, worktree_path
+                    )));
+                }
+            }
+            return Err(GitError::OperationFailed(format!(
+                "Branch '{}' is already checked out in another worktree. \
+                 Use that worktree or choose a different branch.",
+                branch_name
+            )));
+        }
+
+        return Err(GitError::OperationFailed(stderr.to_string()));
+    }
+
+    Ok(())
+}
+
+/// Checkout a target in detached HEAD mode.
+///
+/// Useful when the corresponding local branch is locked in another worktree.
+pub fn checkout_detached(repo: &Repository, target: &str) -> Result<(), GitError> {
+    let repo_path = super::get_workdir(repo);
+
+    let mut cmd = Command::new("git");
+    cmd.args(["checkout", "--detach", "-f", target])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::OperationFailed(stderr.to_string()));
+    }
+
+    Ok(())
+}
+
 /// Check if a local branch exists
 pub fn branch_exists(repo: &Repository, branch_name: &str) -> bool {
     let repo_path = super::get_workdir(repo);
