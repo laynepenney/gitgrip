@@ -100,7 +100,7 @@ fn test_tree_add_writes_repo_upstreams() {
     git_helpers::checkout(&ws.repo_path("lib"), "main");
 
     let manifest_path =
-        gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&ws.workspace_root)
+        gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(&ws.workspace_root)
             .expect("workspace manifest path should resolve");
     set_default_branch(&manifest_path, "lib", "dev");
     let manifest = ws.load_manifest();

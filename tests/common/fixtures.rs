@@ -45,7 +45,7 @@ impl WorkspaceFixture {
     /// Load the manifest from this workspace.
     pub fn load_manifest(&self) -> gitgrip::core::manifest::Manifest {
         let manifest_path =
-            gitgrip::core::manifest_paths::resolve_workspace_manifest_path(&self.workspace_root)
+            gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(&self.workspace_root)
                 .expect("workspace manifest path should resolve");
         let content = fs::read_to_string(&manifest_path).unwrap_or_else(|e| {
             panic!(
