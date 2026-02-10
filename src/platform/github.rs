@@ -305,8 +305,11 @@ impl HostingPlatform for GitHubAdapter {
                         pull_number
                     )))
                 } else {
-                    // Other 405 errors (not mergeable, etc.)
-                    Ok(false)
+                    // Other 405 errors (not mergeable, checks required, etc.)
+                    Err(PlatformError::ApiError(format!(
+                        "PR #{} merge rejected (405): {}",
+                        pull_number, body_text
+                    )))
                 }
             }
             403 => {

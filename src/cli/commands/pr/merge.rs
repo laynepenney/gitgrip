@@ -355,20 +355,36 @@ pub async fn run_pr_merge(
                             )
                             .await
                         {
-                            Ok(true) => {
-                                retry_spinner.finish_with_message(format!(
-                                    "{}: merged PR #{}",
-                                    pr.repo_name, pr.pr_number
-                                ));
-                                success_count += 1;
-                                continue;
-                            }
-                            Ok(false) => {
-                                retry_spinner.finish_with_message(format!(
-                                    "{}: PR #{} was already merged",
-                                    pr.repo_name, pr.pr_number
-                                ));
-                                success_count += 1;
+                            Ok(merged) => {
+                                // Verify the PR is actually merged
+                                let verified = match pr
+                                    .platform
+                                    .get_pull_request(&pr.owner, &pr.repo, pr.pr_number)
+                                    .await
+                                {
+                                    Ok(verified_pr) => verified_pr.merged,
+                                    Err(_) => merged,
+                                };
+
+                                if verified {
+                                    retry_spinner.finish_with_message(format!(
+                                        "{}: merged PR #{}",
+                                        pr.repo_name, pr.pr_number
+                                    ));
+                                    success_count += 1;
+                                } else if merged {
+                                    retry_spinner.finish_with_message(format!(
+                                        "{}: PR #{} merge reported success but PR is not merged",
+                                        pr.repo_name, pr.pr_number
+                                    ));
+                                    error_count += 1;
+                                } else {
+                                    retry_spinner.finish_with_message(format!(
+                                        "{}: PR #{} was already merged",
+                                        pr.repo_name, pr.pr_number
+                                    ));
+                                    success_count += 1;
+                                }
                                 continue;
                             }
                             Err(e) => Err(e),
@@ -396,12 +412,32 @@ pub async fn run_pr_merge(
         // Original spinner is still active for non-update paths
         match merge_result {
             Ok(merged) => {
-                if merged {
+                // Verify the PR is actually merged by checking its state
+                let verified = match pr
+                    .platform
+                    .get_pull_request(&pr.owner, &pr.repo, pr.pr_number)
+                    .await
+                {
+                    Ok(verified_pr) => verified_pr.merged,
+                    Err(_) => {
+                        // If we can't verify, trust the merge response
+                        merged
+                    }
+                };
+
+                if verified {
                     spinner.finish_with_message(format!(
                         "{}: merged PR #{}",
                         pr.repo_name, pr.pr_number
                     ));
                     success_count += 1;
+                } else if merged {
+                    // API said merged but verification says otherwise
+                    spinner.finish_with_message(format!(
+                        "{}: PR #{} merge reported success but PR is not merged — check branch protection or required checks",
+                        pr.repo_name, pr.pr_number
+                    ));
+                    error_count += 1;
                 } else {
                     spinner.finish_with_message(format!(
                         "{}: PR #{} was already merged",

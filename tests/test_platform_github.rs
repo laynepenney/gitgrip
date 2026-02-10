@@ -429,9 +429,18 @@ async fn test_github_merge_pr_405_generic() {
         .merge_pull_request("owner", "repo", 42, None, false)
         .await;
 
-    // Generic 405 (not "branch behind") should return Ok(false)
-    assert!(result.is_ok(), "generic 405 should return Ok: {:?}", result);
-    assert!(!result.unwrap(), "should return false for non-mergeable PR");
+    // Generic 405 (not "branch behind") should return an error
+    assert!(
+        result.is_err(),
+        "generic 405 should return Err: {:?}",
+        result
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("merge rejected"),
+        "error should mention merge rejected: {}",
+        err_msg
+    );
 }
 
 // ── PR Create: Validation Error (422) ───────────────────────────
