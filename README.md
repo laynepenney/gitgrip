@@ -21,7 +21,8 @@ Inspired by Android's [repo tool](https://source.android.com/docs/setup/create/r
 ## Features
 
 - **Manifest-based configuration** - Define all your repos in a single YAML file
-- **Multi-platform support** - Works with GitHub, GitLab, and Azure DevOps (even mixed in one workspace)
+- **Composable workspaces** - Inherit repos, scripts, hooks, and env from shared gripspace repositories
+- **Multi-platform support** - Works with GitHub, GitLab, Azure DevOps, and Bitbucket (even mixed in one workspace)
 - **Synchronized branches** - Create and checkout branches across all repos at once
 - **Linked PRs** - Create pull requests that reference each other across repos
 - **Atomic merges** - All-or-nothing merge strategy ensures repos stay in sync
@@ -290,8 +291,20 @@ The workspace file (`gripspace.yml`) defines your workspace:
 ```yaml
 version: 1
 
+# Inherit from shared gripspace repositories (optional)
+gripspaces:
+  - url: git@github.com:your-org/base-workspace.git
+    rev: main  # Pin to branch/tag/commit (default: remote HEAD)
+
 manifest:
   url: git@github.com:your-org/workspace.git
+  # Generate files from gripspace + local parts
+  composefile:
+    - dest: CLAUDE.md
+      parts:
+        - gripspace: base-workspace
+          src: CODI.md
+        - src: LOCAL_DOCS.md
 
 repos:
   repo-name:
@@ -302,6 +315,19 @@ repos:
 settings:
   pr_prefix: "[cross-repo]"
   merge_strategy: all-or-nothing
+```
+
+### Gripspace Includes
+
+Compose workspaces from shared base configurations using `gripspaces:`. Gripspace repos are cloned into `.gitgrip/spaces/` and their manifests are merged into the local workspace.
+
+What gets merged: repos, scripts, env, hooks, linkfiles, and copyfiles. Local values always win on conflict. Resolution is recursive (max depth 5) with cycle detection.
+
+```yaml
+gripspaces:
+  - url: git@github.com:org/platform-base.git     # Shared infra repos + hooks
+  - url: git@github.com:org/frontend-tools.git     # Frontend tooling scripts
+    rev: v2.0.0                                     # Pin to a specific version
 ```
 
 ### Merge Strategies

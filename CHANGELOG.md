@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-02-09
+
+### Added
+- **Gripspace includes** - Composable manifest inheritance via `gripspaces:` directive (#270)
+  - Clone external gripspace repositories and merge their repos, scripts, env, hooks, linkfiles, and copyfiles into the local workspace
+  - Recursive resolution with DAG-aware cycle detection (max depth 5)
+  - Local manifest values always win on conflict
+  - `gr sync` and `gr init` resolve and clone gripspaces automatically
+  - `gr status` shows gripspace clone status with revision and dirty state
+- **Composefile support** - Generate files by concatenating parts from gripspaces and/or local manifest (`composefile:` directive)
+  - Processed on `gr sync` and `gr link --apply`
+  - Parts can reference gripspace content or local manifest content
+- **URL normalization** - SSH and HTTPS URLs to the same repo are recognized as equivalent for space reuse (`git@github.com:user/repo` ↔ `https://github.com/user/repo`)
+- **Manifest paths module** - Consistent path resolution across all commands (`manifest_paths.rs`)
+
+### Changed
+- **Unified directory layout** - `.gitgrip/spaces/` is now the single directory for all space content (gripspaces and manifest), replacing the previous split between `gripspaces/` and `spaces/`
+- Reserved space names (`main`, `local`) are auto-suffixed to avoid conflicts with the manifest space
+
+### Security
+- Gripspace name validation with allowlist (`[a-zA-Z0-9._-]`), rejecting `.`, `..`, and path traversal
+- Windows absolute path and UNC path rejection in path boundary checks
+- Gripspace manifest validation via `validate_as_gripspace()` (allows empty repos, validates all other constraints)
+- Failed clone cleanup — partial directories are removed on clone error
+- Untrusted gripspace path hardening across all validators
+
 ## [0.11.3] - 2026-02-09
 
 ### Changed

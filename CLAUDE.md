@@ -251,6 +251,7 @@ src/
 Workspace configuration in `.gitgrip/spaces/main/gripspace.yml`:
 - `repos`: Repository definitions with URL, path, default_branch
 - `manifest`: Self-tracking for the manifest repo itself
+- `gripspaces`: Composable includes — clone external gripspace repos and merge their repos, scripts, env, hooks, and file links
 - `workspace`: Scripts, hooks, and environment variables
 - `settings`: PR prefix, merge strategy
 

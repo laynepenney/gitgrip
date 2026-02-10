@@ -196,6 +196,19 @@ gr branch feat/x
 gr pr create -t "title"
 ```
 
+## Gripspace Includes
+
+Workspaces can inherit repos, scripts, env, hooks, and file links from shared gripspace repositories:
+
+```yaml
+gripspaces:
+  - url: git@github.com:org/base-workspace.git
+  - url: git@github.com:org/tools.git
+    rev: v2.0.0  # Pin to branch/tag/commit
+```
+
+Gripspaces are cloned into `.gitgrip/spaces/<name>/` and merged during `gr sync`. Local values always win. Resolution is recursive (max depth 5) with cycle detection.
+
 ## Manifest Location
 
 The canonical workspace manifest is `.gitgrip/spaces/main/gripspace.yml` (legacy `.gitgrip/manifests/manifest.yaml` is still supported). Use `gr manifest schema` to view the schema.

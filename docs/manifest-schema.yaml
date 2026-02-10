@@ -9,7 +9,7 @@ version: 1
 
 # Gripspace includes (optional)
 # Include repos, scripts, env, hooks, and linkfiles from other gripspace repositories.
-# Gripspaces are cloned into .gitgrip/gripspaces/<name>/ and their manifests are merged.
+# Gripspaces are cloned into .gitgrip/spaces/<name>/ and their manifests are merged.
 # Local manifest values always win on conflict.
 # Supports recursive includes (max depth: 5) with cycle detection.
 gripspaces:
