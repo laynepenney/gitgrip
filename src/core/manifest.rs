@@ -129,6 +129,18 @@ pub struct RepoAgentConfig {
     pub format: Option<String>,
 }
 
+/// A context generation target for an AI tool
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentContextTarget {
+    /// Target format: claude, opencode, codex, cursor, raw
+    pub format: String,
+    /// Destination path relative to workspace root ({repo} placeholder for per-repo generation)
+    pub dest: String,
+    /// Additional files to append to the generated context
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compose_with: Option<Vec<String>>,
+}
+
 /// Agent context for a workspace — conventions and workflows for AI agents
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceAgentConfig {
@@ -138,6 +150,12 @@ pub struct WorkspaceAgentConfig {
     pub conventions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workflows: Option<HashMap<String, String>>,
+    /// Source file for context generation (supports gripspace: prefix)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_source: Option<String>,
+    /// Targets for multi-tool context generation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<AgentContextTarget>>,
 }
 
 /// Repository configuration in the manifest

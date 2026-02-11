@@ -205,6 +205,338 @@ fn test_agent_context_repo_filter_not_found() {
     );
 }
 
+// ── Generate Context Tests ───────────────────────────────────────
+
+#[test]
+fn test_agent_generate_context_no_targets() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    // No targets configured — should succeed silently
+    let result = gitgrip::cli::commands::agent::run_agent_generate_context(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        true,
+    );
+    assert!(
+        result.is_ok(),
+        "generate-context should succeed with no targets: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn test_agent_generate_context_raw_format() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    // Write a source file in the manifest content dir
+    let manifests_dir = ws
+        .workspace_root
+        .join(".gitgrip")
+        .join("spaces")
+        .join("main");
+    fs::write(
+        manifests_dir.join("CONTEXT.md"),
+        "# Workspace Rules\nRule 1\nRule 2",
+    )
+    .unwrap();
+
+    add_workspace_agent_config(
+        &ws.workspace_root,
+        r#"workspace:
+  agent:
+    context_source: CONTEXT.md
+    targets:
+      - format: raw
+        dest: AGENTS.md
+"#,
+    );
+
+    let manifest = ws.load_manifest();
+    let result = gitgrip::cli::commands::agent::run_agent_generate_context(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        true,
+    );
+    assert!(
+        result.is_ok(),
+        "raw format generation should succeed: {:?}",
+        result.err()
+    );
+
+    let output = fs::read_to_string(ws.workspace_root.join("AGENTS.md")).unwrap();
+    assert_eq!(output, "# Workspace Rules\nRule 1\nRule 2");
+}
+
+#[test]
+fn test_agent_generate_context_per_repo() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo("app")
+        .add_repo("lib")
+        .build();
+
+    // Add agent config to both repos
+    add_repo_agent_config(
+        &ws.workspace_root,
+        "app",
+        "      description: \"Main application\"\n      language: rust\n      build: cargo build\n",
+    );
+    add_repo_agent_config(
+        &ws.workspace_root,
+        "lib",
+        "      description: \"Shared library\"\n      language: rust\n      test: cargo test\n",
+    );
+
+    add_workspace_agent_config(
+        &ws.workspace_root,
+        r#"workspace:
+  agent:
+    targets:
+      - format: opencode
+        dest: ".opencode/skill/{repo}/SKILL.md"
+"#,
+    );
+
+    let manifest = ws.load_manifest();
+    let result = gitgrip::cli::commands::agent::run_agent_generate_context(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        true,
+    );
+    assert!(
+        result.is_ok(),
+        "per-repo generation should succeed: {:?}",
+        result.err()
+    );
+
+    // Check that files were generated for both repos
+    let app_skill = ws.workspace_root.join(".opencode/skill/app/SKILL.md");
+    let lib_skill = ws.workspace_root.join(".opencode/skill/lib/SKILL.md");
+
+    assert!(app_skill.exists(), "app skill file should exist");
+    assert!(lib_skill.exists(), "lib skill file should exist");
+
+    let app_content = fs::read_to_string(&app_skill).unwrap();
+    assert!(app_content.contains("name: app"), "should have frontmatter");
+    assert!(
+        app_content.contains("Main application"),
+        "should have description"
+    );
+    assert!(
+        app_content.contains("Language: rust"),
+        "should have language"
+    );
+
+    let lib_content = fs::read_to_string(&lib_skill).unwrap();
+    assert!(lib_content.contains("name: lib"), "should have frontmatter");
+    assert!(
+        lib_content.contains("Shared library"),
+        "should have description"
+    );
+}
+
+#[test]
+fn test_agent_generate_context_compose_with() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let manifests_dir = ws
+        .workspace_root
+        .join(".gitgrip")
+        .join("spaces")
+        .join("main");
+    fs::write(manifests_dir.join("CONTEXT.md"), "# Base Context").unwrap();
+
+    // Write a compose_with file in the workspace (workspace-relative path)
+    fs::write(
+        ws.workspace_root.join("PRIVATE_RULES.md"),
+        "# Private Rules\nDo not share.",
+    )
+    .unwrap();
+
+    add_workspace_agent_config(
+        &ws.workspace_root,
+        r#"workspace:
+  agent:
+    context_source: CONTEXT.md
+    targets:
+      - format: raw
+        dest: CLAUDE.md
+        compose_with:
+          - PRIVATE_RULES.md
+"#,
+    );
+
+    let manifest = ws.load_manifest();
+    let result = gitgrip::cli::commands::agent::run_agent_generate_context(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        true,
+    );
+    assert!(
+        result.is_ok(),
+        "compose_with should succeed: {:?}",
+        result.err()
+    );
+
+    let output = fs::read_to_string(ws.workspace_root.join("CLAUDE.md")).unwrap();
+    assert!(
+        output.contains("# Base Context"),
+        "should contain base content"
+    );
+    assert!(
+        output.contains("# Private Rules"),
+        "should contain composed content"
+    );
+}
+
+#[test]
+fn test_agent_generate_context_dry_run() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let manifests_dir = ws
+        .workspace_root
+        .join(".gitgrip")
+        .join("spaces")
+        .join("main");
+    fs::write(manifests_dir.join("CONTEXT.md"), "content").unwrap();
+
+    add_workspace_agent_config(
+        &ws.workspace_root,
+        r#"workspace:
+  agent:
+    context_source: CONTEXT.md
+    targets:
+      - format: raw
+        dest: DRY_RUN_OUTPUT.md
+"#,
+    );
+
+    let manifest = ws.load_manifest();
+    let result = gitgrip::cli::commands::agent::run_agent_generate_context(
+        &ws.workspace_root,
+        &manifest,
+        true, // dry_run
+        false,
+    );
+    assert!(result.is_ok(), "dry-run should succeed: {:?}", result.err());
+
+    // File should NOT exist in dry-run mode
+    assert!(
+        !ws.workspace_root.join("DRY_RUN_OUTPUT.md").exists(),
+        "dry-run should not write files"
+    );
+}
+
+#[test]
+fn test_agent_generate_context_claude_format() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    add_repo_agent_config(
+        &ws.workspace_root,
+        "app",
+        "      description: \"Test app\"\n      language: typescript\n      build: pnpm build\n      test: pnpm test\n",
+    );
+
+    add_workspace_agent_config(
+        &ws.workspace_root,
+        r#"workspace:
+  agent:
+    targets:
+      - format: claude
+        dest: ".claude/skills/{repo}/SKILL.md"
+"#,
+    );
+
+    let manifest = ws.load_manifest();
+    let result = gitgrip::cli::commands::agent::run_agent_generate_context(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        true,
+    );
+    assert!(
+        result.is_ok(),
+        "claude format should succeed: {:?}",
+        result.err()
+    );
+
+    let skill_path = ws.workspace_root.join(".claude/skills/app/SKILL.md");
+    assert!(skill_path.exists(), "claude skill file should exist");
+
+    let content = fs::read_to_string(&skill_path).unwrap();
+    assert!(
+        content.starts_with("---\n"),
+        "should start with frontmatter"
+    );
+    assert!(
+        content.contains("name: app"),
+        "should have name in frontmatter"
+    );
+    assert!(content.contains("Test app"), "should have description");
+    assert!(
+        content.contains("Language: typescript"),
+        "should have language"
+    );
+}
+
+#[test]
+fn test_agent_generate_context_cursor_format() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let manifests_dir = ws
+        .workspace_root
+        .join(".gitgrip")
+        .join("spaces")
+        .join("main");
+    fs::write(
+        manifests_dir.join("CONTEXT.md"),
+        "# Project Rules\n## Code Style\nUse 2-space indent\n",
+    )
+    .unwrap();
+
+    add_workspace_agent_config(
+        &ws.workspace_root,
+        r#"workspace:
+  agent:
+    context_source: CONTEXT.md
+    targets:
+      - format: cursor
+        dest: .cursorrules
+"#,
+    );
+
+    let manifest = ws.load_manifest();
+    let result = gitgrip::cli::commands::agent::run_agent_generate_context(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        true,
+    );
+    assert!(
+        result.is_ok(),
+        "cursor format should succeed: {:?}",
+        result.err()
+    );
+
+    let content = fs::read_to_string(ws.workspace_root.join(".cursorrules")).unwrap();
+    assert!(
+        !content.contains("# "),
+        "heading markers should be stripped"
+    );
+    assert!(
+        content.contains("Project Rules"),
+        "heading text should remain"
+    );
+    assert!(
+        content.contains("Code Style"),
+        "subheading text should remain"
+    );
+}
+
 // ── Build Tests ──────────────────────────────────────────────────
 
 #[test]
