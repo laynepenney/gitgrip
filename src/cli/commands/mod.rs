@@ -24,6 +24,7 @@ pub mod prune;
 pub mod pull;
 pub mod push;
 pub mod rebase;
+pub mod release;
 pub mod repo;
 pub mod run;
 pub mod status;

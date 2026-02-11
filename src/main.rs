@@ -305,6 +305,26 @@ enum Commands {
         #[command(subcommand)]
         action: AgentCommands,
     },
+    /// Automated release workflow
+    Release {
+        /// Version to release (e.g. v0.12.4)
+        version: String,
+        /// Release notes
+        #[arg(short, long)]
+        notes: Option<String>,
+        /// Show what would happen without doing it
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip PR workflow (bump, tag, release only)
+        #[arg(long)]
+        skip_pr: bool,
+        /// Target repo for GitHub release (default: auto-detect)
+        #[arg(long)]
+        repo: Option<String>,
+        /// Timeout in seconds for CI wait (default: 600)
+        #[arg(long, default_value = "600")]
+        timeout: u64,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -1034,6 +1054,31 @@ async fn main() -> anyhow::Result<()> {
                     )?;
                 }
             }
+        }
+        Some(Commands::Release {
+            version,
+            notes,
+            dry_run,
+            skip_pr,
+            repo,
+            timeout,
+        }) => {
+            let (workspace_root, manifest) = load_gripspace()?;
+            gitgrip::cli::commands::release::run_release(
+                gitgrip::cli::commands::release::ReleaseOptions {
+                    workspace_root: &workspace_root,
+                    manifest: &manifest,
+                    version: &version,
+                    notes: notes.as_deref(),
+                    dry_run,
+                    skip_pr,
+                    target_repo: repo.as_deref(),
+                    json: cli.json,
+                    quiet: cli.quiet,
+                    timeout,
+                },
+            )
+            .await?;
         }
         Some(Commands::Completions { shell }) => {
             let mut cmd = Cli::command();
