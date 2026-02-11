@@ -112,6 +112,34 @@ pub struct ComposeFileConfig {
     pub separator: Option<String>,
 }
 
+/// Agent context for a repository — build/test/lint commands for AI agents
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RepoAgentConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+}
+
+/// Agent context for a workspace — conventions and workflows for AI agents
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceAgentConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conventions: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflows: Option<HashMap<String, String>>,
+}
+
 /// Repository configuration in the manifest
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
@@ -137,6 +165,9 @@ pub struct RepoConfig {
     /// Groups this repo belongs to (for selective operations)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
+    /// Agent context metadata (build/test/lint commands for AI agents)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<RepoAgentConfig>,
 }
 
 fn default_branch() -> String {
@@ -301,6 +332,9 @@ pub struct WorkspaceConfig {
     /// CI/CD pipelines
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci: Option<CiConfig>,
+    /// Agent context metadata (conventions and workflows for AI agents)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<WorkspaceAgentConfig>,
 }
 
 /// The main manifest structure
@@ -1063,6 +1097,147 @@ repos: {}
         let manifest = Manifest::parse_raw(yaml).unwrap();
         let result = manifest.validate_as_gripspace();
         assert!(matches!(result, Err(ManifestError::PathTraversal(_))));
+    }
+
+    #[test]
+    fn test_parse_repo_agent_config() {
+        let yaml = r#"
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+    agent:
+      description: "Rust CLI tool"
+      language: rust
+      build: "cargo build"
+      test: "cargo test"
+      lint: "cargo clippy"
+      format: "cargo fmt"
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        let repo = manifest.repos.get("myrepo").unwrap();
+        let agent = repo.agent.as_ref().unwrap();
+        assert_eq!(agent.description.as_deref(), Some("Rust CLI tool"));
+        assert_eq!(agent.language.as_deref(), Some("rust"));
+        assert_eq!(agent.build.as_deref(), Some("cargo build"));
+        assert_eq!(agent.test.as_deref(), Some("cargo test"));
+        assert_eq!(agent.lint.as_deref(), Some("cargo clippy"));
+        assert_eq!(agent.format.as_deref(), Some("cargo fmt"));
+    }
+
+    #[test]
+    fn test_parse_workspace_agent_config() {
+        let yaml = r#"
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+workspace:
+  agent:
+    description: "Multi-repo workspace"
+    conventions:
+      - "Use conventional commits"
+      - "All PRs require review"
+    workflows:
+      deploy: "./scripts/deploy.sh"
+      release: "gr run release"
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        let workspace = manifest.workspace.as_ref().unwrap();
+        let agent = workspace.agent.as_ref().unwrap();
+        assert_eq!(agent.description.as_deref(), Some("Multi-repo workspace"));
+        assert_eq!(agent.conventions.len(), 2);
+        assert_eq!(agent.conventions[0], "Use conventional commits");
+        assert_eq!(agent.conventions[1], "All PRs require review");
+        let workflows = agent.workflows.as_ref().unwrap();
+        assert_eq!(workflows.get("deploy").unwrap(), "./scripts/deploy.sh");
+        assert_eq!(workflows.get("release").unwrap(), "gr run release");
+    }
+
+    #[test]
+    fn test_agent_config_optional() {
+        let yaml = r#"
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        let repo = manifest.repos.get("myrepo").unwrap();
+        assert!(repo.agent.is_none());
+        assert!(manifest.workspace.is_none());
+    }
+
+    #[test]
+    fn test_agent_config_serialization_roundtrip() {
+        let yaml = r#"
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+    agent:
+      description: "Test repo"
+      language: rust
+      build: "cargo build"
+      test: "cargo test"
+workspace:
+  agent:
+    description: "Test workspace"
+    conventions:
+      - "convention one"
+    workflows:
+      deploy: "deploy.sh"
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        let serialized = serde_yaml::to_string(&manifest).unwrap();
+        let reparsed = Manifest::parse(&serialized).unwrap();
+
+        let orig_agent = manifest
+            .repos
+            .get("myrepo")
+            .unwrap()
+            .agent
+            .as_ref()
+            .unwrap();
+        let re_agent = reparsed
+            .repos
+            .get("myrepo")
+            .unwrap()
+            .agent
+            .as_ref()
+            .unwrap();
+        assert_eq!(orig_agent.description, re_agent.description);
+        assert_eq!(orig_agent.language, re_agent.language);
+        assert_eq!(orig_agent.build, re_agent.build);
+        assert_eq!(orig_agent.test, re_agent.test);
+
+        let orig_ws_agent = manifest.workspace.as_ref().unwrap().agent.as_ref().unwrap();
+        let re_ws_agent = reparsed.workspace.as_ref().unwrap().agent.as_ref().unwrap();
+        assert_eq!(orig_ws_agent.description, re_ws_agent.description);
+        assert_eq!(orig_ws_agent.conventions, re_ws_agent.conventions);
+        assert_eq!(orig_ws_agent.workflows, re_ws_agent.workflows);
+    }
+
+    #[test]
+    fn test_repo_agent_config_partial() {
+        let yaml = r#"
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+    agent:
+      language: python
+      test: "pytest"
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        let repo = manifest.repos.get("myrepo").unwrap();
+        let agent = repo.agent.as_ref().unwrap();
+        assert!(agent.description.is_none());
+        assert_eq!(agent.language.as_deref(), Some("python"));
+        assert!(agent.build.is_none());
+        assert_eq!(agent.test.as_deref(), Some("pytest"));
+        assert!(agent.lint.is_none());
+        assert!(agent.format.is_none());
     }
 
     #[test]

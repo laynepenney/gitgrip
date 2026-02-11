@@ -89,12 +89,29 @@ repos:
       - src: ".env.example"
         dest: ".env"
 
+    # Agent context for AI tools (optional)
+    # Machine-readable metadata for AI coding agents
+    agent:
+      description: "React web frontend"
+      language: "typescript"
+      build: "pnpm build"
+      test: "pnpm test"
+      lint: "pnpm lint"
+      format: "pnpm format"
+
   backend:
     url: "git@github.com:org/backend.git"
     path: "./backend"
     groups:
       - core
       - api
+    agent:
+      description: "Rust API server"
+      language: "rust"
+      build: "cargo build"
+      test: "cargo test"
+      lint: "cargo clippy"
+      format: "cargo fmt"
 
   # Reference repositories (read-only)
   reference-lib:
@@ -113,6 +130,7 @@ settings:
   merge_strategy: "all-or-nothing"
 
 # Workspace configuration (optional)
+# Includes scripts, hooks, env, CI, and agent metadata
 workspace:
   # Environment variables available to workspace scripts
   env:
@@ -166,6 +184,18 @@ workspace:
             command: "npm run coverage:upload"
             env:
               COVERAGE_TOKEN: "${COVERAGE_TOKEN}"
+
+  # Agent context for AI tools (optional)
+  # Workspace-level metadata for AI coding agents
+  agent:
+    description: "Multi-repo web application workspace"
+    conventions:
+      - "Use conventional commits (feat:, fix:, chore:)"
+      - "All PRs require review before merge"
+      - "Use gr commands, never raw git"
+    workflows:
+      deploy: "gr pr merge && ./scripts/deploy.sh"
+      release: "gr run release"
 
 # Supported platform types:
 # - github: GitHub.com or GitHub Enterprise

@@ -113,6 +113,7 @@ pub fn run_status(
                 project: None,
                 reference: false,
                 groups: Vec::new(),
+                agent: None,
             };
 
             let status = get_repo_status(&manifest_repo_info);

@@ -13,7 +13,8 @@
 //! inserted after gripspace values, overriding by key.
 
 use crate::core::manifest::{
-    GripspaceConfig, HookCommand, Manifest, ManifestError, WorkspaceConfig, WorkspaceHooks,
+    GripspaceConfig, HookCommand, Manifest, ManifestError, WorkspaceAgentConfig, WorkspaceConfig,
+    WorkspaceHooks,
 };
 use crate::core::manifest_paths;
 use crate::git::clone_repo;
@@ -352,6 +353,7 @@ pub fn resolve_all_gripspaces(
     let mut merged_hooks_post_checkout: Vec<HookCommand> = Vec::new();
     let mut merged_linkfiles = Vec::new();
     let mut merged_copyfiles = Vec::new();
+    let mut merged_agent: Option<WorkspaceAgentConfig> = None;
 
     // Process each gripspace
     for gs_config in &gripspaces {
@@ -368,6 +370,7 @@ pub fn resolve_all_gripspaces(
             &mut merged_hooks_post_checkout,
             &mut merged_linkfiles,
             &mut merged_copyfiles,
+            &mut merged_agent,
         )?;
     }
 
@@ -414,6 +417,35 @@ pub fn resolve_all_gripspaces(
             merged_hooks_post_checkout.extend(existing);
             hooks.post_checkout = Some(merged_hooks_post_checkout);
         }
+    }
+
+    // Agent config: gripspace agent config first, local overrides
+    if let Some(gs_agent) = merged_agent {
+        let local_agent = workspace.agent.take();
+        let mut merged = gs_agent;
+        if let Some(local) = local_agent {
+            // Local fields win over gripspace fields
+            if local.description.is_some() {
+                merged.description = local.description;
+            }
+            if !local.conventions.is_empty() {
+                // Prepend local conventions, then gripspace conventions
+                let mut combined = local.conventions;
+                for c in merged.conventions {
+                    if !combined.contains(&c) {
+                        combined.push(c);
+                    }
+                }
+                merged.conventions = combined;
+            }
+            if let Some(local_workflows) = local.workflows {
+                let workflows = merged.workflows.get_or_insert_with(HashMap::new);
+                for (key, value) in local_workflows {
+                    workflows.insert(key, value); // local wins
+                }
+            }
+        }
+        workspace.agent = Some(merged);
     }
 
     // Linkfiles from gripspaces are tracked separately — they'll be applied by the link command
@@ -482,6 +514,7 @@ fn resolve_gripspace_recursive(
     merged_hooks_post_checkout: &mut Vec<HookCommand>,
     merged_linkfiles: &mut Vec<crate::core::manifest::LinkFileConfig>,
     merged_copyfiles: &mut Vec<crate::core::manifest::CopyFileConfig>,
+    merged_agent: &mut Option<WorkspaceAgentConfig>,
 ) -> Result<(), ManifestError> {
     if depth >= MAX_GRIPSPACE_DEPTH {
         return Err(ManifestError::GripspaceError(format!(
@@ -554,6 +587,7 @@ fn resolve_gripspace_recursive(
                 merged_hooks_post_checkout,
                 merged_linkfiles,
                 merged_copyfiles,
+                merged_agent,
             )?;
         }
     }
@@ -587,6 +621,26 @@ fn resolve_gripspace_recursive(
             }
             if let Some(ref post_checkout) = hooks.post_checkout {
                 merged_hooks_post_checkout.extend(post_checkout.clone());
+            }
+        }
+
+        if let Some(ref gs_agent_config) = workspace.agent {
+            let agent = merged_agent.get_or_insert_with(WorkspaceAgentConfig::default);
+            if agent.description.is_none() {
+                agent.description.clone_from(&gs_agent_config.description);
+            }
+            for c in &gs_agent_config.conventions {
+                if !agent.conventions.contains(c) {
+                    agent.conventions.push(c.clone());
+                }
+            }
+            if let Some(ref gs_workflows) = gs_agent_config.workflows {
+                let workflows = agent.workflows.get_or_insert_with(HashMap::new);
+                for (key, value) in gs_workflows {
+                    workflows
+                        .entry(key.clone())
+                        .or_insert_with(|| value.clone());
+                }
             }
         }
     }
@@ -795,6 +849,7 @@ repos:
                         platform: None,
                         reference: false,
                         groups: Vec::new(),
+                        agent: None,
                     },
                 );
                 m
@@ -853,6 +908,7 @@ repos:
                         platform: None,
                         reference: false,
                         groups: Vec::new(),
+                        agent: None,
                     },
                 );
                 m
@@ -1045,6 +1101,7 @@ workspace:
                 env: None,
                 hooks: None,
                 ci: None,
+                agent: None,
             }),
         };
 
