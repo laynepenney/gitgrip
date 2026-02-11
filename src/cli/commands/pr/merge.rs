@@ -228,11 +228,18 @@ pub async fn run_pr_merge(
 
                 if start.elapsed() > timeout_duration {
                     spinner.finish_with_message("Timed out waiting for checks");
-                    Output::error(&format!(
+                    anyhow::bail!(
                         "Timed out after {} seconds waiting for checks to pass",
                         timeout
-                    ));
-                    return Ok(());
+                    );
+                }
+
+                // Early exit if all remaining non-passing checks have definitively failed
+                let all_resolved = prs_to_merge
+                    .iter()
+                    .all(|pr| !matches!(pr.check_status, CheckStatus::Pending));
+                if all_resolved {
+                    break;
                 }
 
                 let elapsed = start.elapsed().as_secs();
