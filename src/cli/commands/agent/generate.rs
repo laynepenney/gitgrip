@@ -1,6 +1,6 @@
 //! Agent context generation — generate context files for multiple AI tools from a single source.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::cli::output::Output;
 use crate::core::manifest::{AgentContextTarget, Manifest};
