@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-02-11
+
+### Added
+- **`gr agent` command** - AI coding tool context discovery and workspace operations (#289)
+  - `gr agent context` — Full workspace context with repos, build commands, and conventions
+  - `gr agent context --repo <name>` — Single repo context
+  - `gr agent build <repo>` / `gr agent test <repo>` — Run build/test for a specific repo
+  - All subcommands support `--json` for machine consumption
+- **`gr agent generate-context`** - Multi-tool context generation from a single source (#290)
+  - Define context once in manifest, generate for Claude, OpenCode, Codex, Cursor, and raw formats
+  - `{repo}` placeholder in dest paths generates per-repo skill files
+  - `compose_with` appends additional files to generated context
+  - Runs automatically during `gr sync`; standalone with `gr agent generate-context`
+  - `--dry-run` flag to preview without writing
+- **`gr verify`** - Boolean pass/fail assertions for CI and scripting (#284)
+  - `--clean` — Assert all repos have no uncommitted changes
+  - `--on-branch <name>` — Assert all repos are on a specific branch
+  - `--synced` — Assert repos are up to date with remote
+  - Returns exit code 0/1 for scripting; supports `--json` output
+- **`gr release`** - Automated release workflow (#287)
+  - Bumps version, updates changelog, creates PR, tags, and creates GitHub release
+  - `--dry-run` for preview
+- **`--json` global flag** - Machine-readable JSON output on all commands (#282)
+  - Structured output for `gr status`, `gr diff`, `gr pr status`, `gr verify`, `gr link --status`, and more
+- **`--wait` flag for `gr pr merge`** - Poll CI checks before merging (#285)
+  - Configurable timeout with `--timeout <seconds>` (default: 300s)
+  - Visual spinner showing elapsed time and check status
+- **Post-sync hooks** - Run commands automatically after `gr sync` (#286)
+  - `post_sync` hooks in workspace manifest with optional `condition` triggers
+  - `file_changed` condition to only run when specific files change
+- **Agent manifest config** - Define agent-relevant metadata per-repo in manifest (#288)
+  - `agent.description`, `agent.language`, `agent.build`, `agent.test`, `agent.lint`
+  - Workspace-level `agent.conventions` for cross-repo coding standards
+
+### Fixed
+- **`gr pr merge` silent failure** - Now verifies PR state after merge API call to catch cases where GitHub reports success but PR wasn't actually merged (#283)
+- **`gr pr merge --wait` timeout** - Timeout now properly bails with error instead of silently allowing merge to proceed (#305)
+- **`gr pr merge --wait` early exit** - Checks loop now exits early when all checks have definitively resolved (no more pending)
+- **Gripspace repo groups** - Repos inherited from included gripspaces can now be added to groups (#294)
+
 ## [0.12.3] - 2026-02-10
 
 ### Added
