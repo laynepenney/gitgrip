@@ -118,6 +118,7 @@ fn bench_url_parse(c: &mut Criterion) {
         platform: None,
         reference: false,
         groups: Vec::new(),
+        agent: None,
     };
     let workspace = PathBuf::from("/home/user/workspace");
 
@@ -137,6 +138,7 @@ fn bench_url_parse_azure(c: &mut Criterion) {
         platform: None,
         reference: false,
         groups: Vec::new(),
+        agent: None,
     };
     let workspace = PathBuf::from("/home/user/workspace");
 
