@@ -300,11 +300,41 @@ enum Commands {
         #[command(subcommand)]
         action: ManifestCommands,
     },
+    /// AI agent operations (context, build, test, verify)
+    Agent {
+        #[command(subcommand)]
+        action: AgentCommands,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: Shell,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentCommands {
+    /// Dump workspace context for AI agent system prompts
+    Context {
+        /// Filter to a specific repo
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Build repo(s) using manifest agent config
+    Build {
+        /// Specific repo to build (default: all with agent.build)
+        repo: Option<String>,
+    },
+    /// Test repo(s) using manifest agent config
+    Test {
+        /// Specific repo to test (default: all with agent.test)
+        repo: Option<String>,
+    },
+    /// Run all verification checks (build + test + lint)
+    Verify {
+        /// Specific repo to verify (default: all with agent config)
+        repo: Option<String>,
     },
 }
 
@@ -970,6 +1000,40 @@ async fn main() -> anyhow::Result<()> {
         },
         Some(Commands::Bench(args)) => {
             gitgrip::cli::commands::bench::run(args).await?;
+        }
+        Some(Commands::Agent { action }) => {
+            let (workspace_root, manifest) = load_gripspace()?;
+            match action {
+                AgentCommands::Context { repo } => {
+                    gitgrip::cli::commands::agent::run_agent_context(
+                        &workspace_root,
+                        &manifest,
+                        repo.as_deref(),
+                        cli.json,
+                    )?;
+                }
+                AgentCommands::Build { repo } => {
+                    gitgrip::cli::commands::agent::run_agent_build(
+                        &workspace_root,
+                        &manifest,
+                        repo.as_deref(),
+                    )?;
+                }
+                AgentCommands::Test { repo } => {
+                    gitgrip::cli::commands::agent::run_agent_test(
+                        &workspace_root,
+                        &manifest,
+                        repo.as_deref(),
+                    )?;
+                }
+                AgentCommands::Verify { repo } => {
+                    gitgrip::cli::commands::agent::run_agent_verify(
+                        &workspace_root,
+                        &manifest,
+                        repo.as_deref(),
+                    )?;
+                }
+            }
         }
         Some(Commands::Completions { shell }) => {
             let mut cmd = Cli::command();
