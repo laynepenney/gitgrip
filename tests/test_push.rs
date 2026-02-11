@@ -62,8 +62,14 @@ fn test_push_nothing_to_push() {
     let manifest = ws.load_manifest();
 
     // Push with nothing to push -- should succeed
-    let result =
-        gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, false, false, false, false);
+    let result = gitgrip::cli::commands::push::run_push(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        false,
+        false,
+    );
     assert!(
         result.is_ok(),
         "push with nothing should succeed: {:?}",
@@ -96,12 +102,24 @@ fn test_push_skips_reference_repos() {
     std::fs::write(ws.repo_path("app").join("change.txt"), "data").unwrap();
     let files = vec![".".to_string()];
     gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files).unwrap();
-    gitgrip::cli::commands::commit::run_commit(&ws.workspace_root, &manifest, "change", false, false)
-        .unwrap();
+    gitgrip::cli::commands::commit::run_commit(
+        &ws.workspace_root,
+        &manifest,
+        "change",
+        false,
+        false,
+    )
+    .unwrap();
 
     // Push -- should skip reference repo
-    let result =
-        gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, true, false, false, false);
+    let result = gitgrip::cli::commands::push::run_push(
+        &ws.workspace_root,
+        &manifest,
+        true,
+        false,
+        false,
+        false,
+    );
     assert!(result.is_ok(), "push should succeed: {:?}", result.err());
 
     // docs should still be on main (not pushed, not branched)
@@ -143,8 +161,14 @@ fn test_push_multiple_repos() {
     )
     .unwrap();
 
-    let result =
-        gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, true, false, false, false);
+    let result = gitgrip::cli::commands::push::run_push(
+        &ws.workspace_root,
+        &manifest,
+        true,
+        false,
+        false,
+        false,
+    );
     assert!(result.is_ok(), "push should succeed: {:?}", result.err());
 }
 
@@ -178,8 +202,15 @@ fn test_push_force() {
         false,
     )
     .unwrap();
-    gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, true, false, false, false)
-        .unwrap();
+    gitgrip::cli::commands::push::run_push(
+        &ws.workspace_root,
+        &manifest,
+        true,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
 
     // Make another commit
     std::fs::write(ws.repo_path("app").join("second.txt"), "second").unwrap();

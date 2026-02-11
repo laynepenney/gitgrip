@@ -258,8 +258,14 @@ fn test_push_on_main_nothing_to_push() {
     let manifest = ws.load_manifest();
 
     // Push on main with no new commits - should succeed silently
-    let result =
-        gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, false, false, false, false);
+    let result = gitgrip::cli::commands::push::run_push(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        false,
+        false,
+    );
     assert!(
         result.is_ok(),
         "push with nothing should succeed: {:?}",

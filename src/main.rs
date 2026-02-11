@@ -653,12 +653,8 @@ async fn main() -> anyhow::Result<()> {
                     .await?;
                 }
                 PrCommands::Status => {
-                    gitgrip::cli::commands::pr::run_pr_status(
-                        &workspace_root,
-                        &manifest,
-                        cli.json,
-                    )
-                    .await?;
+                    gitgrip::cli::commands::pr::run_pr_status(&workspace_root, &manifest, cli.json)
+                        .await?;
                 }
                 PrCommands::Merge {
                     method,
@@ -678,12 +674,8 @@ async fn main() -> anyhow::Result<()> {
                     .await?;
                 }
                 PrCommands::Checks => {
-                    gitgrip::cli::commands::pr::run_pr_checks(
-                        &workspace_root,
-                        &manifest,
-                        cli.json,
-                    )
-                    .await?;
+                    gitgrip::cli::commands::pr::run_pr_checks(&workspace_root, &manifest, cli.json)
+                        .await?;
                 }
                 PrCommands::Diff { stat } => {
                     gitgrip::cli::commands::pr::run_pr_diff(&workspace_root, &manifest, stat)
