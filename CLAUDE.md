@@ -108,7 +108,7 @@ Compare results before/after your changes. Document significant improvements or 
 - [ ] `README.md` - User-facing documentation
 - [ ] `CONTRIBUTING.md` - If workflow changes
 - [ ] `CHANGELOG.md` - Add entry for the change
-- [ ] `.claude/skills/gitgrip/SKILL.md` - Claude Code skill definition
+- [ ] `codi-gripspace/skills/gitgrip/SKILL.md` - Skill definition (canonical source in gripspace)
 
 Forgetting to update docs creates drift between code and documentation. Always check these files when adding/modifying commands.
 
