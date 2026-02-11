@@ -344,7 +344,7 @@ pub fn run_tree_add(
     if let Some(tree_manifest_path) = manifest_paths::resolve_gripspace_manifest_path(&tree_path) {
         println!();
         if let Ok(tree_manifest) = Manifest::load(&tree_manifest_path) {
-            if let Err(e) = run_link(&tree_path, &tree_manifest, false, true) {
+            if let Err(e) = run_link(&tree_path, &tree_manifest, false, true, false) {
                 Output::warning(&format!("Failed to apply links: {}", e));
             }
         }
@@ -520,6 +520,7 @@ pub async fn run_tree_return(
             false,
             false,
             None,
+            false,
             false,
             false,
         )

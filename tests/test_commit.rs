@@ -41,6 +41,7 @@ fn test_commit_across_repos() {
         &manifest,
         "feat: add initial files",
         false,
+        false,
     );
     assert!(result.is_ok(), "commit should succeed: {:?}", result.err());
 
@@ -72,6 +73,7 @@ fn test_commit_skips_no_staged_changes() {
         &manifest,
         "feat: app only",
         false,
+        false,
     );
     assert!(result.is_ok(), "commit should succeed: {:?}", result.err());
 
@@ -91,6 +93,7 @@ fn test_commit_no_changes() {
         &ws.workspace_root,
         &manifest,
         "empty commit",
+        false,
         false,
     );
     assert!(
@@ -113,8 +116,14 @@ fn test_commit_amend() {
         .current_dir(ws.repo_path("app"))
         .output()
         .unwrap();
-    gitgrip::cli::commands::commit::run_commit(&ws.workspace_root, &manifest, "initial", false)
-        .unwrap();
+    gitgrip::cli::commands::commit::run_commit(
+        &ws.workspace_root,
+        &manifest,
+        "initial",
+        false,
+        false,
+    )
+    .unwrap();
 
     // Modify and stage again
     std::fs::write(ws.repo_path("app").join("file.txt"), "v2").unwrap();
@@ -125,8 +134,13 @@ fn test_commit_amend() {
         .unwrap();
 
     // Amend
-    let result =
-        gitgrip::cli::commands::commit::run_commit(&ws.workspace_root, &manifest, "amended", true);
+    let result = gitgrip::cli::commands::commit::run_commit(
+        &ws.workspace_root,
+        &manifest,
+        "amended",
+        true,
+        false,
+    );
     assert!(result.is_ok(), "amend should succeed: {:?}", result.err());
 
     // Verify only 2 commits (initial from fixture + our amended one)

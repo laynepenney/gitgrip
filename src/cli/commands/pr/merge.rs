@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Run the PR merge command
+#[allow(clippy::too_many_arguments)]
 pub async fn run_pr_merge(
     workspace_root: &PathBuf,
     manifest: &Manifest,
@@ -18,9 +19,12 @@ pub async fn run_pr_merge(
     force: bool,
     update: bool,
     auto: bool,
+    json: bool,
 ) -> anyhow::Result<()> {
-    Output::header("Merging pull requests...");
-    println!();
+    if !json {
+        Output::header("Merging pull requests...");
+        println!();
+    }
 
     let repos: Vec<RepoInfo> = manifest
         .repos
@@ -73,6 +77,7 @@ pub async fn run_pr_merge(
     }
 
     let mut prs_to_merge: Vec<PRToMerge> = Vec::new();
+    let mut json_skipped: Vec<String> = Vec::new();
 
     for repo in &all_repos {
         if !path_exists(&repo.absolute_path) {
@@ -156,10 +161,15 @@ pub async fn run_pr_merge(
                 });
             }
             Ok(None) => {
-                Output::info(&format!("{}: no open PR for this branch", repo.name));
+                if !json {
+                    Output::info(&format!("{}: no open PR for this branch", repo.name));
+                }
+                json_skipped.push(repo.name.clone());
             }
             Err(e) => {
-                Output::error(&format!("{}: {}", repo.name, e));
+                if !json {
+                    Output::error(&format!("{}: {}", repo.name, e));
+                }
             }
         }
     }
@@ -298,8 +308,29 @@ pub async fn run_pr_merge(
     let mut success_count = 0;
     let mut error_count = 0;
 
+    #[derive(serde::Serialize)]
+    struct JsonMergedPr {
+        repo: String,
+        pr_number: u64,
+    }
+    #[derive(serde::Serialize)]
+    struct JsonFailedPr {
+        repo: String,
+        pr_number: u64,
+        reason: String,
+    }
+    let mut json_merged: Vec<JsonMergedPr> = Vec::new();
+    let mut json_failed_prs: Vec<JsonFailedPr> = Vec::new();
+
     for pr in prs_to_merge {
-        let spinner = Output::spinner(&format!("Merging {} PR #{}...", pr.repo_name, pr.pr_number));
+        let spinner = if !json {
+            Some(Output::spinner(&format!(
+                "Merging {} PR #{}...",
+                pr.repo_name, pr.pr_number
+            )))
+        } else {
+            None
+        };
 
         let merge_result = pr
             .platform
@@ -312,18 +343,23 @@ pub async fn run_pr_merge(
             )
             .await;
 
-        // Handle BranchBehind with --update retry (single attempt — if another
-        // commit lands between update and retry, the user can re-run the command).
+        // Handle BranchBehind with --update retry
         let merge_result = match merge_result {
             Err(PlatformError::BranchBehind(ref msg)) if update => {
-                spinner.finish_with_message(format!(
-                    "{}: branch behind base, updating...",
-                    pr.repo_name
-                ));
-                let update_spinner = Output::spinner(&format!(
-                    "Updating {} PR #{} branch...",
-                    pr.repo_name, pr.pr_number
-                ));
+                if let Some(ref s) = spinner {
+                    s.finish_with_message(format!(
+                        "{}: branch behind base, updating...",
+                        pr.repo_name
+                    ));
+                }
+                let update_spinner = if !json {
+                    Some(Output::spinner(&format!(
+                        "Updating {} PR #{} branch...",
+                        pr.repo_name, pr.pr_number
+                    )))
+                } else {
+                    None
+                };
 
                 match pr
                     .platform
@@ -331,19 +367,23 @@ pub async fn run_pr_merge(
                     .await
                 {
                     Ok(true) => {
-                        update_spinner.finish_with_message(format!(
-                            "{}: branch updated, retrying merge...",
-                            pr.repo_name
-                        ));
-                        // Wait for GitHub to process the update
+                        if let Some(ref s) = update_spinner {
+                            s.finish_with_message(format!(
+                                "{}: branch updated, retrying merge...",
+                                pr.repo_name
+                            ));
+                        }
                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-                        let retry_spinner = Output::spinner(&format!(
-                            "Merging {} PR #{}...",
-                            pr.repo_name, pr.pr_number
-                        ));
+                        let retry_spinner = if !json {
+                            Some(Output::spinner(&format!(
+                                "Merging {} PR #{}...",
+                                pr.repo_name, pr.pr_number
+                            )))
+                        } else {
+                            None
+                        };
 
-                        // Retry merge once
                         match pr
                             .platform
                             .merge_pull_request(
@@ -356,7 +396,6 @@ pub async fn run_pr_merge(
                             .await
                         {
                             Ok(merged) => {
-                                // Verify the PR is actually merged
                                 let verified = match pr
                                     .platform
                                     .get_pull_request(&pr.owner, &pr.repo, pr.pr_number)
@@ -367,23 +406,43 @@ pub async fn run_pr_merge(
                                 };
 
                                 if verified {
-                                    retry_spinner.finish_with_message(format!(
-                                        "{}: merged PR #{}",
-                                        pr.repo_name, pr.pr_number
-                                    ));
+                                    if let Some(ref s) = retry_spinner {
+                                        s.finish_with_message(format!(
+                                            "{}: merged PR #{}",
+                                            pr.repo_name, pr.pr_number
+                                        ));
+                                    }
                                     success_count += 1;
+                                    json_merged.push(JsonMergedPr {
+                                        repo: pr.repo_name.clone(),
+                                        pr_number: pr.pr_number,
+                                    });
                                 } else if merged {
-                                    retry_spinner.finish_with_message(format!(
-                                        "{}: PR #{} merge reported success but PR is not merged",
-                                        pr.repo_name, pr.pr_number
-                                    ));
+                                    if let Some(ref s) = retry_spinner {
+                                        s.finish_with_message(format!(
+                                            "{}: PR #{} merge reported success but PR is not merged",
+                                            pr.repo_name, pr.pr_number
+                                        ));
+                                    }
                                     error_count += 1;
+                                    json_failed_prs.push(JsonFailedPr {
+                                        repo: pr.repo_name.clone(),
+                                        pr_number: pr.pr_number,
+                                        reason: "merge reported success but PR is not merged"
+                                            .to_string(),
+                                    });
                                 } else {
-                                    retry_spinner.finish_with_message(format!(
-                                        "{}: PR #{} was already merged",
-                                        pr.repo_name, pr.pr_number
-                                    ));
+                                    if let Some(ref s) = retry_spinner {
+                                        s.finish_with_message(format!(
+                                            "{}: PR #{} was already merged",
+                                            pr.repo_name, pr.pr_number
+                                        ));
+                                    }
                                     success_count += 1;
+                                    json_merged.push(JsonMergedPr {
+                                        repo: pr.repo_name.clone(),
+                                        pr_number: pr.pr_number,
+                                    });
                                 }
                                 continue;
                             }
@@ -391,17 +450,21 @@ pub async fn run_pr_merge(
                         }
                     }
                     Ok(false) => {
-                        update_spinner.finish_with_message(format!(
-                            "{}: branch already up to date",
-                            pr.repo_name
-                        ));
+                        if let Some(ref s) = update_spinner {
+                            s.finish_with_message(format!(
+                                "{}: branch already up to date",
+                                pr.repo_name
+                            ));
+                        }
                         Err(PlatformError::BranchBehind(msg.clone()))
                     }
                     Err(update_err) => {
-                        update_spinner.finish_with_message(format!(
-                            "{}: branch update failed - {}",
-                            pr.repo_name, update_err
-                        ));
+                        if let Some(ref s) = update_spinner {
+                            s.finish_with_message(format!(
+                                "{}: branch update failed - {}",
+                                pr.repo_name, update_err
+                            ));
+                        }
                         Err(PlatformError::BranchBehind(msg.clone()))
                     }
                 }
@@ -409,80 +472,121 @@ pub async fn run_pr_merge(
             other => other,
         };
 
-        // Original spinner is still active for non-update paths
         match merge_result {
             Ok(merged) => {
-                // Verify the PR is actually merged by checking its state
                 let verified = match pr
                     .platform
                     .get_pull_request(&pr.owner, &pr.repo, pr.pr_number)
                     .await
                 {
                     Ok(verified_pr) => verified_pr.merged,
-                    Err(_) => {
-                        // If we can't verify, trust the merge response
-                        merged
-                    }
+                    Err(_) => merged,
                 };
 
                 if verified {
-                    spinner.finish_with_message(format!(
-                        "{}: merged PR #{}",
-                        pr.repo_name, pr.pr_number
-                    ));
+                    if let Some(ref s) = spinner {
+                        s.finish_with_message(format!(
+                            "{}: merged PR #{}",
+                            pr.repo_name, pr.pr_number
+                        ));
+                    }
                     success_count += 1;
+                    json_merged.push(JsonMergedPr {
+                        repo: pr.repo_name.clone(),
+                        pr_number: pr.pr_number,
+                    });
                 } else if merged {
-                    // API said merged but verification says otherwise
-                    spinner.finish_with_message(format!(
-                        "{}: PR #{} merge reported success but PR is not merged — check branch protection or required checks",
-                        pr.repo_name, pr.pr_number
-                    ));
+                    if let Some(ref s) = spinner {
+                        s.finish_with_message(format!(
+                            "{}: PR #{} merge reported success but PR is not merged — check branch protection or required checks",
+                            pr.repo_name, pr.pr_number
+                        ));
+                    }
                     error_count += 1;
+                    json_failed_prs.push(JsonFailedPr {
+                        repo: pr.repo_name.clone(),
+                        pr_number: pr.pr_number,
+                        reason: "merge reported success but PR is not merged".to_string(),
+                    });
                 } else {
-                    spinner.finish_with_message(format!(
-                        "{}: PR #{} was already merged",
-                        pr.repo_name, pr.pr_number
-                    ));
+                    if let Some(ref s) = spinner {
+                        s.finish_with_message(format!(
+                            "{}: PR #{} was already merged",
+                            pr.repo_name, pr.pr_number
+                        ));
+                    }
                     success_count += 1;
+                    json_merged.push(JsonMergedPr {
+                        repo: pr.repo_name.clone(),
+                        pr_number: pr.pr_number,
+                    });
                 }
             }
             Err(PlatformError::BranchBehind(_)) => {
-                spinner.finish_with_message(format!(
-                    "{}: PR #{} branch is behind base branch",
-                    pr.repo_name, pr.pr_number
-                ));
-                Output::info("  Hint: use 'gr pr merge --update' to update the branch and retry");
+                if let Some(ref s) = spinner {
+                    s.finish_with_message(format!(
+                        "{}: PR #{} branch is behind base branch",
+                        pr.repo_name, pr.pr_number
+                    ));
+                }
+                if !json {
+                    Output::info(
+                        "  Hint: use 'gr pr merge --update' to update the branch and retry",
+                    );
+                }
                 error_count += 1;
+                json_failed_prs.push(JsonFailedPr {
+                    repo: pr.repo_name.clone(),
+                    pr_number: pr.pr_number,
+                    reason: "branch is behind base branch".to_string(),
+                });
             }
             Err(PlatformError::BranchProtected(ref msg)) => {
-                spinner.finish_with_message(format!("{}: {}", pr.repo_name, msg));
-                Output::info(
-                    "  Hint: use 'gr pr merge --auto' to enable auto-merge when checks pass",
-                );
-                Output::info(&format!(
-                    "  Or:   gh pr merge {} --admin --repo {}/{}",
-                    pr.pr_number, pr.owner, pr.repo
-                ));
+                if let Some(ref s) = spinner {
+                    s.finish_with_message(format!("{}: {}", pr.repo_name, msg));
+                }
+                if !json {
+                    Output::info(
+                        "  Hint: use 'gr pr merge --auto' to enable auto-merge when checks pass",
+                    );
+                    Output::info(&format!(
+                        "  Or:   gh pr merge {} --admin --repo {}/{}",
+                        pr.pr_number, pr.owner, pr.repo
+                    ));
+                }
                 error_count += 1;
+                json_failed_prs.push(JsonFailedPr {
+                    repo: pr.repo_name.clone(),
+                    pr_number: pr.pr_number,
+                    reason: msg.clone(),
+                });
             }
             Err(e) => {
-                spinner.finish_with_message(format!("{}: failed - {}", pr.repo_name, e));
+                if let Some(ref s) = spinner {
+                    s.finish_with_message(format!("{}: failed - {}", pr.repo_name, e));
+                }
+                json_failed_prs.push(JsonFailedPr {
+                    repo: pr.repo_name.clone(),
+                    pr_number: pr.pr_number,
+                    reason: e.to_string(),
+                });
                 error_count += 1;
 
-                // Check for all-or-nothing merge strategy (unless forcing)
                 if !force
                     && manifest.settings.merge_strategy
                         == crate::core::manifest::MergeStrategy::AllOrNothing
                 {
-                    Output::error(
-                        "Stopping due to all-or-nothing merge strategy. Use --force to bypass.",
-                    );
+                    if !json {
+                        Output::error(
+                            "Stopping due to all-or-nothing merge strategy. Use --force to bypass.",
+                        );
+                    }
                     return Err(e.into());
                 }
-                // If forcing with AllOrNothing, just log and continue
                 if force
                     && manifest.settings.merge_strategy
                         == crate::core::manifest::MergeStrategy::AllOrNothing
+                    && !json
                 {
                     Output::warning(&format!(
                         "{}: merge failed but continuing due to --force flag",
@@ -494,11 +598,29 @@ pub async fn run_pr_merge(
     }
 
     // Summary
-    println!();
-    if error_count == 0 {
-        Output::success(&format!("Successfully merged {} PR(s).", success_count));
+    if json {
+        #[derive(serde::Serialize)]
+        struct JsonPrMergeResult {
+            success: bool,
+            merged: Vec<JsonMergedPr>,
+            failed: Vec<JsonFailedPr>,
+            skipped: Vec<String>,
+        }
+
+        let result = JsonPrMergeResult {
+            success: error_count == 0,
+            merged: json_merged,
+            failed: json_failed_prs,
+            skipped: json_skipped,
+        };
+        println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        Output::warning(&format!("{} merged, {} failed", success_count, error_count));
+        println!();
+        if error_count == 0 {
+            Output::success(&format!("Successfully merged {} PR(s).", success_count));
+        } else {
+            Output::warning(&format!("{} merged, {} failed", success_count, error_count));
+        }
     }
 
     Ok(())

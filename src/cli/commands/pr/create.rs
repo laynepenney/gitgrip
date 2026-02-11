@@ -11,6 +11,7 @@ use git2::Repository;
 use std::path::PathBuf;
 
 /// Run the PR create command
+#[allow(clippy::too_many_arguments)]
 pub async fn run_pr_create(
     workspace_root: &PathBuf,
     manifest: &Manifest,
@@ -19,13 +20,16 @@ pub async fn run_pr_create(
     draft: bool,
     push_first: bool,
     dry_run: bool,
+    json: bool,
 ) -> anyhow::Result<()> {
-    if dry_run {
-        Output::header("PR Preview");
-        println!();
-    } else {
-        Output::header("Creating pull requests...");
-        println!();
+    if !json {
+        if dry_run {
+            Output::header("PR Preview");
+            println!();
+        } else {
+            Output::header("Creating pull requests...");
+            println!();
+        }
     }
 
     let repos: Vec<RepoInfo> = manifest
@@ -205,13 +209,40 @@ pub async fn run_pr_create(
     }
 
     // Summary
-    println!();
-    if created_prs.is_empty() {
-        Output::warning("No PRs were created.");
+    if json {
+        #[derive(serde::Serialize)]
+        struct JsonPrCreateResult {
+            success: bool,
+            prs: Vec<JsonCreatedPr>,
+        }
+        #[derive(serde::Serialize)]
+        struct JsonCreatedPr {
+            repo: String,
+            number: u64,
+            url: String,
+        }
+
+        let result = JsonPrCreateResult {
+            success: !created_prs.is_empty(),
+            prs: created_prs
+                .iter()
+                .map(|(repo, number, url)| JsonCreatedPr {
+                    repo: repo.clone(),
+                    number: *number,
+                    url: url.clone(),
+                })
+                .collect(),
+        };
+        println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        Output::success(&format!("Created {} PR(s):", created_prs.len()));
-        for (repo_name, pr_number, url) in &created_prs {
-            println!("  {}: #{} - {}", repo_name, pr_number, url);
+        println!();
+        if created_prs.is_empty() {
+            Output::warning("No PRs were created.");
+        } else {
+            Output::success(&format!("Created {} PR(s):", created_prs.len()));
+            for (repo_name, pr_number, url) in &created_prs {
+                println!("  {}: #{} - {}", repo_name, pr_number, url);
+            }
         }
     }
 

@@ -17,9 +17,12 @@ pub fn run_commit(
     manifest: &Manifest,
     message: &str,
     amend: bool,
+    json: bool,
 ) -> anyhow::Result<()> {
-    Output::header("Committing changes...");
-    println!();
+    if !json {
+        Output::header("Committing changes...");
+        println!();
+    }
 
     let repos: Vec<RepoInfo> = manifest
         .repos
@@ -29,6 +32,14 @@ pub fn run_commit(
 
     let mut success_count = 0;
     let mut skip_count = 0;
+
+    #[derive(serde::Serialize)]
+    struct JsonCommit {
+        repo: String,
+        sha: String,
+    }
+    let mut json_committed: Vec<JsonCommit> = Vec::new();
+    let mut json_skipped: Vec<String> = Vec::new();
 
     for repo in &repos {
         if !path_exists(&repo.absolute_path) {
@@ -40,24 +51,42 @@ pub fn run_commit(
                 // Check if there are staged changes
                 if !has_staged_changes(&git_repo)? {
                     skip_count += 1;
+                    json_skipped.push(repo.name.clone());
                     continue;
                 }
 
                 match create_commit(&git_repo, message, amend) {
                     Ok(commit_id) => {
                         let short_id = &commit_id[..7.min(commit_id.len())];
-                        if amend {
-                            Output::success(&format!("{}: amended ({})", repo.name, short_id));
-                        } else {
-                            Output::success(&format!("{}: committed ({})", repo.name, short_id));
+                        if !json {
+                            if amend {
+                                Output::success(&format!("{}: amended ({})", repo.name, short_id));
+                            } else {
+                                Output::success(&format!(
+                                    "{}: committed ({})",
+                                    repo.name, short_id
+                                ));
+                            }
                         }
                         success_count += 1;
+                        json_committed.push(JsonCommit {
+                            repo: repo.name.clone(),
+                            sha: commit_id.clone(),
+                        });
                         invalidate_status_cache(&repo.absolute_path);
                     }
-                    Err(e) => Output::error(&format!("{}: {}", repo.name, e)),
+                    Err(e) => {
+                        if !json {
+                            Output::error(&format!("{}: {}", repo.name, e));
+                        }
+                    }
                 }
             }
-            Err(e) => Output::error(&format!("{}: {}", repo.name, e)),
+            Err(e) => {
+                if !json {
+                    Output::error(&format!("{}: {}", repo.name, e));
+                }
+            }
         }
     }
 
@@ -71,36 +100,72 @@ pub fn run_commit(
                         match create_commit(&git_repo, message, amend) {
                             Ok(commit_id) => {
                                 let short_id = &commit_id[..7.min(commit_id.len())];
-                                if amend {
-                                    Output::success(&format!("manifest: amended ({})", short_id));
-                                } else {
-                                    Output::success(&format!("manifest: committed ({})", short_id));
+                                if !json {
+                                    if amend {
+                                        Output::success(&format!(
+                                            "manifest: amended ({})",
+                                            short_id
+                                        ));
+                                    } else {
+                                        Output::success(&format!(
+                                            "manifest: committed ({})",
+                                            short_id
+                                        ));
+                                    }
                                 }
                                 success_count += 1;
+                                json_committed.push(JsonCommit {
+                                    repo: "manifest".to_string(),
+                                    sha: commit_id.clone(),
+                                });
                                 invalidate_status_cache(&manifests_dir);
                             }
-                            Err(e) => Output::error(&format!("manifest: {}", e)),
+                            Err(e) => {
+                                if !json {
+                                    Output::error(&format!("manifest: {}", e));
+                                }
+                            }
                         }
                     }
                 }
-                Err(e) => Output::warning(&format!("manifest: {}", e)),
+                Err(e) => {
+                    if !json {
+                        Output::warning(&format!("manifest: {}", e));
+                    }
+                }
             }
         }
     }
 
-    println!();
-    if success_count > 0 {
-        println!(
-            "Created {} commit(s){}.",
-            success_count,
-            if skip_count > 0 {
-                format!(", {} repo(s) had no staged changes", skip_count)
-            } else {
-                String::new()
-            }
-        );
+    if json {
+        #[derive(serde::Serialize)]
+        struct JsonCommitResult {
+            success: bool,
+            committed: Vec<JsonCommit>,
+            skipped: Vec<String>,
+        }
+
+        let result = JsonCommitResult {
+            success: !json_committed.is_empty(),
+            committed: json_committed,
+            skipped: json_skipped,
+        };
+        println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        println!("No changes to commit.");
+        println!();
+        if success_count > 0 {
+            println!(
+                "Created {} commit(s){}.",
+                success_count,
+                if skip_count > 0 {
+                    format!(", {} repo(s) had no staged changes", skip_count)
+                } else {
+                    String::new()
+                }
+            );
+        } else {
+            println!("No changes to commit.");
+        }
     }
 
     Ok(())
