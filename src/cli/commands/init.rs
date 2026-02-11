@@ -641,6 +641,7 @@ fn generate_manifest(repos: &[DiscoveredRepo]) -> Manifest {
                 platform: None,
                 reference: false,
                 groups: Vec::new(),
+                agent: None,
             },
         );
     }

@@ -213,6 +213,7 @@ fn run_benchmark_operation(name: &str) -> Result<()> {
                 platform: None,
                 reference: false,
                 groups: Vec::new(),
+                agent: None,
             };
             let workspace = std::path::PathBuf::from("/workspace");
             let _ = RepoInfo::from_config("repo", &config, &workspace);

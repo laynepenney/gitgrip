@@ -157,6 +157,13 @@ Each repository under `repos` supports:
 | `copyfile` | array | - | Files to copy to workspace |
 | `linkfile` | array | - | Symlinks to create |
 | `platform` | object | auto | Platform type and base URL |
+| `agent` | object | - | Agent context (AI tool metadata) |
+| `agent.description` | string | - | What this repo does |
+| `agent.language` | string | - | Primary language |
+| `agent.build` | string | - | Build command |
+| `agent.test` | string | - | Test command |
+| `agent.lint` | string | - | Lint command |
+| `agent.format` | string | - | Format command |
 
 ## Settings
 
@@ -171,6 +178,14 @@ Each repository under `repos` supports:
 - `gitlab` - GitLab.com or self-hosted
 - `azure-devops` - Azure DevOps or Azure DevOps Server
 - `bitbucket` - Bitbucket Cloud or Server
+
+## Workspace Agent Config
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `agent.description` | string | Workspace description for agents |
+| `agent.conventions` | array | Coding conventions to follow |
+| `agent.workflows` | object | Named workflow descriptions |
 
 ## Example
 
@@ -196,17 +211,37 @@ repos:
     url: git@github.com:org/frontend.git
     path: ./frontend
     groups: [core, web]
+    agent:
+      description: "React web application"
+      language: typescript
+      build: "pnpm build"
+      test: "pnpm test"
+      lint: "pnpm lint"
 
   backend:
     url: git@github.com:org/backend.git
     path: ./backend
     groups: [core, api]
+    agent:
+      description: "Rust API server"
+      language: rust
+      build: "cargo build"
+      test: "cargo test"
+      lint: "cargo clippy"
+      format: "cargo fmt"
 
 settings:
   pr_prefix: "[multi-repo]"
   merge_strategy: all-or-nothing
 
 workspace:
+  agent:
+    description: "Multi-repo web application"
+    conventions:
+      - "Use conventional commits"
+      - "All PRs require review"
+    workflows:
+      deploy: "gr pr merge && ./scripts/deploy.sh"
   scripts:
     build:
       command: "npm run build"

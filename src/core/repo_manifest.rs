@@ -401,6 +401,7 @@ impl XmlManifest {
                     }),
                     reference,
                     groups,
+                    agent: None,
                 },
             );
 

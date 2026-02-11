@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::core::manifest::{Manifest, ManifestRepoConfig, PlatformType, RepoConfig};
+use crate::core::manifest::{Manifest, ManifestRepoConfig, PlatformType, RepoAgentConfig, RepoConfig};
 use crate::core::manifest_paths;
 
 /// Extended repository information with computed fields
@@ -32,6 +32,8 @@ pub struct RepoInfo {
     pub reference: bool,
     /// Groups this repo belongs to (for selective operations)
     pub groups: Vec<String>,
+    /// Agent context metadata (build/test/lint commands for AI agents)
+    pub agent: Option<RepoAgentConfig>,
 }
 
 impl RepoInfo {
@@ -61,6 +63,7 @@ impl RepoInfo {
             project: parsed.project,
             reference: config.reference,
             groups: config.groups.clone(),
+            agent: config.agent.clone(),
         })
     }
 
@@ -247,6 +250,7 @@ fn create_manifest_repo_info(
             platform: config.platform.clone(),
             reference: false,
             groups: Vec::new(),
+            agent: None,
         },
         &workspace_root.to_path_buf(),
     )

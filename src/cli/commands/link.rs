@@ -723,6 +723,7 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: Vec::new(),
+                agent: None,
             },
         );
 
@@ -907,6 +908,7 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: Vec::new(),
+                agent: None,
             },
         );
 
