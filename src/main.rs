@@ -341,6 +341,12 @@ enum PrCommands {
         /// Enable auto-merge (merges when all checks pass)
         #[arg(long)]
         auto: bool,
+        /// Wait for checks to pass before merging
+        #[arg(short = 'w', long)]
+        wait: bool,
+        /// Timeout in seconds for --wait (default: 600)
+        #[arg(long, default_value = "600")]
+        timeout: u64,
     },
     /// Check CI status
     Checks,
@@ -661,6 +667,8 @@ async fn main() -> anyhow::Result<()> {
                     force,
                     update,
                     auto,
+                    wait,
+                    timeout,
                 } => {
                     gitgrip::cli::commands::pr::run_pr_merge(
                         &workspace_root,
@@ -670,6 +678,8 @@ async fn main() -> anyhow::Result<()> {
                         update,
                         auto,
                         cli.json,
+                        wait,
+                        timeout,
                     )
                     .await?;
                 }

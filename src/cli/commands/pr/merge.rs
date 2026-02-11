@@ -20,6 +20,8 @@ pub async fn run_pr_merge(
     update: bool,
     auto: bool,
     json: bool,
+    wait: bool,
+    timeout: u64,
 ) -> anyhow::Result<()> {
     if !json {
         Output::header("Merging pull requests...");
@@ -69,6 +71,7 @@ pub async fn run_pr_merge(
         repo_name: String,
         owner: String,
         repo: String,
+        branch: String,
         pr_number: u64,
         platform: Arc<dyn crate::platform::HostingPlatform>,
         approved: bool,
@@ -153,6 +156,7 @@ pub async fn run_pr_merge(
                     repo_name: repo.name.clone(),
                     owner: repo.owner.clone(),
                     repo: repo.repo.clone(),
+                    branch: branch.clone(),
                     pr_number: pr.number,
                     platform,
                     approved,
@@ -198,6 +202,91 @@ pub async fn run_pr_merge(
             Output::info(&format!("  - {}: skipped (no open PR)", repo_name));
         }
         println!();
+    }
+
+    // Wait for checks to pass if --wait
+    if wait {
+        let any_pending = prs_to_merge
+            .iter()
+            .any(|pr| matches!(pr.check_status, CheckStatus::Pending));
+
+        if any_pending {
+            let start = std::time::Instant::now();
+            let timeout_duration = std::time::Duration::from_secs(timeout);
+
+            let spinner = Output::spinner("Waiting for checks to pass...");
+
+            loop {
+                let pending_count = prs_to_merge
+                    .iter()
+                    .filter(|pr| matches!(pr.check_status, CheckStatus::Pending))
+                    .count();
+
+                if pending_count == 0 {
+                    break;
+                }
+
+                if start.elapsed() > timeout_duration {
+                    spinner.finish_with_message("Timed out waiting for checks");
+                    Output::error(&format!(
+                        "Timed out after {} seconds waiting for checks to pass",
+                        timeout
+                    ));
+                    return Ok(());
+                }
+
+                let elapsed = start.elapsed().as_secs();
+                spinner.set_message(format!(
+                    "Waiting for checks... ({} pending, {}s elapsed)",
+                    pending_count, elapsed
+                ));
+
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+
+                // Re-poll check status for pending PRs
+                for pr in &mut prs_to_merge {
+                    if !matches!(pr.check_status, CheckStatus::Pending) {
+                        continue;
+                    }
+
+                    match pr
+                        .platform
+                        .get_status_checks(&pr.owner, &pr.repo, &pr.branch)
+                        .await
+                    {
+                        Ok(status) => {
+                            pr.check_status = match status.state {
+                                CheckState::Failure => CheckStatus::Failing,
+                                CheckState::Pending => CheckStatus::Pending,
+                                _ => CheckStatus::Passing,
+                            };
+
+                            match pr.check_status {
+                                CheckStatus::Passing => {
+                                    Output::success(&format!(
+                                        "{} PR #{}: checks passed",
+                                        pr.repo_name, pr.pr_number
+                                    ));
+                                }
+                                CheckStatus::Failing => {
+                                    Output::error(&format!(
+                                        "{} PR #{}: checks failed",
+                                        pr.repo_name, pr.pr_number
+                                    ));
+                                }
+                                _ => {}
+                            }
+                        }
+                        Err(_) => {
+                            // Keep as pending, will retry next iteration
+                        }
+                    }
+                }
+            }
+
+            spinner.finish_with_message("All checks resolved");
+            println!();
+        }
     }
 
     // Check readiness if not forcing
