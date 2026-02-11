@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>gitgrip — Multi-repo workflow tool</title>
+  <meta name="description" content="Manage multiple git repositories as one. Synchronized branches, linked PRs, and atomic merges.">
+  <meta property="og:title" content="gitgrip — git a grip">
+  <meta property="og:description" content="Multi-repo workflow tool for synchronized branches, linked PRs, and atomic merges.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://laynepenney.github.io/gitgrip/">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%239A3412'/><circle cx='50' cy='30' r='8' fill='%23FDBA74'/><circle cx='30' cy='50' r='6' fill='%23FDBA74'/><circle cx='70' cy='50' r='6' fill='%23FDBA74'/><circle cx='50' cy='70' r='6' fill='%23FDBA74'/></svg>">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-primary: #0a0a0f;
+      --bg-secondary: #111827;
+      --bg-card: #1a1a2e;
+      --bg-terminal: #0d1117;
+      --text-primary: #f3f4f6;
+      --text-secondary: #9ca3af;
+      --text-muted: #6b7280;
+      --accent: #FB923C;
+      --accent-light: #FDBA74;
+      --accent-dark: #9A3412;
+      --accent-darker: #7C2D12;
+      --accent-darkest: #431407;
+      --border: #1f2937;
+      --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+      --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--accent); text-decoration: none; transition: color 0.2s; }
+    a:hover { color: var(--accent-light); }
+
+    .container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+
+    /* ── Nav ── */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      background: rgba(10, 10, 15, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 0;
+    }
+    nav .container { display: flex; align-items: center; justify-content: space-between; }
+    nav .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 20px; color: var(--accent); }
+    nav .logo svg { width: 28px; height: 28px; }
+    nav .nav-links { display: flex; gap: 24px; align-items: center; }
+    nav .nav-links a { color: var(--text-secondary); font-size: 14px; font-weight: 500; }
+    nav .nav-links a:hover { color: var(--accent); }
+    .nav-gh { display: flex; align-items: center; gap: 6px; }
+
+    /* ── Hero ── */
+    .hero {
+      padding: 160px 0 100px;
+      text-align: center;
+      background: radial-gradient(ellipse at 50% 0%, rgba(154, 52, 18, 0.15) 0%, transparent 60%);
+    }
+    .hero-logo { margin-bottom: 24px; }
+    .hero-logo svg { width: 80px; height: 80px; }
+    .hero h1 {
+      font-size: 64px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.1;
+      background: linear-gradient(135deg, var(--accent), var(--accent-light));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero .tagline {
+      font-size: 20px; color: var(--text-secondary); margin: 8px 0 4px;
+      font-style: italic; font-weight: 400;
+    }
+    .hero .subtitle {
+      font-size: 22px; color: var(--text-secondary); margin: 16px auto 0;
+      max-width: 600px; line-height: 1.5;
+    }
+    .hero-buttons { display: flex; gap: 16px; justify-content: center; margin-top: 40px; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px; padding: 14px 28px;
+      border-radius: 10px; font-size: 16px; font-weight: 600; transition: all 0.2s;
+      border: none; cursor: pointer;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent-dark), var(--accent-darkest));
+      color: var(--accent-light);
+    }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(251, 146, 60, 0.2); color: #fff; }
+    .btn-secondary {
+      background: transparent; border: 1px solid var(--border); color: var(--text-secondary);
+    }
+    .btn-secondary:hover { border-color: var(--accent-dark); color: var(--accent); transform: translateY(-1px); }
+    .version-badge {
+      display: inline-block; margin-top: 20px; padding: 4px 12px;
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 20px; font-size: 13px; color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    /* ── Section ── */
+    section { padding: 80px 0; }
+    .section-title {
+      font-size: 36px; font-weight: 700; text-align: center; margin-bottom: 12px;
+      letter-spacing: -0.02em;
+    }
+    .section-subtitle {
+      text-align: center; color: var(--text-secondary); font-size: 18px;
+      margin-bottom: 48px; max-width: 600px; margin-left: auto; margin-right: auto;
+    }
+
+    /* ── Features ── */
+    .features { background: var(--bg-secondary); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+    .feature-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 28px;
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .feature-card:hover { border-color: var(--accent-dark); transform: translateY(-2px); }
+    .feature-icon { font-size: 28px; margin-bottom: 12px; display: block; }
+    .feature-card h3 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+    .feature-card p { font-size: 14px; color: var(--text-secondary); line-height: 1.6; }
+
+    /* ── Terminal ── */
+    .terminal-section { background: var(--bg-primary); }
+    .terminal {
+      max-width: 700px; margin: 0 auto;
+      background: var(--bg-terminal); border: 1px solid var(--border);
+      border-radius: 12px; overflow: hidden;
+    }
+    .terminal-header {
+      display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+      background: rgba(255,255,255,0.03); border-bottom: 1px solid var(--border);
+    }
+    .terminal-dot { width: 12px; height: 12px; border-radius: 50%; }
+    .terminal-dot.red { background: #ff5f57; }
+    .terminal-dot.yellow { background: #febc2e; }
+    .terminal-dot.green { background: #28c840; }
+    .terminal-title { margin-left: 8px; font-size: 13px; color: var(--text-muted); font-family: var(--font-mono); }
+    .terminal-body { padding: 20px; font-family: var(--font-mono); font-size: 14px; line-height: 1.8; overflow-x: auto; }
+    .terminal-body .prompt { color: var(--accent); }
+    .terminal-body .cmd { color: var(--text-primary); }
+    .terminal-body .comment { color: var(--text-muted); font-style: italic; }
+    .terminal-body .output { color: var(--text-secondary); }
+    .terminal-body .success { color: #34d399; }
+
+    /* ── Install ── */
+    .install-section { background: var(--bg-secondary); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .install-tabs { display: flex; justify-content: center; gap: 4px; margin-bottom: 24px; flex-wrap: wrap; }
+    .install-tab {
+      padding: 8px 20px; border-radius: 8px; font-size: 14px; font-weight: 500;
+      background: transparent; border: 1px solid var(--border); color: var(--text-secondary);
+      cursor: pointer; transition: all 0.2s; font-family: var(--font-sans);
+    }
+    .install-tab:hover { border-color: var(--accent-dark); color: var(--accent); }
+    .install-tab.active { background: var(--accent-dark); border-color: var(--accent-dark); color: #fff; }
+    .install-panel { display: none; max-width: 600px; margin: 0 auto; }
+    .install-panel.active { display: block; }
+    .install-code {
+      background: var(--bg-terminal); border: 1px solid var(--border);
+      border-radius: 10px; padding: 20px; font-family: var(--font-mono);
+      font-size: 14px; color: var(--text-primary); overflow-x: auto;
+      position: relative;
+    }
+    .install-code .line { margin: 2px 0; }
+    .install-note { text-align: center; margin-top: 12px; font-size: 13px; color: var(--text-muted); }
+
+    /* ── AI Section ── */
+    .ai-section { background: var(--bg-primary); }
+    .ai-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
+    .ai-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 28px;
+    }
+    .ai-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+    .ai-card code {
+      font-family: var(--font-mono); font-size: 13px;
+      background: rgba(251, 146, 60, 0.1); color: var(--accent);
+      padding: 2px 6px; border-radius: 4px;
+    }
+    .ai-card p { font-size: 14px; color: var(--text-secondary); line-height: 1.6; }
+    .ai-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 4px;
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      background: rgba(251, 146, 60, 0.15); color: var(--accent);
+      letter-spacing: 0.05em;
+    }
+
+    /* ── Footer ── */
+    footer {
+      padding: 40px 0; text-align: center; border-top: 1px solid var(--border);
+      color: var(--text-muted); font-size: 14px;
+    }
+    footer .footer-links { display: flex; justify-content: center; gap: 24px; margin-bottom: 16px; flex-wrap: wrap; }
+    footer .footer-links a { color: var(--text-secondary); }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      .hero h1 { font-size: 40px; }
+      .hero .subtitle { font-size: 18px; }
+      .feature-grid { grid-template-columns: 1fr; }
+      .ai-grid { grid-template-columns: 1fr; }
+      nav .nav-links { gap: 16px; }
+      .section-title { font-size: 28px; }
+    }
+    @media (max-width: 480px) {
+      .hero h1 { font-size: 32px; }
+      .hero-buttons { flex-direction: column; align-items: center; }
+      nav .nav-links a:not(.nav-gh) { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav>
+  <div class="container">
+    <a href="#" class="logo">
+      <svg viewBox="0 0 46 46" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="46" height="46" rx="10" fill="url(#nav-grad)"/>
+        <defs><linearGradient id="nav-grad" x1="0" y1="0" x2="46" y2="46"><stop stop-color="#9A3412"/><stop offset="1" stop-color="#431407"/></linearGradient></defs>
+        <g stroke="#FB923C" stroke-width="1.2" opacity="0.8" fill="none" transform="scale(0.72)">
+          <line x1="10" y1="24" x2="14" y2="32"/><line x1="14" y1="32" x2="20" y2="40"/>
+          <line x1="16" y1="14" x2="18" y2="24"/><line x1="18" y1="24" x2="24" y2="36"/>
+          <line x1="28" y1="10" x2="28" y2="22"/><line x1="28" y1="22" x2="30" y2="36"/>
+          <line x1="40" y1="12" x2="40" y2="24"/><line x1="40" y1="24" x2="38" y2="38"/>
+          <line x1="54" y1="28" x2="48" y2="36"/><line x1="48" y1="36" x2="42" y2="42"/>
+          <line x1="20" y1="40" x2="30" y2="44"/><line x1="30" y1="44" x2="42" y2="42"/>
+          <line x1="20" y1="40" x2="22" y2="54"/><line x1="42" y1="42" x2="40" y2="54"/>
+          <line x1="22" y1="54" x2="40" y2="54"/>
+        </g>
+        <g fill="#FDBA74" transform="scale(0.72)">
+          <circle cx="10" cy="24" r="3"/><circle cx="14" cy="32" r="2.5"/><circle cx="20" cy="40" r="2.5"/>
+          <circle cx="16" cy="14" r="3.5"/><circle cx="18" cy="24" r="2.5"/><circle cx="24" cy="36" r="2"/>
+          <circle cx="28" cy="10" r="4"/><circle cx="28" cy="22" r="2.5"/><circle cx="30" cy="36" r="2"/>
+          <circle cx="40" cy="12" r="3.5"/><circle cx="40" cy="24" r="2.5"/><circle cx="38" cy="38" r="2"/>
+          <circle cx="54" cy="28" r="3.5"/><circle cx="48" cy="36" r="2.5"/><circle cx="42" cy="42" r="2.5"/>
+          <circle cx="30" cy="44" r="2"/>
+          <circle cx="22" cy="54" r="2.5"/><circle cx="40" cy="54" r="2.5"/>
+        </g>
+      </svg>
+      gitgrip
+    </a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="#ai">AI-Native</a>
+      <a href="https://github.com/laynepenney/gitgrip" class="nav-gh">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-logo">
+      <svg viewBox="0 0 80 80" width="80" height="80" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="hero-grad" x1="0" y1="0" x2="80" y2="80"><stop stop-color="#9A3412"/><stop offset="0.5" stop-color="#7C2D12"/><stop offset="1" stop-color="#431407"/></linearGradient></defs>
+        <rect width="80" height="80" rx="18" fill="url(#hero-grad)"/>
+        <g stroke="#FB923C" stroke-width="1.8" opacity="0.8" fill="none" transform="scale(1.25)">
+          <line x1="10" y1="24" x2="14" y2="32"/><line x1="14" y1="32" x2="20" y2="40"/>
+          <line x1="16" y1="14" x2="18" y2="24"/><line x1="18" y1="24" x2="24" y2="36"/>
+          <line x1="28" y1="10" x2="28" y2="22"/><line x1="28" y1="22" x2="30" y2="36"/>
+          <line x1="40" y1="12" x2="40" y2="24"/><line x1="40" y1="24" x2="38" y2="38"/>
+          <line x1="54" y1="28" x2="48" y2="36"/><line x1="48" y1="36" x2="42" y2="42"/>
+          <line x1="20" y1="40" x2="30" y2="44"/><line x1="30" y1="44" x2="42" y2="42"/>
+          <line x1="20" y1="40" x2="22" y2="54"/><line x1="42" y1="42" x2="40" y2="54"/>
+          <line x1="22" y1="54" x2="40" y2="54"/>
+        </g>
+        <g fill="#FDBA74" transform="scale(1.25)">
+          <circle cx="10" cy="24" r="3"/><circle cx="14" cy="32" r="2.5"/><circle cx="20" cy="40" r="2.5"/>
+          <circle cx="16" cy="14" r="3.5"/><circle cx="18" cy="24" r="2.5"/><circle cx="24" cy="36" r="2"/>
+          <circle cx="28" cy="10" r="4"/><circle cx="28" cy="22" r="2.5"/><circle cx="30" cy="36" r="2"/>
+          <circle cx="40" cy="12" r="3.5"/><circle cx="40" cy="24" r="2.5"/><circle cx="38" cy="38" r="2"/>
+          <circle cx="54" cy="28" r="3.5"/><circle cx="48" cy="36" r="2.5"/><circle cx="42" cy="42" r="2.5"/>
+          <circle cx="30" cy="44" r="2"/>
+          <circle cx="22" cy="54" r="2.5"/><circle cx="40" cy="54" r="2.5"/>
+        </g>
+      </svg>
+    </div>
+    <h1>gitgrip</h1>
+    <p class="tagline">git a grip</p>
+    <p class="subtitle">Manage multiple git repositories as one workspace. Synchronized branches, linked PRs, and atomic merges.</p>
+    <div class="hero-buttons">
+      <a href="#install" class="btn btn-primary">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Install
+      </a>
+      <a href="https://github.com/laynepenney/gitgrip" class="btn btn-secondary">
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        View on GitHub
+      </a>
+    </div>
+    <div class="version-badge">v0.13.0</div>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="features" id="features">
+  <div class="container">
+    <h2 class="section-title">Everything you need for multi-repo</h2>
+    <p class="section-subtitle">One tool to synchronize branches, link pull requests, and keep multiple repositories working as one.</p>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <span class="feature-icon">&#128220;</span>
+        <h3>Manifest-Based Config</h3>
+        <p>Define all your repos in a single YAML file. Version it, share it, and onboard new developers instantly.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">&#129513;</span>
+        <h3>Composable Workspaces</h3>
+        <p>Inherit repos, scripts, hooks, and env from shared gripspace repositories. Build on top of team defaults.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">&#127760;</span>
+        <h3>Multi-Platform</h3>
+        <p>Works with GitHub, GitLab, Azure DevOps, and Bitbucket. Mix platforms in a single workspace.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">&#128256;</span>
+        <h3>Synchronized Branches</h3>
+        <p>Create, checkout, and delete branches across every repo at once. Always stay in sync.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">&#128279;</span>
+        <h3>Linked Pull Requests</h3>
+        <p>Create PRs that reference each other across repos. Review and track changes as a cohesive unit.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">&#9889;</span>
+        <h3>Atomic Merges</h3>
+        <p>All-or-nothing merge strategy ensures repos stay in sync. No more partial merges breaking your stack.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Terminal Demo -->
+<section class="terminal-section" id="demo">
+  <div class="container">
+    <h2 class="section-title">Simple, powerful workflow</h2>
+    <p class="section-subtitle">Everything works the way you expect git to work &mdash; just across all your repos at once.</p>
+    <div class="terminal">
+      <div class="terminal-header">
+        <div class="terminal-dot red"></div>
+        <div class="terminal-dot yellow"></div>
+        <div class="terminal-dot green"></div>
+        <span class="terminal-title">~/workspace</span>
+      </div>
+      <div class="terminal-body">
+        <div><span class="comment"># Check status of all repos</span></div>
+        <div><span class="prompt">$ </span><span class="cmd">gr status</span></div>
+        <div><span class="output">Repo        Branch  Status  vs main</span></div>
+        <div><span class="output">frontend    main    </span><span class="success">&#10003;</span><span class="output">       -</span></div>
+        <div><span class="output">backend     main    </span><span class="success">&#10003;</span><span class="output">       -</span></div>
+        <div><span class="output">shared      main    </span><span class="success">&#10003;</span><span class="output">       -</span></div>
+        <div>&nbsp;</div>
+        <div><span class="comment"># Create a branch across all repos</span></div>
+        <div><span class="prompt">$ </span><span class="cmd">gr branch feat/auth</span></div>
+        <div><span class="success">&#10003;</span><span class="output"> Created branch in 3 repos</span></div>
+        <div>&nbsp;</div>
+        <div><span class="comment"># Make changes, then commit and create linked PRs</span></div>
+        <div><span class="prompt">$ </span><span class="cmd">gr add . && gr commit -m "feat: add auth"</span></div>
+        <div><span class="prompt">$ </span><span class="cmd">gr pr create -t "feat: add auth" --push</span></div>
+        <div><span class="success">&#10003;</span><span class="output"> Created 3 linked PRs</span></div>
+        <div>&nbsp;</div>
+        <div><span class="comment"># Merge all PRs atomically</span></div>
+        <div><span class="prompt">$ </span><span class="cmd">gr pr merge</span></div>
+        <div><span class="success">&#10003;</span><span class="output"> Merged 3 PRs</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Install -->
+<section class="install-section" id="install">
+  <div class="container">
+    <h2 class="section-title">Get started in seconds</h2>
+    <p class="section-subtitle">Install gitgrip and start managing your repos together.</p>
+    <div class="install-tabs">
+      <button class="install-tab active" data-tab="brew">Homebrew</button>
+      <button class="install-tab" data-tab="cargo">Cargo</button>
+      <button class="install-tab" data-tab="binary">Binary</button>
+      <button class="install-tab" data-tab="source">Source</button>
+    </div>
+    <div class="install-panel active" id="tab-brew">
+      <div class="install-code">
+        <div class="line"><span style="color:var(--text-muted)">$</span> brew tap laynepenney/tap</div>
+        <div class="line"><span style="color:var(--text-muted)">$</span> brew install gitgrip</div>
+      </div>
+      <p class="install-note">macOS and Linux</p>
+    </div>
+    <div class="install-panel" id="tab-cargo">
+      <div class="install-code">
+        <div class="line"><span style="color:var(--text-muted)">$</span> cargo install gitgrip</div>
+      </div>
+      <p class="install-note">Requires Rust toolchain</p>
+    </div>
+    <div class="install-panel" id="tab-binary">
+      <div class="install-code">
+        <div class="line"><span style="color:var(--text-muted)"># Download from GitHub Releases</span></div>
+        <div class="line"><span style="color:var(--text-muted)">$</span> curl -sL <span style="color:var(--accent)">https://github.com/laynepenney/gitgrip/releases/latest</span></div>
+      </div>
+      <p class="install-note">Pre-built for Linux (x86_64), macOS (Apple Silicon), and Windows</p>
+    </div>
+    <div class="install-panel" id="tab-source">
+      <div class="install-code">
+        <div class="line"><span style="color:var(--text-muted)">$</span> git clone https://github.com/laynepenney/gitgrip.git</div>
+        <div class="line"><span style="color:var(--text-muted)">$</span> cd gitgrip</div>
+        <div class="line"><span style="color:var(--text-muted)">$</span> cargo install --path .</div>
+      </div>
+      <p class="install-note">Build from source with Rust</p>
+    </div>
+  </div>
+</section>
+
+<!-- AI-Native -->
+<section class="ai-section" id="ai">
+  <div class="container">
+    <h2 class="section-title">AI-Native Workspaces</h2>
+    <p class="section-subtitle">Built for a world where AI agents are your teammates. <span class="ai-badge">New in v0.13.0</span></p>
+    <div class="ai-grid">
+      <div class="ai-card">
+        <h3><code>gr agent context</code></h3>
+        <p>AI tools query workspace metadata &mdash; repos, languages, build commands, conventions &mdash; with <code>--json</code> for machine consumption.</p>
+      </div>
+      <div class="ai-card">
+        <h3><code>gr agent generate-context</code></h3>
+        <p>Define context once, generate for Claude, OpenCode, Codex, and Cursor. Runs automatically during <code>gr sync</code>.</p>
+      </div>
+      <div class="ai-card">
+        <h3><code>gr verify</code></h3>
+        <p>Boolean pass/fail assertions for CI. <code>--clean</code>, <code>--on-branch</code>, <code>--synced</code> with exit code 0/1 for scripting.</p>
+      </div>
+      <div class="ai-card">
+        <h3><code>--json</code> everywhere</h3>
+        <p>Machine-readable output on every command. Status, diff, PR status, verify, link &mdash; all structured JSON.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <div class="container">
+    <div class="footer-links">
+      <a href="https://github.com/laynepenney/gitgrip">GitHub</a>
+      <a href="https://crates.io/crates/gitgrip">crates.io</a>
+      <a href="https://github.com/laynepenney/gitgrip/releases">Releases</a>
+      <a href="https://github.com/laynepenney/gitgrip/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/laynepenney/gitgrip/blob/main/LICENSE">MIT License</a>
+    </div>
+    <p>Made by <a href="https://github.com/laynepenney">Layne Penney</a></p>
+  </div>
+</footer>
+
+<script>
+  // Install tab switching
+  document.querySelectorAll('.install-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.install-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.install-panel').forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+    });
+  });
+</script>
+
+</body>
+</html>
