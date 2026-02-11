@@ -857,6 +857,78 @@ impl HostingPlatform for GitHubAdapter {
         Ok(())
     }
 
+    async fn create_release(
+        &self,
+        owner: &str,
+        repo: &str,
+        tag: &str,
+        name: &str,
+        body: Option<&str>,
+        target_commitish: &str,
+        draft: bool,
+        prerelease: bool,
+    ) -> Result<ReleaseResult, PlatformError> {
+        let token = self.get_token().await?;
+        let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
+        let http_client = Self::http_client();
+
+        #[derive(serde::Serialize)]
+        struct CreateReleaseRequest {
+            tag_name: String,
+            target_commitish: String,
+            name: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            body: Option<String>,
+            draft: bool,
+            prerelease: bool,
+        }
+
+        let url = format!("{}/repos/{}/{}/releases", base_url, owner, repo);
+        let response = http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .json(&CreateReleaseRequest {
+                tag_name: tag.to_string(),
+                target_commitish: target_commitish.to_string(),
+                name: name.to_string(),
+                body: body.map(|s| s.to_string()),
+                draft,
+                prerelease,
+            })
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(PlatformError::ApiError(format!(
+                "Failed to create release ({}): {}",
+                status, error_text
+            )));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct ReleaseResponse {
+            id: u64,
+            tag_name: String,
+            html_url: String,
+        }
+
+        let release: ReleaseResponse = response
+            .json()
+            .await
+            .map_err(|e| PlatformError::ParseError(e.to_string()))?;
+
+        Ok(ReleaseResult {
+            id: release.id,
+            tag: release.tag_name,
+            url: release.html_url,
+        })
+    }
+
     fn generate_linked_pr_comment(&self, links: &[LinkedPRRef]) -> String {
         if links.is_empty() {
             return String::new();

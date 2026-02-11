@@ -1102,6 +1102,7 @@ workspace:
                 hooks: None,
                 ci: None,
                 agent: None,
+                release: None,
             }),
         };
 

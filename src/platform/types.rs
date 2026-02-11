@@ -213,6 +213,17 @@ pub struct ParsedRepoInfo {
     pub platform: Option<PlatformType>,
 }
 
+/// Result of creating a GitHub/platform release
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseResult {
+    /// Release ID
+    pub id: u64,
+    /// Git tag name
+    pub tag: String,
+    /// Release URL
+    pub url: String,
+}
+
 /// Azure DevOps specific context
 #[derive(Debug, Clone)]
 pub struct AzureDevOpsContext {

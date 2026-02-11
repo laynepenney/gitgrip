@@ -204,6 +204,26 @@ pub trait HostingPlatform: Send + Sync {
         ))
     }
 
+    /// Create a release on the platform with a tag
+    ///
+    /// Creates a git tag and a release (e.g., GitHub Release) on the repository.
+    /// Returns the release URL and metadata.
+    async fn create_release(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _tag: &str,
+        _name: &str,
+        _body: Option<&str>,
+        _target_commitish: &str,
+        _draft: bool,
+        _prerelease: bool,
+    ) -> Result<ReleaseResult, PlatformError> {
+        Err(PlatformError::ApiError(
+            "Release creation not supported on this platform".to_string(),
+        ))
+    }
+
     /// Generate HTML comment for linked PR tracking
     fn generate_linked_pr_comment(&self, links: &[LinkedPRRef]) -> String {
         if links.is_empty() {

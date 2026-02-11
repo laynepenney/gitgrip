@@ -337,6 +337,29 @@ pub struct CiConfig {
     pub pipelines: Option<HashMap<String, CiPipeline>>,
 }
 
+/// A version file to update during release
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionFileConfig {
+    /// Path relative to workspace root (e.g. "gitgrip/Cargo.toml")
+    pub path: String,
+    /// Pattern with `{version}` placeholder (e.g. `version = "{version}"`)
+    pub pattern: String,
+}
+
+/// Release workflow configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReleaseConfig {
+    /// Version files to update (auto-detected if not specified)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version_files: Option<Vec<VersionFileConfig>>,
+    /// Path to changelog file (default: "CHANGELOG.md")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changelog: Option<String>,
+    /// Commands to run after release (supports {version} substitution)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub post_release: Option<Vec<HookCommand>>,
+}
+
 /// Workspace configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
@@ -355,6 +378,9 @@ pub struct WorkspaceConfig {
     /// Agent context metadata (conventions and workflows for AI agents)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<WorkspaceAgentConfig>,
+    /// Release workflow configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release: Option<ReleaseConfig>,
 }
 
 /// The main manifest structure

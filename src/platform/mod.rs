@@ -13,7 +13,8 @@ pub mod types;
 pub use traits::HostingPlatform;
 pub use types::{
     AllowedMergeMethods, CheckState, CheckStatusDetails, MergeMethod, PRBase, PRCreateResult,
-    PRHead, PRReview, PRState, ParsedRepoInfo, PullRequest, StatusCheck, StatusCheckResult,
+    PRHead, PRReview, PRState, ParsedRepoInfo, PullRequest, ReleaseResult, StatusCheck,
+    StatusCheckResult,
 };
 
 use crate::core::manifest::PlatformType;
