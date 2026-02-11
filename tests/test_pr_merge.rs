@@ -37,6 +37,8 @@ async fn test_pr_merge_no_open_prs() {
         false, // update
         false, // auto
         false, // json
+        false, // wait
+        600,   // timeout
     )
     .await;
 
@@ -81,6 +83,8 @@ async fn test_pr_merge_skip_default_branch() {
         false, // update
         false, // auto
         false, // json
+        false, // wait
+        600,   // timeout
     )
     .await;
 
@@ -119,6 +123,8 @@ async fn test_pr_merge_skip_reference_repos() {
         false, // update
         false, // auto
         false, // json
+        false, // wait
+        600,   // timeout
     )
     .await;
 
@@ -156,6 +162,8 @@ async fn test_pr_merge_mixed_repos_all_skipped() {
         false, // update
         false, // auto
         false, // json
+        false, // wait
+        600,   // timeout
     )
     .await;
 
@@ -212,6 +220,8 @@ async fn test_pr_merge_force_bypasses_checks() {
         false, // update
         false, // auto
         false, // json
+        false, // wait
+        600,   // timeout
     )
     .await;
 
@@ -273,7 +283,9 @@ async fn test_pr_merge_branch_behind_suggests_update() {
         true,  // force to bypass readiness
         false, // update
         false, // auto
-        false,
+        false, // json
+        false, // wait
+        600,   // timeout
     )
     .await;
 
