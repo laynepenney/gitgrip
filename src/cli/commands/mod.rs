@@ -30,3 +30,4 @@ pub mod run;
 pub mod status;
 pub mod sync;
 pub mod tree;
+pub mod verify;

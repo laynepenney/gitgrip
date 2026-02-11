@@ -331,6 +331,24 @@ enum Commands {
         #[arg(value_enum)]
         shell: Shell,
     },
+    /// Verify workspace assertions (exit 0 = pass, 1 = fail)
+    Verify {
+        /// All repos are clean (no uncommitted changes)
+        #[arg(long)]
+        clean: bool,
+        /// All copyfile/linkfile entries are valid
+        #[arg(long)]
+        links: bool,
+        /// All non-reference repos are on this branch
+        #[arg(long, value_name = "BRANCH")]
+        on_branch: Option<String>,
+        /// All repos are synced with remote (not ahead/behind)
+        #[arg(long)]
+        synced: bool,
+        /// Only verify repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1097,6 +1115,28 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Completions { shell }) => {
             let mut cmd = Cli::command();
             generate(shell, &mut cmd, "gr", &mut std::io::stdout());
+        }
+        Some(Commands::Verify {
+            clean,
+            links,
+            on_branch,
+            synced,
+            group,
+        }) => {
+            let (workspace_root, manifest) = load_gripspace()?;
+            gitgrip::cli::commands::verify::run_verify(
+                gitgrip::cli::commands::verify::VerifyOptions {
+                    workspace_root: &workspace_root,
+                    manifest: &manifest,
+                    group_filter: group.as_deref(),
+                    json: cli.json,
+                    quiet: cli.quiet,
+                    clean,
+                    links,
+                    on_branch: on_branch.as_deref(),
+                    synced,
+                },
+            )?;
         }
         None => {
             let logo = r#"
