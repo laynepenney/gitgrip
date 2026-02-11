@@ -28,3 +28,4 @@ typescript-legacy/dist/
 typescript-legacy/coverage/
 typescript-legacy/*.log
 typescript-legacy/npm-debug.log*
+build_rs_cov.profraw
