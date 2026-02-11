@@ -69,6 +69,9 @@ enum Commands {
         /// Sync repos sequentially (default: parallel)
         #[arg(long)]
         sequential: bool,
+        /// Skip post-sync hooks
+        #[arg(long)]
+        no_hooks: bool,
     },
     /// Show status of all repositories
     Status {
@@ -532,6 +535,7 @@ async fn main() -> anyhow::Result<()> {
             reset_refs,
             group,
             sequential,
+            no_hooks,
         }) => {
             let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::sync::run_sync(
@@ -543,6 +547,7 @@ async fn main() -> anyhow::Result<()> {
                 sequential,
                 reset_refs,
                 cli.json,
+                no_hooks,
             )
             .await?;
         }

@@ -6,7 +6,7 @@ use crate::core::gripspace::{
     ensure_gripspace, gripspace_name, resolve_all_gripspaces, update_gripspace,
 };
 use crate::core::griptree::GriptreeConfig;
-use crate::core::manifest::Manifest;
+use crate::core::manifest::{HookCondition, Manifest};
 use crate::core::manifest_paths;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::files::process_composefiles;
@@ -18,6 +18,7 @@ use crate::git::status::has_uncommitted_changes;
 use crate::git::{clone_repo, get_current_branch, open_repo, path_exists};
 use git2::Repository;
 use indicatif::ProgressBar;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinSet;
@@ -29,6 +30,7 @@ struct SyncResult {
     success: bool,
     message: String,
     was_cloned: bool,
+    had_changes: bool,
 }
 
 /// JSON-serializable sync result for --json output
@@ -36,6 +38,17 @@ struct SyncResult {
 struct JsonSyncRepo {
     name: String,
     action: String,
+    error: Option<String>,
+}
+
+/// Result of running a single post-sync hook
+#[derive(serde::Serialize, Clone)]
+struct HookResult {
+    name: String,
+    success: bool,
+    skipped: bool,
+    duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
@@ -50,6 +63,7 @@ pub async fn run_sync(
     sequential: bool,
     reset_refs: bool,
     json: bool,
+    no_hooks: bool,
 ) -> anyhow::Result<()> {
     // Re-load and resolve gripspaces before syncing repos
     let manifest = sync_gripspaces(workspace_root, manifest, quiet)?;
@@ -187,18 +201,27 @@ pub async fn run_sync(
         }
     }
 
+    // Execute post-sync hooks
+    let hook_results = if no_hooks {
+        Vec::new()
+    } else {
+        execute_post_sync_hooks(workspace_root, manifest, &results, quiet, json)
+    };
+
     if json {
         #[derive(serde::Serialize)]
         struct JsonSyncResult {
             success: bool,
             repos: Vec<JsonSyncRepo>,
             composefiles: usize,
+            hooks: Vec<HookResult>,
         }
 
         let result = JsonSyncResult {
             success: error_count == 0,
             repos: json_repos,
             composefiles: composefiles_count,
+            hooks: hook_results,
         };
         println!("{}", serde_json::to_string_pretty(&result)?);
     }
@@ -405,6 +428,7 @@ fn sync_griptree_upstream(
                     success: false,
                     message: msg,
                     was_cloned: false,
+                    had_changes: false,
                 };
             }
         },
@@ -424,6 +448,7 @@ fn sync_griptree_upstream(
             success: false,
             message: msg,
             was_cloned: false,
+            had_changes: false,
         };
     }
 
@@ -451,6 +476,7 @@ fn sync_griptree_upstream(
                     success: true,
                     message: msg,
                     was_cloned: false,
+                    had_changes: false,
                 };
             }
             Ok(false) => {}
@@ -464,6 +490,7 @@ fn sync_griptree_upstream(
                     success: false,
                     message: msg,
                     was_cloned: false,
+                    had_changes: false,
                 };
             }
         }
@@ -488,6 +515,7 @@ fn sync_griptree_upstream(
                 success: true,
                 message: msg,
                 was_cloned: false,
+                had_changes: true,
             }
         }
         Err(e) => {
@@ -500,6 +528,7 @@ fn sync_griptree_upstream(
                 success: false,
                 message: msg,
                 was_cloned: false,
+                had_changes: false,
             }
         }
     }
@@ -525,6 +554,7 @@ fn sync_reference_reset(
                     success: false,
                     message: msg,
                     was_cloned: false,
+                    had_changes: false,
                 };
             }
         },
@@ -559,6 +589,7 @@ fn sync_reference_reset(
             success: false,
             message: msg,
             was_cloned: false,
+            had_changes: false,
         };
     }
 
@@ -579,6 +610,7 @@ fn sync_reference_reset(
                     success: false,
                     message: msg,
                     was_cloned: false,
+                    had_changes: false,
                 };
             }
             used_detached_fallback = true;
@@ -592,6 +624,7 @@ fn sync_reference_reset(
                 success: false,
                 message: msg,
                 was_cloned: false,
+                had_changes: false,
             };
         }
     }
@@ -616,6 +649,7 @@ fn sync_reference_reset(
                 success: true,
                 message: msg,
                 was_cloned: false,
+                had_changes: true,
             }
         }
         Err(e) => {
@@ -628,6 +662,7 @@ fn sync_reference_reset(
                 success: false,
                 message: msg,
                 was_cloned: false,
+                had_changes: false,
             }
         }
     }
@@ -690,6 +725,7 @@ fn sync_single_repo(
                     success: true,
                     message: clone_msg,
                     was_cloned: true,
+                    had_changes: true,
                 });
             }
             Err(e) => {
@@ -702,6 +738,7 @@ fn sync_single_repo(
                     success: false,
                     message: msg,
                     was_cloned: false,
+                    had_changes: false,
                 });
             }
         }
@@ -737,6 +774,7 @@ fn sync_single_repo(
 
                 match result {
                     Ok(pull_result) => {
+                        let had_changes = pull_result.pulled;
                         let (success, message) = if pull_result.pulled {
                             if pull_result.recovered {
                                 (
@@ -774,6 +812,7 @@ fn sync_single_repo(
                             success,
                             message,
                             was_cloned: false,
+                            had_changes,
                         })
                     }
                     Err(e) => {
@@ -786,6 +825,7 @@ fn sync_single_repo(
                             success: false,
                             message: msg,
                             was_cloned: false,
+                            had_changes: false,
                         })
                     }
                 }
@@ -801,6 +841,7 @@ fn sync_single_repo(
                 success: false,
                 message: msg,
                 was_cloned: false,
+                had_changes: false,
             })
         }
     }
@@ -814,6 +855,139 @@ impl Clone for SyncResult {
             success: self.success,
             message: self.message.clone(),
             was_cloned: self.was_cloned,
+            had_changes: self.had_changes,
         }
     }
+}
+
+/// Execute post-sync hooks defined in the manifest
+fn execute_post_sync_hooks(
+    workspace_root: &PathBuf,
+    manifest: &Manifest,
+    sync_results: &[SyncResult],
+    quiet: bool,
+    json: bool,
+) -> Vec<HookResult> {
+    let hooks = match manifest
+        .workspace
+        .as_ref()
+        .and_then(|w| w.hooks.as_ref())
+        .and_then(|h| h.post_sync.as_ref())
+    {
+        Some(hooks) if !hooks.is_empty() => hooks,
+        _ => return Vec::new(),
+    };
+
+    // Build set of repos that had changes
+    let changed_repos: HashSet<&str> = sync_results
+        .iter()
+        .filter(|r| r.had_changes)
+        .map(|r| r.name.as_str())
+        .collect();
+
+    let any_changed = !changed_repos.is_empty();
+
+    if !quiet && !json {
+        Output::header("Post-Sync Hooks");
+        println!();
+    }
+
+    let mut results = Vec::new();
+
+    for hook in hooks {
+        let hook_name = hook.name.as_deref().unwrap_or(&hook.command).to_string();
+
+        // Check condition
+        let should_run = match hook.condition {
+            HookCondition::Always => true,
+            HookCondition::Changed => {
+                if let Some(ref repos) = hook.repos {
+                    // Run if any of the specified repos had changes
+                    repos.iter().any(|r| changed_repos.contains(r.as_str()))
+                } else {
+                    // Run if any repo had changes
+                    any_changed
+                }
+            }
+        };
+
+        if !should_run {
+            if !quiet && !json {
+                Output::info(&format!("{}: skipped (no changes)", hook_name));
+            }
+            results.push(HookResult {
+                name: hook_name,
+                success: true,
+                skipped: true,
+                duration_ms: 0,
+                error: None,
+            });
+            continue;
+        }
+
+        let working_dir = hook
+            .cwd
+            .as_ref()
+            .map(|p| workspace_root.join(p))
+            .unwrap_or_else(|| workspace_root.clone());
+
+        let start = std::time::Instant::now();
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&hook.command)
+            .current_dir(&working_dir)
+            .status();
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        match status {
+            Ok(exit) if exit.success() => {
+                if !quiet && !json {
+                    Output::success(&format!(
+                        "{}: completed ({:.1}s)",
+                        hook_name,
+                        duration_ms as f64 / 1000.0
+                    ));
+                }
+                results.push(HookResult {
+                    name: hook_name,
+                    success: true,
+                    skipped: false,
+                    duration_ms,
+                    error: None,
+                });
+            }
+            Ok(exit) => {
+                let err_msg = format!("exit code {}", exit.code().unwrap_or(-1));
+                if !quiet && !json {
+                    Output::warning(&format!("{}: failed ({})", hook_name, err_msg));
+                }
+                results.push(HookResult {
+                    name: hook_name,
+                    success: false,
+                    skipped: false,
+                    duration_ms,
+                    error: Some(err_msg),
+                });
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                if !quiet && !json {
+                    Output::warning(&format!("{}: failed ({})", hook_name, err_msg));
+                }
+                results.push(HookResult {
+                    name: hook_name,
+                    success: false,
+                    skipped: false,
+                    duration_ms,
+                    error: Some(err_msg),
+                });
+            }
+        }
+    }
+
+    if !quiet && !json && !results.is_empty() {
+        println!();
+    }
+
+    results
 }
