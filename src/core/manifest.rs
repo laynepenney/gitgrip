@@ -1192,8 +1192,20 @@ workspace:
         let serialized = serde_yaml::to_string(&manifest).unwrap();
         let reparsed = Manifest::parse(&serialized).unwrap();
 
-        let orig_agent = manifest.repos.get("myrepo").unwrap().agent.as_ref().unwrap();
-        let re_agent = reparsed.repos.get("myrepo").unwrap().agent.as_ref().unwrap();
+        let orig_agent = manifest
+            .repos
+            .get("myrepo")
+            .unwrap()
+            .agent
+            .as_ref()
+            .unwrap();
+        let re_agent = reparsed
+            .repos
+            .get("myrepo")
+            .unwrap()
+            .agent
+            .as_ref()
+            .unwrap();
         assert_eq!(orig_agent.description, re_agent.description);
         assert_eq!(orig_agent.language, re_agent.language);
         assert_eq!(orig_agent.build, re_agent.build);

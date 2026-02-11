@@ -637,7 +637,9 @@ fn resolve_gripspace_recursive(
             if let Some(ref gs_workflows) = gs_agent_config.workflows {
                 let workflows = agent.workflows.get_or_insert_with(HashMap::new);
                 for (key, value) in gs_workflows {
-                    workflows.entry(key.clone()).or_insert_with(|| value.clone());
+                    workflows
+                        .entry(key.clone())
+                        .or_insert_with(|| value.clone());
                 }
             }
         }

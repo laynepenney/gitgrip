@@ -2,7 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::core::manifest::{Manifest, ManifestRepoConfig, PlatformType, RepoAgentConfig, RepoConfig};
+use crate::core::manifest::{
+    Manifest, ManifestRepoConfig, PlatformType, RepoAgentConfig, RepoConfig,
+};
 use crate::core::manifest_paths;
 
 /// Extended repository information with computed fields
