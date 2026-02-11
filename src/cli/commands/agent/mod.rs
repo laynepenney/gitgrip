@@ -4,11 +4,13 @@
 
 pub mod build;
 pub mod context;
+pub mod generate;
 pub mod test;
 pub mod verify;
 
 pub use build::run_agent_build;
 pub use context::run_agent_context;
+pub use generate::run_agent_generate_context;
 pub use test::run_agent_test;
 pub use verify::run_agent_verify;
 

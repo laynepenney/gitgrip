@@ -356,6 +356,12 @@ enum AgentCommands {
         /// Specific repo to verify (default: all with agent config)
         repo: Option<String>,
     },
+    /// Generate context files for all configured AI tool targets
+    GenerateContext {
+        /// Show what would be generated without writing files
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1051,6 +1057,14 @@ async fn main() -> anyhow::Result<()> {
                         &workspace_root,
                         &manifest,
                         repo.as_deref(),
+                    )?;
+                }
+                AgentCommands::GenerateContext { dry_run } => {
+                    gitgrip::cli::commands::agent::run_agent_generate_context(
+                        &workspace_root,
+                        &manifest,
+                        dry_run,
+                        cli.quiet,
                     )?;
                 }
             }

@@ -191,6 +191,25 @@ pub async fn run_sync(
         }
     }
 
+    // Generate agent context files (after composefiles, before linkfiles)
+    if let Some(agent_config) = manifest.workspace.as_ref().and_then(|w| w.agent.as_ref()) {
+        if agent_config.targets.is_some() {
+            match crate::cli::commands::agent::run_agent_generate_context(
+                workspace_root,
+                manifest,
+                false,
+                quiet || json,
+            ) {
+                Ok(()) => {}
+                Err(e) => {
+                    if !json {
+                        Output::warning(&format!("Agent context generation failed: {}", e));
+                    }
+                }
+            }
+        }
+    }
+
     // Apply linkfiles and copyfiles after repos and composefiles
     match apply_links(workspace_root, manifest, quiet || json) {
         Ok(()) => {}
