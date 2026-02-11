@@ -260,6 +260,17 @@ pub struct WorkspaceScript {
     pub steps: Option<Vec<ScriptStep>>,
 }
 
+/// Condition for when a hook should run
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HookCondition {
+    /// Always run the hook
+    #[default]
+    Always,
+    /// Only run if repos had changes during sync
+    Changed,
+}
+
 /// Hook command definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookCommand {
@@ -268,6 +279,15 @@ pub struct HookCommand {
     /// Optional working directory
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Optional display name for the hook
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Optional list of repos this hook applies to (for condition: changed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repos: Option<Vec<String>>,
+    /// When to run the hook (default: always)
+    #[serde(default)]
+    pub condition: HookCondition,
 }
 
 /// Workspace lifecycle hooks

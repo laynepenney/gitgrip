@@ -46,6 +46,7 @@ async fn test_sync_clones_missing_repos() {
         false,
         false,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -73,6 +74,7 @@ async fn test_sync_pulls_existing_repos() {
         false,
         false,
         None,
+        false,
         false,
         false,
         false,
@@ -108,6 +110,7 @@ async fn test_sync_uses_griptree_upstream_mapping() {
         false,
         false,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -137,6 +140,7 @@ async fn test_sync_sets_tracking_upstream_for_griptree_base_branch() {
         false,
         false,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -160,6 +164,7 @@ async fn test_sync_handles_up_to_date() {
         false,
         false,
         None,
+        false,
         false,
         false,
         false,
@@ -201,6 +206,7 @@ async fn test_sync_skips_griptree_base_with_local_commits_ahead() {
         false,
         false,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -239,6 +245,7 @@ async fn test_sync_reset_refs_hard_resets_reference_repo() {
         false,
         true,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -275,6 +282,7 @@ async fn test_sync_reset_refs_checks_out_upstream_branch() {
         None,
         false,
         true,
+        false,
         false,
     )
     .await;
@@ -316,6 +324,7 @@ async fn test_sync_reset_refs_falls_back_to_detached_when_branch_locked_in_workt
         None,
         false,
         true,
+        false,
         false,
     )
     .await;
@@ -369,6 +378,7 @@ async fn test_sync_multiple_repos() {
         false,
         false,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -395,6 +405,7 @@ async fn test_sync_quiet_mode() {
         false,
         true,
         None,
+        false,
         false,
         false,
         false,
@@ -426,6 +437,7 @@ async fn test_sync_sequential_mode() {
         true,
         false,
         false,
+        false,
     )
     .await;
     assert!(
@@ -452,6 +464,7 @@ async fn test_sync_clone_failure_invalid_url() {
         false,
         false,
         None,
+        false,
         false,
         false,
         false,
@@ -484,6 +497,7 @@ async fn test_sync_existing_repo_missing_git_dir() {
         false,
         false,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should not crash: {:?}", result.err());
@@ -492,5 +506,128 @@ async fn test_sync_existing_repo_missing_git_dir() {
     assert!(
         !ws.repo_path("app").join(".git").exists(),
         "expected sync to fail for non-git directory"
+    );
+}
+
+/// Helper to append workspace hooks to the manifest YAML
+fn append_hooks_to_manifest(workspace_root: &Path, hooks_yaml: &str) {
+    let manifest_path = workspace_root
+        .join(".gitgrip")
+        .join("spaces")
+        .join("main")
+        .join("gripspace.yml");
+    let mut content = fs::read_to_string(&manifest_path).unwrap();
+    content.push_str(hooks_yaml);
+    fs::write(&manifest_path, content).unwrap();
+}
+
+#[tokio::test]
+async fn test_sync_runs_post_sync_hooks_always() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    // Add a hook that creates a marker file (condition: always)
+    let marker = ws.workspace_root.join("hook-ran.txt");
+    let hooks_yaml = format!(
+        r#"
+workspace:
+  hooks:
+    post-sync:
+      - name: create-marker
+        command: echo "hook executed" > "{}"
+        condition: always
+"#,
+        marker.display()
+    );
+    append_hooks_to_manifest(&ws.workspace_root, &hooks_yaml);
+
+    let manifest = ws.load_manifest();
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        true,
+        None,
+        false,
+        false,
+        false,
+        false,
+    )
+    .await;
+    assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
+    assert!(marker.exists(), "hook marker file should have been created");
+}
+
+#[tokio::test]
+async fn test_sync_hook_failure_is_warning_not_error() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    // Add a hook that fails
+    let hooks_yaml = r#"
+workspace:
+  hooks:
+    post-sync:
+      - name: failing-hook
+        command: exit 1
+        condition: always
+"#;
+    append_hooks_to_manifest(&ws.workspace_root, hooks_yaml);
+
+    let manifest = ws.load_manifest();
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        true,
+        None,
+        false,
+        false,
+        false,
+        false,
+    )
+    .await;
+    // Sync should still succeed even though hook failed
+    assert!(
+        result.is_ok(),
+        "sync should succeed even when hook fails: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+async fn test_sync_no_hooks_flag_skips_hooks() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    // Add a hook that creates a marker file
+    let marker = ws.workspace_root.join("no-hooks-marker.txt");
+    let hooks_yaml = format!(
+        r#"
+workspace:
+  hooks:
+    post-sync:
+      - name: create-marker
+        command: echo "should not run" > "{}"
+        condition: always
+"#,
+        marker.display()
+    );
+    append_hooks_to_manifest(&ws.workspace_root, &hooks_yaml);
+
+    let manifest = ws.load_manifest();
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        true,
+        None,
+        false,
+        false,
+        false,
+        true, // no_hooks = true
+    )
+    .await;
+    assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
+    assert!(
+        !marker.exists(),
+        "hook marker file should NOT exist when --no-hooks is set"
     );
 }

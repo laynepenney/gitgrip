@@ -6,6 +6,7 @@ use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::manifest_paths;
 use crate::core::repo::RepoInfo;
+use serde_yaml::{self, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -78,7 +79,7 @@ pub fn run_group_add(
 
     // Load the raw YAML to preserve formatting
     let content = std::fs::read_to_string(&manifest_path)?;
-    let mut manifest: serde_yaml::Value = serde_yaml::from_str(&content)?;
+    let mut manifest: Value = serde_yaml::from_str(&content)?;
 
     let repos_section = manifest
         .get_mut("repos")
@@ -86,36 +87,56 @@ pub fn run_group_add(
         .as_mapping_mut()
         .ok_or_else(|| anyhow::anyhow!("'repos' is not a mapping"))?;
 
+    // Load the fully resolved manifest to check for repos from gripspaces
+    let resolved_manifest = Manifest::load(&manifest_path)?;
+
     let mut added_count = 0;
     let mut already_count = 0;
+    let mut not_found = Vec::new();
 
     for repo_name in repos {
-        if let Some(repo) = repos_section.get_mut(serde_yaml::Value::String(repo_name.clone())) {
-            let repo_map = repo
-                .as_mapping_mut()
-                .ok_or_else(|| anyhow::anyhow!("Repository '{}' is not a mapping", repo_name))?;
+        // Check if repo exists in the fully resolved manifest (including gripspaces)
+        if !resolved_manifest.repos.contains_key(repo_name) {
+            Output::error(&format!(
+                "Repository '{}' not found in workspace",
+                repo_name
+            ));
+            not_found.push(repo_name.clone());
+            continue;
+        }
 
-            // Get or create groups array
-            let groups_key = serde_yaml::Value::String("groups".to_string());
-            let groups = repo_map
-                .entry(groups_key.clone())
-                .or_insert_with(|| serde_yaml::Value::Sequence(vec![]));
+        // Check if repo exists in the local manifest section
+        let repo_key = Value::String(repo_name.clone());
+        let repo_entry = repos_section.entry(repo_key.clone()).or_insert_with(|| {
+            // Repo exists in gripspace but not locally - create a minimal local entry
+            // with just the groups field
+            let mut new_repo = serde_yaml::Mapping::new();
+            new_repo.insert(Value::String("groups".to_string()), Value::Sequence(vec![]));
+            Value::Mapping(new_repo)
+        });
 
-            let groups_seq = groups
-                .as_sequence_mut()
-                .ok_or_else(|| anyhow::anyhow!("'groups' is not an array in '{}'", repo_name))?;
+        let repo_map = repo_entry
+            .as_mapping_mut()
+            .ok_or_else(|| anyhow::anyhow!("Repository '{}' is not a mapping", repo_name))?;
 
-            let group_value = serde_yaml::Value::String(group.to_string());
-            if groups_seq.contains(&group_value) {
-                Output::info(&format!("{}: already in group '{}'", repo_name, group));
-                already_count += 1;
-            } else {
-                groups_seq.push(group_value);
-                Output::success(&format!("{}: added to group '{}'", repo_name, group));
-                added_count += 1;
-            }
+        // Get or create groups array
+        let groups_key = Value::String("groups".to_string());
+        let groups = repo_map
+            .entry(groups_key.clone())
+            .or_insert_with(|| Value::Sequence(vec![]));
+
+        let groups_seq = groups
+            .as_sequence_mut()
+            .ok_or_else(|| anyhow::anyhow!("'groups' is not an array in '{}'", repo_name))?;
+
+        let group_value = Value::String(group.to_string());
+        if groups_seq.contains(&group_value) {
+            Output::info(&format!("{}: already in group '{}'", repo_name, group));
+            already_count += 1;
         } else {
-            Output::error(&format!("Repository '{}' not found in manifest", repo_name));
+            groups_seq.push(group_value);
+            Output::success(&format!("{}: added to group '{}'", repo_name, group));
+            added_count += 1;
         }
     }
 
@@ -133,8 +154,15 @@ pub fn run_group_add(
             manifest_path.display()
         ));
     }
-    if already_count > 0 && added_count == 0 {
+    if already_count > 0 && added_count == 0 && not_found.is_empty() {
         Output::info(&format!("All repos already in group '{}'", group));
+    }
+    if !not_found.is_empty() {
+        anyhow::bail!(
+            "Could not add {} repo(s) to group '{}' because they were not found in the workspace",
+            not_found.len(),
+            group
+        );
     }
 
     Ok(())
@@ -150,7 +178,7 @@ pub fn run_group_remove(
 
     // Load the raw YAML to preserve formatting
     let content = std::fs::read_to_string(&manifest_path)?;
-    let mut manifest: serde_yaml::Value = serde_yaml::from_str(&content)?;
+    let mut manifest: Value = serde_yaml::from_str(&content)?;
 
     let repos_section = manifest
         .get_mut("repos")
@@ -158,19 +186,34 @@ pub fn run_group_remove(
         .as_mapping_mut()
         .ok_or_else(|| anyhow::anyhow!("'repos' is not a mapping"))?;
 
+    // Load the fully resolved manifest to check for repos from gripspaces
+    let resolved_manifest = Manifest::load(&manifest_path)?;
+
     let mut removed_count = 0;
     let mut not_in_count = 0;
+    let mut not_found = Vec::new();
 
     for repo_name in repos {
-        if let Some(repo) = repos_section.get_mut(serde_yaml::Value::String(repo_name.clone())) {
+        // Check if repo exists in the fully resolved manifest (including gripspaces)
+        if !resolved_manifest.repos.contains_key(repo_name) {
+            Output::error(&format!(
+                "Repository '{}' not found in workspace",
+                repo_name
+            ));
+            not_found.push(repo_name.clone());
+            continue;
+        }
+
+        let repo_key = Value::String(repo_name.clone());
+        if let Some(repo) = repos_section.get_mut(&repo_key) {
             let repo_map = repo
                 .as_mapping_mut()
                 .ok_or_else(|| anyhow::anyhow!("Repository '{}' is not a mapping", repo_name))?;
 
-            let groups_key = serde_yaml::Value::String("groups".to_string());
+            let groups_key = Value::String("groups".to_string());
             if let Some(groups) = repo_map.get_mut(&groups_key) {
                 if let Some(groups_seq) = groups.as_sequence_mut() {
-                    let group_value = serde_yaml::Value::String(group.to_string());
+                    let group_value = Value::String(group.to_string());
                     let original_len = groups_seq.len();
                     groups_seq.retain(|v| v != &group_value);
 
@@ -195,7 +238,12 @@ pub fn run_group_remove(
                 not_in_count += 1;
             }
         } else {
-            Output::error(&format!("Repository '{}' not found in manifest", repo_name));
+            // Repo exists in gripspace but not locally - can't remove from local manifest
+            Output::info(&format!(
+                "{}: not in local manifest (from gripspace) - group membership managed in source gripspace",
+                repo_name
+            ));
+            not_in_count += 1;
         }
     }
 
@@ -213,8 +261,15 @@ pub fn run_group_remove(
             manifest_path.display()
         ));
     }
-    if not_in_count > 0 && removed_count == 0 {
+    if not_in_count > 0 && removed_count == 0 && not_found.is_empty() {
         Output::info(&format!("No repos were in group '{}'", group));
+    }
+    if !not_found.is_empty() {
+        anyhow::bail!(
+            "Could not remove {} repo(s) from group '{}' because they were not found in the workspace",
+            not_found.len(),
+            group
+        );
     }
 
     Ok(())
