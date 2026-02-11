@@ -8,6 +8,13 @@ use crate::git::{get_current_branch, open_repo, path_exists};
 use git2::Repository;
 use std::path::PathBuf;
 
+/// JSON-serializable push error for --json output
+#[derive(serde::Serialize)]
+struct JsonPushError {
+    repo: String,
+    reason: String,
+}
+
 /// Run the push command
 pub fn run_push(
     workspace_root: &PathBuf,
@@ -15,13 +22,16 @@ pub fn run_push(
     set_upstream: bool,
     force: bool,
     quiet: bool,
+    json: bool,
 ) -> anyhow::Result<()> {
-    if force {
-        Output::header("Force pushing changes...");
-    } else {
-        Output::header("Pushing changes...");
+    if !json {
+        if force {
+            Output::header("Force pushing changes...");
+        } else {
+            Output::header("Pushing changes...");
+        }
+        println!();
     }
-    println!();
 
     let mut repos: Vec<RepoInfo> = manifest
         .repos
@@ -39,6 +49,9 @@ pub fn run_push(
     let mut skip_count = 0;
     let mut error_count = 0;
     let mut failed_repos: Vec<(String, String)> = Vec::new(); // (repo_name, error_message)
+    let mut json_pushed: Vec<String> = Vec::new();
+    let mut json_skipped: Vec<String> = Vec::new();
+    let mut json_failed: Vec<JsonPushError> = Vec::new();
 
     for repo in &repos {
         if !path_exists(&repo.absolute_path) {
@@ -51,23 +64,34 @@ pub fn run_push(
                 let branch = match get_current_branch(&git_repo) {
                     Ok(b) => b,
                     Err(e) => {
-                        Output::error(&format!("{}: {}", repo.name, e));
+                        if !json {
+                            Output::error(&format!("{}: {}", repo.name, e));
+                        }
                         error_count += 1;
+                        json_failed.push(JsonPushError {
+                            repo: repo.name.clone(),
+                            reason: e.to_string(),
+                        });
                         continue;
                     }
                 };
 
                 // Check if there's anything to push
                 if !has_commits_to_push(&git_repo, &branch)? {
-                    if !quiet {
+                    if !quiet && !json {
                         Output::info(&format!("{}: nothing to push", repo.name));
                     }
                     skip_count += 1;
+                    json_skipped.push(repo.name.clone());
                     continue;
                 }
 
                 let action = if force { "Force pushing" } else { "Pushing" };
-                let spinner = Output::spinner(&format!("{} {}...", action, repo.name));
+                let spinner = if !json {
+                    Some(Output::spinner(&format!("{} {}...", action, repo.name)))
+                } else {
+                    None
+                };
 
                 let result = if force {
                     force_push_branch(&git_repo, &branch, "origin")
@@ -77,15 +101,18 @@ pub fn run_push(
 
                 match result {
                     Ok(()) => {
-                        let msg = if force {
-                            format!("{}: force pushed", repo.name)
-                        } else if set_upstream {
-                            format!("{}: pushed and set upstream", repo.name)
-                        } else {
-                            format!("{}: pushed", repo.name)
-                        };
-                        spinner.finish_with_message(msg);
+                        if let Some(s) = spinner {
+                            let msg = if force {
+                                format!("{}: force pushed", repo.name)
+                            } else if set_upstream {
+                                format!("{}: pushed and set upstream", repo.name)
+                            } else {
+                                format!("{}: pushed", repo.name)
+                            };
+                            s.finish_with_message(msg);
+                        }
                         success_count += 1;
+                        json_pushed.push(repo.name.clone());
                     }
                     Err(e) => {
                         // Check if this is a "nothing to push" situation
@@ -96,62 +123,95 @@ pub fn run_push(
                             || error_msg.contains("no changes")
                             || error_msg.contains("already up to date")
                         {
-                            if !quiet {
-                                spinner.finish_with_message(format!(
-                                    "{}: skipped (nothing to push)",
-                                    repo.name
-                                ));
-                            } else {
-                                spinner.finish_and_clear();
+                            if let Some(s) = spinner {
+                                if !quiet {
+                                    s.finish_with_message(format!(
+                                        "{}: skipped (nothing to push)",
+                                        repo.name
+                                    ));
+                                } else {
+                                    s.finish_and_clear();
+                                }
                             }
                             skip_count += 1;
+                            json_skipped.push(repo.name.clone());
                         } else {
-                            spinner.finish_with_message(format!("{}: failed - {}", repo.name, e));
+                            if let Some(s) = spinner {
+                                s.finish_with_message(format!("{}: failed - {}", repo.name, e));
+                            }
                             error_count += 1;
                             failed_repos.push((repo.name.clone(), format!("Error: {}", e)));
+                            json_failed.push(JsonPushError {
+                                repo: repo.name.clone(),
+                                reason: e.to_string(),
+                            });
                         }
                     }
                 }
             }
             Err(e) => {
-                Output::error(&format!("{}: {}", repo.name, e));
+                if !json {
+                    Output::error(&format!("{}: {}", repo.name, e));
+                }
                 error_count += 1;
                 failed_repos.push((repo.name.clone(), format!("Error: {}", e)));
+                json_failed.push(JsonPushError {
+                    repo: repo.name.clone(),
+                    reason: e.to_string(),
+                });
             }
         }
     }
 
-    println!();
-    let action = if force { "Force pushed" } else { "Pushed" };
-    if error_count == 0 {
-        if success_count > 0 {
-            Output::success(&format!(
-                "{} {} repo(s){}.",
-                action,
-                success_count,
-                if skip_count > 0 {
-                    format!(", {} had nothing to push", skip_count)
-                } else {
-                    String::new()
-                }
-            ));
-        } else {
-            println!("Nothing to push.");
+    if json {
+        #[derive(serde::Serialize)]
+        struct JsonPushResult {
+            success: bool,
+            pushed: Vec<String>,
+            skipped: Vec<String>,
+            failed: Vec<JsonPushError>,
         }
-    } else {
-        Output::warning(&format!(
-            "{} {}, {} failed, {} skipped",
-            success_count,
-            action.to_lowercase(),
-            error_count,
-            skip_count
-        ));
 
-        // Show which repos failed and why
-        if !failed_repos.is_empty() {
-            println!();
-            for (repo_name, error_msg) in &failed_repos {
-                println!("  ✗ {}: {}", repo_name, error_msg);
+        let result = JsonPushResult {
+            success: error_count == 0,
+            pushed: json_pushed,
+            skipped: json_skipped,
+            failed: json_failed,
+        };
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!();
+        let action = if force { "Force pushed" } else { "Pushed" };
+        if error_count == 0 {
+            if success_count > 0 {
+                Output::success(&format!(
+                    "{} {} repo(s){}.",
+                    action,
+                    success_count,
+                    if skip_count > 0 {
+                        format!(", {} had nothing to push", skip_count)
+                    } else {
+                        String::new()
+                    }
+                ));
+            } else {
+                println!("Nothing to push.");
+            }
+        } else {
+            Output::warning(&format!(
+                "{} {}, {} failed, {} skipped",
+                success_count,
+                action.to_lowercase(),
+                error_count,
+                skip_count
+            ));
+
+            // Show which repos failed and why
+            if !failed_repos.is_empty() {
+                println!();
+                for (repo_name, error_msg) in &failed_repos {
+                    println!("  ✗ {}: {}", repo_name, error_msg);
+                }
             }
         }
     }

@@ -33,6 +33,7 @@ fn test_push_to_remote() {
         &manifest,
         "feat: push test",
         false,
+        false,
     )
     .unwrap();
 
@@ -41,6 +42,7 @@ fn test_push_to_remote() {
         &ws.workspace_root,
         &manifest,
         true, // set_upstream
+        false,
         false,
         false,
     );
@@ -61,7 +63,7 @@ fn test_push_nothing_to_push() {
 
     // Push with nothing to push -- should succeed
     let result =
-        gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, false, false, false);
+        gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, false, false, false, false);
     assert!(
         result.is_ok(),
         "push with nothing should succeed: {:?}",
@@ -94,12 +96,12 @@ fn test_push_skips_reference_repos() {
     std::fs::write(ws.repo_path("app").join("change.txt"), "data").unwrap();
     let files = vec![".".to_string()];
     gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files).unwrap();
-    gitgrip::cli::commands::commit::run_commit(&ws.workspace_root, &manifest, "change", false)
+    gitgrip::cli::commands::commit::run_commit(&ws.workspace_root, &manifest, "change", false, false)
         .unwrap();
 
     // Push -- should skip reference repo
     let result =
-        gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, true, false, false);
+        gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, true, false, false, false);
     assert!(result.is_ok(), "push should succeed: {:?}", result.err());
 
     // docs should still be on main (not pushed, not branched)
@@ -137,11 +139,12 @@ fn test_push_multiple_repos() {
         &manifest,
         "feat: multi push",
         false,
+        false,
     )
     .unwrap();
 
     let result =
-        gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, true, false, false);
+        gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, true, false, false, false);
     assert!(result.is_ok(), "push should succeed: {:?}", result.err());
 }
 
@@ -172,9 +175,10 @@ fn test_push_force() {
         &manifest,
         "first commit",
         false,
+        false,
     )
     .unwrap();
-    gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, true, false, false)
+    gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, true, false, false, false)
         .unwrap();
 
     // Make another commit
@@ -185,6 +189,7 @@ fn test_push_force() {
         &manifest,
         "second commit",
         false,
+        false,
     )
     .unwrap();
 
@@ -194,6 +199,7 @@ fn test_push_force() {
         &manifest,
         false,
         true, // force
+        false,
         false,
     );
     assert!(
@@ -219,6 +225,7 @@ fn test_push_quiet_mode() {
         false,
         false,
         true, // quiet
+        false,
     );
     assert!(
         result.is_ok(),

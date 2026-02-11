@@ -31,7 +31,16 @@ struct SyncResult {
     was_cloned: bool,
 }
 
+/// JSON-serializable sync result for --json output
+#[derive(serde::Serialize)]
+struct JsonSyncRepo {
+    name: String,
+    action: String,
+    error: Option<String>,
+}
+
 /// Run the sync command
+#[allow(clippy::too_many_arguments)]
 pub async fn run_sync(
     workspace_root: &PathBuf,
     manifest: &Manifest,
@@ -40,6 +49,7 @@ pub async fn run_sync(
     group_filter: Option<&[String]>,
     sequential: bool,
     reset_refs: bool,
+    json: bool,
 ) -> anyhow::Result<()> {
     // Re-load and resolve gripspaces before syncing repos
     let manifest = sync_gripspaces(workspace_root, manifest, quiet)?;
@@ -54,8 +64,10 @@ pub async fn run_sync(
     let griptree_config = GriptreeConfig::load_from_workspace(workspace_root)?;
     let griptree_branch = griptree_config.as_ref().map(|cfg| cfg.branch.clone());
 
-    Output::header(&format!("Syncing {} repositories...", repos.len()));
-    println!();
+    if !json {
+        Output::header(&format!("Syncing {} repositories...", repos.len()));
+        println!();
+    }
 
     let results = if sequential {
         sync_sequential(
@@ -83,7 +95,28 @@ pub async fn run_sync(
     let mut error_count = 0;
     let mut failed_repos: Vec<(String, String)> = Vec::new();
 
-    for result in results {
+    // Build JSON data alongside display
+    let mut json_repos: Vec<JsonSyncRepo> = Vec::new();
+
+    for result in &results {
+        let action = if result.was_cloned {
+            "cloned"
+        } else if result.success {
+            "pulled"
+        } else {
+            "failed"
+        };
+
+        json_repos.push(JsonSyncRepo {
+            name: result.name.clone(),
+            action: action.to_string(),
+            error: if !result.success {
+                Some(result.message.clone())
+            } else {
+                None
+            },
+        });
+
         if result.success {
             success_count += 1;
         } else {
@@ -92,27 +125,31 @@ pub async fn run_sync(
         }
     }
 
-    println!();
-    if error_count == 0 {
-        Output::success(&format!(
-            "All {} repositories synced successfully.",
-            success_count
-        ));
-    } else {
-        Output::warning(&format!("{} synced, {} failed", success_count, error_count));
+    if !json {
+        println!();
+        if error_count == 0 {
+            Output::success(&format!(
+                "All {} repositories synced successfully.",
+                success_count
+            ));
+        } else {
+            Output::warning(&format!("{} synced, {} failed", success_count, error_count));
 
-        if !failed_repos.is_empty() {
-            println!();
-            for (repo_name, error_msg) in &failed_repos {
-                println!("  ✗ {}: {}", repo_name, error_msg);
+            if !failed_repos.is_empty() {
+                println!();
+                for (repo_name, error_msg) in &failed_repos {
+                    println!("  ✗ {}: {}", repo_name, error_msg);
+                }
             }
         }
     }
 
     // Process composefiles after sync
+    let mut composefiles_count = 0;
     if let Some(ref manifest_config) = manifest.manifest {
         if let Some(ref composefiles) = manifest_config.composefile {
             if !composefiles.is_empty() {
+                composefiles_count = composefiles.len();
                 let manifests_dir = manifest_paths::resolve_manifest_content_dir(workspace_root);
                 let spaces_dir = manifest_paths::spaces_dir(workspace_root);
 
@@ -123,7 +160,7 @@ pub async fn run_sync(
                     composefiles,
                 ) {
                     Ok(()) => {
-                        if !quiet {
+                        if !quiet && !json {
                             Output::success(&format!(
                                 "Processed {} composefile(s)",
                                 composefiles.len()
@@ -131,7 +168,9 @@ pub async fn run_sync(
                         }
                     }
                     Err(e) => {
-                        Output::warning(&format!("Composefile processing failed: {}", e));
+                        if !json {
+                            Output::warning(&format!("Composefile processing failed: {}", e));
+                        }
                     }
                 }
             }
@@ -139,11 +178,29 @@ pub async fn run_sync(
     }
 
     // Apply linkfiles and copyfiles after repos and composefiles
-    match apply_links(workspace_root, manifest, quiet) {
+    match apply_links(workspace_root, manifest, quiet || json) {
         Ok(()) => {}
         Err(e) => {
-            Output::warning(&format!("Link application failed: {}", e));
+            if !json {
+                Output::warning(&format!("Link application failed: {}", e));
+            }
         }
+    }
+
+    if json {
+        #[derive(serde::Serialize)]
+        struct JsonSyncResult {
+            success: bool,
+            repos: Vec<JsonSyncRepo>,
+            composefiles: usize,
+        }
+
+        let result = JsonSyncResult {
+            success: error_count == 0,
+            repos: json_repos,
+            composefiles: composefiles_count,
+        };
+        println!("{}", serde_json::to_string_pretty(&result)?);
     }
 
     Ok(())

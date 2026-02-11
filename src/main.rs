@@ -16,6 +16,10 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
+    /// Output in JSON format (machine-readable)
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -74,9 +78,6 @@ enum Commands {
         /// Only show repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
-        /// Output JSON (machine-readable)
-        #[arg(long)]
-        json: bool,
     },
     /// Create or switch branches across repos
     Branch {
@@ -97,9 +98,6 @@ enum Commands {
         /// Only operate on repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
-        /// Output JSON (machine-readable, list mode only)
-        #[arg(long)]
-        json: bool,
     },
     /// Checkout a branch across repos
     Checkout {
@@ -123,9 +121,6 @@ enum Commands {
         /// Show staged changes
         #[arg(long)]
         staged: bool,
-        /// Output JSON (machine-readable)
-        #[arg(long)]
-        json: bool,
     },
     /// Commit changes across repos
     Commit {
@@ -331,11 +326,7 @@ enum PrCommands {
         dry_run: bool,
     },
     /// Show PR status
-    Status {
-        /// Output JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Status,
     /// Merge pull requests
     Merge {
         /// Merge method (merge, squash, rebase)
@@ -352,11 +343,7 @@ enum PrCommands {
         auto: bool,
     },
     /// Check CI status
-    Checks {
-        /// Output JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Checks,
     /// Show PR diff
     Diff {
         /// Show stat summary only
@@ -454,22 +441,11 @@ enum CiCommands {
     Run {
         /// Pipeline name
         name: String,
-        /// Output JSON
-        #[arg(long)]
-        json: bool,
     },
     /// List available pipelines
-    List {
-        /// Output JSON
-        #[arg(long)]
-        json: bool,
-    },
+    List,
     /// Show status of last CI runs
-    Status {
-        /// Output JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -534,11 +510,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
-        Some(Commands::Status {
-            verbose,
-            group,
-            json,
-        }) => {
+        Some(Commands::Status { verbose, group }) => {
             let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::status::run_status(
                 &workspace_root,
@@ -546,7 +518,7 @@ async fn main() -> anyhow::Result<()> {
                 verbose,
                 cli.quiet,
                 group.as_deref(),
-                json,
+                cli.json,
             )?;
         }
         Some(Commands::Sync {
@@ -564,6 +536,7 @@ async fn main() -> anyhow::Result<()> {
                 group.as_deref(),
                 sequential,
                 reset_refs,
+                cli.json,
             )
             .await?;
         }
@@ -574,7 +547,6 @@ async fn main() -> anyhow::Result<()> {
             repo,
             include_manifest: _,
             group,
-            json,
         }) => {
             let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::branch::run_branch(
@@ -586,7 +558,7 @@ async fn main() -> anyhow::Result<()> {
                     move_commits: r#move,
                     repos_filter: repo.as_deref(),
                     group_filter: group.as_deref(),
-                    json,
+                    json: cli.json,
                 },
             )?;
         }
@@ -612,9 +584,9 @@ async fn main() -> anyhow::Result<()> {
             let (workspace_root, manifest) = load_gripspace()?;
             gitgrip::cli::commands::add::run_add(&workspace_root, &manifest, &files)?;
         }
-        Some(Commands::Diff { staged, json }) => {
+        Some(Commands::Diff { staged }) => {
             let (workspace_root, manifest) = load_gripspace()?;
-            gitgrip::cli::commands::diff::run_diff(&workspace_root, &manifest, staged, json)?;
+            gitgrip::cli::commands::diff::run_diff(&workspace_root, &manifest, staged, cli.json)?;
         }
         Some(Commands::Commit { message, amend }) => {
             let (workspace_root, manifest) = load_gripspace()?;
@@ -622,7 +594,13 @@ async fn main() -> anyhow::Result<()> {
                 eprintln!("Error: commit message required (-m)");
                 std::process::exit(1);
             });
-            gitgrip::cli::commands::commit::run_commit(&workspace_root, &manifest, &msg, amend)?;
+            gitgrip::cli::commands::commit::run_commit(
+                &workspace_root,
+                &manifest,
+                &msg,
+                amend,
+                cli.json,
+            )?;
         }
         Some(Commands::Push {
             set_upstream,
@@ -635,6 +613,7 @@ async fn main() -> anyhow::Result<()> {
                 set_upstream,
                 force,
                 cli.quiet,
+                cli.json,
             )?;
         }
         Some(Commands::Prune {
@@ -669,12 +648,17 @@ async fn main() -> anyhow::Result<()> {
                         draft,
                         push,
                         dry_run,
+                        cli.json,
                     )
                     .await?;
                 }
-                PrCommands::Status { json } => {
-                    gitgrip::cli::commands::pr::run_pr_status(&workspace_root, &manifest, json)
-                        .await?;
+                PrCommands::Status => {
+                    gitgrip::cli::commands::pr::run_pr_status(
+                        &workspace_root,
+                        &manifest,
+                        cli.json,
+                    )
+                    .await?;
                 }
                 PrCommands::Merge {
                     method,
@@ -689,12 +673,17 @@ async fn main() -> anyhow::Result<()> {
                         force,
                         update,
                         auto,
+                        cli.json,
                     )
                     .await?;
                 }
-                PrCommands::Checks { json } => {
-                    gitgrip::cli::commands::pr::run_pr_checks(&workspace_root, &manifest, json)
-                        .await?;
+                PrCommands::Checks => {
+                    gitgrip::cli::commands::pr::run_pr_checks(
+                        &workspace_root,
+                        &manifest,
+                        cli.json,
+                    )
+                    .await?;
                 }
                 PrCommands::Diff { stat } => {
                     gitgrip::cli::commands::pr::run_pr_diff(&workspace_root, &manifest, stat)
@@ -846,7 +835,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Link { status, apply }) => {
             let (workspace_root, manifest) = load_gripspace()?;
-            gitgrip::cli::commands::link::run_link(&workspace_root, &manifest, status, apply)?;
+            gitgrip::cli::commands::link::run_link(
+                &workspace_root,
+                &manifest,
+                status,
+                apply,
+                cli.json,
+            )?;
         }
         Some(Commands::Run { name, list }) => {
             let (workspace_root, manifest) = load_gripspace()?;
@@ -938,19 +933,19 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Ci { action }) => {
             let (workspace_root, manifest) = load_gripspace()?;
             match action {
-                CiCommands::Run { name, json } => {
+                CiCommands::Run { name } => {
                     gitgrip::cli::commands::ci::run_ci_run(
                         &workspace_root,
                         &manifest,
                         &name,
-                        json,
+                        cli.json,
                     )?;
                 }
-                CiCommands::List { json } => {
-                    gitgrip::cli::commands::ci::run_ci_list(&manifest, json)?;
+                CiCommands::List => {
+                    gitgrip::cli::commands::ci::run_ci_list(&manifest, cli.json)?;
                 }
-                CiCommands::Status { json } => {
-                    gitgrip::cli::commands::ci::run_ci_status(&workspace_root, json)?;
+                CiCommands::Status => {
+                    gitgrip::cli::commands::ci::run_ci_status(&workspace_root, cli.json)?;
                 }
             }
         }

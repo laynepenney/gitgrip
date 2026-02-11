@@ -348,6 +348,7 @@ fn test_commit_amend_with_changes() {
         &manifest,
         "amended message",
         true, // amend
+        false,
     );
     assert!(
         result.is_ok(),

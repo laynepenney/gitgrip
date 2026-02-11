@@ -31,6 +31,7 @@ fn test_link_status_no_links() {
         &manifest,
         true,  // status
         false, // not apply
+        false,
     );
     assert!(
         result.is_ok(),
@@ -58,6 +59,7 @@ fn test_link_status_with_copyfile() {
         &manifest,
         true, // status
         false,
+        false,
     );
     assert!(
         result.is_ok(),
@@ -84,6 +86,7 @@ fn test_link_status_with_linkfile() {
         &ws.workspace_root,
         &manifest,
         true, // status
+        false,
         false,
     );
     assert!(
@@ -114,6 +117,7 @@ fn test_link_apply_copyfile() {
         &manifest,
         false,
         true, // apply
+        false,
     );
     assert!(
         result.is_ok(),
@@ -150,6 +154,7 @@ fn test_link_apply_linkfile() {
         &manifest,
         false,
         true, // apply
+        false,
     );
     assert!(
         result.is_ok(),
@@ -186,6 +191,7 @@ fn test_link_apply_missing_repo() {
         &manifest,
         false,
         true, // apply
+        false,
     );
     assert!(
         result.is_ok(),
@@ -204,7 +210,7 @@ fn test_link_default_shows_status() {
 
     // No flags → defaults to status
     let result =
-        gitgrip::cli::commands::link::run_link(&ws.workspace_root, &manifest, false, false);
+        gitgrip::cli::commands::link::run_link(&ws.workspace_root, &manifest, false, false, false);
     assert!(
         result.is_ok(),
         "link default should succeed: {:?}",

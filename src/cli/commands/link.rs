@@ -16,22 +16,29 @@ pub fn run_link(
     manifest: &Manifest,
     status: bool,
     apply: bool,
+    json: bool,
 ) -> anyhow::Result<()> {
     if status {
-        show_link_status(workspace_root, manifest)?;
+        show_link_status(workspace_root, manifest, json)?;
     } else if apply {
         apply_links(workspace_root, manifest, false)?;
     } else {
         // Default: show status
-        show_link_status(workspace_root, manifest)?;
+        show_link_status(workspace_root, manifest, json)?;
     }
 
     Ok(())
 }
 
-fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<()> {
-    Output::header("File Link Status");
-    println!();
+fn show_link_status(
+    workspace_root: &PathBuf,
+    manifest: &Manifest,
+    json: bool,
+) -> anyhow::Result<()> {
+    if !json {
+        Output::header("File Link Status");
+        println!();
+    }
 
     let repos: Vec<RepoInfo> = manifest
         .repos
@@ -42,6 +49,15 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
     let mut total_links = 0;
     let mut valid_links = 0;
     let mut broken_links = 0;
+
+    #[derive(serde::Serialize)]
+    struct JsonLink {
+        link_type: String,
+        src: String,
+        dest: String,
+        status: String,
+    }
+    let mut json_links: Vec<JsonLink> = Vec::new();
 
     for (name, config) in &manifest.repos {
         let repo = repos.iter().find(|r| &r.name == name);
@@ -57,16 +73,30 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
 
                 let status = if source.exists() && dest.exists() {
                     valid_links += 1;
-                    "✓"
+                    "valid"
                 } else if !source.exists() {
                     broken_links += 1;
-                    "✗ (source missing)"
+                    "broken: source missing"
                 } else {
                     broken_links += 1;
-                    "✗ (dest missing)"
+                    "broken: dest missing"
                 };
 
-                println!("  [copy] {} -> {} {}", copyfile.src, copyfile.dest, status);
+                if json {
+                    json_links.push(JsonLink {
+                        link_type: "copyfile".to_string(),
+                        src: copyfile.src.clone(),
+                        dest: copyfile.dest.clone(),
+                        status: status.to_string(),
+                    });
+                } else {
+                    let symbol = if status == "valid" {
+                        "✓"
+                    } else {
+                        &format!("✗ ({})", status.strip_prefix("broken: ").unwrap_or(status))
+                    };
+                    println!("  [copy] {} -> {} {}", copyfile.src, copyfile.dest, symbol);
+                }
             }
         }
 
@@ -81,19 +111,33 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
 
                 let status = if source.exists() && dest.exists() && dest.is_symlink() {
                     valid_links += 1;
-                    "✓"
+                    "valid"
                 } else if !source.exists() {
                     broken_links += 1;
-                    "✗ (source missing)"
+                    "broken: source missing"
                 } else if !dest.exists() {
                     broken_links += 1;
-                    "✗ (link missing)"
+                    "broken: link missing"
                 } else {
                     broken_links += 1;
-                    "✗ (not a symlink)"
+                    "broken: not a symlink"
                 };
 
-                println!("  [link] {} -> {} {}", linkfile.src, linkfile.dest, status);
+                if json {
+                    json_links.push(JsonLink {
+                        link_type: "linkfile".to_string(),
+                        src: linkfile.src.clone(),
+                        dest: linkfile.dest.clone(),
+                        status: status.to_string(),
+                    });
+                } else {
+                    let symbol = if status == "valid" {
+                        "✓"
+                    } else {
+                        &format!("✗ ({})", status.strip_prefix("broken: ").unwrap_or(status))
+                    };
+                    println!("  [link] {} -> {} {}", linkfile.src, linkfile.dest, symbol);
+                }
             }
         }
     }
@@ -111,10 +155,24 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
                     Ok(p) => p,
                     Err(e) => {
                         broken_links += 1;
-                        Output::warning(&format!(
-                            "[copy] {} -> {} ({})",
-                            copyfile.src, copyfile.dest, e
-                        ));
+                        if json {
+                            let label = if copyfile.src.starts_with("gripspace:") {
+                                copyfile.src.clone()
+                            } else {
+                                format!("manifest:{}", copyfile.src)
+                            };
+                            json_links.push(JsonLink {
+                                link_type: "copyfile".to_string(),
+                                src: label,
+                                dest: copyfile.dest.clone(),
+                                status: format!("broken: {}", e),
+                            });
+                        } else {
+                            Output::warning(&format!(
+                                "[copy] {} -> {} ({})",
+                                copyfile.src, copyfile.dest, e
+                            ));
+                        }
                         continue;
                     }
                 };
@@ -128,16 +186,30 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
 
                 let status = if source.exists() && dest.exists() {
                     valid_links += 1;
-                    "✓"
+                    "valid"
                 } else if !source.exists() {
                     broken_links += 1;
-                    "✗ (source missing)"
+                    "broken: source missing"
                 } else {
                     broken_links += 1;
-                    "✗ (dest missing)"
+                    "broken: dest missing"
                 };
 
-                println!("  [copy] {} -> {} {}", label, copyfile.dest, status);
+                if json {
+                    json_links.push(JsonLink {
+                        link_type: "copyfile".to_string(),
+                        src: label,
+                        dest: copyfile.dest.clone(),
+                        status: status.to_string(),
+                    });
+                } else {
+                    let symbol = if status == "valid" {
+                        "✓"
+                    } else {
+                        &format!("✗ ({})", status.strip_prefix("broken: ").unwrap_or(status))
+                    };
+                    println!("  [copy] {} -> {} {}", label, copyfile.dest, symbol);
+                }
             }
         }
 
@@ -149,10 +221,24 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
                     Ok(p) => p,
                     Err(e) => {
                         broken_links += 1;
-                        Output::warning(&format!(
-                            "[link] {} -> {} ({})",
-                            linkfile.src, linkfile.dest, e
-                        ));
+                        if json {
+                            let label = if linkfile.src.starts_with("gripspace:") {
+                                linkfile.src.clone()
+                            } else {
+                                format!("manifest:{}", linkfile.src)
+                            };
+                            json_links.push(JsonLink {
+                                link_type: "linkfile".to_string(),
+                                src: label,
+                                dest: linkfile.dest.clone(),
+                                status: format!("broken: {}", e),
+                            });
+                        } else {
+                            Output::warning(&format!(
+                                "[link] {} -> {} ({})",
+                                linkfile.src, linkfile.dest, e
+                            ));
+                        }
                         continue;
                     }
                 };
@@ -166,19 +252,33 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
 
                 let status = if source.exists() && dest.exists() && dest.is_symlink() {
                     valid_links += 1;
-                    "✓"
+                    "valid"
                 } else if !source.exists() {
                     broken_links += 1;
-                    "✗ (source missing)"
+                    "broken: source missing"
                 } else if !dest.exists() {
                     broken_links += 1;
-                    "✗ (link missing)"
+                    "broken: link missing"
                 } else {
                     broken_links += 1;
-                    "✗ (not a symlink)"
+                    "broken: not a symlink"
                 };
 
-                println!("  [link] {} -> {} {}", label, linkfile.dest, status);
+                if json {
+                    json_links.push(JsonLink {
+                        link_type: "linkfile".to_string(),
+                        src: label,
+                        dest: linkfile.dest.clone(),
+                        status: status.to_string(),
+                    });
+                } else {
+                    let symbol = if status == "valid" {
+                        "✓"
+                    } else {
+                        &format!("✗ ({})", status.strip_prefix("broken: ").unwrap_or(status))
+                    };
+                    println!("  [link] {} -> {} {}", label, linkfile.dest, symbol);
+                }
             }
         }
 
@@ -190,10 +290,10 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
 
                 let status = if dest.exists() {
                     valid_links += 1;
-                    "✓"
+                    "valid"
                 } else {
                     broken_links += 1;
-                    "✗ (not generated)"
+                    "broken: not generated"
                 };
 
                 let parts_desc: Vec<String> = compose
@@ -207,28 +307,59 @@ fn show_link_status(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
                         }
                     })
                     .collect();
-                println!(
-                    "  [compose] [{}] -> {} {}",
-                    parts_desc.join(" + "),
-                    compose.dest,
-                    status
-                );
+
+                if json {
+                    json_links.push(JsonLink {
+                        link_type: "composefile".to_string(),
+                        src: parts_desc.join(" + "),
+                        dest: compose.dest.clone(),
+                        status: status.to_string(),
+                    });
+                } else {
+                    let symbol = if status == "valid" {
+                        "✓"
+                    } else {
+                        &format!("✗ ({})", status.strip_prefix("broken: ").unwrap_or(status))
+                    };
+                    println!(
+                        "  [compose] [{}] -> {} {}",
+                        parts_desc.join(" + "),
+                        compose.dest,
+                        symbol
+                    );
+                }
             }
         }
     }
 
-    println!();
-    if total_links == 0 {
-        println!("No file links defined in manifest.");
-    } else if broken_links == 0 {
-        Output::success(&format!("All {} link(s) valid", valid_links));
+    if json {
+        #[derive(serde::Serialize)]
+        struct JsonLinkStatus {
+            links: Vec<JsonLink>,
+            valid: usize,
+            broken: usize,
+        }
+
+        let result = JsonLinkStatus {
+            links: json_links,
+            valid: valid_links,
+            broken: broken_links,
+        };
+        println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        Output::warning(&format!(
-            "{} valid, {} broken out of {} total",
-            valid_links, broken_links, total_links
-        ));
         println!();
-        println!("Run 'gr link --apply' to fix broken links.");
+        if total_links == 0 {
+            println!("No file links defined in manifest.");
+        } else if broken_links == 0 {
+            Output::success(&format!("All {} link(s) valid", valid_links));
+        } else {
+            Output::warning(&format!(
+                "{} valid, {} broken out of {} total",
+                valid_links, broken_links, total_links
+            ));
+            println!();
+            println!("Run 'gr link --apply' to fix broken links.");
+        }
     }
 
     Ok(())
@@ -614,7 +745,7 @@ mod tests {
         let manifest = create_test_manifest(None, None);
 
         // Should not error even with no links
-        let result = show_link_status(&temp.path().to_path_buf(), &manifest);
+        let result = show_link_status(&temp.path().to_path_buf(), &manifest, false);
         assert!(result.is_ok());
     }
 

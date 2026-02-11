@@ -144,6 +144,7 @@ fn test_commit_with_no_staged_changes() {
         &manifest,
         "should not commit",
         false,
+        false,
     );
     // Should succeed but report "no changes to commit"
     assert!(
@@ -232,6 +233,7 @@ async fn test_sync_with_deleted_remote() {
         None,
         false,
         false,
+        false,
     )
     .await;
     // Whether it returns Ok (with per-repo error reports) or Err is acceptable,
@@ -257,7 +259,7 @@ fn test_push_on_main_nothing_to_push() {
 
     // Push on main with no new commits - should succeed silently
     let result =
-        gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, false, false, false);
+        gitgrip::cli::commands::push::run_push(&ws.workspace_root, &manifest, false, false, false, false);
     assert!(
         result.is_ok(),
         "push with nothing should succeed: {:?}",
