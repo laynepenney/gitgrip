@@ -64,8 +64,16 @@ impl Metrics {
     /// Get a snapshot of all metrics.
     pub fn snapshot(&self) -> MetricsSnapshot {
         let git = self.git_metrics.lock().expect("mutex poisoned").clone();
-        let platform = self.platform_metrics.lock().expect("mutex poisoned").clone();
-        let operations = self.operation_metrics.lock().expect("mutex poisoned").clone();
+        let platform = self
+            .platform_metrics
+            .lock()
+            .expect("mutex poisoned")
+            .clone();
+        let operations = self
+            .operation_metrics
+            .lock()
+            .expect("mutex poisoned")
+            .clone();
 
         MetricsSnapshot {
             git,
@@ -77,8 +85,14 @@ impl Metrics {
     /// Reset all metrics.
     pub fn reset(&self) {
         self.git_metrics.lock().expect("mutex poisoned").clear();
-        self.platform_metrics.lock().expect("mutex poisoned").clear();
-        self.operation_metrics.lock().expect("mutex poisoned").clear();
+        self.platform_metrics
+            .lock()
+            .expect("mutex poisoned")
+            .clear();
+        self.operation_metrics
+            .lock()
+            .expect("mutex poisoned")
+            .clear();
     }
 }
 
