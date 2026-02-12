@@ -63,8 +63,9 @@ git2 = "0.19"
 # gitoxide (gix) - pure Rust, async-capable (optional, experimental)
 gix = { version = "0.68", default-features = false, features = ["blocking-network-client", "blocking-http-transport-reqwest-rust-tls"], optional = true }
 
-# GitHub API
-octocrab = "0.41"
+# GitHub API — use webpki (Mozilla) roots instead of native TLS roots to avoid
+# macOS Security framework failures in CI / sandboxed environments.
+octocrab = { version = "0.41", features = ["rustls-webpki-tokio"] }
 
 # Error handling
 anyhow = "1"

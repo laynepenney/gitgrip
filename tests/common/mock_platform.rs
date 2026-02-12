@@ -10,11 +10,16 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// Start a wiremock server and configure GITHUB_TOKEN env var.
 /// Returns the server and a GitHubAdapter pointed at it.
 pub async fn setup_github_mock() -> (MockServer, gitgrip::platform::github::GitHubAdapter) {
-    let server = MockServer::start().await;
-    // Set token so get_token() succeeds without gh CLI
-    unsafe {
+    // Set token once before any tests use it. Using a static Once ensures
+    // thread-safety even when tests run in parallel (set_var is not safe to
+    // call concurrently on Rust 1.66+).
+    use std::sync::Once;
+    static SET_TOKEN: Once = Once::new();
+    SET_TOKEN.call_once(|| unsafe {
         std::env::set_var("GITHUB_TOKEN", "mock-test-token");
-    }
+    });
+
+    let server = MockServer::start().await;
     let adapter = gitgrip::platform::github::GitHubAdapter::new(Some(&server.uri()));
     (server, adapter)
 }
