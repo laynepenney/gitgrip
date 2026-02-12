@@ -82,6 +82,11 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-features
+        env:
+          # Windows: link advapi32 for libgit2-sys (needed for test crates that
+          # don't go through build.rs) and increase stack to 8 MB (debug builds
+          # overflow the default 1 MB Windows stack during clap parsing)
+          RUSTFLAGS: ${{ matrix.os == 'windows-latest' && '-C link-arg=advapi32.lib -C link-arg=/STACK:8388608' || '' }}
 
   build:
     name: Build Release
