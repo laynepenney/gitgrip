@@ -999,7 +999,7 @@ fn run_parallel(
                 }
             };
 
-            let mut results = results.lock().unwrap();
+            let mut results = results.lock().expect("mutex poisoned");
             results.push((repo_name, result));
         });
 
@@ -1008,11 +1008,13 @@ fn run_parallel(
 
     // Wait for all threads
     for handle in handles {
-        handle.join().unwrap();
+        handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("Worker thread panicked"))?;
     }
 
     // Print results
-    let results = results.lock().unwrap();
+    let results = results.lock().expect("mutex poisoned");
     let mut success_count = 0;
     let mut error_count = 0;
 

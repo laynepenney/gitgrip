@@ -138,7 +138,7 @@ fn run_grep_parallel(
 
         let handle = thread::spawn(move || {
             if let Some(output) = run_grep_in_repo(&repo, &pattern, ignore_case, &pathspec) {
-                let mut results = results.lock().unwrap();
+                let mut results = results.lock().expect("mutex poisoned");
                 results.push(output);
             }
         });
@@ -147,10 +147,12 @@ fn run_grep_parallel(
     }
 
     for handle in handles {
-        handle.join().unwrap();
+        handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("Worker thread panicked"))?;
     }
 
-    let results = results.lock().unwrap();
+    let results = results.lock().expect("mutex poisoned");
     let mut total_matches = 0;
 
     for output in results.iter() {

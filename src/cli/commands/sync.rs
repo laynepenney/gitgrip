@@ -394,7 +394,7 @@ async fn sync_parallel(
                 griptree_branch.as_deref(),
                 reset_refs,
             )?;
-            results.lock().unwrap().push(result);
+            results.lock().expect("mutex poisoned").push(result);
             Ok(())
         });
     }
@@ -408,8 +408,8 @@ async fn sync_parallel(
 
     // Extract results from Arc<Mutex<>>
     let results = match Arc::try_unwrap(results) {
-        Ok(mutex) => mutex.into_inner().unwrap(),
-        Err(arc) => arc.lock().unwrap().clone(),
+        Ok(mutex) => mutex.into_inner().expect("mutex poisoned"),
+        Err(arc) => arc.lock().expect("mutex poisoned").clone(),
     };
 
     // Print results in order

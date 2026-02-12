@@ -622,10 +622,13 @@ pub async fn mock_repo_info(server: &MockServer, owner: &str, repo: &str) {
 /// Returns the server and a BitbucketAdapter pointed at it.
 pub async fn setup_bitbucket_mock() -> (MockServer, gitgrip::platform::bitbucket::BitbucketAdapter)
 {
-    let server = MockServer::start().await;
-    unsafe {
+    use std::sync::Once;
+    static SET_TOKEN: Once = Once::new();
+    SET_TOKEN.call_once(|| unsafe {
         std::env::set_var("BITBUCKET_TOKEN", "mock-bb-token");
-    }
+    });
+
+    let server = MockServer::start().await;
     let adapter = gitgrip::platform::bitbucket::BitbucketAdapter::new(Some(&server.uri()));
     (server, adapter)
 }
