@@ -29,7 +29,7 @@ impl Metrics {
 
     /// Record a git operation.
     pub fn record_git(&self, operation: &str, duration: Duration, success: bool) {
-        let mut metrics = self.git_metrics.lock().unwrap();
+        let mut metrics = self.git_metrics.lock().expect("mutex poisoned");
         let entry = metrics.entry(operation.to_string()).or_default();
         entry.record(duration, success);
     }
@@ -43,14 +43,14 @@ impl Metrics {
         success: bool,
     ) {
         let key = format!("{platform}:{operation}");
-        let mut metrics = self.platform_metrics.lock().unwrap();
+        let mut metrics = self.platform_metrics.lock().expect("mutex poisoned");
         let entry = metrics.entry(key).or_default();
         entry.record(duration, success);
     }
 
     /// Record a generic operation.
     pub fn record_operation(&self, name: &str, duration: Duration) {
-        let mut metrics = self.operation_metrics.lock().unwrap();
+        let mut metrics = self.operation_metrics.lock().expect("mutex poisoned");
         let entry = metrics.entry(name.to_string()).or_default();
         entry.record(duration);
     }
@@ -63,9 +63,17 @@ impl Metrics {
 
     /// Get a snapshot of all metrics.
     pub fn snapshot(&self) -> MetricsSnapshot {
-        let git = self.git_metrics.lock().unwrap().clone();
-        let platform = self.platform_metrics.lock().unwrap().clone();
-        let operations = self.operation_metrics.lock().unwrap().clone();
+        let git = self.git_metrics.lock().expect("mutex poisoned").clone();
+        let platform = self
+            .platform_metrics
+            .lock()
+            .expect("mutex poisoned")
+            .clone();
+        let operations = self
+            .operation_metrics
+            .lock()
+            .expect("mutex poisoned")
+            .clone();
 
         MetricsSnapshot {
             git,
@@ -76,9 +84,15 @@ impl Metrics {
 
     /// Reset all metrics.
     pub fn reset(&self) {
-        self.git_metrics.lock().unwrap().clear();
-        self.platform_metrics.lock().unwrap().clear();
-        self.operation_metrics.lock().unwrap().clear();
+        self.git_metrics.lock().expect("mutex poisoned").clear();
+        self.platform_metrics
+            .lock()
+            .expect("mutex poisoned")
+            .clear();
+        self.operation_metrics
+            .lock()
+            .expect("mutex poisoned")
+            .clear();
     }
 }
 

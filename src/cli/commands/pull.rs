@@ -122,7 +122,7 @@ async fn pull_parallel(
 
         join_set.spawn_blocking(move || {
             let result = pull_single_repo(&repo, mode, quiet, false)?;
-            results.lock().unwrap().push(result);
+            results.lock().expect("mutex poisoned").push(result);
             Ok(())
         });
     }
@@ -134,8 +134,8 @@ async fn pull_parallel(
     spinner.finish_and_clear();
 
     let results = match Arc::try_unwrap(results) {
-        Ok(mutex) => mutex.into_inner().unwrap(),
-        Err(arc) => arc.lock().unwrap().clone(),
+        Ok(mutex) => mutex.into_inner().expect("mutex poisoned"),
+        Err(arc) => arc.lock().expect("mutex poisoned").clone(),
     };
 
     for result in &results {
