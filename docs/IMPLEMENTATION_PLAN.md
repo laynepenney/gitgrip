@@ -2,7 +2,7 @@
 
 *February 2026 — 4 PRs covering 16 action items from `docs/ARCHITECTURAL_ASSESSMENT.md`*
 
-## PR 1: P0 — Safety Fixes (`fix/p0-safety`)
+## PR 1: P0 — Safety Fixes (`fix/p0-safety`) — MERGED (#315)
 
 ### 1.1 Thread panic handling
 Replace `handle.join().unwrap()` with proper error handling:
@@ -30,7 +30,7 @@ Add `Once` guard to `setup_bitbucket_mock()` in `tests/common/mock_platform.rs:6
 
 ---
 
-## PR 2: P1 — Quality Fixes (`fix/p1-quality`)
+## PR 2: P1 — Quality Fixes (`fix/p1-quality`) — MERGED (#316)
 
 ### 2.1 Fix broken branch JSON output
 Add JSON output for create, delete, and move-commits operations in `src/cli/commands/branch.rs`.
@@ -48,29 +48,29 @@ Pass `--hostname` to `gh` CLI in `src/platform/github.rs` `enable_auto_merge()` 
 
 ---
 
-## PR 3: P2 — Maintainability Refactor (`refactor/p2-maintainability`)
+## PR 3: P2 — Maintainability Refactor (`refactor/p2-maintainability`) — IN PROGRESS
 
 ### Phase 1: Foundation
-- New `src/cli/context.rs`: `WorkspaceContext` struct (workspace_root, manifest, quiet, verbose, json)
-- Extend `src/cli/output.rs`: Add `blank_line()`, `summary()`, `raw()`, `json()` methods
+- [x] New `src/cli/context.rs`: `WorkspaceContext` struct (workspace_root, manifest, quiet, verbose, json)
+- [ ] ~~Extend `src/cli/output.rs`: Add `blank_line()`, `summary()`, `raw()`, `json()` methods~~ — Scoped out: commands handle output directly; wrappers add indirection without value
 
 ### Phase 2: load_gripspace decomposition
-Split `load_gripspace()` in `src/main.rs` into `load_from_griptree()`, `load_from_gitgrip_dir()`, `load_from_repo_xml()`.
+- [x] Split `load_gripspace()` into `load_from_griptree()`, `load_from_workspace()`, `resolve_gripspace_includes()`
 
 ### Phase 3: Repo iteration helper
-New `src/cli/repo_iter.rs`: `RepoSelection`, `RepoVisitResult`, `for_each_repo()`, `for_each_repo_path()`.
+- [x] New `src/cli/repo_iter.rs`: `RepoVisitResult`, `RepoOpSummary`, `for_each_repo()`, `for_each_repo_path()`
+- [ ] Wire into commands — Deferred: most commands accumulate custom state that doesn't fit the simple Success/Skipped/Error enum
 
-### Phase 4-6: Migrate all commands to WorkspaceContext + repo iteration helper
-- Batch 1: add, diff, gc, prune, env
-- Batch 2: status, commit, push, checkout, grep, forall, rebase, cherry_pick, link, run
-- Batch 3: branch, verify, sync, pull, pr/*, release, tree, init, ci, repo, group, manifest, agent/*
+### Phase 4-6: Migrate all commands to WorkspaceContext
+- [x] 28/30 commands in main.rs use `load_workspace_context()` (Init, Completions, Bench don't need workspace)
+- [ ] ~~Migrate command signatures to accept `&WorkspaceContext`~~ — Scoped out: would touch every command file + every test; ctx field extraction in dispatch works fine
 
 ### Phase 7: Dispatch refactor
-Restructure main.rs: single `load_gripspace()` call, `WorkspaceContext` creation, compact `dispatch_workspace_command()` match block.
+- [x] Consistent `load_workspace_context()` pattern with CLI flag extraction
+- [ ] ~~Compact `dispatch_workspace_command()` function~~ — Scoped out: 612-line match for 30 commands is standard; only one dispatch site
 
 ### Phase 8: Break up large functions
-- sync.rs: Extract post-sync steps
-- release.rs: Extract phase functions
+- [ ] ~~sync.rs / release.rs decomposition~~ — Scoped out: already have helpers (`sync_single_repo`, `execute_post_sync_hooks`, etc.)
 
 ---
 
@@ -95,7 +95,7 @@ Record pre-sync HEADs, add `gr sync --rollback` flag.
 
 ## Execution Order
 
-1. PR 1 (P0) — Safety fixes
-2. PR 2 (P1) — Quality fixes
-3. PR 3 (P2) — Maintainability refactor (depends on P0/P1)
+1. ~~PR 1 (P0) — Safety fixes~~ — MERGED (#315, Feb 13 2026)
+2. ~~PR 2 (P1) — Quality fixes~~ — MERGED (#316, Feb 13 2026)
+3. PR 3 (P2) — Maintainability refactor — IN PROGRESS
 4. PR 4 (P3) — Extensibility (depends on P2)
