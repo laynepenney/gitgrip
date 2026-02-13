@@ -303,4 +303,143 @@ mod tests {
             "origin/dev".to_string()
         );
     }
+
+    #[test]
+    fn test_validate_upstream_ref_invalid() {
+        assert!(GriptreeConfig::validate_upstream_ref("nobranch").is_err());
+        assert!(GriptreeConfig::validate_upstream_ref("").is_err());
+        assert!(GriptreeConfig::validate_upstream_ref("/").is_err());
+    }
+
+    #[test]
+    fn test_validate_upstream_ref_valid() {
+        assert!(GriptreeConfig::validate_upstream_ref("origin/main").is_ok());
+        assert!(GriptreeConfig::validate_upstream_ref("upstream/feat/x").is_ok());
+    }
+
+    #[test]
+    fn test_save_and_load() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_path = temp.path().join("config.json");
+
+        let mut config = GriptreeConfig::new("feat/save-test", "/workspace");
+        config
+            .repo_upstreams
+            .insert("myrepo".to_string(), "origin/dev".to_string());
+
+        config.save(&config_path).unwrap();
+        assert!(config_path.exists());
+
+        let loaded = GriptreeConfig::load(&config_path).unwrap();
+        assert_eq!(loaded.branch, "feat/save-test");
+        assert_eq!(loaded.path, "/workspace");
+        assert_eq!(loaded.repo_upstreams.get("myrepo").unwrap(), "origin/dev");
+    }
+
+    #[test]
+    fn test_load_nonexistent_file() {
+        let result = GriptreeConfig::load(&PathBuf::from("/nonexistent/config.json"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_invalid_json() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_path = temp.path().join("bad.json");
+        std::fs::write(&config_path, "not valid json").unwrap();
+
+        let result = GriptreeConfig::load(&config_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_from_workspace_none_when_missing() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let result = GriptreeConfig::load_from_workspace(&temp.path().to_path_buf()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_load_from_workspace_some_when_present() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let gitgrip_dir = temp.path().join(".gitgrip");
+        std::fs::create_dir_all(&gitgrip_dir).unwrap();
+
+        let config = GriptreeConfig::new("feat/ws", temp.path().to_str().unwrap());
+        let config_path = gitgrip_dir.join("griptree.json");
+        config.save(&config_path).unwrap();
+
+        let loaded = GriptreeConfig::load_from_workspace(&temp.path().to_path_buf())
+            .unwrap()
+            .expect("should find config");
+        assert_eq!(loaded.branch, "feat/ws");
+    }
+
+    #[test]
+    fn test_griptree_pointer_load() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let pointer_path = temp.path().join(".griptree");
+
+        let pointer = GriptreePointer {
+            main_workspace: "/main/workspace".to_string(),
+            branch: "feat/pointer-test".to_string(),
+            locked: false,
+            created_at: Some(Utc::now()),
+            repos: vec![GriptreeRepoInfo {
+                name: "myrepo".to_string(),
+                original_branch: "main".to_string(),
+                is_reference: false,
+                worktree_name: None,
+                worktree_path: None,
+                main_repo_path: None,
+            }],
+            manifest_branch: None,
+            manifest_worktree_name: None,
+        };
+
+        let json = serde_json::to_string_pretty(&pointer).unwrap();
+        std::fs::write(&pointer_path, json).unwrap();
+
+        let loaded = GriptreePointer::load(&pointer_path).unwrap();
+        assert_eq!(loaded.branch, "feat/pointer-test");
+        assert_eq!(loaded.main_workspace, "/main/workspace");
+        assert_eq!(loaded.repos.len(), 1);
+        assert_eq!(loaded.repos[0].name, "myrepo");
+    }
+
+    #[test]
+    fn test_griptree_pointer_load_invalid() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let pointer_path = temp.path().join(".griptree");
+        std::fs::write(&pointer_path, "bad json").unwrap();
+
+        let result = GriptreePointer::load(&pointer_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_griptree_pointer_find_in_ancestors() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let nested = temp.path().join("a").join("b").join("c");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        // Place pointer at root
+        let pointer = GriptreePointer {
+            main_workspace: "/main".to_string(),
+            branch: "feat/ancestor".to_string(),
+            locked: false,
+            created_at: None,
+            repos: vec![],
+            manifest_branch: None,
+            manifest_worktree_name: None,
+        };
+        let json = serde_json::to_string(&pointer).unwrap();
+        std::fs::write(temp.path().join(".griptree"), json).unwrap();
+
+        let found = GriptreePointer::find_in_ancestors(&nested);
+        assert!(found.is_some());
+        let (found_path, found_pointer) = found.unwrap();
+        assert_eq!(found_path, temp.path());
+        assert_eq!(found_pointer.branch, "feat/ancestor");
+    }
 }

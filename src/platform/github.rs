@@ -376,9 +376,8 @@ impl HostingPlatform for GitHubAdapter {
     /// because the REST API doesn't support auto-merge and the GraphQL mutation
     /// is complex.
     ///
-    /// TODO: This ignores `self.base_url`, so it won't work with GitHub
-    /// Enterprise instances that use a custom API URL. To support GHE, either
-    /// use the GraphQL API or pass `--hostname` to `gh`.
+    /// Supports GitHub Enterprise by passing `--hostname` when a custom
+    /// `base_url` is configured.
     async fn enable_auto_merge(
         &self,
         owner: &str,
@@ -395,12 +394,30 @@ impl HostingPlatform for GitHubAdapter {
         let repo_arg = format!("{}/{}", owner, repo);
         let pr_str = pull_number.to_string();
 
-        let mut cmd = tokio::process::Command::new("gh");
-        cmd.args([
-            "pr", "merge", &pr_str, "--auto", merge_flag, "--repo", &repo_arg,
-        ]);
+        // Extract hostname for GHE instances
+        let ghe_hostname = self.base_url.as_ref().and_then(|url| {
+            url::Url::parse(url).ok().and_then(|parsed| {
+                let host = parsed.host_str()?.to_string();
+                if host == "api.github.com" {
+                    None // Standard GitHub, no --hostname needed
+                } else {
+                    Some(host)
+                }
+            })
+        });
 
-        debug!(target: "gitgrip::cmd", program = "gh", args = ?["pr", "merge", &pr_str, "--auto", merge_flag, "--repo", &repo_arg], "exec");
+        let mut args = vec![
+            "pr", "merge", &pr_str, "--auto", merge_flag, "--repo", &repo_arg,
+        ];
+        if let Some(ref hostname) = ghe_hostname {
+            args.push("--hostname");
+            args.push(hostname);
+        }
+
+        let mut cmd = tokio::process::Command::new("gh");
+        cmd.args(&args);
+
+        debug!(target: "gitgrip::cmd", program = "gh", args = ?args, "exec");
         let output = cmd
             .output()
             .await

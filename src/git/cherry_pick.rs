@@ -100,3 +100,102 @@ pub fn cherry_pick_continue(repo_path: &Path) -> Result<(), GitError> {
 pub fn cherry_pick_in_progress(repo_path: &Path) -> bool {
     repo_path.join(".git").join("CHERRY_PICK_HEAD").exists()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::process::Command as StdCommand;
+    use tempfile::TempDir;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let output = StdCommand::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn setup_repo_with_commit() -> TempDir {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        git(dir, &["init", "-b", "main"]);
+        git(dir, &["config", "user.email", "test@example.com"]);
+        git(dir, &["config", "user.name", "Test User"]);
+        fs::write(dir.join("file.txt"), "initial").unwrap();
+        git(dir, &["add", "file.txt"]);
+        git(dir, &["commit", "-m", "initial commit"]);
+        temp
+    }
+
+    fn get_head_sha(dir: &Path) -> String {
+        let output = StdCommand::new("git")
+            .current_dir(dir)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn test_commit_exists_true() {
+        let temp = setup_repo_with_commit();
+        let sha = get_head_sha(temp.path());
+        assert!(commit_exists(temp.path(), &sha));
+    }
+
+    #[test]
+    fn test_commit_exists_false() {
+        let temp = setup_repo_with_commit();
+        assert!(!commit_exists(
+            temp.path(),
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+        ));
+    }
+
+    #[test]
+    fn test_cherry_pick_applied() {
+        let temp = setup_repo_with_commit();
+        let dir = temp.path();
+
+        // Create a second commit on a side branch
+        git(dir, &["checkout", "-b", "side"]);
+        fs::write(dir.join("side.txt"), "side content").unwrap();
+        git(dir, &["add", "side.txt"]);
+        git(dir, &["commit", "-m", "side commit"]);
+        let side_sha = get_head_sha(dir);
+
+        // Switch back to main and cherry-pick
+        git(dir, &["checkout", "main"]);
+        let result = cherry_pick(dir, &side_sha);
+        assert!(matches!(result, CherryPickResult::Applied));
+        assert!(dir.join("side.txt").exists());
+    }
+
+    #[test]
+    fn test_cherry_pick_commit_not_found() {
+        let temp = setup_repo_with_commit();
+        let result = cherry_pick(temp.path(), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+        assert!(matches!(result, CherryPickResult::CommitNotFound));
+    }
+
+    #[test]
+    fn test_cherry_pick_in_progress_false() {
+        let temp = setup_repo_with_commit();
+        assert!(!cherry_pick_in_progress(temp.path()));
+    }
+
+    #[test]
+    fn test_cherry_pick_abort_no_cherry_pick() {
+        let temp = setup_repo_with_commit();
+        // Aborting when no cherry-pick is in progress should error
+        let result = cherry_pick_abort(temp.path());
+        assert!(result.is_err());
+    }
+}

@@ -48,6 +48,9 @@ pub enum GitError {
 
     #[error("Object error: {0}")]
     Object(String),
+
+    #[error("Repository locked: {0}")]
+    RepositoryLocked(String),
 }
 
 /// Open a git repository at the given path
@@ -64,6 +67,48 @@ pub fn is_git_repo<P: AsRef<Path>>(path: P) -> bool {
 /// Check if a path exists
 pub fn path_exists<P: AsRef<Path>>(path: P) -> bool {
     path.as_ref().exists()
+}
+
+/// Check if a git lock file exists (`.git/index.lock`).
+///
+/// Returns the lock file path if it exists.
+pub fn git_lock_exists<P: AsRef<Path>>(path: P) -> Option<std::path::PathBuf> {
+    let lock_path = path.as_ref().join(".git").join("index.lock");
+    if lock_path.exists() {
+        Some(lock_path)
+    } else {
+        None
+    }
+}
+
+/// Wait for a git lock to be released with exponential backoff.
+///
+/// Returns `Ok(())` if the lock is released within the retry window,
+/// or `Err(GitError::RepositoryLocked)` if it times out.
+pub fn wait_for_git_lock<P: AsRef<Path>>(path: P) -> Result<(), GitError> {
+    let path = path.as_ref();
+    let max_attempts: u32 = 5;
+    let initial_delay_ms: u64 = 200;
+    let max_delay_ms: u64 = 5000;
+
+    for attempt in 0..max_attempts {
+        if git_lock_exists(path).is_none() {
+            return Ok(());
+        }
+
+        let delay_ms = (initial_delay_ms * 2u64.pow(attempt)).min(max_delay_ms);
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+    }
+
+    // Final check
+    if git_lock_exists(path).is_none() {
+        return Ok(());
+    }
+
+    Err(GitError::RepositoryLocked(format!(
+        "{}: .git/index.lock exists — another git process may be running",
+        path.display()
+    )))
 }
 
 /// Clone a repository
@@ -263,5 +308,41 @@ mod tests {
         let repo = open_repo(&dest).expect("open repo");
         let branch = get_current_branch(&repo).expect("current branch");
         assert_eq!(branch, "main");
+    }
+
+    #[test]
+    fn test_git_lock_exists_none() {
+        let temp = TempDir::new().unwrap();
+        Repository::init(temp.path()).unwrap();
+        assert!(git_lock_exists(temp.path()).is_none());
+    }
+
+    #[test]
+    fn test_git_lock_exists_some() {
+        let temp = TempDir::new().unwrap();
+        Repository::init(temp.path()).unwrap();
+        let lock_path = temp.path().join(".git").join("index.lock");
+        fs::write(&lock_path, "").unwrap();
+        assert!(git_lock_exists(temp.path()).is_some());
+    }
+
+    #[test]
+    fn test_wait_for_git_lock_no_lock() {
+        let temp = TempDir::new().unwrap();
+        Repository::init(temp.path()).unwrap();
+        assert!(wait_for_git_lock(temp.path()).is_ok());
+    }
+
+    #[test]
+    fn test_wait_for_git_lock_persistent_lock() {
+        let temp = TempDir::new().unwrap();
+        Repository::init(temp.path()).unwrap();
+        let lock_path = temp.path().join(".git").join("index.lock");
+        fs::write(&lock_path, "").unwrap();
+
+        let result = wait_for_git_lock(temp.path());
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("index.lock"));
     }
 }
