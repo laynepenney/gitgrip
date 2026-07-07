@@ -173,6 +173,11 @@ impl HostingPlatform for GitHubAdapter {
 
         let client = self.get_client().await?;
 
+        debug!(
+            owner,
+            repo, head, base, title, draft, "GitHub create PR request"
+        );
+
         let result = client
             .pulls(owner, repo)
             .create(title, head, base)
@@ -199,7 +204,7 @@ impl HostingPlatform for GitHubAdapter {
         }
 
         let pr = result.map_err(|e| {
-            let msg = e.to_string();
+            let msg = format_octocrab_error(&e);
             if msg.contains("Validation Failed") || msg.contains("422") {
                 if msg.contains("head sha") || msg.contains("Head sha") {
                     return PlatformError::HeadBranchNotFound {
@@ -1557,6 +1562,33 @@ impl HostingPlatform for GitHubAdapter {
             tag: release.tag_name,
             url: release.html_url,
         })
+    }
+}
+
+fn format_octocrab_error(error: &octocrab::Error) -> String {
+    match error {
+        octocrab::Error::GitHub { source, .. } => {
+            let mut message = format!(
+                "GitHub API {}: {}",
+                source.status_code.as_u16(),
+                source.message
+            );
+            if let Some(errors) = source.errors.as_ref().filter(|errors| !errors.is_empty()) {
+                let details = errors
+                    .iter()
+                    .map(|error| error.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                message.push_str("; errors: ");
+                message.push_str(&details);
+            }
+            if let Some(url) = &source.documentation_url {
+                message.push_str("; documentation: ");
+                message.push_str(url);
+            }
+            message
+        }
+        other => other.to_string(),
     }
 }
 

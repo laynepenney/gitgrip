@@ -301,6 +301,36 @@ pub fn filter_repos(
         .collect()
 }
 
+/// Validate repo filters before command execution so repo-scoped commands do not
+/// silently no-op when the local manifest is stale.
+pub fn validate_repo_filters_known(
+    manifest: &Manifest,
+    repos_filter: Option<&[String]>,
+) -> anyhow::Result<()> {
+    let Some(filters) = repos_filter else {
+        return Ok(());
+    };
+
+    let missing: Vec<&String> = filters
+        .iter()
+        .filter(|name| name.as_str() != "manifest" && !manifest.repos.contains_key(*name))
+        .collect();
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let names = missing
+        .iter()
+        .map(|name| format!("'{}'", name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::bail!(
+        "repo filter {} not found in local manifest. If it was added upstream, run `gr sync --repo manifest` or plain `gr sync` first, then retry.",
+        names
+    );
+}
+
 /// Get RepoInfo for the manifest repo if it exists.
 ///
 /// This provides a standardized way to include the manifest repository
