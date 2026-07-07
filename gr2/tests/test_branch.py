@@ -144,7 +144,9 @@ class TestBranchCLI:
         assert result.exit_code == 0, result.output
         assert _head_sha(repo, "feat/cli-based") == _head_sha(repo, "main")
 
-    def test_gr2_branch_defaults_to_cwd_repo_scope(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_gr2_branch_defaults_to_cwd_repo_scope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """gr2 branch operates on the current repo by default -- no gripspace-wide
         sweep unless explicitly requested. Departs from gr1's default (which
         operates over filter_repos(...) across the whole manifest); grip#755's
