@@ -190,8 +190,8 @@ Current Python references:
 
 4. The engine does not own hooks policy.
 
-   Hooks may execute around materialization in the Python UX layer, but a
-   future Rust core should not embed premium policy or daemon behavior.
+   The OSS UX layer exposes only a neutral hook seam; hook registration,
+   policy, and behavior live in premium-side plugins.
 
 5. The engine does not own transport.
 
