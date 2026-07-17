@@ -184,7 +184,18 @@ pub async fn run_pr_merge(
                 {
                     Ok(status) => {
                         // Successfully got check status
-                        if status.state == CheckState::Failure {
+                        if !status.checks_configured {
+                            // No CI is configured for this ref at all -- not a
+                            // real pending/passing signal, nothing to wait on
+                            // (grip#772: this used to map to Pending and
+                            // `--wait` would burn the full timeout for
+                            // something that was never going to appear).
+                            Output::info(&format!(
+                                "{}: no CI checks configured for branch '{}', proceeding",
+                                repo.name, branch
+                            ));
+                            CheckStatus::Passing
+                        } else if status.state == CheckState::Failure {
                             // Checks are actually failing
                             CheckStatus::Failing
                         } else if status.state == CheckState::Pending {
@@ -331,10 +342,17 @@ pub async fn run_pr_merge(
                         .await
                     {
                         Ok(status) => {
-                            pr.check_status = match status.state {
-                                CheckState::Failure => CheckStatus::Failing,
-                                CheckState::Pending => CheckStatus::Pending,
-                                _ => CheckStatus::Passing,
+                            pr.check_status = if !status.checks_configured {
+                                // grip#772: don't keep waiting on a ref that
+                                // turns out to have no CI configured, even if
+                                // it started this loop as Pending.
+                                CheckStatus::Passing
+                            } else {
+                                match status.state {
+                                    CheckState::Failure => CheckStatus::Failing,
+                                    CheckState::Pending => CheckStatus::Pending,
+                                    _ => CheckStatus::Passing,
+                                }
                             };
 
                             match pr.check_status {

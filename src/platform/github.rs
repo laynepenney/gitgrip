@@ -843,6 +843,7 @@ impl HostingPlatform for GitHubAdapter {
                 return Ok(StatusCheckResult {
                     state: aggregate_state,
                     statuses,
+                    checks_configured: true,
                 });
             }
         }
@@ -894,7 +895,7 @@ impl HostingPlatform for GitHubAdapter {
             _ => CheckState::Pending,
         };
 
-        let statuses = status
+        let statuses: Vec<StatusCheck> = status
             .statuses
             .iter()
             .map(|s| StatusCheck {
@@ -903,7 +904,19 @@ impl HostingPlatform for GitHubAdapter {
             })
             .collect();
 
-        Ok(StatusCheckResult { state, statuses })
+        // GitHub's legacy combined-status endpoint reports state="pending" for
+        // a commit with zero posted statuses -- the same string it uses for
+        // "checks are running." Reaching this fallback at all already means
+        // the modern Check Runs API found nothing (total_count == 0); if the
+        // legacy API also has zero individual statuses, nothing is configured
+        // for this ref at all, and `--wait` must not block on it (grip#772).
+        let checks_configured = !(state == CheckState::Pending && statuses.is_empty());
+
+        Ok(StatusCheckResult {
+            state,
+            statuses,
+            checks_configured,
+        })
     }
 
     async fn get_allowed_merge_methods(
