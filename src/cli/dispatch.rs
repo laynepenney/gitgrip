@@ -1055,7 +1055,7 @@ fn load_gripspace() -> anyhow::Result<(std::path::PathBuf, crate::core::manifest
         match crate::core::workspace_checkout::load_checkout_metadata(&search_path) {
             Ok(Some(checkout_info)) => {
                 let manifest =
-                    crate::core::workspace_checkout::manifest_from_checkout(&checkout_info);
+                    crate::core::workspace_checkout::manifest_from_checkout(&checkout_info)?;
                 return Ok((search_path, manifest));
             }
             Ok(None) => {}

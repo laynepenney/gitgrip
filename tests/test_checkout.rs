@@ -540,3 +540,98 @@ fn test_corrupted_checkout_metadata_fails_closed_not_open_to_parent() {
         "a failed gr env should explain why, not fail silently"
     );
 }
+
+// ── grip#775 round 4: an absolute or escaping repo path inside otherwise-
+// valid checkout metadata must not redirect authority-bearing commands
+// outside the checkout, e.g. onto an unrelated parent repo. ────────────────
+
+#[test]
+fn test_absolute_repo_path_in_metadata_cannot_escape_the_checkout() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    let pointer = gitgrip::core::griptree::GriptreePointer {
+        main_workspace: "/nonexistent/decoy-main-workspace".to_string(),
+        branch: "feat/decoy".to_string(),
+        locked: false,
+        created_at: None,
+        repos: vec![],
+        manifest_branch: None,
+        manifest_worktree_name: None,
+    };
+    std::fs::write(
+        ws.workspace_root.join(".griptree"),
+        serde_json::to_string(&pointer).expect("serialize pointer"),
+    )
+    .expect("write .griptree pointer at the parent gripspace root");
+
+    gitgrip::cli::commands::checkout::run_checkout_add(
+        &ws.workspace_root,
+        &manifest,
+        "sentinel-repro-escape",
+        Some(&["app".to_string()]),
+        None,
+    )
+    .expect("checkout add should succeed");
+
+    let checkout_root = ws
+        .workspace_root
+        .join(".grip")
+        .join("checkouts")
+        .join("sentinel-repro-escape");
+    let checkout_repo_dir = checkout_root.join("app");
+
+    // Sanity: works correctly before corruption.
+    let good_output = Command::cargo_bin("gr")
+        .expect("gr binary should build")
+        .current_dir(&checkout_repo_dir)
+        .arg("env")
+        .output()
+        .expect("gr env should run");
+    assert!(
+        good_output.status.success(),
+        "gr env should succeed before the metadata is tampered with"
+    );
+
+    // Rewrite .checkout.json's "app" entry to an ABSOLUTE relative_path
+    // pointing at the PARENT's own real "app" repo -- otherwise-valid,
+    // nonempty metadata, exactly Sentinel's repro shape. PathBuf::join
+    // silently discards the checkout-root base when the joined path is
+    // absolute, so an unvalidated reconstruction would resolve authority-
+    // bearing commands onto this unrelated parent repo instead.
+    let meta_path = checkout_root.join(".checkout.json");
+    let raw = std::fs::read_to_string(&meta_path).expect("read checkout metadata");
+    let mut value: serde_json::Value = serde_json::from_str(&raw).expect("parse metadata");
+    let parent_app_path = ws.workspace_root.join("app");
+    value["repos"][0]["relative_path"] =
+        serde_json::Value::String(parent_app_path.to_string_lossy().to_string());
+    std::fs::write(&meta_path, serde_json::to_string_pretty(&value).unwrap())
+        .expect("write tampered metadata");
+
+    let escaped_output = Command::cargo_bin("gr")
+        .expect("gr binary should build")
+        .current_dir(&checkout_repo_dir)
+        .arg("env")
+        .output()
+        .expect("gr env should run");
+
+    assert!(
+        !escaped_output.status.success(),
+        "gr env must reject a reconstructed manifest whose repo path is absolute -- silently \
+         succeeding means an authority-bearing command could resolve outside the checkout, \
+         grip#775 round 4's exact scope escape"
+    );
+
+    let stdout = String::from_utf8_lossy(&escaped_output.stdout);
+    assert!(
+        !stdout.contains(&parent_app_path.to_string_lossy().to_string()),
+        "the rejected reconstruction must never surface the escaping absolute path in output: {}",
+        stdout
+    );
+
+    let stderr = String::from_utf8_lossy(&escaped_output.stderr);
+    assert!(
+        !stderr.is_empty(),
+        "a rejected reconstruction should explain why, not fail silently"
+    );
+}

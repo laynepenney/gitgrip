@@ -270,7 +270,18 @@ fn validate_checkout_info(info: &CheckoutInfo, meta_path: &Path) -> Result<()> {
 /// Reconstruct a full gripspace `Manifest` from checkout metadata, in memory
 /// -- no file is ever written for this; `.checkout.json` is the single
 /// source of truth a checkout carries about itself.
-pub fn manifest_from_checkout(info: &CheckoutInfo) -> Manifest {
+///
+/// Validated with the SAME `Manifest::validate()` path-safety checks
+/// (`path_escapes_boundary`) a YAML manifest goes through via
+/// `Manifest::parse` -- a manifest built in memory is not exempt from them.
+/// grip#775 round 3 (Sentinel): a nonempty but absolute or `..`-escaping
+/// `CheckoutRepo.relative_path` passed `validate_checkout_info`'s
+/// empty-string check yet, once joined onto the checkout root via
+/// `PathBuf::join`, silently replaced it outright (`Path::join` discards the
+/// base when the argument is absolute) -- redirecting authority-bearing
+/// commands like `gr status` at whatever real path the metadata pointed to,
+/// including an unrelated parent repo.
+pub fn manifest_from_checkout(info: &CheckoutInfo) -> Result<Manifest> {
     let mut repos = HashMap::new();
     for repo in &info.repos {
         repos.insert(
@@ -297,7 +308,7 @@ pub fn manifest_from_checkout(info: &CheckoutInfo) -> Manifest {
         );
     }
 
-    Manifest {
+    let manifest = Manifest {
         version: 2,
         remotes: None,
         gripspaces: None,
@@ -305,7 +316,14 @@ pub fn manifest_from_checkout(info: &CheckoutInfo) -> Manifest {
         repos,
         settings: info.settings.clone(),
         workspace: None,
-    }
+    };
+    manifest.validate().with_context(|| {
+        format!(
+            "checkout '{}' has an invalid reconstructed manifest",
+            info.name
+        )
+    })?;
+    Ok(manifest)
 }
 
 /// List all checkouts under `.grip/checkouts/`.
@@ -680,7 +698,8 @@ mod tests {
             let info = load_checkout_metadata(&checkout_root)
                 .expect("checkout metadata should be readable")
                 .expect("checkout metadata should load from the checkout root");
-            let derived = manifest_from_checkout(&info);
+            let derived =
+                manifest_from_checkout(&info).expect("reconstructed manifest should validate");
 
             assert_eq!(
                 derived.repos.len(),
