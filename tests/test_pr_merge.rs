@@ -43,6 +43,7 @@ async fn test_pr_merge_no_open_prs() {
             delete_branch: true,
             repo_filter: None,
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -94,6 +95,7 @@ async fn test_pr_merge_skip_default_branch() {
             delete_branch: true,
             repo_filter: None,
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -139,6 +141,7 @@ async fn test_pr_merge_skip_reference_repos() {
             delete_branch: true,
             repo_filter: None,
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -183,6 +186,7 @@ async fn test_pr_merge_mixed_repos_all_skipped() {
             delete_branch: true,
             repo_filter: None,
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -246,6 +250,7 @@ async fn test_pr_merge_force_bypasses_checks() {
             delete_branch: true,
             repo_filter: None,
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -315,6 +320,7 @@ async fn test_pr_merge_branch_behind_suggests_update() {
             delete_branch: true,
             repo_filter: None,
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -393,6 +399,7 @@ async fn test_pr_merge_repo_filter_excludes_non_target() {
             delete_branch: true,
             repo_filter: Some(vec!["frontend".to_string()]),
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -443,6 +450,7 @@ async fn test_pr_merge_repo_filter_no_match_finds_no_prs() {
             delete_branch: true,
             repo_filter: Some(vec!["nonexistent".to_string()]),
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -500,6 +508,7 @@ async fn test_pr_merge_force_yes_merges_without_prompt() {
             delete_branch: true,
             repo_filter: None,
             yes: true,
+            allow_all: false,
         },
     )
     .await;
