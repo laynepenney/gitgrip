@@ -143,17 +143,8 @@ pub fn run_checkout_add(
         anyhow::bail!("no repos matched checkout filters");
     }
 
-    let repo_specs: Vec<(&str, &str, &str)> = repos
-        .iter()
-        .map(|repo| (repo.name.as_str(), repo.url.as_str(), repo.path.as_str()))
-        .collect();
-
-    let info = workspace_checkout::create_checkout(
-        workspace_root,
-        checkout_name,
-        repo_specs.into_iter(),
-        None,
-    )?;
+    let info =
+        workspace_checkout::create_checkout(workspace_root, checkout_name, manifest, &repos, None)?;
 
     Output::success(&format!(
         "Created checkout '{}' with {} repo(s)",
