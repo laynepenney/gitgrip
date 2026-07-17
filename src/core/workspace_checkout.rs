@@ -6,9 +6,13 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::core::manifest::{Manifest, PlatformConfig, RepoConfig};
+use crate::core::manifest_paths;
+use crate::core::repo::RepoInfo;
 use crate::core::workspace_cache;
 use crate::util::log_cmd;
 
@@ -107,12 +111,16 @@ pub fn materialize_repo(
 
 /// Create a full checkout with all provided repos.
 ///
-/// Takes an iterator of (name, url, path) tuples.
+/// `parent_manifest` supplies `settings` for the derived checkout manifest
+/// (see `write_checkout_manifest`); `repos` supplies the already-resolved
+/// per-repo info (url, path, revision, target, platform, ...) to materialize
+/// and to carry into that derived manifest verbatim.
 /// Returns info about the created checkout.
-pub fn create_checkout<'a>(
+pub fn create_checkout(
     workspace_root: &Path,
     checkout_name: &str,
-    repos: impl Iterator<Item = (&'a str, &'a str, &'a str)>,
+    parent_manifest: &Manifest,
+    repos: &[RepoInfo],
     branch: Option<&str>,
 ) -> Result<CheckoutInfo> {
     if checkout_exists(workspace_root, checkout_name) {
@@ -125,10 +133,17 @@ pub fn create_checkout<'a>(
 
     let mut checkout_repos = Vec::new();
 
-    for (name, url, path) in repos {
-        let target = materialize_repo(workspace_root, checkout_name, name, url, path, branch)?;
+    for repo in repos {
+        let target = materialize_repo(
+            workspace_root,
+            checkout_name,
+            &repo.name,
+            &repo.url,
+            &repo.path,
+            branch,
+        )?;
         checkout_repos.push(CheckoutRepo {
-            name: name.to_string(),
+            name: repo.name.clone(),
             path: target,
             branch: branch.map(String::from),
         });
@@ -148,7 +163,72 @@ pub fn create_checkout<'a>(
     std::fs::write(&meta_path, json)
         .with_context(|| format!("writing checkout metadata: {}", meta_path.display()))?;
 
+    // Write a self-contained gripspace manifest so `gr` commands run from
+    // inside the checkout resolve THIS checkout as the workspace root
+    // (grip#774) instead of climbing past it to the parent gripspace --
+    // `load_from_workspace`'s ancestor walk only recognizes a `.gitgrip`
+    // directory, which nothing wrote here before this.
+    write_checkout_manifest(&checkout_root, parent_manifest, repos)?;
+
     Ok(info)
+}
+
+/// Derive and write a `.gitgrip/spaces/main/gripspace.yml` scoped to exactly
+/// the repos materialized into this checkout, so the checkout is a
+/// self-sufficient gripspace discoverable by the same ancestor walk every
+/// other `gr` command already uses (no new discovery path, no special-casing
+/// checkouts anywhere else in the CLI).
+fn write_checkout_manifest(
+    checkout_root: &Path,
+    parent_manifest: &Manifest,
+    repos: &[RepoInfo],
+) -> Result<()> {
+    let mut derived_repos: HashMap<String, RepoConfig> = HashMap::new();
+    for repo in repos {
+        derived_repos.insert(
+            repo.name.clone(),
+            RepoConfig {
+                url: Some(repo.url.clone()),
+                remote: None,
+                path: repo.path.clone(),
+                revision: Some(repo.revision.clone()),
+                target: Some(repo.target.clone()),
+                sync_remote: Some(repo.sync_remote.clone()),
+                push_remote: Some(repo.push_remote.clone()),
+                copyfile: None,
+                linkfile: None,
+                platform: Some(PlatformConfig {
+                    platform_type: repo.platform_type,
+                    base_url: repo.platform_base_url.clone(),
+                }),
+                reference: repo.reference,
+                groups: repo.groups.clone(),
+                agent: None,
+                clone_strategy: None,
+            },
+        );
+    }
+
+    let derived_manifest = Manifest {
+        version: 2,
+        remotes: None,
+        gripspaces: None,
+        manifest: None,
+        repos: derived_repos,
+        settings: parent_manifest.settings.clone(),
+        workspace: None,
+    };
+
+    let manifest_dir = manifest_paths::main_space_dir(checkout_root);
+    std::fs::create_dir_all(&manifest_dir)
+        .with_context(|| format!("creating checkout manifest dir: {}", manifest_dir.display()))?;
+    let manifest_path = manifest_dir.join(manifest_paths::PRIMARY_FILE_NAME);
+    let yaml = serde_yaml::to_string(&derived_manifest)
+        .context("serializing derived checkout manifest")?;
+    std::fs::write(&manifest_path, yaml)
+        .with_context(|| format!("writing checkout manifest: {}", manifest_path.display()))?;
+
+    Ok(())
 }
 
 /// List all checkouts under `.grip/checkouts/`.
@@ -200,8 +280,65 @@ pub fn remove_checkout(workspace_root: &Path, name: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::manifest::ManifestSettings;
     use crate::core::workspace_cache::test_support;
     use std::fs;
+
+    /// Build a single-repo manifest + resolved `RepoInfo`, matching the shape
+    /// `setup_cached_workspace` produces (one repo named "testrepo" checked
+    /// out at path "testrepo"), for tests exercising `create_checkout`'s
+    /// derived-manifest path without hand-rolling every `RepoInfo` field.
+    fn single_repo_manifest_and_info(
+        workspace: &Path,
+        name: &str,
+        url: &str,
+    ) -> (Manifest, Vec<RepoInfo>) {
+        // parse_git_url only recognizes git@, https://, http://, and file://
+        // -- setup_cached_workspace hands back a bare filesystem path, so it
+        // needs the file:// scheme RepoInfo::from_config requires to resolve
+        // owner/repo. materialize_repo's `git clone` accepts file:// URLs
+        // the same as a bare path, so this doesn't change what gets cloned.
+        let file_url = if url.contains("://") {
+            url.to_string()
+        } else {
+            format!("file://{}", url)
+        };
+
+        let mut repos = HashMap::new();
+        repos.insert(
+            name.to_string(),
+            RepoConfig {
+                url: Some(file_url),
+                remote: None,
+                path: name.to_string(),
+                revision: None,
+                target: None,
+                sync_remote: None,
+                push_remote: None,
+                copyfile: None,
+                linkfile: None,
+                platform: None,
+                reference: false,
+                groups: vec![],
+                agent: None,
+                clone_strategy: None,
+            },
+        );
+        let manifest = Manifest {
+            version: 2,
+            remotes: None,
+            gripspaces: None,
+            manifest: None,
+            repos,
+            settings: ManifestSettings::default(),
+            workspace: None,
+        };
+        let settings = manifest.settings.clone();
+        let config = manifest.repos.get(name).unwrap();
+        let repo_info = RepoInfo::from_config(name, config, workspace, &settings, None)
+            .expect("from_config should resolve a repo with an explicit url");
+        (manifest, vec![repo_info])
+    }
 
     fn with_cache_dir<T>(cache_dir: &Path, f: impl FnOnce() -> T) -> T {
         let _guard = test_support::ENV_LOCK
@@ -367,9 +504,9 @@ mod tests {
             let (workspace, remote) = setup_cached_workspace(tmp.path());
 
             let url = remote.to_string_lossy().to_string();
-            let repos = vec![("testrepo", url.as_str(), "testrepo")];
+            let (manifest, repos) = single_repo_manifest_and_info(&workspace, "testrepo", &url);
 
-            let info = create_checkout(&workspace, "feat-x", repos.into_iter(), None)
+            let info = create_checkout(&workspace, "feat-x", &manifest, &repos, None)
                 .expect("create checkout");
 
             assert_eq!(info.name, "feat-x");
@@ -390,11 +527,10 @@ mod tests {
             let (workspace, remote) = setup_cached_workspace(tmp.path());
 
             let url = remote.to_string_lossy().to_string();
-            let repos = vec![("testrepo", url.as_str(), "testrepo")];
-            create_checkout(&workspace, "dup", repos.into_iter(), None).expect("first");
+            let (manifest, repos) = single_repo_manifest_and_info(&workspace, "testrepo", &url);
+            create_checkout(&workspace, "dup", &manifest, &repos, None).expect("first");
 
-            let repos2 = vec![("testrepo", url.as_str(), "testrepo")];
-            let result = create_checkout(&workspace, "dup", repos2.into_iter(), None);
+            let result = create_checkout(&workspace, "dup", &manifest, &repos, None);
             assert!(result.is_err());
         });
     }
@@ -407,8 +543,8 @@ mod tests {
             let (workspace, remote) = setup_cached_workspace(tmp.path());
 
             let url = remote.to_string_lossy().to_string();
-            let repos = vec![("testrepo", url.as_str(), "testrepo")];
-            create_checkout(&workspace, "removeme", repos.into_iter(), None).expect("create");
+            let (manifest, repos) = single_repo_manifest_and_info(&workspace, "testrepo", &url);
+            create_checkout(&workspace, "removeme", &manifest, &repos, None).expect("create");
 
             assert!(checkout_exists(&workspace, "removeme"));
             let removed = remove_checkout(&workspace, "removeme").expect("remove");
@@ -432,14 +568,119 @@ mod tests {
             let (workspace, remote) = setup_cached_workspace(tmp.path());
 
             let url = remote.to_string_lossy().to_string();
-            let repos = vec![("testrepo", url.as_str(), "testrepo")];
-            create_checkout(&workspace, "ephemeral", repos.into_iter(), None).expect("create");
+            let (manifest, repos) = single_repo_manifest_and_info(&workspace, "testrepo", &url);
+            create_checkout(&workspace, "ephemeral", &manifest, &repos, None).expect("create");
 
             remove_checkout(&workspace, "ephemeral").expect("remove");
 
             assert!(
                 workspace_cache::cache_exists(&workspace, "testrepo", &url).expect("cache exists"),
                 "cache must survive checkout deletion"
+            );
+        });
+    }
+
+    // ── grip#774: checkout must be a self-discoverable workspace ──────────
+
+    #[test]
+    fn test_create_checkout_writes_self_contained_gripspace_manifest() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_dir = tmp.path().join("global-cache");
+        with_cache_dir(&cache_dir, || {
+            let (workspace, remote) = setup_cached_workspace(tmp.path());
+
+            let url = remote.to_string_lossy().to_string();
+            let (mut manifest, repos) = single_repo_manifest_and_info(&workspace, "testrepo", &url);
+            manifest.settings.pr_prefix = "[from-parent]".to_string();
+
+            create_checkout(&workspace, "self-contained", &manifest, &repos, None)
+                .expect("create checkout");
+
+            let checkout_root = checkout_path(&workspace, "self-contained");
+
+            // This is the exact marker `load_from_workspace`'s ancestor walk
+            // looks for (dispatch.rs) -- before this fix, nothing wrote it,
+            // so the walk climbed straight past the checkout to the parent.
+            let gitgrip_dir = checkout_root.join(".gitgrip");
+            assert!(
+                gitgrip_dir.is_dir(),
+                "checkout root must contain a .gitgrip marker so gr commands \
+                 discover the checkout itself, not the parent workspace"
+            );
+
+            let manifest_path = manifest_paths::default_gripspace_manifest_path(&checkout_root);
+            assert!(
+                manifest_path.is_file(),
+                "expected a gripspace manifest at {}",
+                manifest_path.display()
+            );
+
+            let content = fs::read_to_string(&manifest_path).expect("read derived manifest");
+            let derived = crate::core::manifest::Manifest::parse(&content)
+                .expect("derived checkout manifest should parse");
+
+            assert_eq!(
+                derived.repos.len(),
+                1,
+                "derived manifest should carry exactly the repos materialized into this checkout"
+            );
+            let repo_config = derived.repos.get("testrepo").expect("testrepo entry");
+            assert_eq!(
+                repo_config.url.as_deref(),
+                Some(format!("file://{}", url).as_str()),
+                "derived repo url must match the resolved (file://-scheme) url used to \
+                 materialize the repo"
+            );
+            assert_eq!(
+                repo_config.path, "testrepo",
+                "derived repo path must be relative to the checkout root, matching \
+                 where materialize_repo actually cloned it"
+            );
+            assert_eq!(
+                derived.settings.pr_prefix, "[from-parent]",
+                "derived manifest must carry the parent's settings, not gitgrip's built-in default"
+            );
+        });
+    }
+
+    #[test]
+    fn test_checkout_gripspace_manifest_is_independently_discoverable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_dir = tmp.path().join("global-cache");
+        with_cache_dir(&cache_dir, || {
+            let (workspace, remote) = setup_cached_workspace(tmp.path());
+
+            let url = remote.to_string_lossy().to_string();
+            let (manifest, repos) = single_repo_manifest_and_info(&workspace, "testrepo", &url);
+            create_checkout(&workspace, "discoverable", &manifest, &repos, None)
+                .expect("create checkout");
+
+            let checkout_root = checkout_path(&workspace, "discoverable");
+            let repo_dir = checkout_root.join("testrepo");
+            assert!(repo_dir.is_dir(), "materialized repo dir must exist");
+
+            // Mirrors dispatch.rs's `load_from_workspace` ancestor walk directly
+            // (that function is private to the CLI crate): starting from a repo
+            // *inside* the checkout, the nearest `.gitgrip` ancestor must be the
+            // checkout root, not the parent workspace root two levels up.
+            let mut search = repo_dir.as_path();
+            let found_root = loop {
+                if search.join(".gitgrip").exists() {
+                    break Some(search.to_path_buf());
+                }
+                match search.parent() {
+                    Some(parent) => search = parent,
+                    None => break None,
+                }
+            };
+
+            assert_eq!(
+                found_root,
+                Some(checkout_root.clone()),
+                "the nearest .gitgrip ancestor from inside the checkout's repo must be \
+                 the checkout root ({}), not the parent workspace ({})",
+                checkout_root.display(),
+                workspace.display()
             );
         });
     }
