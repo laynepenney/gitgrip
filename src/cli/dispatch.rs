@@ -302,6 +302,7 @@ pub async fn dispatch_command(
                     no_delete_branch,
                     repo,
                     yes,
+                    all,
                 } => {
                     crate::cli::commands::pr::run_pr_merge(
                         &ctx.workspace_root,
@@ -317,16 +318,24 @@ pub async fn dispatch_command(
                             delete_branch: !no_delete_branch,
                             repo_filter: repo,
                             yes,
+                            allow_all: all,
                         },
                     )
                     .await?;
                 }
-                PrCommands::Edit { title, body } => {
+                PrCommands::Edit {
+                    title,
+                    body,
+                    repo,
+                    all,
+                } => {
                     crate::cli::commands::pr::run_pr_edit(
                         &ctx.workspace_root,
                         &ctx.manifest,
                         title.as_deref(),
                         body.as_deref(),
+                        repo.as_deref(),
+                        all,
                         ctx.json,
                     )
                     .await?;
@@ -367,12 +376,19 @@ pub async fn dispatch_command(
                     )
                     .await?;
                 }
-                PrCommands::Review { event, body } => {
+                PrCommands::Review {
+                    event,
+                    body,
+                    repo,
+                    all,
+                } => {
                     crate::cli::commands::pr::run_pr_review(
                         &ctx.workspace_root,
                         &ctx.manifest,
                         event,
                         body.as_deref(),
+                        repo.as_deref(),
+                        all,
                         ctx.json,
                     )
                     .await?;

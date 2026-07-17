@@ -3,7 +3,7 @@
 use super::create::has_commits_ahead;
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::{get_manifest_repo_info, RepoInfo};
+use crate::core::repo::{get_manifest_repo_info, require_explicit_multi_repo_scope, RepoInfo};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::traits::{HostingPlatform, PlatformError};
 use crate::platform::{get_platform_adapter, CheckState, MergeMethod};
@@ -49,6 +49,7 @@ pub struct MergeOptions<'a> {
     pub delete_branch: bool,
     pub repo_filter: Option<Vec<String>>,
     pub yes: bool,
+    pub allow_all: bool,
 }
 
 /// Run the PR merge command
@@ -235,6 +236,22 @@ pub async fn run_pr_merge(
         println!("Repositories checked: {}", all_repos.len());
         return Ok(());
     }
+
+    // Same guard as `gr pr edit`/`gr pr review`: an unscoped multi-repo match is
+    // ambiguous, not consent. --repo already narrows opts.repo_filter above; --all
+    // is the explicit opt-in when the caller genuinely wants every matched repo.
+    require_explicit_multi_repo_scope(
+        &prs_to_merge,
+        opts.repo_filter.is_some(),
+        opts.allow_all,
+        "gr pr merge",
+        |pr| {
+            format!(
+                "{} PR #{} on {}/{}",
+                pr.repo_name, pr.pr_number, pr.owner, pr.repo
+            )
+        },
+    )?;
 
     // Show which repos have PRs and which don't
     let repos_with_prs: Vec<String> = prs_to_merge.iter().map(|p| p.repo_name.clone()).collect();

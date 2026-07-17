@@ -745,6 +745,9 @@ pub enum PrCommands {
         /// Skip confirmation prompt (used with --force)
         #[arg(short = 'y', long)]
         yes: bool,
+        /// Proceed even though multiple repos have a matching open PR (without --repo)
+        #[arg(long)]
+        all: bool,
     },
     /// Edit pull request title/body
     Edit {
@@ -754,6 +757,12 @@ pub enum PrCommands {
         /// New PR body/description
         #[arg(short, long)]
         body: Option<String>,
+        /// Only edit PRs for specific repos (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Proceed even though multiple repos have a matching open PR (without --repo)
+        #[arg(long)]
+        all: bool,
     },
     /// Check CI status
     Checks {
@@ -795,6 +804,12 @@ pub enum PrCommands {
         /// Review comment body (required for comment and request-changes)
         #[arg(short, long)]
         body: Option<String>,
+        /// Only review PRs for specific repos (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Proceed even though multiple repos have a matching open PR (without --repo)
+        #[arg(long)]
+        all: bool,
     },
 }
 
