@@ -789,6 +789,14 @@ impl HostingPlatform for GitHubAdapter {
 
         check_response_rate_limit(response.headers(), "GitHub").await;
 
+        // Whether the Check Runs API positively confirmed zero runs exist
+        // (success + total_count == 0), as opposed to failing to answer at
+        // all (non-success HTTP). Only a positive confirmation licenses the
+        // legacy fallback's ambiguous pending+empty reading to mean
+        // "confirmed absent" -- a Check Runs outage must not be conflated
+        // with "nothing is configured" (grip#776 finding 1).
+        let mut check_runs_confirmed_empty = false;
+
         if response.status().is_success() {
             #[derive(serde::Deserialize)]
             struct CheckRunsResponse {
@@ -846,6 +854,7 @@ impl HostingPlatform for GitHubAdapter {
                     checks_configured: true,
                 });
             }
+            check_runs_confirmed_empty = true;
         }
 
         // Fallback to legacy status checks API
@@ -906,11 +915,16 @@ impl HostingPlatform for GitHubAdapter {
 
         // GitHub's legacy combined-status endpoint reports state="pending" for
         // a commit with zero posted statuses -- the same string it uses for
-        // "checks are running." Reaching this fallback at all already means
-        // the modern Check Runs API found nothing (total_count == 0); if the
-        // legacy API also has zero individual statuses, nothing is configured
-        // for this ref at all, and `--wait` must not block on it (grip#772).
-        let checks_configured = !(state == CheckState::Pending && statuses.is_empty());
+        // "checks are running." That ambiguous reading only means "nothing is
+        // configured" when the modern Check Runs API POSITIVELY confirmed
+        // zero runs (check_runs_confirmed_empty); if Check Runs instead
+        // failed to answer at all, an equally-ambiguous legacy reading must
+        // not be promoted to confirmed-absence, or `--wait` would silently
+        // proceed past checks whose status simply could not be determined
+        // (grip#776 finding 1). A definitive legacy signal -- real statuses,
+        // or a non-pending state -- is trusted either way.
+        let legacy_ambiguous = state == CheckState::Pending && statuses.is_empty();
+        let checks_configured = !(check_runs_confirmed_empty && legacy_ambiguous);
 
         Ok(StatusCheckResult {
             state,

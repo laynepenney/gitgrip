@@ -6,10 +6,40 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::{get_manifest_repo_info, require_explicit_multi_repo_scope, RepoInfo};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::traits::{HostingPlatform, PlatformError};
-use crate::platform::{get_platform_adapter, CheckState, MergeMethod};
+use crate::platform::{get_platform_adapter, CheckState, MergeMethod, StatusCheckResult};
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
+
+/// This command's internal readiness classification for a PR's checks,
+/// derived from a platform's [`StatusCheckResult`] via [`resolve_check_status`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckStatus {
+    Passing,
+    Failing,
+    Pending,
+    Unknown,
+}
+
+/// Resolve a platform's status-check result into this command's internal
+/// [`CheckStatus`]. Pure and synchronous so it can be pinned directly against
+/// synthetic [`StatusCheckResult`] values, without exercising the HTTP or
+/// sleep/retry machinery around either call site. Both the initial fetch and
+/// the `--wait` re-poll loop call this exact function so the decision can
+/// never diverge between them (grip#776 finding 3).
+fn resolve_check_status(status: &StatusCheckResult) -> CheckStatus {
+    if !status.checks_configured {
+        // No CI is configured for this ref at all -- not a real
+        // pending/passing signal, nothing to wait on (grip#772).
+        CheckStatus::Passing
+    } else {
+        match status.state {
+            CheckState::Failure => CheckStatus::Failing,
+            CheckState::Pending => CheckStatus::Pending,
+            CheckState::Success => CheckStatus::Passing,
+        }
+    }
+}
 
 /// Auto-detect the best merge method for a repo when none is specified.
 ///
@@ -112,14 +142,6 @@ pub async fn run_pr_merge(
     }
 
     // Collect PRs to merge
-    #[derive(Debug, Clone, Copy)]
-    enum CheckStatus {
-        Passing,
-        Failing,
-        Pending,
-        Unknown,
-    }
-
     struct PRToMerge {
         repo_name: String,
         owner: String,
@@ -185,25 +207,12 @@ pub async fn run_pr_merge(
                     Ok(status) => {
                         // Successfully got check status
                         if !status.checks_configured {
-                            // No CI is configured for this ref at all -- not a
-                            // real pending/passing signal, nothing to wait on
-                            // (grip#772: this used to map to Pending and
-                            // `--wait` would burn the full timeout for
-                            // something that was never going to appear).
                             Output::info(&format!(
                                 "{}: no CI checks configured for branch '{}', proceeding",
                                 repo.name, branch
                             ));
-                            CheckStatus::Passing
-                        } else if status.state == CheckState::Failure {
-                            // Checks are actually failing
-                            CheckStatus::Failing
-                        } else if status.state == CheckState::Pending {
-                            // Checks still running - don't block but warn
-                            CheckStatus::Pending
-                        } else {
-                            CheckStatus::Passing
                         }
+                        resolve_check_status(&status)
                     }
                     Err(e) => {
                         // Could not determine check status
@@ -342,32 +351,7 @@ pub async fn run_pr_merge(
                         .await
                     {
                         Ok(status) => {
-                            pr.check_status = if !status.checks_configured {
-                                // grip#772: don't keep waiting on a ref that
-                                // turns out to have no CI configured, even if
-                                // it started this loop as Pending.
-                                //
-                                // Defense-in-depth, not independently mutation-tested:
-                                // this mirrors the initial-fetch guard above verbatim,
-                                // and the existing regression only exercises that first
-                                // guard (a repo whose checks are already unconfigured on
-                                // entry short-circuits before the wait loop ever runs).
-                                // A mutant breaking only this re-poll branch would
-                                // survive that test. Reaching this specific branch in a
-                                // test means surviving a real 15s sleep per iteration
-                                // (hardcoded below, no paused-clock seam exists yet in
-                                // this codebase) -- accepted as review-pinned parity
-                                // with the initial guard rather than paying that cost
-                                // for structurally identical logic. Revisit if this
-                                // branch and the initial guard ever diverge.
-                                CheckStatus::Passing
-                            } else {
-                                match status.state {
-                                    CheckState::Failure => CheckStatus::Failing,
-                                    CheckState::Pending => CheckStatus::Pending,
-                                    _ => CheckStatus::Passing,
-                                }
-                            };
+                            pr.check_status = resolve_check_status(&status);
 
                             match pr.check_status {
                                 CheckStatus::Passing => {
@@ -881,4 +865,55 @@ fn check_repo_for_changes(repo: &RepoInfo) -> anyhow::Result<bool> {
 
     // Check for commits ahead of target branch using shared helper
     has_commits_ahead(&git_repo, &current, repo.target_branch())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(checks_configured: bool, state: CheckState) -> StatusCheckResult {
+        StatusCheckResult {
+            state,
+            statuses: Vec::new(),
+            checks_configured,
+        }
+    }
+
+    // ── resolve_check_status: the single seam both the initial fetch and the
+    // ── --wait re-poll loop call (grip#776 finding 3). Pure and synchronous,
+    // ── so these pin the decision directly with no HTTP or sleep involved.
+
+    #[test]
+    fn test_resolve_check_status_not_configured_is_passing() {
+        // grip#772: a ref with no CI configured at all has nothing to wait
+        // on, regardless of what `state` the platform reports alongside it.
+        assert_eq!(
+            resolve_check_status(&status(false, CheckState::Pending)),
+            CheckStatus::Passing
+        );
+    }
+
+    #[test]
+    fn test_resolve_check_status_configured_success_is_passing() {
+        assert_eq!(
+            resolve_check_status(&status(true, CheckState::Success)),
+            CheckStatus::Passing
+        );
+    }
+
+    #[test]
+    fn test_resolve_check_status_configured_failure_is_failing() {
+        assert_eq!(
+            resolve_check_status(&status(true, CheckState::Failure)),
+            CheckStatus::Failing
+        );
+    }
+
+    #[test]
+    fn test_resolve_check_status_configured_pending_is_pending() {
+        assert_eq!(
+            resolve_check_status(&status(true, CheckState::Pending)),
+            CheckStatus::Pending
+        );
+    }
 }
