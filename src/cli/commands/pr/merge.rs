@@ -346,6 +346,20 @@ pub async fn run_pr_merge(
                                 // grip#772: don't keep waiting on a ref that
                                 // turns out to have no CI configured, even if
                                 // it started this loop as Pending.
+                                //
+                                // Defense-in-depth, not independently mutation-tested:
+                                // this mirrors the initial-fetch guard above verbatim,
+                                // and the existing regression only exercises that first
+                                // guard (a repo whose checks are already unconfigured on
+                                // entry short-circuits before the wait loop ever runs).
+                                // A mutant breaking only this re-poll branch would
+                                // survive that test. Reaching this specific branch in a
+                                // test means surviving a real 15s sleep per iteration
+                                // (hardcoded below, no paused-clock seam exists yet in
+                                // this codebase) -- accepted as review-pinned parity
+                                // with the initial guard rather than paying that cost
+                                // for structurally identical logic. Revisit if this
+                                // branch and the initial guard ever diverge.
                                 CheckStatus::Passing
                             } else {
                                 match status.state {
