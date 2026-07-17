@@ -1046,11 +1046,25 @@ fn load_gripspace() -> anyhow::Result<(std::path::PathBuf, crate::core::manifest
             }
         }
 
-        if let Some(checkout_info) =
-            crate::core::workspace_checkout::load_checkout_metadata(&search_path)
-        {
-            let manifest = crate::core::workspace_checkout::manifest_from_checkout(&checkout_info);
-            return Ok((search_path, manifest));
+        // Fail CLOSED, not open: once `.checkout.json` exists at the nearest
+        // boundary, an unreadable/malformed/incomplete marker must stop the
+        // walk here with a clear error, never silently continue climbing to
+        // the parent gripspace (grip#775 round 3 -- that silent continue was
+        // the same cross-scope hazard this PR exists to close, reintroduced
+        // through a corrupted marker instead of a missing one).
+        match crate::core::workspace_checkout::load_checkout_metadata(&search_path) {
+            Ok(Some(checkout_info)) => {
+                let manifest =
+                    crate::core::workspace_checkout::manifest_from_checkout(&checkout_info);
+                return Ok((search_path, manifest));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return Err(e.context(format!(
+                    "found checkout metadata at {} but it is invalid",
+                    search_path.display()
+                )));
+            }
         }
 
         let gitgrip_dir = search_path.join(".gitgrip");

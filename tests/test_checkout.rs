@@ -438,3 +438,105 @@ fn test_checkout_including_manifest_repo_leaves_it_clean_end_to_end() {
         std::fs::canonicalize(reported).unwrap_or_else(|_| std::path::PathBuf::from(reported));
     assert_eq!(canonical_reported, canonical_checkout_root);
 }
+
+// ── grip#775 round 3: malformed checkout metadata must fail closed, never
+// fail open to a parent workspace -- especially a parent that is itself a
+// griptree, Sentinel's exact real-gripspace repro shape. ────────────────────
+
+#[test]
+fn test_corrupted_checkout_metadata_fails_closed_not_open_to_parent() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    // Match Sentinel's exact repro context: the parent also carries a
+    // .griptree pointer, which is precisely the path a fail-open bug would
+    // silently resolve to once the (corrupted) nearer checkout marker is
+    // wrongly treated as absent.
+    let pointer = gitgrip::core::griptree::GriptreePointer {
+        main_workspace: "/nonexistent/decoy-main-workspace".to_string(),
+        branch: "feat/decoy".to_string(),
+        locked: false,
+        created_at: None,
+        repos: vec![],
+        manifest_branch: None,
+        manifest_worktree_name: None,
+    };
+    std::fs::write(
+        ws.workspace_root.join(".griptree"),
+        serde_json::to_string(&pointer).expect("serialize pointer"),
+    )
+    .expect("write .griptree pointer at the parent gripspace root");
+
+    gitgrip::cli::commands::checkout::run_checkout_add(
+        &ws.workspace_root,
+        &manifest,
+        "sentinel-repro-nomanifest",
+        Some(&["app".to_string()]),
+        None,
+    )
+    .expect("checkout add should succeed with no manifest repo included");
+
+    let checkout_repo_dir = ws
+        .workspace_root
+        .join(".grip")
+        .join("checkouts")
+        .join("sentinel-repro-nomanifest")
+        .join("app");
+
+    // Sanity: gr env correctly reports the child BEFORE corruption (mirrors
+    // step 2 of Sentinel's repro).
+    let good_output = Command::cargo_bin("gr")
+        .expect("gr binary should build")
+        .current_dir(&checkout_repo_dir)
+        .arg("env")
+        .output()
+        .expect("gr env should run");
+    assert!(
+        good_output.status.success(),
+        "gr env should succeed before corruption: {}",
+        String::from_utf8_lossy(&good_output.stderr)
+    );
+
+    // Corrupt only the child-root .checkout.json (step 3).
+    let checkout_root = ws
+        .workspace_root
+        .join(".grip")
+        .join("checkouts")
+        .join("sentinel-repro-nomanifest");
+    std::fs::write(checkout_root.join(".checkout.json"), "not valid json{{{")
+        .expect("corrupt checkout metadata");
+
+    // Step 4: gr env again. Must NOT exit 0, and must NOT report the parent
+    // workspace path -- that combination is grip#775 round 3's exact
+    // reported failure mode.
+    let corrupted_output = Command::cargo_bin("gr")
+        .expect("gr binary should build")
+        .current_dir(&checkout_repo_dir)
+        .arg("env")
+        .output()
+        .expect("gr env should run");
+
+    assert!(
+        !corrupted_output.status.success(),
+        "gr env must fail (nonzero exit) when the nearest checkout marker exists but is \
+         corrupted -- silently succeeding here means it fell through to some other \
+         workspace instead of failing closed"
+    );
+
+    let stdout = String::from_utf8_lossy(&corrupted_output.stdout);
+    let canonical_parent =
+        std::fs::canonicalize(&ws.workspace_root).unwrap_or_else(|_| ws.workspace_root.clone());
+    assert!(
+        !stdout.contains(&canonical_parent.to_string_lossy().to_string())
+            && !stdout.contains(&ws.workspace_root.to_string_lossy().to_string()),
+        "gr env's output must not emit the parent workspace path at all when the nearer \
+         checkout marker is corrupted -- got stdout: {}",
+        stdout
+    );
+
+    let stderr = String::from_utf8_lossy(&corrupted_output.stderr);
+    assert!(
+        !stderr.is_empty(),
+        "a failed gr env should explain why, not fail silently"
+    );
+}

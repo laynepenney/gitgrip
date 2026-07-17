@@ -224,10 +224,47 @@ pub fn create_checkout(
 /// owns the ancestor traversal so it can check every marker type at each
 /// level before climbing (grip#775 blocker 1: two independent all-ancestors
 /// passes let a farther `.griptree` eclipse a nearer checkout).
-pub fn load_checkout_metadata(dir: &Path) -> Option<CheckoutInfo> {
+///
+/// Distinguishes "no marker here" (`Ok(None)`, safe to keep climbing) from
+/// "a marker exists but is unreadable, malformed, or structurally incomplete"
+/// (`Err`, must NOT be treated as absence). Sentinel's grip#775 round-3
+/// finding: collapsing both cases to `None` via `.ok()?` let a corrupted
+/// `.checkout.json` fail OPEN to the parent workspace -- recreating the
+/// exact silent cross-scope hazard this whole PR exists to close, just
+/// through a new mechanism (a broken marker instead of a missing one).
+pub fn load_checkout_metadata(dir: &Path) -> Result<Option<CheckoutInfo>> {
     let meta_path = dir.join(CHECKOUT_METADATA_FILE);
-    let content = std::fs::read_to_string(meta_path).ok()?;
-    serde_json::from_str(&content).ok()
+    if !meta_path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(&meta_path)
+        .with_context(|| format!("reading checkout metadata: {}", meta_path.display()))?;
+    let info: CheckoutInfo = serde_json::from_str(&content)
+        .with_context(|| format!("parsing checkout metadata: {}", meta_path.display()))?;
+    validate_checkout_info(&info, &meta_path)?;
+    Ok(Some(info))
+}
+
+/// Structural completeness check for metadata that parsed successfully but
+/// may still be unusable -- e.g. a pre-round-2 `.checkout.json` whose
+/// per-repo fields (url, relative_path, ...) all deserialize to their
+/// `#[serde(default)]` empty values because those fields didn't exist yet
+/// when it was written. A `RepoConfig` built from an empty url or path is
+/// not a parse error, but it is not a usable workspace either.
+fn validate_checkout_info(info: &CheckoutInfo, meta_path: &Path) -> Result<()> {
+    for repo in &info.repos {
+        if repo.url.is_empty() || repo.relative_path.is_empty() {
+            anyhow::bail!(
+                "checkout metadata at {} has an incomplete entry for repo '{}' (empty url or \
+                 path) -- this checkout was likely created by an older gitgrip version; remove \
+                 it with `gr checkout remove {}` and recreate it",
+                meta_path.display(),
+                repo.name,
+                info.name
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Reconstruct a full gripspace `Manifest` from checkout metadata, in memory
@@ -284,10 +321,13 @@ pub fn list_checkouts(workspace_root: &Path) -> Result<Vec<CheckoutInfo>> {
         if !entry.path().is_dir() {
             continue;
         }
+        // `gr checkout list` is informational, not a scope-resolution path --
+        // unlike `load_gripspace`'s discovery walk, a broken checkout here
+        // should not fail the whole listing, only fall back to a minimal
+        // entry so the user can see it exists and remove/recreate it.
         match load_checkout_metadata(&entry.path()) {
-            Some(info) => checkouts.push(info),
-            None => {
-                // Checkout dir exists but no metadata — construct minimal info
+            Ok(Some(info)) => checkouts.push(info),
+            Ok(None) | Err(_) => {
                 let name = entry.file_name().to_string_lossy().to_string();
                 checkouts.push(CheckoutInfo {
                     name: name.clone(),
@@ -638,6 +678,7 @@ mod tests {
             let checkout_root = checkout_path(&workspace, "self-contained");
 
             let info = load_checkout_metadata(&checkout_root)
+                .expect("checkout metadata should be readable")
                 .expect("checkout metadata should load from the checkout root");
             let derived = manifest_from_checkout(&info);
 
@@ -683,7 +724,9 @@ mod tests {
                 ".checkout.json must live directly at the checkout root"
             );
             assert!(
-                load_checkout_metadata(checkout_root.join("testrepo").as_path()).is_none(),
+                load_checkout_metadata(checkout_root.join("testrepo").as_path())
+                    .expect("absence is not an error")
+                    .is_none(),
                 "metadata must not also be discoverable from inside a materialized repo \
                  (that would mean it was written into repo content, not the checkout root)"
             );
@@ -778,13 +821,51 @@ mod tests {
     #[test]
     fn test_load_checkout_metadata_returns_none_when_missing() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        assert!(load_checkout_metadata(tmp.path()).is_none());
+        assert!(load_checkout_metadata(tmp.path())
+            .expect("absence is not an error")
+            .is_none());
     }
 
     #[test]
-    fn test_load_checkout_metadata_returns_none_on_malformed_json() {
+    fn test_load_checkout_metadata_errors_on_malformed_json_instead_of_failing_open() {
+        // grip#775 round 3 (Sentinel): a marker that EXISTS but is broken must
+        // never be treated the same as no marker at all -- that collapse is
+        // exactly what let a corrupted `.checkout.json` fail open to the
+        // parent workspace. This replaces the old test that pinned the
+        // unsafe `None`-on-malformed-JSON behavior as if it were correct.
         let tmp = tempfile::tempdir().expect("tempdir");
         fs::write(tmp.path().join(CHECKOUT_METADATA_FILE), "not valid json").unwrap();
-        assert!(load_checkout_metadata(tmp.path()).is_none());
+        let result = load_checkout_metadata(tmp.path());
+        assert!(
+            result.is_err(),
+            "a marker that exists but fails to parse must be an error, not Ok(None) -- \
+             collapsing the two lets the discovery walk silently climb past a broken \
+             checkout to the parent workspace"
+        );
+    }
+
+    #[test]
+    fn test_load_checkout_metadata_errors_on_legacy_metadata_with_empty_repo_fields() {
+        // grip#775 round 3 requirement 3: metadata that parses successfully
+        // but whose per-repo fields deserialize to their #[serde(default)]
+        // empty values (e.g. a pre-round-2 .checkout.json written before url/
+        // relative_path existed on CheckoutRepo) is not a parse error, but a
+        // RepoConfig built from an empty url or path is unusable.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let legacy_json = r#"{
+            "name": "legacy",
+            "path": "/tmp/legacy",
+            "created_at": "2026-01-01T00:00:00Z",
+            "repos": [
+                {"name": "app", "path": "/tmp/legacy/app", "branch": null}
+            ]
+        }"#;
+        fs::write(tmp.path().join(CHECKOUT_METADATA_FILE), legacy_json).unwrap();
+        let result = load_checkout_metadata(tmp.path());
+        assert!(
+            result.is_err(),
+            "metadata with an empty url/relative_path must fail structural validation, \
+             not silently reconstruct a Manifest with an unusable repo config"
+        );
     }
 }
