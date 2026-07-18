@@ -507,6 +507,37 @@ pub async fn mock_check_runs(
         .await;
 }
 
+/// GitHub API response for the legacy combined-status endpoint (GET
+/// /repos/:owner/:repo/commits/:ref/status). This is the fallback the real
+/// adapter code hits when the check-runs API reports zero runs. With zero
+/// posted statuses, GitHub's own API returns `state: "pending"` -- the exact
+/// ambiguity grip#772's fix disambiguates via the empty `statuses` array.
+pub async fn mock_legacy_combined_status(
+    server: &MockServer,
+    ref_name: &str,
+    state: &str,
+    statuses: Vec<(&str, &str)>,
+) {
+    let entries: Vec<Value> = statuses
+        .iter()
+        .map(|(context, entry_state)| json!({"context": context, "state": entry_state}))
+        .collect();
+
+    let body = json!({
+        "state": state,
+        "statuses": entries
+    });
+
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/owner/repo/commits/{}/status",
+            ref_name
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
 /// GitHub API response for updating a PR (PATCH /repos/:owner/:repo/pulls/:number).
 pub async fn mock_update_pull_request(server: &MockServer, number: u64) {
     let body = github_pr_json(number, "open", "feat/test", "main", false, "");
