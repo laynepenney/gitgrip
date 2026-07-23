@@ -603,6 +603,16 @@ async fn test_github_create_pr_validation_error() {
         "error should mention create failure: {}",
         err_str
     );
+    assert!(
+        err_str.contains("422"),
+        "error should include upstream status code: {}",
+        err_str
+    );
+    assert!(
+        err_str.contains("A pull request already exists for owner:feat/test."),
+        "error should include upstream validation detail: {}",
+        err_str
+    );
 }
 
 // ── Rate Limited (403) ──────────────────────────────────────────
