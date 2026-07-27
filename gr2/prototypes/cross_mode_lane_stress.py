@@ -93,46 +93,46 @@ path = "repos/web"
 url = "https://example.invalid/web.git"
 
 [[repos]]
-name = "premium"
-path = "repos/premium"
-url = "https://example.invalid/premium.git"
+name = "billing"
+path = "repos/billing"
+url = "https://example.invalid/billing.git"
 
 [workspace_constraints]
 max_concurrent_edit_leases_global = 2
 
 [workspace_constraints.required_reviewers]
-premium = 2
+billing = 2
 app = 1
 
 [[units]]
 name = "atlas"
 path = "agents/atlas"
 agent_id = "atlas-agent"
-repos = ["app", "api", "web", "premium"]
+repos = ["app", "api", "web", "billing"]
 
 [[units]]
 name = "apollo"
 path = "agents/apollo"
 agent_id = "apollo-agent"
-repos = ["app", "api", "web", "premium"]
+repos = ["app", "api", "web", "billing"]
 
 [[units]]
 name = "layne"
 path = "agents/layne"
 agent_id = "layne-human"
-repos = ["app", "api", "web", "premium"]
+repos = ["app", "api", "web", "billing"]
 
 [[units]]
 name = "synapt-core"
 path = "agents/synapt-core"
 agent_id = "agent_opus_abc123"
-repos = ["app", "api", "web", "premium"]
+repos = ["app", "api", "web", "billing"]
 
 [[units]]
 name = "release-control"
 path = "agents/release-control"
 agent_id = "agent_opus_abc123"
-repos = ["app", "api", "web", "premium"]
+repos = ["app", "api", "web", "billing"]
 """
     (workspace_root / ".grip" / "workspace_spec.toml").write_text(spec)
 
@@ -813,7 +813,7 @@ def scenario_identity_rebind_live_lanes(root: Path, workspace_root: Path) -> Sce
             "synapt-core",
             "release-control",
             "--actor",
-            "premium:control-plane",
+            "scope:control-plane",
             "--json",
         ],
         capture=True,
@@ -855,7 +855,7 @@ def scenario_identity_rebind_live_lanes(root: Path, workspace_root: Path) -> Sce
             "synapt-core",
             "release-control",
             "--actor",
-            "premium:control-plane",
+            "scope:control-plane",
             "--json",
         ],
         capture=True,
@@ -925,7 +925,7 @@ def scenario_global_edit_lease_cap(root: Path, workspace_root: Path) -> Scenario
     create_lane(root, workspace_root, "apollo", "feat-cap-b", "api", "feat/cap-b")
     create_lane(root, workspace_root, "layne", "feat-cap-c", "web", "feat/cap-c")
 
-    create_lane(root, workspace_root, "release-control", "feat-cap-stale", "premium", "feat/cap-stale")
+    create_lane(root, workspace_root, "release-control", "feat-cap-stale", "billing", "feat/cap-stale")
     acquire_lease(root, workspace_root, "release-control", "feat-cap-stale", "agent:opus", "edit", ttl_seconds=0)
 
     lease_a = acquire_lease(root, workspace_root, "atlas", "feat-cap-a", "agent:atlas", "edit")
@@ -992,11 +992,11 @@ def scenario_global_edit_lease_cap(root: Path, workspace_root: Path) -> Scenario
 
 
 def scenario_required_reviewers(root: Path, workspace_root: Path) -> ScenarioResult:
-    zero = check_review_requirements_json(root, workspace_root, "premium", 777)
-    create_review_lane(root, workspace_root, "atlas", "premium", 777)
-    one = check_review_requirements_json(root, workspace_root, "premium", 777)
-    create_review_lane(root, workspace_root, "apollo", "premium", 777)
-    two = check_review_requirements_json(root, workspace_root, "premium", 777)
+    zero = check_review_requirements_json(root, workspace_root, "billing", 777)
+    create_review_lane(root, workspace_root, "atlas", "billing", 777)
+    one = check_review_requirements_json(root, workspace_root, "billing", 777)
+    create_review_lane(root, workspace_root, "apollo", "billing", 777)
+    two = check_review_requirements_json(root, workspace_root, "billing", 777)
 
     holds = []
     gaps = []
@@ -1012,14 +1012,14 @@ def scenario_required_reviewers(root: Path, workspace_root: Path) -> ScenarioRes
         gaps.append("zero-reviewer requirement state is incorrect")
 
     if one["actual_reviewers"] == 1 and not one["satisfied"]:
-        holds.append("one review lane is still unsatisfied when premium requires two reviewers")
+        holds.append("one review lane is still unsatisfied when the repo requires two reviewers")
     else:
         gaps.append("single reviewer state is incorrect")
 
     if two["actual_reviewers"] == 2 and two["satisfied"]:
-        holds.append("two review lanes satisfy the premium repo review requirement")
+        holds.append("two review lanes satisfy the repo review requirement")
     else:
-        gaps.append("two reviewers did not satisfy the premium repo requirement")
+        gaps.append("two reviewers did not satisfy the repo requirement")
 
     verdict = "holds" if not gaps else "fails"
     return ScenarioResult(

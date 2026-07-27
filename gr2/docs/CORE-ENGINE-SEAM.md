@@ -48,7 +48,7 @@ removing it from live Cargo workspace membership, deleting the duplicate root
 
 The core engine presents structured functions. They return typed data or
 plain structured dictionaries. They do not print, parse CLI args, call Typer,
-exit the process, or read premium-only state.
+exit the process, or read state it does not own.
 
 ### `load_spec`
 
@@ -67,7 +67,7 @@ Non-responsibilities:
 
 - resolving org membership
 - deriving `owner_unit` from `agent_id`
-- consulting premium entitlements
+- consulting entitlements
 
 Current Python references:
 
@@ -113,7 +113,7 @@ Responsibilities:
 
 Non-responsibilities:
 
-- deciding premium policy
+- deciding policy
 - hiding partial failure behind a success response
 - silently pulling, rebasing, or discarding work without an explicit guard
 
@@ -160,7 +160,7 @@ Responsibilities:
 
 Non-responsibilities:
 
-- reading premium lane envelopes under `.grip/lanes`
+- reading externally-owned lane envelopes under `.grip/lanes`
 - resolving whether a caller is allowed to create the lane
 - deriving identity from branch, path, or handle strings
 
@@ -177,10 +177,10 @@ Current Python references:
    `owner_unit` and `agent_id` are opaque caller-supplied keys. The engine may
    store and echo them, but it must not derive, parse, or authorize from them.
 
-2. The engine does not own premium envelopes.
+2. The engine does not own lane envelopes.
 
    OSS gr2 lane records live under `agents/<owner_unit>/lanes/<lane>`.
-   Premium lane envelopes may live under `.grip/lanes`, but OSS gr2 must not
+   Externally-owned lane envelopes may live under `.grip/lanes`, but OSS gr2 must not
    read that namespace.
 
 3. The engine does not own CLI shape.
@@ -191,7 +191,7 @@ Current Python references:
 4. The engine does not own hooks policy.
 
    The OSS UX layer exposes only a neutral hook seam; hook registration,
-   policy, and behavior live in premium-side plugins.
+   policy, and behavior live in plugins outside this repo.
 
 5. The engine does not own transport.
 

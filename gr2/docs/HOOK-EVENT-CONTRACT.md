@@ -13,7 +13,7 @@ behavior; it defines the target contract.
 - Events are durable, append-only, and replayable.
 - Consumers read events at their own pace via cursors. gr2 does not block on
   delivery.
-- The event schema is the stable API between OSS gr2 and premium spawn.
+- The event schema is the stable API between OSS gr2 and any external orchestrator.
 - Hook execution is one event source among several, not the only one.
 
 ## 2. Event Sources
@@ -76,7 +76,7 @@ top-level object without unwrapping a nested payload.
 |-------|------|----------|-------------|
 | `workspace` | string | yes | Workspace name from WorkspaceSpec. |
 | `actor` | string | yes | Who triggered the event. Format: `agent:<name>`, `human:<name>`, or `system`. |
-| `agent_id` | string | no | Persistent agent identity from premium. Opaque in OSS. |
+| `agent_id` | string | no | Persistent agent identity, resolved elsewhere. Opaque in OSS. |
 | `owner_unit` | string | yes | Unit that owns the context where this event occurred. |
 
 **Domain fields** vary by event type. See section 3.2 for the fields each event
@@ -286,7 +286,7 @@ Reading flow:
 |----------|----------|--------------|
 | **channel_bridge** | OSS | Derives `#dev`-style notifications from events. Posts to channel transport. |
 | **recall_indexer** | OSS | Indexes events into recall for searchable lane/activity history. |
-| **spawn_watcher** | Premium | Watches for events that trigger agent orchestration (lane assignments, PR readiness, hook failures). |
+| **spawn_watcher** | External | Watches for events that trigger agent orchestration (lane assignments, PR readiness, hook failures). |
 
 ### 5.3 Consumer Contract
 
@@ -300,11 +300,11 @@ Consumers must:
 - Handle schema version bumps by checking `version` and ignoring events with
   a version they do not understand.
 
-### 5.4 Spawn Integration (Premium)
+### 5.4 Spawn Integration (External)
 
-Spawn is the premium consumer that orchestrates multi-agent workflows. It
-consumes the same outbox as OSS consumers but interprets events through the
-lens of org policy and agent identity.
+Spawn is an external consumer that orchestrates multi-agent workflows. It
+consumes the same outbox as every other consumer; how it interprets those
+events is outside this contract.
 
 Events that spawn cares about:
 
@@ -558,7 +558,7 @@ Query examples that this enables:
 - `recall_timeline(actor="agent:apollo", start="2026-04-15")` shows Apollo's
   full activity timeline.
 
-The recall indexer does **not** need premium logic. It consumes the same neutral
+The recall indexer needs no external logic. It consumes the same neutral
 event stream as the channel bridge.
 
 ## 10. Failure Modes and Recovery
@@ -671,7 +671,7 @@ This document is a dependency for:
    frequent operations), should the outbox be SQLite WAL instead of JSONL?
    JSONL is simpler and auditable; SQLite handles concurrent writes better.
 5. **Event signing**: Should events carry a signature or checksum for tamper
-   detection? Relevant if the outbox is consumed by premium policy enforcement.
+   detection? Relevant if the outbox is consumed by external policy enforcement.
 
 ## 14. Failure Recovery Contract
 

@@ -158,7 +158,7 @@ def test_lane_records_remain_in_oss_agent_lane_namespace(tmp_path: Path) -> None
     assert ".grip/lanes" not in lane_path.as_posix()
 
 
-def test_oss_gr2_has_no_premium_lane_envelope_reader() -> None:
+def test_oss_gr2_has_no_external_lane_envelope_reader() -> None:
     gr2_root = Path(__file__).resolve().parents[1]
     forbidden_fragments = (
         '".grip" / "lanes"',

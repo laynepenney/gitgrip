@@ -181,10 +181,10 @@ That means:
 
 - a Synapt-backed workspace should not treat channels, recall, or agent identity
   as optional afterthoughts
-- a premium org/control-plane should compile into `WorkspaceSpec` and lane
+- an external control plane should compile into `WorkspaceSpec` and lane
   policy rather than bypassing the workspace model
 - the local workspace should materialize the result of org, team, agent, and
-  access policy decisions without leaking premium-only control-plane semantics
+  access policy decisions without leaking control-plane semantics
   into the wrong layer
 
 The user should be able to think:

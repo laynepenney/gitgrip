@@ -67,7 +67,7 @@ That makes third-party adapters possible later:
 
 ## 3. Required Spawn-Readiness Seams
 
-For premium spawn to move on top of `gr2`, these are required:
+For an external orchestrator to move on top of `gr2`, these are required:
 
 - hook invocation API with stable structured results
 - workspace / lane event outbox
@@ -154,7 +154,7 @@ Write:
 - event outbox entries
 - updated aggregated status snapshot
 
-This is the seam premium and QA will consume.
+This is the seam external consumers and QA will use.
 
 ## 6. Sync Safety Rules
 
@@ -172,7 +172,7 @@ This is the seam premium and QA will consume.
    Example: 3 of 5 repos updated, 1 blocked dirty, 1 platform failure.
 
 5. Event emission is part of correctness.
-   `sync` must emit enough machine-readable state for premium spawn and QA.
+   `sync` must emit enough machine-readable state for external orchestration and QA.
    Emit failure does not block the parent operation.
 
 6. Terminal sync state is normalized.
@@ -238,4 +238,4 @@ Not part of Sprint 20 `gr2` OSS:
 - release flow
 - multi-platform support beyond GitHub
 
-Those would either duplicate raw git or blur the OSS/premium boundary.
+Those would either duplicate raw git or blur the OSS boundary.

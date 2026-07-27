@@ -3,9 +3,9 @@
 Executes a LaunchPlan entry: run this argv, in this working directory, with
 these environment KEY NAMES. gr2 cannot tell a synapt agent team from any other
 multi-repo workspace -- it sees an opaque `unit_key`, an argv, and a set of env
-key names whose VALUES premium supplies in memory at launch.
+key names whose VALUES the caller supplies in memory at launch.
 
-Design: `synapt-spawn-premium-compiler-2026-07-27.md` §2 (LaunchPlan is the
+Design: the spawn launch contract, §2 (LaunchPlan is the
 opaque tier) and §5 (cold start, no `--resume`).
 
 THE BOUNDARY CORRECTION THIS SLICE EXISTS TO MAKE
@@ -104,7 +104,7 @@ class LaunchEntry:
 def _require_exact_env(entry: LaunchEntry, values: Mapping[str, str]) -> dict[str, str]:
     """The allowlist is exact in BOTH directions.
 
-    Extra: premium supplied a value for a key the plan never declared. The plan
+    Extra: the caller supplied a value for a key the plan never declared. The plan
     is what a reviewer reads to know what a process receives, so a value outside
     it is invisible to review.
 
@@ -146,9 +146,9 @@ def _child_environment(entry: LaunchEntry, values: Mapping[str, str]) -> dict[st
     """The child's COMPLETE environment, built rather than inherited.
 
     Sentinel, #825: passing `{**os.environ, **declared}` inherits the parent's
-    entire environment, so a child sees ambient premium variables that were
+    entire environment, so a child sees ambient caller variables that were
     never declared anywhere -- reproduced on a live host, where the coordinator's
-    SYNAPT_PREMIUM_FEATURES and SYNAPT_LOOP_INTERVAL reached a spawned agent.
+    ambient coordinator variables reached a spawned agent.
 
     My allowlist check was exact in two directions and both were about the
     SUPPLIED dict: a value for an undeclared key, and a declared key with no
@@ -163,7 +163,7 @@ def _child_environment(entry: LaunchEntry, values: Mapping[str, str]) -> dict[st
 
     That matters beyond tidiness: the demo claims identity is injected in memory
     with nothing leaked, and inheriting os.environ leaks the COORDINATOR'S
-    premium environment into every spawned agent."""
+    caller environment into every spawned agent."""
     child = _require_exact_env(entry, values)
     for key in _LAUNCHER_OWNED_PASSTHROUGH:
         ambient = os.environ.get(key)

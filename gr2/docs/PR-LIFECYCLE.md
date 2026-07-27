@@ -409,7 +409,7 @@ keeps the event stream clean: consumers see either one `pr.merged` or one
 ### 7.1 Compiled Requirements
 
 Review requirements come from the compiled WorkspaceSpec (originally from
-premium's org policy):
+externally-compiled org policy):
 
 ```toml
 [workspace_constraints.required_reviewers]
@@ -434,7 +434,7 @@ lifecycle integrates it into the `mergeable` gate.
 
 Review requirement **evaluation** (counting approvals against a threshold) is
 OSS. Review requirement **definition** (who can review, role-based overrides,
-org-level policies) is premium. gr2 only consumes the compiled numeric
+org-level policies) is out of scope for OSS. gr2 only consumes the compiled numeric
 threshold.
 
 ## 8. Cross-Link Format
@@ -454,7 +454,6 @@ canonical GitHub repository name.
 |------|----|
 | grip | synapt-dev/grip#570 |
 | synapt | synapt-dev/synapt#583 |
-| synapt-private | synapt-dev/premium#291 |
 
 Lane: `apollo/design/hook-event-contract`
 Base: `sprint-20`

@@ -669,7 +669,7 @@ async fn test_pr_merge_all_flag_proceeds_and_merges_every_match() {
 // ── grip#772: --wait must not block on a branch with no CI configured ──────
 //
 // Reproduces the exact incident: `gr pr merge --wait --timeout 600` on
-// premium#745 (2026-07-17) ran the full 600s timeout even though the branch
+// A 2026-07-17 PR ran the full 600s timeout even though the branch
 // had zero CI checks configured at all -- GitHub's check-runs API reported
 // total_count=0, and its legacy combined-status fallback reports
 // state="pending" for a commit with zero posted statuses, the same string it

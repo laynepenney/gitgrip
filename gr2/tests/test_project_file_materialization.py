@@ -1,6 +1,6 @@
 """Staging / project_file executor tests (S4-C).
 
-The `project_file` operation is the FOUNDATION PROJECTION: premium compiles the
+The `project_file` operation is the FOUNDATION PROJECTION: the plan producer stages the
 foundation, stages it under an opaque artifact key, and gr2 projects it into the
 unit (for Codex, as `AGENTS.md`). Acceptance fruit 15 -- removing the projection
 makes the Codex startup assertion fail -- is what makes these bytes a contract

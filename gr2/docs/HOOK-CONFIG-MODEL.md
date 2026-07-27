@@ -43,7 +43,7 @@ The workspace file only declares:
 - workspace identity
 - repos
 - units
-- optional workspace-wide constraints compiled from premium
+- optional workspace-wide constraints compiled externally
 
 Example:
 
@@ -63,7 +63,7 @@ url = "git@github.com:synapt-dev/synapt.git"
 [[repos]]
 name = "synapt-private"
 path = "repos/synapt-private"
-url = "git@github.com:synapt-dev/premium.git"
+url = "git@github.com:example-org/billing.git"
 
 [[units]]
 name = "atlas"
@@ -367,10 +367,9 @@ Why:
 - making that behavior repo-local is better than hiding it in a workspace-level
   manifest
 
-### 5.3 `synapt-private`
+### 5.3 Private config repo
 
-`synapt-private` is the local worktree alias for the premium repo and already
-carries private config and stronger review needs.
+A private config repo carries private configuration and stronger review needs.
 
 Example:
 
@@ -444,13 +443,6 @@ That means:
 - repo-local policy defaults
 - repo-local preferred commands
 
-### Premium owns
-
-- durable identity
-- org roles
-- entitlements
-- compilation of org/policy into workspace constraints
-
 ## 8. Migration Path
 
 We need one migration story, not three separate products.
@@ -506,7 +498,7 @@ as a parallel runtime authority once Python `gr2` is active.
 
 Recommended direction:
 
-- `agents.toml` remains a premium/control-plane input during transition
+- `agents.toml` remains a control-plane input during transition
 - compilation resolves it into:
   - workspace `units`
   - `agent_id`

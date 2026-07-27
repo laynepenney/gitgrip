@@ -21,7 +21,7 @@ fn stderr(output: &std::process::Output) -> String {
 #[test]
 #[ignore = "grip object model phase 0 is a future TDD stub"]
 fn test_grip_snapshot_bootstraps_dedicated_repo_and_commits_repo_state() {
-    let playground = PlaygroundHarness::new(&["recall", "premium", "grip", "config", "site"]);
+    let playground = PlaygroundHarness::new(&["recall", "billing", "grip", "config", "site"]);
     playground.init_from_dirs();
 
     let output = playground.run_in_workspace_output(["grip", "--type", "ceremony"]);
@@ -45,7 +45,7 @@ fn test_grip_snapshot_bootstraps_dedicated_repo_and_commits_repo_state() {
 #[test]
 #[ignore = "grip object model phase 0 is a future TDD stub"]
 fn test_grip_show_is_human_reviewable() {
-    let playground = PlaygroundHarness::new(&["recall", "premium"]);
+    let playground = PlaygroundHarness::new(&["recall", "billing"]);
     playground.init_from_dirs();
 
     let snap = playground.run_in_workspace_output(["grip", "--type", "snapshot"]);
@@ -66,7 +66,7 @@ fn test_grip_show_is_human_reviewable() {
 
     let rendered = stdout(&output);
     assert!(
-        rendered.contains("recall") && rendered.contains("premium"),
+        rendered.contains("recall") && rendered.contains("billing"),
         "gr show should render repo names in a reviewable form, got:\n{}",
         rendered
     );
@@ -75,7 +75,7 @@ fn test_grip_show_is_human_reviewable() {
 #[test]
 #[ignore = "grip object model phase 0 is a future TDD stub"]
 fn test_grip_diff_reports_changed_repos_between_snapshots() {
-    let playground = PlaygroundHarness::new(&["recall", "premium"]);
+    let playground = PlaygroundHarness::new(&["recall", "billing"]);
     playground.init_from_dirs();
 
     let first = playground.run_in_workspace_output(["grip", "--type", "snapshot"]);

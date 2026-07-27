@@ -71,7 +71,7 @@ These extend gr2 but are not required for the replacement workflow.
 | Lane checkout-pr (checkout PR branch into lane) | grip#546 |
 | Multi-platform adapters (GitLab, Azure, Bitbucket) | platform.py stubs exist |
 | Spec diffing (show drift between spec and workspace) | Rust plan command exists |
-| Agent spawn integration | Premium; gr2 OSS provides the exec surface only |
+| Agent spawn integration | External; gr2 OSS provides the exec surface only |
 | Repo maintenance policies | Prototype exists |
 | CI/release surface | gr1 covers this; port later |
 | Griptree management | gr1 covers this; port later |
@@ -172,12 +172,11 @@ that the replacement workflow works end-to-end.
 
 gr2 workspace orchestration is OSS. All features in this MVP definition live in
 the grip repo. Identity resolution, org routing, agent identity, and workspace
-policy enforcement live in premium (`synapt-dev/premium`; local worktree
-`synapt-private/`) and connect through the plugin seam.
+policy enforcement live outside this repo and connect through the plugin seam.
 
 The exec surface, sync engine, and materialization pipeline are neutral
 infrastructure. They do not answer "who is this agent" or "what workspace owns
-this." Any feature that crosses that line goes in premium per the identity test
+this." Any feature that crosses that line goes outside OSS per the identity test
 heuristic.
 
 ## References
@@ -187,4 +186,3 @@ heuristic.
 - SYNC-FAILURE-CONTRACT.md: Sync failure semantics
 - PR-LIFECYCLE.md: PR group orchestration design
 - PLATFORM-ADAPTER-AND-SYNC.md: Platform adapter protocol
-- SYNAPT-INTEGRATION.md: Premium integration boundary

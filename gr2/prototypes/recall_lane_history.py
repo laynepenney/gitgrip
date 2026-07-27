@@ -159,7 +159,7 @@ def demo_events() -> list[dict]:
             "owner_unit": "design-research",
             "lane": "auth-refactor",
             "lane_type": "feature",
-            "repos": ["grip", "premium"],
+            "repos": ["grip", "billing"],
             "timestamp": at(0),
         },
         {
@@ -170,7 +170,7 @@ def demo_events() -> list[dict]:
             "lane": "auth-refactor",
             "lane_type": "feature",
             "lease_mode": "edit",
-            "repos": ["grip", "premium"],
+            "repos": ["grip", "billing"],
             "timestamp": at(2),
         },
         {
@@ -201,7 +201,7 @@ def demo_events() -> list[dict]:
             "owner_unit": "design-research",
             "lane": "auth-refactor",
             "lane_type": "feature",
-            "repos": ["grip", "premium"],
+            "repos": ["grip", "billing"],
             "timestamp": at(45),
         },
         {
@@ -211,7 +211,7 @@ def demo_events() -> list[dict]:
             "owner_unit": "design-research",
             "lane": "auth-refactor",
             "lane_type": "feature",
-            "repos": ["grip", "premium"],
+            "repos": ["grip", "billing"],
             "timestamp": at(47),
         },
         {
@@ -221,7 +221,7 @@ def demo_events() -> list[dict]:
             "owner_unit": "release-control",
             "lane": "auth-refactor",
             "lane_type": "review",
-            "repos": ["grip", "premium"],
+            "repos": ["grip", "billing"],
             "timestamp": at(60),
         },
         {
@@ -232,7 +232,7 @@ def demo_events() -> list[dict]:
             "lane": "auth-refactor",
             "lane_type": "review",
             "lease_mode": "review",
-            "repos": ["grip", "premium"],
+            "repos": ["grip", "billing"],
             "timestamp": at(62),
         },
     ]

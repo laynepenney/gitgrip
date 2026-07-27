@@ -1,6 +1,6 @@
 """Executor for the neutral MaterializationPlan `project_file` operation (S4-C).
 
-The foundation projection: premium compiles the foundation, stages it under an
+The foundation projection: the plan producer stages the foundation under an
 opaque artifact key, and gr2 projects it into the unit (for Codex, as
 `AGENTS.md`). Acceptance fruit 15 -- removing the projection makes the Codex
 startup assertion fail -- is what makes these bytes a contract rather than a
@@ -130,7 +130,7 @@ def verify_staged_source(
         mode = os.lstat(source).st_mode
     except FileNotFoundError:
         raise ProjectFileExecutionError(
-            f"staged input {source} does not exist -- premium stages the compiled "
+            f"staged input {source} does not exist -- the staged input is written "
             "foundation before gr2 projects it"
         ) from None
     if not stat.S_ISREG(mode):

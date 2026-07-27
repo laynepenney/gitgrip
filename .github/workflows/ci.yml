@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Block premium identity markers in OSS surfaces
+      - name: Block forbidden identity markers in OSS surfaces
         shell: bash
         run: |
           set -euo pipefail
@@ -45,14 +45,14 @@ jobs:
               --glob '!.github/workflows/ci.yml' \
               "$pattern" "${SEARCH_PATHS[@]}"; then
               echo
-              echo "Boundary lint violation: found forbidden premium marker pattern '$pattern' in OSS surfaces."
+              echo "Boundary lint violation: found forbidden marker pattern '$pattern' in OSS surfaces."
               failed=1
             fi
           done
 
           if [[ "$failed" -ne 0 ]]; then
             echo
-            echo "Premium boundary violation detected. Move identity or workspace-resolution behavior out of OSS."
+            echo "Boundary violation detected. Move identity or workspace-resolution behavior out of OSS."
             exit 1
           fi
 

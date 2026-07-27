@@ -80,7 +80,7 @@ New features will land in gr2. gr1 will receive only critical bug fixes.
 ### Changed
 - **gr2 binary removed from main crate** — gr2 development continues as a standalone Python CLI; Rust gr2 code retained as library
 - CI: Windows tests run in non-blocking lane (#487)
-- Stripped premium prompts from migrate flow (#510)
+- Stripped non-OSS prompts from migrate flow (#510)
 
 ### Fixed
 - Spawn model passthrough from agents.toml (#474)

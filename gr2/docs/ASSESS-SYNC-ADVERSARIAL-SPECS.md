@@ -78,11 +78,11 @@ Invariant:
 ## 5. Conflicting Branch States Across Repos
 
 Preconditions:
-- lane spans repos `app`, `api`, `premium`
+- lane spans repos `app`, `api`, `billing`
 - expected branch is `feat/auth`
 - `app` is on `feat/auth`
 - `api` is behind remote
-- `premium` is on a different local branch
+- `billing` is on a different local branch
 
 Trigger:
 - `gr2 sync status`
