@@ -20,11 +20,25 @@ come from two different reads and nothing binds them. The invariant is satisfied
 by the broken implementation. The correct reading is that the bytes you USE must
 be the bytes you HASHED, which means exactly one read.
 
-INVARIANT 8 MAKES THIS A LIFECYCLE. A staged input may not be deleted until the
-receipt carrying its evidence is atomically published and durable, and the spec
-names the wrong signal outright: "a successful destination write or in-memory
-operation result is not acknowledgement." So the executor deletes nothing, and
-an interrupted cleanup must be recoverable from the verified receipt.
+INVARIANT 8 IS SPLIT ACROSS TWO SLICES, deliberately (Stromus 2026-07-27). The
+invariant reads: a staged input may not be deleted until the receipt carrying
+its evidence is atomically published and durable -- and it names the wrong
+signal outright, "a successful destination write or in-memory operation result
+is not acknowledgement."
+
+That is stated entirely as a NEGATIVE constraint on deletion timing, so a slice
+that never deletes satisfies it trivially. C's whole contribution to invariant 8
+is therefore that negative discipline: **C deletes nothing**, and staged inputs
+demonstrably survive a successful projection. The receipt-keyed idempotent
+cleanup is its own later slice, because a delete driven by a file on disk --
+one that must REFUSE a receipt that does not acknowledge its plan -- is a
+distinct and dangerous operation that deserves its own review surface. Never
+bundle a delete with a copy.
+
+The carve has a consequence C must carry, which is why
+test_a_rerun_after_cleanup_succeeds_from_the_destination_alone exists: once the
+cleanup slice runs, a later apply finds no staged input, so an executor that
+demanded one would break on the system's own normal sequence.
 
 Masking analysis, run before implementation (S4-A/B discipline):
 
@@ -56,7 +70,6 @@ from unittest.mock import patch
 
 from gr2.python_cli.file_exec import (
     ProjectFileExecutionError,
-    cleanup_staged_inputs,
     execute_project_file_operation,
 )
 from gr2.python_cli.spec_apply import (
@@ -255,7 +268,7 @@ class TestSourceConfinement(ProjectFileTestBase):
             self._execute(validated)
         self.assertIn("regular file", str(ctx.exception))
 
-    def test_missing_staged_input_is_rejected(self):
+    def test_missing_staged_input_with_no_current_projection_is_rejected(self):
         validated = self._validated()
         self.source_path.unlink()
 
@@ -264,7 +277,7 @@ class TestSourceConfinement(ProjectFileTestBase):
         self.assertIn("staged input", str(ctx.exception))
 
 
-class TestStagedInputLifecycle(ProjectFileTestBase):
+class TestStagedInputSurvival(ProjectFileTestBase):
     def test_a_successful_projection_does_not_delete_the_staged_input(self):
         """Invariant 8, and the spec names the proxy it is warning against: 'a
         successful destination write or in-memory operation result is not
@@ -279,74 +292,40 @@ class TestStagedInputLifecycle(ProjectFileTestBase):
             "crash here loses the only recoverable copy",
         )
 
-    def test_cleanup_removes_staged_inputs_only_after_the_receipt_is_published(self):
-        validated = self._validated()
-        evidence = self._execute(validated)
-        receipt_path = write_materialization_receipt(
-            self.workspace_root, validated, [evidence]
-        )
+    def test_a_rerun_after_cleanup_succeeds_from_the_destination_alone(self):
+        """The consequence of carving cleanup into its own slice, and the
+        reason C cannot simply require the staged input to exist.
 
-        removed = cleanup_staged_inputs(
-            validated, workspace_root=self.workspace_root, receipt_path=receipt_path
-        )
+        Run the sequence forward: C projects -> receipt publishes -> the
+        cleanup slice deletes the staged input -> someone applies again. The
+        input is gone. An executor that demands a source would make the SECOND
+        apply fail, so C and the cleanup slice together would produce a system
+        that breaks on its own normal sequence.
 
-        self.assertEqual(removed, [self.source_rel])
-        self.assertFalse(self.source_path.exists())
+        A destination already hashing to source_sha256 IS proof the projection
+        is current -- the hash is the contract, and satisfying it needs no
+        source read. Note this short-circuit only reaches a rerun: on a first
+        apply dest does not exist, so every source guard still runs."""
+        self._execute()
+        self.source_path.unlink()  # the cleanup slice, having done its job
+
+        evidence = self._execute()
+
+        self.assertIs(evidence["written"], False)
         self.assertEqual(self.dest_path.read_bytes(), FOUNDATION)
 
-    def test_interrupted_cleanup_is_completed_idempotently_from_the_receipt(self):
-        """Invariant 8's tail: 'if cleanup is interrupted after receipt
-        publication, rerun performs the idempotent cleanup from the verified
-        receipt.' The recovery reads the RECEIPT, not ambient filesystem
-        state -- the receipt is the only durable record of which inputs this
-        plan is entitled to remove."""
-        validated = self._validated()
-        evidence = self._execute(validated)
-        receipt_path = write_materialization_receipt(
-            self.workspace_root, validated, [evidence]
-        )
-        self.assertTrue(self.source_path.exists(), "precondition: cleanup has not run")
-
-        cleanup_staged_inputs(
-            validated, workspace_root=self.workspace_root, receipt_path=receipt_path
-        )
-        self.assertFalse(self.source_path.exists())
-
-        again = cleanup_staged_inputs(
-            validated, workspace_root=self.workspace_root, receipt_path=receipt_path
-        )
-        self.assertEqual(again, [], "a second cleanup must be a no-op, not an error")
-
-    def test_cleanup_refuses_a_receipt_belonging_to_another_plan(self):
-        """Cleanup DELETES, driven by a file on disk. Without this it is a
-        primitive that removes whatever some other plan's receipt happens to
-        name."""
-        validated = self._validated()
-        evidence = self._execute(validated)
-        receipt_path = write_materialization_receipt(
-            self.workspace_root, validated, [evidence]
-        )
-
-        other = self._validated(plan_id="mp_other")
-        with self.assertRaises(ProjectFileExecutionError) as ctx:
-            cleanup_staged_inputs(
-                other, workspace_root=self.workspace_root, receipt_path=receipt_path
-            )
-        self.assertIn("does not acknowledge", str(ctx.exception))
-        self.assertTrue(self.source_path.exists())
-
-    def test_cleanup_refuses_a_receipt_that_is_not_durable(self):
-        validated = self._validated()
-        self._execute(validated)
+    def test_a_stale_destination_still_demands_the_staged_input(self):
+        """The boundary of that short-circuit. If dest does NOT satisfy the
+        declared hash, the projection is not current and the source is
+        genuinely required -- otherwise 'dest exists' would quietly become
+        sufficient and a stale AGENTS.md would survive forever."""
+        self._execute()
+        self.dest_path.write_bytes(b"stale\n")
+        self.source_path.unlink()
 
         with self.assertRaises(ProjectFileExecutionError) as ctx:
-            cleanup_staged_inputs(
-                validated,
-                workspace_root=self.workspace_root,
-                receipt_path=self.workspace_root / ".grip" / "state" / "materialization" / "absent.json",
-            )
-        self.assertIn("receipt", str(ctx.exception))
-        self.assertTrue(self.source_path.exists())
+            self._execute()
+        self.assertIn("staged input", str(ctx.exception))
 
 
 class TestPublicationOrdering(ProjectFileTestBase):
