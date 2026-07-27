@@ -134,6 +134,44 @@ def _require_exact_env(entry: LaunchEntry, values: Mapping[str, str]) -> dict[st
     return {k: str(values[k]) for k in entry.env_allowlist_keys}
 
 
+# Launcher-owned process mechanics, supplied EXPLICITLY rather than inherited.
+# §6 classes these as launcher-owned precisely so a plan cannot declare them --
+# but the child still needs them to run at all (a binary resolved by name needs
+# PATH). Naming them here is the difference between "the launcher provides these,
+# for these reasons" and "whatever the parent happened to have".
+_LAUNCHER_OWNED_PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SystemRoot")
+
+
+def _child_environment(entry: LaunchEntry, values: Mapping[str, str]) -> dict[str, str]:
+    """The child's COMPLETE environment, built rather than inherited.
+
+    Sentinel, #825: passing `{**os.environ, **declared}` inherits the parent's
+    entire environment, so a child sees ambient premium variables that were
+    never declared anywhere -- reproduced on a live host, where the coordinator's
+    SYNAPT_PREMIUM_FEATURES and SYNAPT_LOOP_INTERVAL reached a spawned agent.
+
+    My allowlist check was exact in two directions and both were about the
+    SUPPLIED dict: a value for an undeclared key, and a declared key with no
+    value. Neither asks what the child ACTUALLY ENDS UP WITH. Receiving the
+    right thing and receiving ONLY that are different claims, and the test that
+    asserted the child got the declared value could not see the difference.
+
+    So the environment is CONSTRUCTED: exactly the declared keys, plus a named
+    set of launcher-owned mechanics the child cannot run without. Nothing is
+    inherited implicitly. Everything present is there because something declared
+    it or because this list names it.
+
+    That matters beyond tidiness: the demo claims identity is injected in memory
+    with nothing leaked, and inheriting os.environ leaks the COORDINATOR'S
+    premium environment into every spawned agent."""
+    child = _require_exact_env(entry, values)
+    for key in _LAUNCHER_OWNED_PASSTHROUGH:
+        ambient = os.environ.get(key)
+        if ambient is not None and key not in child:
+            child[key] = ambient
+    return child
+
+
 def launch_unit(
     entry: LaunchEntry,
     *,
@@ -156,7 +194,7 @@ def launch_unit(
             "unit was never materialized rather than that launch should create it"
         )
 
-    env = _require_exact_env(entry, env_values)
+    env = _child_environment(entry, env_values)
 
     try:
         # No shell. argv is a list, and a plan's contents are never handed to a
@@ -164,7 +202,7 @@ def launch_unit(
         proc = subprocess.Popen(  # noqa: S603
             list(entry.argv),
             cwd=str(workdir),
-            env={**os.environ, **env},
+            env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,

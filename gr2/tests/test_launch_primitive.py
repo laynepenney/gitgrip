@@ -18,6 +18,7 @@ is the shape this sprint kept finding:
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -35,6 +36,25 @@ from gr2.python_cli.launch_exec import (
 )
 
 SECRET = "SYNAPT-AGENT-ID-VALUE-THAT-MUST-NEVER-TOUCH-DISK"
+
+
+def _platform_injected_env() -> set[str]:
+    """Variables this platform adds to any child regardless of what is passed.
+
+    Measured, not listed: spawn a process with a completely empty environment
+    and see what survives. A hardcoded list would drift per-OS and, worse, would
+    silently absorb a real inheritance bug on a platform nobody measured."""
+    out = subprocess.run(
+        [sys.executable, "-c", "import os,json;print(json.dumps(dict(os.environ)))"],
+        env={},
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    try:
+        return set(json.loads(out))
+    except json.JSONDecodeError:  # pragma: no cover
+        return set()
 
 
 class LaunchTestBase(unittest.TestCase):
@@ -108,8 +128,14 @@ class TestTheBoundary(LaunchTestBase):
         for both implementations."""
         ev = self._launch()
 
+        # SCANNED FROM self.tmp, NOT self.ws (Sentinel, #825). The original
+        # scanned only workspace_root, so a value written to its PARENT left
+        # this test green -- "nothing under workspace_root" is not "nothing
+        # persisted". self.tmp is the whole region this test controls, and it
+        # contains the workspace, its parent, and anything a sibling write would
+        # land in.
         found = []
-        for path in self.ws.rglob("*"):
+        for path in self.tmp.rglob("*"):
             if not path.is_file():
                 continue
             try:
@@ -142,6 +168,61 @@ class TestTheBoundary(LaunchTestBase):
                 break
             time.sleep(0.05)
         self.assertEqual(out.read_text(), SECRET, "the child never received the value")
+
+    def test_the_child_environment_contains_no_ambient_inheritance(self):
+        """THE DIRECTION I MISSED, reproduced by Sentinel on a live host.
+
+        My allowlist was exact in two directions and both were about the
+        SUPPLIED dict -- a value for an undeclared key, and a declared key with
+        no value. Neither asks what the child ACTUALLY ENDS UP WITH. Receiving
+        the right thing and receiving ONLY that are different claims.
+
+        An ambient premium variable in the coordinator's own environment reached
+        spawned agents through `{**os.environ, **declared}` while both existing
+        directions stayed green. The environment is now CONSTRUCTED, so this
+        asserts the child's full env equals the declared set plus the named
+        launcher-owned mechanics, and nothing else."""
+        from gr2.python_cli.launch_exec import _LAUNCHER_OWNED_PASSTHROUGH
+
+        marker = "AMBIENT_PREMIUM_THAT_MUST_NOT_INHERIT"
+        os.environ[marker] = "leaked-from-the-coordinator"
+        self.addCleanup(os.environ.pop, marker, None)
+
+        out = self.unit / "env.json"
+        entry = self._entry(
+            argv=[
+                sys.executable,
+                "-c",
+                f"import os,json,time;open({str(out)!r},'w').write("
+                "json.dumps(dict(os.environ)));time.sleep(30)",
+            ]
+        )
+        self._launch(entry)
+        for _ in range(60):
+            if out.is_file() and out.read_text():
+                break
+            time.sleep(0.05)
+
+        child_env = json.loads(out.read_text())
+        self.assertNotIn(marker, child_env, "ambient parent variable was inherited")
+
+        # Platform-injected, NOT inherited -- established empirically rather
+        # than assumed: launching with a completely empty env={} on this host
+        # still yields LC_CTYPE and __CF_USER_TEXT_ENCODING, so macOS adds them
+        # regardless of what the launcher passes. Naming them without checking
+        # WHY they appeared would have quietly weakened this assertion into
+        # excusing whatever showed up.
+        platform_injected = _platform_injected_env()
+
+        expected = (
+            {"SYNAPT_AGENT_ID"}
+            | {k for k in _LAUNCHER_OWNED_PASSTHROUGH if k in os.environ}
+            | platform_injected
+        )
+        unexpected = set(child_env) - expected
+        self.assertEqual(
+            unexpected, set(), f"child received undeclared variables: {sorted(unexpected)}"
+        )
 
     def test_a_value_for_an_undeclared_key_is_refused(self):
         with self.assertRaises(LaunchExecutionError) as ctx:
