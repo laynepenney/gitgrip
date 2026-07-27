@@ -162,17 +162,19 @@ def _write_workspace_spec_multi(workspace_root: Path, repos: list[tuple[str, str
                 """
             ).strip()
         )
+    joined_repo_blocks = "\n\n".join(repo_blocks)
+    unit_repo_names = ", ".join(f'"{name}"' for name, _ in repos)
     spec_path.write_text(
         textwrap.dedent(
             f"""
             workspace_name = "{workspace_root.name}"
 
-            {'\n\n'.join(repo_blocks)}
+            {joined_repo_blocks}
 
             [[units]]
             name = "atlas"
             path = "agents/atlas/home"
-            repos = [{", ".join(f'"{name}"' for name, _ in repos)}]
+            repos = [{unit_repo_names}]
             """
         ).strip()
         + "\n"

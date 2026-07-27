@@ -47,6 +47,13 @@ class LaneMetadata:
     handoff_source: dict[str, str] | None
 
     def as_toml(self) -> str:
+        # repos/shared_with are pre-formatted here, not inlined into the
+        # f-strings below: an f-string expression part can't safely nest a
+        # string literal using the same quote character as the outer
+        # f-string (pre-3.12 tokenizers can't tell a nested string's quote
+        # from the outer delimiter -- see grip#793's Python 3.11 CI catch).
+        repos_toml = ", ".join(f'"{r}"' for r in self.repos)
+        shared_with_toml = ", ".join(f'"{u}"' for u in self.shared_with)
         lines = [
             f"schema_version = {self.schema_version}",
             f'lane_name = "{self.lane_name}"',
@@ -55,8 +62,8 @@ class LaneMetadata:
             f'lane_type = "{self.lane_type}"',
             f'creation_source = "{self.creation_source}"',
             "",
-            f"repos = [{', '.join(f'\"{r}\"' for r in self.repos)}]",
-            f"shared_with = [{', '.join(f'\"{u}\"' for u in self.shared_with)}]",
+            f"repos = [{repos_toml}]",
+            f"shared_with = [{shared_with_toml}]",
             "",
             "[branch_map]",
         ]
@@ -116,6 +123,11 @@ class SharedScratchpad:
     updated_at: str
 
     def as_toml(self) -> str:
+        # See LaneWorkspaceSpec.as_toml's comment above: pre-formatted here
+        # rather than inlined, to avoid nesting a same-quote string literal
+        # inside another f-string's expression part (grip#793).
+        participants_toml = ", ".join(f'"{p}"' for p in self.participants)
+        linked_refs_toml = ", ".join(f'"{r}"' for r in self.linked_refs)
         lines = [
             f"schema_version = {self.schema_version}",
             f'name = "{self.name}"',
@@ -126,8 +138,8 @@ class SharedScratchpad:
             f'created_at = "{self.created_at}"',
             f'updated_at = "{self.updated_at}"',
             "",
-            f'participants = [{", ".join(f"\"{p}\"" for p in self.participants)}]',
-            f'linked_refs = [{", ".join(f"\"{r}\"" for r in self.linked_refs)}]',
+            f"participants = [{participants_toml}]",
+            f"linked_refs = [{linked_refs_toml}]",
             "",
             "[paths]",
             f'docs_root = "{self.docs_root}"',

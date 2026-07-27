@@ -1,14 +1,18 @@
 """Packaging tests: gr2 must be a real installable CLI, not a pytest-only import.
 
-Today, gr2.python_cli and gr2.prototypes only resolve inside pytest, via the
-root conftest.py's sys.modules injection (`gr2/conftest.py`). gr2/pyproject.toml
-packages only gr2_overlay. There is no console_scripts entry point.
+gr2.python_cli and gr2.prototypes are real, independently installable packages
+(grip#788 fixed the self-referential package-dir that used to drop them from
+a fresh install). The root conftest.py's sys.modules injection (`gr2/conftest.py`)
+is still present as a separate, intentional local-dev convenience -- it lets
+`pytest` run in a plain checkout without an editable install first -- but it is
+no longer load-bearing for these tests specifically.
 
 These tests deliberately run each check in a fresh subprocess with cwd pinned to
 a neutral tmp_path (never gr2/ or its parent), so a pass can only mean the
 package is genuinely installed and importable -- not that Python happened to
 find these modules via a cwd-relative accident or pytest's own sys.modules hack,
-which subprocesses don't inherit anyway.
+which subprocesses don't inherit anyway. That property is what makes them the
+regression guard for grip#788's class of bug.
 
 grip#752 slice 1 (D3): pyproject at grip/gr2/... console_scripts entry point.
 Reference path correction: the repo directory is gitgrip/gr2/, not
