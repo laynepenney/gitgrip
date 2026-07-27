@@ -1,10 +1,9 @@
 """Staging / project_file executor tests (S4-C).
 
-The `project_file` operation is the FOUNDATION PROJECTION: the plan producer stages the
-foundation, stages it under an opaque artifact key, and gr2 projects it into the
-unit (for Codex, as `AGENTS.md`). Acceptance fruit 15 -- removing the projection
-makes the Codex startup assertion fail -- is what makes these bytes a contract
-rather than a convenience.
+The `project_file` operation copies one declared staged input to one declared
+destination inside the unit, refusing unless the bytes hash to the declared
+`source_sha256`. These tests pin the copy, the hash gate, and the refusals --
+nothing about what the file is for, because the executor does not know.
 
 Spec: config/design/zero-to-team-gr2-materialization-spec-2026-07-26.md
       section 6.2.1 invariants 7 and 8, section 383 (source confinement),

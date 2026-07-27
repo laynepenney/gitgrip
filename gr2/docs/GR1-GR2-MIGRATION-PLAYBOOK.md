@@ -23,7 +23,7 @@ This playbook does **not** cover:
 - agent identity migration
 - org routing
 - persistent identity binding
-- externally-compiled policy
+- policy declared elsewhere
 
 Those concerns live outside OSS. The playbook may reference the seam, but it must not implement identity resolution.
 

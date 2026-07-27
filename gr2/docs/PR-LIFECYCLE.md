@@ -408,8 +408,7 @@ keeps the event stream clean: consumers see either one `pr.merged` or one
 
 ### 7.1 Compiled Requirements
 
-Review requirements come from the compiled WorkspaceSpec (originally from
-externally-compiled org policy):
+Review requirements come from the declared WorkspaceSpec:
 
 ```toml
 [workspace_constraints.required_reviewers]

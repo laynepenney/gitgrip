@@ -146,9 +146,9 @@ def _child_environment(entry: LaunchEntry, values: Mapping[str, str]) -> dict[st
     """The child's COMPLETE environment, built rather than inherited.
 
     Sentinel, #825: passing `{**os.environ, **declared}` inherits the parent's
-    entire environment, so a child sees ambient caller variables that were
-    never declared anywhere -- reproduced on a live host, where the coordinator's
-    ambient coordinator variables reached a spawned agent.
+    entire environment, so a child sees ambient variables that were never declared
+    anywhere -- reproduced on a live host, where variables belonging to the
+    launching process reached a spawned child.
 
     My allowlist check was exact in two directions and both were about the
     SUPPLIED dict: a value for an undeclared key, and a declared key with no
@@ -161,9 +161,9 @@ def _child_environment(entry: LaunchEntry, values: Mapping[str, str]) -> dict[st
     inherited implicitly. Everything present is there because something declared
     it or because this list names it.
 
-    That matters beyond tidiness: the demo claims identity is injected in memory
-    with nothing leaked, and inheriting os.environ leaks the COORDINATOR'S
-    caller environment into every spawned agent."""
+    That matters beyond tidiness: a caller may pass values it does not want
+    written anywhere, and inheriting os.environ would put the launching
+    process's entire environment into every child regardless."""
     child = _require_exact_env(entry, values)
     for key in _LAUNCHER_OWNED_PASSTHROUGH:
         ambient = os.environ.get(key)
