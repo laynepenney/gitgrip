@@ -911,7 +911,105 @@ mod tests {
         );
     }
 
+    /// Build a well-formed `file://` URL for a local path on any platform.
+    ///
+    /// `format!("file://{}", path.display())` is correct on Unix and WRONG on
+    /// Windows: it yields `file://C:\Users\RUNNER~1\...\base.git`. Nothing
+    /// rejects that as a URL, so the breakage surfaces later and elsewhere --
+    /// `gripspace_name` splits the last path component on `:` (for SSH URLs
+    /// like `git@host:org/repo.git`), which on Windows splits the DRIVE letter
+    /// instead, leaving `\Users\RUNNER~1\...\base`. Backslashes and `~` then
+    /// fail the `[a-zA-Z0-9._-]` name allowlist.
+    ///
+    /// A Windows file URL needs forward slashes and an extra leading slash
+    /// before the drive: `file:///C:/Users/.../base.git`, from which
+    /// `gripspace_name` correctly reads `base`.
+    fn file_url(path: &std::path::Path) -> String {
+        let s = path.display().to_string().replace('\\', "/");
+        if s.starts_with('/') {
+            format!("file://{}", s)
+        } else {
+            format!("file:///{}", s)
+        }
+    }
+
+    /// Read a checked-out file with line endings normalised to `\n`.
+    ///
+    /// Git on Windows checks files out with CRLF under the default
+    /// `core.autocrlf`, so a file committed as `"version: 1\n"` reads back as
+    /// `"version: 1\r\n"`. That is git behaving correctly, not a bug in what is
+    /// under test: this assertion is about whether the gripspace advanced to
+    /// the remote's CONTENT, and the line ending is incidental to that claim.
+    ///
+    /// Comparing raw bytes would make the test assert a platform detail it does
+    /// not care about, which is how a green suite ends up meaning "ran on
+    /// Linux" rather than "the behaviour is right".
+    fn read_normalized(path: &std::path::Path) -> String {
+        std::fs::read_to_string(path).unwrap().replace("\r\n", "\n")
+    }
+
     #[test]
+    fn file_url_is_well_formed_for_both_path_shapes() {
+        // BOTH shapes on EVERY platform, deliberately. Gating the input on
+        // cfg!(windows) would mean the case that actually broke CI is only ever
+        // exercised on Windows -- the fix would go unproven everywhere it is
+        // cheap to check, and a regression would resurface as an "Invalid
+        // gripspace name" error three call frames away, on one runner only.
+        //
+        // A backslash is an ordinary character in a Unix path, so the
+        // Windows-shaped string round-trips through PathBuf here just fine and
+        // the transformation is fully testable off Windows.
+        for raw in [r"C:\Users\test\base.git", "/tmp/test/base.git"] {
+            let url = file_url(&std::path::PathBuf::from(raw));
+            assert!(
+                url.starts_with("file:///"),
+                "not a well-formed file URL for {raw:?}: {url}"
+            );
+            assert!(
+                !url.contains('\\'),
+                "file URL kept a backslash for {raw:?}: {url}"
+            );
+            assert_eq!(
+                gripspace_name(&url),
+                "base",
+                "wrong name derived from {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_old_spelling_is_what_broke_windows() {
+        // Pins the DIAGNOSIS, not just the fix. If gripspace_name ever stops
+        // splitting on ':' this test fails and tells the next reader that the
+        // Windows workaround may no longer be needed -- rather than leaving a
+        // fix in place whose reason nobody can reconstruct.
+        let broken = format!("file://{}", r"C:\Users\RUNNER~1\Temp\base.git");
+        let derived = gripspace_name(&broken);
+        assert_ne!(derived, "base", "the old spelling no longer misderives");
+        assert!(
+            validate_space_name(&derived).is_err(),
+            "expected {derived:?} to fail the name allowlist"
+        );
+    }
+
+    // Ignored on Windows: this test HANGS there rather than failing, and a hang
+    // burns a runner to the workflow timeout while looking identical to "still
+    // running" -- the first instance sat 91 minutes before anyone measured
+    // elapsed against the ~8 min baseline.
+    //
+    // The hang is a REAL bug, not a flaky test, and it is tracked in grip#821
+    // along with the per-test-timeout hardening that would make this class
+    // report as a failure instead. Two Windows bugs in this test were fixed
+    // first (a malformed `file://` URL and a CRLF comparison); each was hidden
+    // behind the previous one, and fixing them is what let execution reach the
+    // `git push` / fetch against a `file:///C:/...` remote that blocks.
+    //
+    // Deferred by Layne 2026-07-27: "don't worry about windows for now. we're
+    // demoing on mac." Recorded so the next reader sees a scoped decision with a
+    // tracking issue rather than an unexplained skip -- ubuntu and macos both
+    // run this test and both pass in under three minutes.
+    #[test]
+    #[cfg_attr(windows, ignore = "hangs on Windows -- see grip#821")]
     fn test_update_gripspace_advances_configured_remote_branch() {
         let temp = tempfile::tempdir().unwrap();
         let remote = temp.path().join("base.git");
@@ -937,12 +1035,12 @@ mod tests {
 
         let spaces = temp.path().join("spaces");
         let config = GripspaceConfig {
-            url: format!("file://{}", remote.display()),
+            url: file_url(&remote),
             rev: Some("main".to_string()),
         };
         let gripspace_path = ensure_gripspace(&spaces, &config).unwrap();
         assert_eq!(
-            std::fs::read_to_string(gripspace_path.join("manifest.yaml")).unwrap(),
+            read_normalized(&gripspace_path.join("manifest.yaml")),
             "version: 1\n"
         );
 
