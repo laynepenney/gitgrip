@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
+import shutil
+import subprocess
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
 from .events import EventType, emit
-from .gitops import clone_repo, ensure_repo_cache, is_git_dir, is_git_repo, repo_dirty
+from .gitops import checkout_branch, clone_repo, ensure_repo_cache, is_git_dir, is_git_repo, repo_dirty
 from .hooks import HookContext, apply_file_projections, load_repo_hooks, run_lifecycle_stage
 
 
@@ -475,3 +478,273 @@ def _record_apply_state(workspace_root: Path, actions: list[str]) -> None:
         state_path.write_text(existing + "\n\n" + "\n".join(content))
     else:
         state_path.write_text("\n".join(content))
+
+
+# ---------------------------------------------------------------------------
+# Neutral MaterializationPlan executor (config#491 §6.2, S4)
+#
+# Consumes the plan JSON directly (clone/venv/editable_install/project_file
+# operations), rather than workspace_spec.toml's repo/unit model above. Both
+# entry points share the same clone/validation primitives -- one executor,
+# not a second materializer, per config#491 §7.3.
+# ---------------------------------------------------------------------------
+
+
+class MaterializationPlanError(Exception):
+    pass
+
+
+# config#491 §6.2: "The production plan must not contain: agent display
+# name, persistent agent ID, role, org or project, channel, entitlement
+# result or reason, secret reference or value, memory body." Checked on
+# every operation dict as a structural safety net -- gr2 must not become
+# somewhere identity data could leak through even accidentally.
+_FORBIDDEN_IDENTITY_KEYS = frozenset(
+    {
+        "agent_name",
+        "agent_id",
+        "persistent_identity_ref",
+        "role",
+        "org",
+        "project",
+        "channel",
+        "channels",
+        "entitlement",
+        "entitlement_reason",
+        "secret",
+        "secret_ref",
+        "memory",
+        "memory_body",
+    }
+)
+
+
+def _reject_identity_fields(op: dict[str, object]) -> None:
+    present = _FORBIDDEN_IDENTITY_KEYS & op.keys()
+    if present:
+        raise MaterializationPlanError(
+            f"operation carries identity-bearing field(s) {sorted(present)}; "
+            "gr2 MaterializationPlan operations must be identity-free (config#491 §6.2)"
+        )
+
+
+def _resolve_safe_dest(workspace_root: Path, dest_path: str) -> Path:
+    """Resolve dest_path relative to workspace_root, rejecting escapes.
+
+    config#491 §3: absolute paths, .., symlink escapes, and duplicate
+    destinations are blockers. Path.resolve() normalizes .. lexically and
+    follows any existing symlinks, so a single containment check after
+    resolving catches all three escape shapes.
+    """
+    if not dest_path or dest_path.startswith("/") or dest_path.startswith("~"):
+        raise MaterializationPlanError(f"dest_path must be relative to the workspace root: {dest_path!r}")
+    workspace_resolved = workspace_root.resolve()
+    candidate = (workspace_root / dest_path).resolve()
+    if candidate != workspace_resolved and workspace_resolved not in candidate.parents:
+        raise MaterializationPlanError(f"dest_path escapes the workspace root: {dest_path!r}")
+    return workspace_root / dest_path
+
+
+def _validate_clone_isolation(repo_root: Path, *, workspace_root: Path, reference_base: str | None) -> None:
+    """gap#6 / config#491 §8.1-8.2: reject worktree-linked clones and
+    alternates pointing anywhere except the declared workspace cache."""
+    git_path = repo_root / ".git"
+    if git_path.is_file():
+        raise MaterializationPlanError(
+            f"clone at {repo_root} has a worktree-pointer .git file, not a real .git directory "
+            "(config#491 §8.1 forbids worktree-linked agent workspaces)"
+        )
+    if not git_path.is_dir():
+        raise MaterializationPlanError(f"clone at {repo_root} has no .git directory")
+
+    alternates_file = git_path / "objects" / "info" / "alternates"
+    if not alternates_file.exists():
+        return
+    approved = (workspace_root / reference_base).resolve() / "objects" if reference_base else None
+    for line in alternates_file.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if approved is None or Path(line).resolve() != approved:
+            raise MaterializationPlanError(
+                f"clone at {repo_root} has an unapproved alternate: {line} "
+                "(config#491 §8.2: alternates may only point at the declared workspace cache)"
+            )
+
+
+def _apply_clone_operation(workspace_root: Path, op: dict[str, object]) -> dict[str, object]:
+    dest_path = str(op["dest_path"])
+    dest = _resolve_safe_dest(workspace_root, dest_path)
+    repo_url = str(op["repo_url"])
+    reference_base = op.get("reference_base")
+    reference_base = str(reference_base) if reference_base else None
+    reference_repo_root = (workspace_root / reference_base) if reference_base else None
+
+    # config#491 §8.3: an existing clone is validated, never blindly reset
+    # or replaced. Checked before attempting anything, not after -- a
+    # worktree-linked or otherwise damaged existing path must block here,
+    # not surface as a confusing "destination already exists" error from
+    # `git clone` itself.
+    if dest.exists():
+        _validate_clone_isolation(dest, workspace_root=workspace_root, reference_base=reference_base)
+        first_materialize = False
+    else:
+        first_materialize = clone_repo(repo_url, dest, reference_repo_root=reference_repo_root)
+        branch = op.get("branch")
+        if branch:
+            checkout_branch(dest, str(branch))
+        _validate_clone_isolation(dest, workspace_root=workspace_root, reference_base=reference_base)
+
+    return {
+        "kind": "clone",
+        "repo_url": repo_url,
+        "dest_path": dest_path,
+        "first_materialize": first_materialize,
+    }
+
+
+def _apply_venv_operation(workspace_root: Path, op: dict[str, object]) -> dict[str, object]:
+    dest_path = str(op["dest_path"])
+    dest = _resolve_safe_dest(workspace_root, dest_path)
+    if dest.exists():
+        return {"kind": "venv", "dest_path": dest_path, "created": False}
+
+    python_constraint = str(op.get("python", ">=3.11"))
+    proc = subprocess.run(
+        ["uv", "venv", "--python", python_constraint, str(dest)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise MaterializationPlanError(f"uv venv failed for {dest}:\n{proc.stderr or proc.stdout}")
+    return {"kind": "venv", "dest_path": dest_path, "created": True}
+
+
+def _apply_editable_install_operation(workspace_root: Path, op: dict[str, object]) -> dict[str, object]:
+    venv_path = _resolve_safe_dest(workspace_root, str(op["venv_path"]))
+    source_path = _resolve_safe_dest(workspace_root, str(op["source_path"]))
+    extras = [str(e) for e in op.get("extras", [])]
+    venv_python = venv_path / "bin" / "python"
+
+    target = f"{source_path}[{','.join(extras)}]" if extras else str(source_path)
+    proc = subprocess.run(
+        ["uv", "pip", "install", "--python", str(venv_python), "--editable", target],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise MaterializationPlanError(
+            f"uv pip install --editable failed for {source_path}:\n{proc.stderr or proc.stdout}"
+        )
+    return {
+        "kind": "editable_install",
+        "venv_path": str(op["venv_path"]),
+        "source_path": str(op["source_path"]),
+    }
+
+
+def _apply_project_file_operation(workspace_root: Path, op: dict[str, object]) -> dict[str, object]:
+    source_path = Path(str(op["source_path"]))
+    dest_path = str(op["dest_path"])
+    dest = _resolve_safe_dest(workspace_root, dest_path)
+    expected_sha256 = str(op["source_sha256"])
+
+    if not source_path.exists():
+        raise MaterializationPlanError(f"project_file source does not exist: {source_path}")
+    content = source_path.read_bytes()
+    actual_sha256 = hashlib.sha256(content).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise MaterializationPlanError(
+            f"project_file hash mismatch for {source_path}: "
+            f"expected {expected_sha256}, got {actual_sha256}"
+        )
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(content)
+    dest.chmod(0o600)
+
+    # config#491 §6.2: the staged input is a run-scoped opaque artifact,
+    # deleted after acknowledgement -- it must not linger once copied.
+    source_path.unlink()
+
+    return {"kind": "project_file", "dest_path": dest_path, "source_sha256": expected_sha256}
+
+
+_MATERIALIZATION_HANDLERS = {
+    "clone": _apply_clone_operation,
+    "venv": _apply_venv_operation,
+    "editable_install": _apply_editable_install_operation,
+    "project_file": _apply_project_file_operation,
+}
+
+
+def _materialization_receipt_path(workspace_root: Path, plan_id: str) -> Path:
+    return workspace_root / ".grip" / "state" / "materialization" / f"{plan_id}.json"
+
+
+def _write_materialization_receipt(
+    workspace_root: Path,
+    plan: dict[str, object],
+    op_results: list[dict[str, object]],
+) -> Path:
+    """gap#5: a structured, resumable per-plan receipt -- not an append-only
+    action log. config#491 §12.1: neutral receipts carry plan hash, spec
+    hash, and per-operation structural evidence; no identity, org, channel,
+    secret, or memory content."""
+    receipt = {
+        "plan_id": plan["plan_id"],
+        "schema_version": plan.get("schema_version", 1),
+        "workspace_spec_sha256": plan.get("workspace_spec_sha256"),
+        "applied_at": datetime.now(UTC).isoformat(),
+        "operations": op_results,
+    }
+    receipt_path = _materialization_receipt_path(workspace_root, str(plan["plan_id"]))
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
+    return receipt_path
+
+
+def apply_materialization_plan(
+    workspace_root: Path,
+    plan: dict[str, object],
+    *,
+    yes: bool = True,
+) -> dict[str, object]:
+    """Execute a neutral MaterializationPlan (config#491 §6.2).
+
+    Identity-free by construction: every operation is validated against
+    _FORBIDDEN_IDENTITY_KEYS before execution. dest_path is used explicitly
+    for every operation kind (gap#4) rather than inferred from a repo name.
+    Resumable: a rerun re-validates already-materialized state and reports
+    first_materialize/created=False rather than duplicating work or receipt
+    entries (idempotent per operation, matching clone_repo's own contract).
+    """
+    if not yes:
+        raise MaterializationPlanError("apply_materialization_plan requires yes=True (no interactive gate)")
+
+    operations = plan.get("operations", [])
+    if not isinstance(operations, list) or not operations:
+        raise MaterializationPlanError("plan.operations must be a non-empty list")
+
+    op_results: list[dict[str, object]] = []
+    for op in operations:
+        if not isinstance(op, dict):
+            raise MaterializationPlanError(f"operation must be an object, got {type(op).__name__}")
+        _reject_identity_fields(op)
+        kind = str(op.get("kind", ""))
+        handler = _MATERIALIZATION_HANDLERS.get(kind)
+        if handler is None:
+            raise MaterializationPlanError(f"unknown materialization operation kind: {kind!r}")
+        op_results.append(handler(workspace_root, op))
+
+    receipt_path = _write_materialization_receipt(workspace_root, plan, op_results)
+
+    return {
+        "workspace_root": str(workspace_root),
+        "plan_id": plan["plan_id"],
+        "operation_count": len(op_results),
+        "operations": op_results,
+        "receipt_path": str(receipt_path),
+    }
