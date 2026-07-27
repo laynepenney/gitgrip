@@ -933,6 +933,21 @@ mod tests {
         }
     }
 
+    /// Read a checked-out file with line endings normalised to `\n`.
+    ///
+    /// Git on Windows checks files out with CRLF under the default
+    /// `core.autocrlf`, so a file committed as `"version: 1\n"` reads back as
+    /// `"version: 1\r\n"`. That is git behaving correctly, not a bug in what is
+    /// under test: this assertion is about whether the gripspace advanced to
+    /// the remote's CONTENT, and the line ending is incidental to that claim.
+    ///
+    /// Comparing raw bytes would make the test assert a platform detail it does
+    /// not care about, which is how a green suite ends up meaning "ran on
+    /// Linux" rather than "the behaviour is right".
+    fn read_normalized(path: &std::path::Path) -> String {
+        std::fs::read_to_string(path).unwrap().replace("\r\n", "\n")
+    }
+
     #[test]
     fn file_url_is_well_formed_for_both_path_shapes() {
         // BOTH shapes on EVERY platform, deliberately. Gating the input on
@@ -1008,7 +1023,7 @@ mod tests {
         };
         let gripspace_path = ensure_gripspace(&spaces, &config).unwrap();
         assert_eq!(
-            std::fs::read_to_string(gripspace_path.join("manifest.yaml")).unwrap(),
+            read_normalized(&gripspace_path.join("manifest.yaml")),
             "version: 1\n"
         );
 
