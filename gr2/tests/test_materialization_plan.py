@@ -1663,6 +1663,99 @@ class TestIdempotentCleanup(MaterializationPlanTestBase):
         self.assertFalse((self.workspace_root / source_rel).exists())
 
 
+class TestPerOperationReceiptSchemas(MaterializationPlanTestBase):
+    """Sentinel round 3 asked for EXACT per-operation receipt schemas, not
+    just top-level ones: "deletion of every operation-specific evidence
+    field remains GREEN". Pinning the exact key set per kind means any
+    evidence field removed or renamed turns this RED."""
+
+    def test_clone_receipt_evidence_schema_is_exact(self):
+        url = self._init_bare_remote("product")
+        cache = self.workspace_root / ".grip" / "cache" / "repos" / "product.git"
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        _git(self.workspace_root, "clone", "--mirror", url, str(cache))
+        plan = self._plan(
+            [
+                self._clone_op(
+                    repo_url=url,
+                    dest_path="units/u1/product",
+                    reference_base=".grip/cache/repos/product.git",
+                )
+            ]
+        )
+        op = apply_materialization_plan(self.workspace_root, plan, yes=True)["operations"][0]
+        self.assertEqual(
+            set(op),
+            {
+                "kind",
+                "repo_url",
+                "dest_path",
+                "first_materialize",
+                "head_sha",
+                "observed_origin",
+                "cache_path",
+                "observed_alternate",
+                "alternate_approved",
+            },
+        )
+        self.assertTrue(op["head_sha"])
+        self.assertEqual(op["observed_origin"], url)
+
+    def test_venv_receipt_evidence_schema_is_exact(self):
+        plan = self._plan([self._venv_op(dest_path="units/u1/.venv")])
+        op = apply_materialization_plan(self.workspace_root, plan, yes=True)["operations"][0]
+        self.assertEqual(set(op), {"kind", "dest_path", "created", "interpreter_path"})
+
+    def test_editable_install_receipt_evidence_schema_is_exact(self):
+        venv_path = self.workspace_root / "units" / "u1" / ".venv"
+        venv_path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["uv", "venv", "--python", ">=3.11", str(venv_path)], check=True, capture_output=True
+        )
+        source = self.workspace_root / "units" / "u1" / "product"
+        source.mkdir(parents=True)
+        (source / "pyproject.toml").write_text(
+            '[project]\nname = "product"\nversion = "0.1.0"\n'
+            '[build-system]\nrequires = ["setuptools>=68"]\nbuild-backend = "setuptools.build_meta"\n'
+        )
+        (source / "product").mkdir()
+        (source / "product" / "__init__.py").write_text("")
+
+        plan = self._plan(
+            [
+                {
+                    "kind": "editable_install",
+                    "venv_path": "units/u1/.venv",
+                    "source_path": "units/u1/product",
+                    "extras": [],
+                }
+            ]
+        )
+        op = apply_materialization_plan(self.workspace_root, plan, yes=True)["operations"][0]
+        self.assertEqual(
+            set(op),
+            {"kind", "venv_path", "source_path", "extras", "distribution", "pep610_evidence"},
+        )
+        self.assertEqual(op["distribution"], "product")
+
+    def test_project_file_receipt_evidence_schema_is_exact(self):
+        content = b"payload"
+        source_rel = self._stage_source("f_01", content)
+        plan = self._plan(
+            [
+                self._project_file_op(
+                    source_path=source_rel,
+                    source_sha256=hashlib.sha256(content).hexdigest(),
+                    dest_path="units/u1/AGENTS.md",
+                )
+            ]
+        )
+        op = apply_materialization_plan(self.workspace_root, plan, yes=True)["operations"][0]
+        self.assertEqual(
+            set(op), {"kind", "source_path", "dest_path", "source_sha256", "already_projected"}
+        )
+
+
 class TestProjectFileReceiptEvidence(MaterializationPlanTestBase):
     """Sentinel round 3: the observed project-file receipt had only kind,
     dest_path, and source_sha256 -- §12.1 also requires the source path."""
