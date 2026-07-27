@@ -5,6 +5,7 @@ import hashlib
 import importlib.resources
 import json
 import os
+import stat
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -501,6 +502,39 @@ class MaterializationPlanError(Exception):
     pass
 
 
+# Capability token. A ValidatedPlan can only be minted by
+# validate_materialization_plan, so a receipt cannot be published from a
+# plan that was never validated -- Atlas P1: the writer previously accepted
+# the raw live plan and an arbitrary result list, which let a schema-invalid
+# plan_id escape the receipt directory and let an unvalidated result graph
+# be persisted verbatim.
+_VALIDATION_TOKEN = object()
+
+
+@dataclasses.dataclass(frozen=True)
+class ValidatedPlan:
+    """Proof that a plan passed the full v1 contract, plus the facts a
+    publisher needs to bind its evidence to that plan.
+
+    Immutable and unforgeable-by-accident: the token check means holding one
+    of these IS the evidence of validation, so publication has a capability
+    to demand rather than a convention to trust."""
+
+    plan: dict[str, object]
+    plan_id: str
+    unit_key: str
+    schema_version: int
+    workspace_spec_sha256: str
+    operation_kinds: tuple[str, ...]
+    _token: object = dataclasses.field(repr=False)
+
+    def __post_init__(self) -> None:
+        if self._token is not _VALIDATION_TOKEN:
+            raise MaterializationPlanError(
+                "ValidatedPlan may only be constructed by validate_materialization_plan"
+            )
+
+
 # The normative wire contract (config#492, merged 4b36896). A hand-rolled
 # validator is a separate, looser contract by construction -- nine plans the
 # pinned schema rejects were accepted by an earlier hand version, and
@@ -725,13 +759,18 @@ def _validate_operation_shape(
     return canonicalize_workspace_path(workspace_root, dest_path, field_name=f"{prefix}.dest_path")
 
 
-def validate_materialization_plan(workspace_root: Path, plan: dict[str, object]) -> None:
+def validate_materialization_plan(workspace_root: Path, plan: dict[str, object]) -> ValidatedPlan:
     """Validate a neutral MaterializationPlan against config#492's pinned v1
     contract. Raises MaterializationPlanError on the first violation.
 
     Validate-before-touch: this runs to completion over the WHOLE plan
     before any handler executes, so an invalid operation late in the list
     cannot let an earlier one mutate state first.
+
+    Returns a ValidatedPlan capability. Publication requires one, so a
+    receipt cannot be written from a plan that never passed this function
+    (Atlas P1) -- validation becomes something the publisher HOLDS rather
+    than something a caller is trusted to have remembered to do.
     """
     validator = _load_plan_validator()
     schema_errors = sorted(validator.iter_errors(plan), key=lambda e: list(e.absolute_path))
@@ -760,13 +799,7 @@ def validate_materialization_plan(workspace_root: Path, plan: dict[str, object])
     # config#492 §6.2.1 invariant #1: reopen the canonical WorkspaceSpec
     # bytes and verify their SHA-256. Carrying the field is not verifying it.
     workspace_spec_sha256 = str(plan["workspace_spec_sha256"])
-    spec_file = workspace_spec_path(workspace_root)
-    if not spec_file.exists():
-        raise MaterializationPlanError(
-            "canonical WorkspaceSpec (.grip/workspace_spec.toml) not found -- "
-            "workspace_spec_sha256 cannot be verified (config#492 §6.2.1 #1)"
-        )
-    actual_spec_sha256 = hashlib.sha256(spec_file.read_bytes()).hexdigest()
+    actual_spec_sha256 = hashlib.sha256(_read_canonical_workspace_spec_bytes(workspace_root)).hexdigest()
     if actual_spec_sha256 != workspace_spec_sha256:
         raise MaterializationPlanError(
             f"workspace_spec_sha256 mismatch: plan declares {workspace_spec_sha256}, "
@@ -795,6 +828,61 @@ def validate_materialization_plan(workspace_root: Path, plan: dict[str, object])
                 )
             seen_canonical_dests[key] = idx
 
+    return ValidatedPlan(
+        plan=plan,
+        plan_id=str(plan["plan_id"]),
+        unit_key=str(plan["unit_key"]),
+        schema_version=int(plan["schema_version"]),
+        workspace_spec_sha256=workspace_spec_sha256,
+        operation_kinds=tuple(str(op["kind"]) for op in operations),
+        _token=_VALIDATION_TOKEN,
+    )
+
+
+_WORKSPACE_SPEC_RELATIVE = ".grip/workspace_spec.toml"
+_RECEIPT_DIR_RELATIVE = ".grip/state/materialization"
+
+
+def _read_canonical_workspace_spec_bytes(workspace_root: Path) -> bytes:
+    """config#492 §6.2.1 #2 applies to the CONTRACT paths too, not only to
+    operation paths (Atlas P2): the canonical WorkspaceSpec must be reached
+    through a symlink-free prefix and be a regular non-symlink file.
+
+    Otherwise a symlink at .grip/workspace_spec.toml pointing outside the
+    team root is accepted whenever its bytes happen to hash to the declared
+    value -- the hash check confirms CONTENT, and says nothing about whether
+    the file it read is inside the workspace at all."""
+    spec_file = canonicalize_workspace_path(
+        workspace_root, _WORKSPACE_SPEC_RELATIVE, field_name="workspace_spec_path"
+    )
+    if not spec_file.exists():
+        raise MaterializationPlanError(
+            "canonical WorkspaceSpec (.grip/workspace_spec.toml) not found -- "
+            "workspace_spec_sha256 cannot be verified (config#492 §6.2.1 #1)"
+        )
+    if not stat.S_ISREG(os.lstat(spec_file).st_mode):
+        raise MaterializationPlanError(
+            f"canonical WorkspaceSpec at {spec_file} is not a regular file "
+            "(config#492 §6.2.1 #2)"
+        )
+    return spec_file.read_bytes()
+
+
+def _canonical_receipt_dir(workspace_root: Path) -> Path:
+    """The receipt directory must be a real in-root directory reached
+    through a symlink-free prefix (Atlas P2): a symlinked
+    .grip/state/materialization otherwise publishes the terminal receipt
+    outside the team root entirely."""
+    receipt_dir = canonicalize_workspace_path(
+        workspace_root, _RECEIPT_DIR_RELATIVE, field_name="receipt_dir"
+    )
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    if not stat.S_ISDIR(os.lstat(receipt_dir).st_mode):
+        raise MaterializationPlanError(
+            f"receipt directory {receipt_dir} is not a real directory (config#492 §6.2.1 #2)"
+        )
+    return receipt_dir
+
 
 def compute_plan_hash(plan: dict[str, object]) -> str:
     """config#492 §6.2.1 #9, the exact pinned canonical serialization: UTF-8
@@ -811,40 +899,106 @@ def materialization_receipt_path(workspace_root: Path, plan_id: str) -> Path:
     return workspace_root / ".grip" / "state" / "materialization" / f"{plan_id}.json"
 
 
+def _screen_receipt_evidence(
+    validated: ValidatedPlan, op_results: list[dict[str, object]]
+) -> None:
+    """config#492 §12.1, Atlas P1: the terminal receipt must be bound to the
+    plan it claims to acknowledge, and its evidence must be as neutral as
+    the plan.
+
+    The plan's own operations are protected by a CLOSED schema whose
+    per-kind allowlists permit no nested object carrier -- so recursive
+    identity rejection there has little left to find. The result graph is
+    the opposite: it is open, it is what gets persisted, and it was
+    previously copied verbatim. That makes it the actual smuggling boundary,
+    which is why the same rejection discipline is applied here rather than
+    only upstream."""
+    if not isinstance(op_results, list):
+        raise MaterializationPlanError("receipt evidence must be a list of operation results")
+    if len(op_results) != len(validated.operation_kinds):
+        raise MaterializationPlanError(
+            f"receipt evidence has {len(op_results)} result(s) but the validated plan has "
+            f"{len(validated.operation_kinds)} operation(s) -- a receipt cannot claim "
+            "MATERIALIZED without evidence for every operation"
+        )
+    for idx, (result, expected_kind) in enumerate(zip(op_results, validated.operation_kinds)):
+        if not isinstance(result, dict):
+            raise MaterializationPlanError(
+                f"receipt evidence[{idx}] must be an object, got {type(result).__name__}"
+            )
+        if result.get("kind") != expected_kind:
+            raise MaterializationPlanError(
+                f"receipt evidence[{idx}] is kind {result.get('kind')!r} but the validated plan's "
+                f"operation {idx} is {expected_kind!r} -- evidence must correspond to its operation, "
+                "in order"
+            )
+        _reject_identity_fields_recursive(result, path=f"receipt.operations[{idx}]")
+
+
 def write_materialization_receipt(
     workspace_root: Path,
-    plan: dict[str, object],
+    validated: ValidatedPlan,
     op_results: list[dict[str, object]],
 ) -> Path:
-    """config#492 §6.2.1 #10: publish through a same-directory temporary
-    file, file flush and fsync, atomic replace, then parent-directory fsync.
+    """Publish the terminal neutral receipt for a VALIDATED plan.
 
-    Every step is load-bearing and ordered: rename success alone is not
-    durable acknowledgement -- on power loss the rename can survive while
-    the bytes do not, yielding a receipt that "exists" with partial content.
-    Callers that perform destructive cleanup on the strength of a receipt
-    must do it only after this returns."""
+    Takes a ValidatedPlan capability rather than a raw dict (Atlas P1): the
+    writer previously accepted the live plan and an arbitrary result list,
+    so a schema-invalid plan_id could escape the receipt directory and an
+    unscreened result graph could be persisted verbatim. Holding the
+    capability is the proof that the contract already ran.
+
+    config#492 §6.2.1 #10 -- publication order is exact and every step is
+    load-bearing: same-directory temp -> write+flush -> fsync(temp file) ->
+    atomic replace -> fsync(parent directory). Rename success alone is not
+    durable acknowledgement; on power loss the rename can survive while the
+    bytes do not. Callers performing destructive cleanup on the strength of
+    a receipt must do it only after this returns.
+
+    The temp file is created O_EXCL|O_NOFOLLOW (Atlas P2): its name is
+    predictable, so a plain open() would happily follow a pre-created
+    symlink, overwrite whatever it points at, and then publish that symlink
+    as the final receipt."""
+    if not isinstance(validated, ValidatedPlan):
+        raise MaterializationPlanError(
+            "write_materialization_receipt requires a ValidatedPlan from "
+            "validate_materialization_plan, not a raw plan"
+        )
+    _screen_receipt_evidence(validated, op_results)
+
+    plan = validated.plan
     receipt = {
-        "plan_id": plan["plan_id"],
-        "unit_key": plan["unit_key"],
+        "plan_id": validated.plan_id,
+        "unit_key": validated.unit_key,
         "plan_hash": compute_plan_hash(plan),
-        "schema_version": plan["schema_version"],
-        "workspace_spec_sha256": plan["workspace_spec_sha256"],
+        "schema_version": validated.schema_version,
+        "workspace_spec_sha256": validated.workspace_spec_sha256,
         # §12.1 structural stage: MATERIALIZED is the terminal state OSS gr2
         # can honestly claim on its own.
         "stage": "MATERIALIZED",
         "applied_at": datetime.now(UTC).isoformat(),
         "operations": op_results,
     }
-    receipt_path = materialization_receipt_path(workspace_root, str(plan["plan_id"]))
-    receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = receipt_path.with_name(receipt_path.name + f".tmp-{os.getpid()}")
-    with open(tmp_path, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps(receipt, indent=2) + "\n")
-        fh.flush()
-        os.fsync(fh.fileno())
+
+    receipt_dir = _canonical_receipt_dir(workspace_root)
+    # plan_id was validated as a path-safe token upstream; re-derived here
+    # from the capability so the filename cannot come from an unvalidated
+    # source.
+    receipt_path = receipt_dir / f"{validated.plan_id}.json"
+    tmp_path = receipt_dir / f"{validated.plan_id}.json.tmp-{os.getpid()}"
+
+    payload = (json.dumps(receipt, indent=2) + "\n").encode("utf-8")
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     os.replace(tmp_path, receipt_path)
-    dir_fd = os.open(receipt_path.parent, os.O_RDONLY)
+    dir_fd = os.open(receipt_dir, os.O_RDONLY)
     try:
         os.fsync(dir_fd)
     finally:

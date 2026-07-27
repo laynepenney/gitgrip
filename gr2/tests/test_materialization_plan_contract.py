@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -407,12 +408,17 @@ class TestPlanHash(PlanContractTestBase):
 
 
 class TestReceiptPublication(PlanContractTestBase):
-    def _receipt_plan(self) -> dict[str, object]:
-        return self._plan([self._venv_op()], plan_id="mp_receipt")
+    def _validated(self, **overrides: object):
+        plan = self._plan([self._venv_op()], plan_id="mp_receipt", **overrides)
+        return validate_materialization_plan(self.workspace_root, plan)
+
+    def _evidence(self) -> list[dict[str, object]]:
+        """Evidence must correspond to the plan's operations, in order."""
+        return [{"kind": "venv", "dest_path": "units/u1/.venv"}]
 
     def test_receipt_schema_is_exact(self):
-        plan = self._receipt_plan()
-        write_materialization_receipt(self.workspace_root, plan, [{"kind": "venv"}])
+        validated = self._validated()
+        write_materialization_receipt(self.workspace_root, validated, self._evidence())
         receipt = json.loads(materialization_receipt_path(self.workspace_root, "mp_receipt").read_text())
         self.assertEqual(
             set(receipt),
@@ -431,26 +437,111 @@ class TestReceiptPublication(PlanContractTestBase):
         self.assertEqual(receipt["unit_key"], "u_test")
         self.assertEqual(receipt["workspace_spec_sha256"], self.spec_sha256)
         # Recomputed independently -- a constant-hash mutant dies here.
-        self.assertEqual(receipt["plan_hash"], compute_plan_hash(plan))
+        self.assertEqual(receipt["plan_hash"], compute_plan_hash(validated.plan))
 
-    def test_publication_fsyncs_file_and_parent_directory(self):
-        """Rename success is not durable acknowledgement: on power loss the
-        rename can survive while the bytes do not."""
+    def test_publication_requires_a_validated_plan_capability(self):
+        """Atlas P1: the writer used to accept the raw live plan. Holding a
+        ValidatedPlan IS the proof the contract ran; a raw dict is not."""
+        raw = self._plan([self._venv_op()], plan_id="mp_receipt")
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            write_materialization_receipt(self.workspace_root, raw, self._evidence())
+        self.assertIn("requires a ValidatedPlan", str(ctx.exception))
+
+    def test_validated_plan_cannot_be_forged(self):
+        """The capability is only mintable by the validator -- otherwise it
+        would be a naming convention rather than a guarantee."""
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            spec_apply.ValidatedPlan(
+                plan={},
+                plan_id="../../escaped",
+                unit_key="u",
+                schema_version=1,
+                workspace_spec_sha256="a" * 64,
+                operation_kinds=(),
+                _token=object(),
+            )
+        self.assertIn("only be constructed by", str(ctx.exception))
+
+    def test_invalid_plan_id_cannot_reach_publication(self):
+        """Atlas P1 fruit: plan_id="../../escaped" published
+        .grip/escaped.json outside the receipt directory. It can no longer
+        be validated, so it can no longer be published."""
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            validate_materialization_plan(
+                self.workspace_root, self._plan([self._venv_op()], plan_id="../../escaped")
+            )
+        self.assertIn("schema", str(ctx.exception))
+        self.assertFalse((self.workspace_root / ".grip" / "escaped.json").exists())
+
+    def test_empty_evidence_cannot_claim_materialized(self):
+        """Atlas P1 fruit: a one-operation plan with op_results=[] published
+        stage=MATERIALIZED with no evidence at all."""
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            write_materialization_receipt(self.workspace_root, self._validated(), [])
+        self.assertIn("evidence for every operation", str(ctx.exception))
+        self.assertFalse(materialization_receipt_path(self.workspace_root, "mp_receipt").exists())
+
+    def test_wrong_kind_evidence_rejected(self):
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            write_materialization_receipt(
+                self.workspace_root, self._validated(), [{"kind": "clone"}]
+            )
+        self.assertIn("must correspond to its operation", str(ctx.exception))
+
+    def test_direct_identity_field_in_evidence_rejected(self):
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            write_materialization_receipt(
+                self.workspace_root, self._validated(), [{"kind": "venv", "secret": "TOKEN"}]
+            )
+        self.assertIn("identity-bearing", str(ctx.exception))
+
+    def test_nested_identity_field_in_evidence_rejected(self):
+        """Atlas P1 fruit, the real smuggling boundary: the plan's closed
+        schema permits no nested object carrier, but the RESULT graph is
+        open and is what gets persisted."""
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            write_materialization_receipt(
+                self.workspace_root,
+                self._validated(),
+                [{"kind": "venv", "nested": {"memory_body": "PRIVATE"}}],
+            )
+        self.assertIn("identity-bearing", str(ctx.exception))
+        self.assertFalse(materialization_receipt_path(self.workspace_root, "mp_receipt").exists())
+
+    def test_publication_order_is_exact(self):
+        """Atlas P3: counting two fsync calls does not pin the SEQUENCE --
+        moving the parent-directory fsync before os.replace left all five
+        prior tests green. This asserts the ordered chain with fd roles,
+        distinguishing the file fsync from the directory fsync via fstat,
+        so the reorder mutant dies for THIS invariant rather than through
+        some unrelated failure."""
         events: list[str] = []
         original_fsync = os.fsync
+        original_replace = os.replace
 
         def tracking_fsync(fd):
-            events.append("fsync")
+            kind = "dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file"
+            events.append(f"fsync:{kind}")
             return original_fsync(fd)
 
+        def tracking_replace(src, dst, **kwargs):
+            events.append("replace")
+            return original_replace(src, dst, **kwargs)
+
         with patch.object(spec_apply.os, "fsync", tracking_fsync):
-            write_materialization_receipt(self.workspace_root, self._receipt_plan(), [])
-        self.assertEqual(events.count("fsync"), 2, events)
+            with patch.object(spec_apply.os, "replace", tracking_replace):
+                write_materialization_receipt(
+                    self.workspace_root, self._validated(), self._evidence()
+                )
+
+        self.assertEqual(events, ["fsync:file", "replace", "fsync:dir"], events)
 
     def test_no_receipt_published_when_fsync_fails(self):
         with patch.object(spec_apply.os, "fsync", side_effect=OSError("simulated fsync failure")):
             with self.assertRaises(OSError):
-                write_materialization_receipt(self.workspace_root, self._receipt_plan(), [])
+                write_materialization_receipt(
+                    self.workspace_root, self._validated(), self._evidence()
+                )
         self.assertFalse(materialization_receipt_path(self.workspace_root, "mp_receipt").exists())
 
     def test_publication_is_atomic_replace_not_direct_write(self):
@@ -466,13 +557,91 @@ class TestReceiptPublication(PlanContractTestBase):
 
         with patch.object(spec_apply.os, "replace", failing_replace):
             with self.assertRaises(OSError):
-                write_materialization_receipt(self.workspace_root, self._receipt_plan(), [])
+                write_materialization_receipt(
+                    self.workspace_root, self._validated(), self._evidence()
+                )
         self.assertFalse(materialization_receipt_path(self.workspace_root, "mp_receipt").exists())
 
     def test_no_temp_file_left_behind_on_success(self):
-        write_materialization_receipt(self.workspace_root, self._receipt_plan(), [])
+        write_materialization_receipt(self.workspace_root, self._validated(), self._evidence())
         state_dir = self.workspace_root / ".grip" / "state" / "materialization"
         self.assertEqual(list(state_dir.glob("*.tmp-*")), [])
+
+    def test_temp_file_failure_leaves_no_residue(self):
+        with patch.object(spec_apply.os, "fsync", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                write_materialization_receipt(
+                    self.workspace_root, self._validated(), self._evidence()
+                )
+        state_dir = self.workspace_root / ".grip" / "state" / "materialization"
+        self.assertEqual(list(state_dir.glob("*.tmp-*")), [])
+
+
+class TestDerivedPathHardening(PlanContractTestBase):
+    """Atlas P2: §6.2.1 #2 applies to the A-owned DERIVED paths (canonical
+    WorkspaceSpec, receipt directory, receipt temp file), not only to
+    operation paths. All three probes succeeded before this closure."""
+
+    def test_symlinked_workspace_spec_rejected(self):
+        """A symlink at .grip/workspace_spec.toml pointing outside the team
+        root was accepted whenever its bytes hashed to the declared value.
+        The hash confirms CONTENT; it says nothing about whether the file
+        read is inside the workspace."""
+        outside = self.tmp / "outside_spec.toml"
+        outside.write_text('workspace_name = "outside"\n')
+        outside_sha = hashlib.sha256(outside.read_bytes()).hexdigest()
+
+        spec_path = workspace_spec_path(self.workspace_root)
+        spec_path.unlink()
+        spec_path.symlink_to(outside)
+
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            validate_materialization_plan(
+                self.workspace_root,
+                self._plan([self._venv_op()], workspace_spec_sha256=outside_sha),
+            )
+        self.assertIn("symlink", str(ctx.exception))
+
+    def test_symlinked_receipt_directory_rejected(self):
+        """A symlinked .grip/state/materialization published the terminal
+        receipt outside the team root entirely."""
+        outside_dir = self.tmp / "outside_receipts"
+        outside_dir.mkdir()
+        state_dir = self.workspace_root / ".grip" / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "materialization").symlink_to(outside_dir)
+
+        validated = validate_materialization_plan(
+            self.workspace_root, self._plan([self._venv_op()], plan_id="mp_escape")
+        )
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            write_materialization_receipt(
+                self.workspace_root, validated, [{"kind": "venv"}]
+            )
+        self.assertIn("symlink", str(ctx.exception))
+        self.assertEqual(list(outside_dir.iterdir()), [])
+
+    def test_pre_created_temp_symlink_is_not_followed(self):
+        """The temp name is predictable (mp_<id>.json.tmp-<pid>), so a plain
+        open() followed a pre-created symlink, overwrote the external
+        target, and then published that symlink as the final receipt.
+        O_EXCL|O_NOFOLLOW refuses instead."""
+        outside_target = self.tmp / "victim.txt"
+        outside_target.write_text("ORIGINAL")
+
+        receipt_dir = self.workspace_root / ".grip" / "state" / "materialization"
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        validated = validate_materialization_plan(
+            self.workspace_root, self._plan([self._venv_op()], plan_id="mp_receipt")
+        )
+        (receipt_dir / f"mp_receipt.json.tmp-{os.getpid()}").symlink_to(outside_target)
+
+        with self.assertRaises(OSError):
+            write_materialization_receipt(
+                self.workspace_root, validated, [{"kind": "venv"}]
+            )
+        self.assertEqual(outside_target.read_text(), "ORIGINAL")
+        self.assertFalse(materialization_receipt_path(self.workspace_root, "mp_receipt").exists())
 
 
 if __name__ == "__main__":
