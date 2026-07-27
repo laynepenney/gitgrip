@@ -1,4 +1,4 @@
-"""Receipt-keyed staged-input cleanup (S4 cleanup slice) -- RED skeleton.
+"""Receipt-keyed staged-input cleanup (S4 cleanup slice).
 
 Carved out of S4-C by Stromus (2026-07-27) so a DELETE never shares a review
 surface with a copy. C stages, projects, and publishes a receipt, and deletes
@@ -62,6 +62,14 @@ Masking analysis, before implementation:
   3. plan_hash matching is masked by plan_id matching -- a recompiled plan for
      the same unit can carry the same opaque plan_id with different operations.
      The probe must reuse the plan_id and change the content.
+     CORRECTED AFTER IMPLEMENTATION: the plan_id comparison is itself masked by
+     the CANONICAL-PATH guard, because the canonical receipt path is DERIVED
+     from plan_id -- another plan's receipt is at the wrong path by
+     construction and is refused before its contents are read. So the input
+     that reaches the plan_id comparison is a receipt sitting at the RIGHT path
+     with a tampered plan_id inside, which is also the shape tampering really
+     takes: the filename is the one part an attacker cannot change without
+     moving the file out of the canonical location. Both probes exist.
   4. The regular-file check is masked by unlink() itself: unlink on a symlink
      removes the LINK, which is already safe. The input that actually matters
      is a DIRECTORY, where the tempting fix is rmtree and the correct answer is
@@ -75,14 +83,14 @@ import unittest
 from pathlib import Path
 
 from gr2.python_cli.file_exec import execute_project_file_operation
-from gr2.python_cli.staging_cleanup import (
-    StagingCleanupError,
-    cleanup_staged_inputs,
-)
 from gr2.python_cli.spec_apply import (
     validate_materialization_plan,
     workspace_spec_path,
     write_materialization_receipt,
+)
+from gr2.python_cli.staging_cleanup import (
+    StagingCleanupError,
+    cleanup_staged_inputs,
 )
 
 FOUNDATION = b"# Foundation\n\ncharim toward the most high.\n"
@@ -180,12 +188,32 @@ class TestAcknowledgementGate(StagingCleanupTestBase):
         self.assertIn("no durable receipt", str(ctx.exception))
         self.assertTrue(self.source_path.exists())
 
-    def test_refuses_a_receipt_for_a_different_plan(self):
+    def test_refuses_a_receipt_from_another_plans_path(self):
+        """Handing cleanup someone else's receipt. Caught by the canonical-path
+        guard rather than by the plan_id comparison, because the canonical path
+        is DERIVED from plan_id -- another plan's receipt is at the wrong path
+        by construction, and is refused before its contents are read."""
         validated, receipt_path = self._project_and_receipt()
         other = self._validated(plan_id="mp_other")
 
         with self.assertRaises(StagingCleanupError) as ctx:
             self._cleanup(other, receipt_path)
+        self.assertIn("not the canonical receipt", str(ctx.exception))
+        self.assertTrue(self.source_path.exists())
+
+    def test_refuses_a_receipt_whose_recorded_plan_id_disagrees(self):
+        """The plan_id CONTENT check, at its own level. The path guard above
+        cannot see this one: the receipt sits exactly where it belongs, and only
+        its contents disagree -- which is the shape tampering actually takes,
+        since the filename is the one part an attacker cannot change without
+        moving the file out of the canonical location."""
+        validated, receipt_path = self._project_and_receipt()
+        receipt = json.loads(receipt_path.read_text())
+        receipt["plan_id"] = "mp_someone_else"
+        receipt_path.write_text(json.dumps(receipt))
+
+        with self.assertRaises(StagingCleanupError) as ctx:
+            self._cleanup(validated, receipt_path)
         self.assertIn("does not acknowledge", str(ctx.exception))
         self.assertTrue(self.source_path.exists())
 
@@ -250,7 +278,10 @@ class TestPathsComeFromThePlanNotTheReceipt(StagingCleanupTestBase):
         removed = self._cleanup(validated, receipt_path)
 
         self.assertEqual(removed, [self.source_rel])
-        self.assertTrue(bystander.exists(), "cleanup scanned the directory instead of reading the plan")
+        self.assertTrue(
+            bystander.exists(),
+            "cleanup scanned the directory instead of reading the plan",
+        )
 
     def test_the_projected_destination_is_never_removed(self):
         validated, receipt_path = self._project_and_receipt()
