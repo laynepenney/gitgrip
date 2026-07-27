@@ -11,6 +11,7 @@ import secrets
 import stat
 import tomllib
 import unicodedata
+import weakref
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -541,7 +542,22 @@ def _deep_freeze(value: object) -> object:
     return value
 
 
-@dataclasses.dataclass(frozen=True)
+# Provenance registry: the instances this validator actually minted.
+#
+# Orthogonal to the seal, and deliberately so. The seal binds CONTENT, which
+# closes replace() and in-place edits; provenance binds ORIGIN, which closes
+# copying that preserves authority without changing any field. They fail in
+# different ways, which is what makes them defense in depth rather than one
+# guard shadowing another.
+#
+# Weak, so holding a capability never keeps it alive; entries vanish with the
+# object. eq=False on the dataclass keeps identity hashing (a MappingProxyType
+# field is unhashable anyway) -- and two capabilities over equal facts SHOULD
+# be distinct capabilities, which is exactly what identity semantics give.
+_MINTED_CAPABILITIES: weakref.WeakSet = weakref.WeakSet()
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
 class ValidatedPlan:
     """Proof that a plan passed the full v1 contract, plus the facts a
     publisher needs to bind its evidence to that plan.
@@ -567,16 +583,22 @@ class ValidatedPlan:
     _seal: str = dataclasses.field(repr=False)
 
     def __post_init__(self) -> None:
+        # Provenance cannot be checked here: registration happens after
+        # construction, so this instance is not in the registry yet.
         self.verify()
 
-    def verify(self) -> None:
+    def verify(self, *, require_provenance: bool = False) -> None:
         """Re-derive the seal from the current contents and compare.
 
         Called at construction AND at every use. Construction-time checking
         alone is not enough: `frozen=True` blocks __setattr__, not
         object.__setattr__, so an already-minted capability can still be
         edited in place. Re-deriving at use means the fields a publisher
-        reads are provably the fields that were sealed."""
+        reads are provably the fields that were sealed.
+
+        `require_provenance` adds the origin check, which only makes sense at
+        USE. Copying a capability preserves every field and therefore every
+        content check; only origin can refuse it."""
         # The hash must actually describe the snapshot, so swapping the graph
         # (with or without a matching hash) cannot survive.
         if compute_plan_hash(self.plan) != self.plan_hash:
@@ -614,6 +636,11 @@ class ValidatedPlan:
             raise MaterializationPlanError(
                 "ValidatedPlan capability is invalid: it was not minted by "
                 "validate_materialization_plan for these exact facts"
+            )
+        if require_provenance and self not in _MINTED_CAPABILITIES:
+            raise MaterializationPlanError(
+                "ValidatedPlan capability is invalid: it is not one this validator "
+                "minted -- a copy preserves every field but not its provenance"
             )
 
 
@@ -970,11 +997,13 @@ def validate_materialization_plan(workspace_root: Path, plan: dict[str, object])
         "workspace_spec_sha256": workspace_spec_sha256,
         "operation_kinds": tuple(str(op["kind"]) for op in operations),
     }
-    return ValidatedPlan(
+    validated = ValidatedPlan(
         plan=_deep_freeze(plan),
         _seal=_capability_seal(**facts),
         **facts,
     )
+    _MINTED_CAPABILITIES.add(validated)
+    return validated
 
 
 _WORKSPACE_SPEC_RELATIVE = ".grip/workspace_spec.toml"
@@ -1120,7 +1149,7 @@ def write_materialization_receipt(
     # was minted honestly can still be edited afterwards -- frozen=True does
     # not stop object.__setattr__ -- and every path below reads these fields,
     # including the one that builds the receipt filename.
-    validated.verify()
+    validated.verify(require_provenance=True)
     _screen_receipt_evidence(validated, op_results)
 
     receipt = {

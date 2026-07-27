@@ -18,6 +18,7 @@ assertRaises cannot tell them apart.
 """
 from __future__ import annotations
 
+import copy
 import dataclasses
 import hashlib
 import json
@@ -1227,6 +1228,75 @@ class TestCapabilityIsContentBound(PlanContractTestBase):
                 self.workspace_root, genuine, [{"kind": "venv"}]
             )
         self.assertIn("not minted by", str(ctx.exception))
+
+    def test_atlas_forge_family_cannot_publish(self):
+        """Atlas's forge family verbatim: he published a receipt claiming an
+        all-zero plan hash and `clone` evidence from a validated `venv` plan,
+        and escaped the receipt directory via plan_id. Every vector he named
+        gets a row, asserting no filesystem publication occurred."""
+        validated = self._valid(plan_id="mp_forge_family")
+        for field, value in (
+            ("plan_id", "../../escaped"),
+            ("unit_key", "u_forged"),
+            ("workspace_spec_sha256", "f" * 64),
+            ("plan_hash", "0" * 64),
+            ("operation_kinds", ("clone",)),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaises(MaterializationPlanError):
+                    forged = dataclasses.replace(validated, **{field: value})
+                    write_materialization_receipt(
+                        self.workspace_root, forged, [{"kind": "venv"}]
+                    )
+        self.assertFalse((self.workspace_root / ".grip" / "escaped.json").exists())
+        state = self.workspace_root / ".grip" / "state" / "materialization"
+        self.assertEqual(
+            [p.name for p in state.glob("*.json")] if state.exists() else [], []
+        )
+
+    def test_copying_the_capability_does_not_preserve_authority(self):
+        """The layer content-checking cannot reach. A copy has identical
+        fields and therefore an identical, genuinely valid seal -- only
+        ORIGIN can refuse it. Atlas's closure says copying must not preserve
+        authority, so this is its own layer with its own probe."""
+        validated = self._valid(plan_id="mp_copy")
+
+        # A shallow copy IS constructible and carries a genuinely valid seal,
+        # so provenance is the only thing that can refuse it.
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            write_materialization_receipt(
+                self.workspace_root, copy.copy(validated), [{"kind": "venv"}]
+            )
+        self.assertIn("not one this validator", str(ctx.exception))
+
+        # A deep copy cannot be produced at all: the frozen snapshot is not
+        # picklable, so the clone never comes into existence. Different
+        # mechanism, same guarantee -- asserted separately rather than folded
+        # in, because a shared assertion would hide which one actually holds.
+        with self.assertRaises(TypeError):
+            copy.deepcopy(validated)
+
+    def test_provenance_rejects_a_correctly_sealed_hand_built_shell(self):
+        """Pinning provenance at its OWN level: this shell carries a real
+        seal, computed with the production helper, so every content check
+        passes. If provenance were removed, nothing else would refuse it."""
+        genuine = self._valid(plan_id="mp_prov")
+        facts = {
+            "plan_hash": genuine.plan_hash,
+            "plan_id": genuine.plan_id,
+            "unit_key": genuine.unit_key,
+            "schema_version": genuine.schema_version,
+            "workspace_spec_sha256": genuine.workspace_spec_sha256,
+            "operation_kinds": genuine.operation_kinds,
+        }
+        shell = spec_apply.ValidatedPlan(
+            plan=genuine.plan, _seal=spec_apply._capability_seal(**facts), **facts
+        )
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            write_materialization_receipt(
+                self.workspace_root, shell, [{"kind": "venv"}]
+            )
+        self.assertIn("not one this validator", str(ctx.exception))
 
     def test_a_genuine_capability_still_publishes(self):
         """The seal must not be so strict it rejects the real thing."""
