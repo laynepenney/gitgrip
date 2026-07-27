@@ -26,6 +26,21 @@ from gr2.python_cli.spec_apply import (
 )
 
 
+def _fake_clone_repo(url, target_repo_root, *, reference_repo_root=None):
+    """Stand-in for gitops.clone_repo that actually creates a directory.
+
+    _clone_isolated clones into a sibling staging path and then
+    staging.rename(dest)'s it into place -- a bare `return_value=True` mock
+    leaves nothing on disk for that rename to find. This creates just
+    enough (a directory + a .git marker) for the atomic-publish step to
+    succeed; _validate_clone_isolation is mocked separately in these tests
+    since real git-state validation is covered by test_materialization_plan.py.
+    """
+    target_repo_root.mkdir(parents=True, exist_ok=True)
+    (target_repo_root / ".git").mkdir(exist_ok=True)
+    return True
+
+
 class ConvergenceTestBase(unittest.TestCase):
     """Base class that creates a minimal workspace with unit metadata."""
 
@@ -197,14 +212,22 @@ class TestBuildPlanConvergence(ConvergenceTestBase):
 class TestApplyConvergence(ConvergenceTestBase):
     """Tests that apply_plan handles converge_unit_repos correctly."""
 
+    @patch("gr2.python_cli.spec_apply._validate_clone_isolation")
     @patch("gr2.python_cli.spec_apply.run_lifecycle_stage")
     @patch("gr2.python_cli.spec_apply.apply_file_projections", return_value=[])
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
     @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
-    @patch("gr2.python_cli.spec_apply.clone_repo", return_value=True)
-    def test_apply_clones_missing_repos_into_unit(self, mock_clone, _repo, _dir, _hooks, _proj, _lc):
-        """Apply should clone missing repos into the unit directory."""
+    @patch("gr2.python_cli.spec_apply.clone_repo", side_effect=_fake_clone_repo)
+    def test_apply_clones_missing_repos_into_unit(self, mock_clone, _repo, _dir, _hooks, _proj, _lc, _isolation):
+        """Apply should clone missing repos into the unit directory.
+
+        _validate_clone_isolation is mocked here (not just clone_repo):
+        this test's job is orchestration (does apply_plan call clone for the
+        right repos at the right paths), not real git state -- that's
+        covered by test_materialization_plan.py's dedicated validation
+        tests, which use real git repos throughout, not mocks.
+        """
         for repo in self.repo_specs:
             self._create_workspace_repo(repo)
             self._create_repo_cache(repo["name"])
@@ -213,22 +236,28 @@ class TestApplyConvergence(ConvergenceTestBase):
         result = apply_plan(self.workspace, yes=True)
 
         self.assertGreater(result["operation_count"], 0)
-        clone_calls = mock_clone.call_args_list
+        # _clone_isolated clones into a sibling staging path and atomically
+        # renames it into place (config#491 §8.3) -- clone_repo's own call
+        # args now legitimately show that staging path, not the final
+        # destination, so this checks the real observable outcome instead
+        # of an internal-implementation-detail mock argument.
         unit_root = self.workspace / "agents" / "test-unit"
-        expected_targets = {unit_root / "repo-a", unit_root / "repo-b"}
-        actual_targets = set()
-        for c in clone_calls:
-            args, kwargs = c
-            actual_targets.add(args[1])
-        self.assertTrue(expected_targets.issubset(actual_targets))
+        self.assertTrue((unit_root / "repo-a" / ".git").exists())
+        self.assertTrue((unit_root / "repo-b" / ".git").exists())
+        cloned_names = set()
+        for args, _kwargs in mock_clone.call_args_list:
+            basename = Path(args[1]).name
+            cloned_names.add(basename.split(".staging-")[0].lstrip("."))
+        self.assertEqual(cloned_names, {"repo-a", "repo-b"})
 
+    @patch("gr2.python_cli.spec_apply._validate_clone_isolation")
     @patch("gr2.python_cli.spec_apply.run_lifecycle_stage")
     @patch("gr2.python_cli.spec_apply.apply_file_projections", return_value=[])
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
     @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
-    @patch("gr2.python_cli.spec_apply.clone_repo", return_value=True)
-    def test_apply_updates_stale_unit_toml(self, _clone, _repo, _dir, _hooks, _proj, _lc):
+    @patch("gr2.python_cli.spec_apply.clone_repo", side_effect=_fake_clone_repo)
+    def test_apply_updates_stale_unit_toml(self, _clone, _repo, _dir, _hooks, _proj, _lc, _isolation):
         """After convergence, unit.toml should reflect the full spec repo list."""
         for repo in self.repo_specs:
             self._create_workspace_repo(repo)
@@ -248,7 +277,7 @@ class TestApplyConvergence(ConvergenceTestBase):
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
     @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
-    @patch("gr2.python_cli.spec_apply.clone_repo", return_value=True)
+    @patch("gr2.python_cli.spec_apply.clone_repo", side_effect=_fake_clone_repo)
     def test_convergence_is_idempotent(self, mock_clone, _repo, _dir, _hooks, _proj, _lc):
         """After apply, a second build_plan should show no converge operations."""
         self._fully_materialize()
@@ -258,13 +287,14 @@ class TestApplyConvergence(ConvergenceTestBase):
         self.assertEqual(len(operations), 0)
         mock_clone.assert_not_called()
 
+    @patch("gr2.python_cli.spec_apply._validate_clone_isolation")
     @patch("gr2.python_cli.spec_apply.run_lifecycle_stage")
     @patch("gr2.python_cli.spec_apply.apply_file_projections", return_value=[])
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
     @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
-    @patch("gr2.python_cli.spec_apply.clone_repo", return_value=True)
-    def test_apply_reports_converged_repos(self, _clone, _repo, _dir, _hooks, _proj, _lc):
+    @patch("gr2.python_cli.spec_apply.clone_repo", side_effect=_fake_clone_repo)
+    def test_apply_reports_converged_repos(self, _clone, _repo, _dir, _hooks, _proj, _lc, _isolation):
         """Apply result should list what was converged."""
         for repo in self.repo_specs:
             self._create_workspace_repo(repo)
