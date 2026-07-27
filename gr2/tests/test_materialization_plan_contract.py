@@ -509,15 +509,53 @@ class TestReceiptPublication(PlanContractTestBase):
         self.assertFalse(materialization_receipt_path(self.workspace_root, "mp_receipt").exists())
 
     def test_publication_order_is_exact(self):
-        """Atlas P3: counting two fsync calls does not pin the SEQUENCE --
-        moving the parent-directory fsync before os.replace left all five
-        prior tests green. This asserts the ordered chain with fd roles,
-        distinguishing the file fsync from the directory fsync via fstat,
-        so the reorder mutant dies for THIS invariant rather than through
-        some unrelated failure."""
+        """Atlas P3 + Sentinel finding 3: counting two fsync calls does not
+        pin the SEQUENCE -- moving the parent-directory fsync before
+        os.replace left all five prior tests green.
+
+        Deleting `fh.flush()` ALSO left the suite green, and it is the
+        subtler mutant: close() flushes anyway, so the published bytes come
+        out identical while the durability protocol is quietly false --
+        fsync would sync an empty file and the bytes would land after it.
+        Content assertions can never see that; only an ordered oracle can.
+
+        So the oracle observes the whole chain including flush, with fd
+        roles resolved via fstat so the file fsync is distinguished from the
+        directory fsync. Each mutant then dies for THIS invariant rather
+        than through some unrelated failure."""
         events: list[str] = []
         original_fsync = os.fsync
         original_replace = os.replace
+        original_fdopen = os.fdopen
+
+        class _TrackingWriter:
+            """Records write/flush without being able to forge them: close()
+            flushes the INNER object directly, bypassing this wrapper, so a
+            deleted explicit flush cannot be masked by the close-flush."""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def write(self, data):
+                events.append("write")
+                return self._inner.write(data)
+
+            def flush(self):
+                events.append("flush")
+                return self._inner.flush()
+
+            def fileno(self):
+                return self._inner.fileno()
+
+            def __enter__(self):
+                self._inner.__enter__()
+                return self
+
+            def __exit__(self, *exc_info):
+                return self._inner.__exit__(*exc_info)
+
+        def tracking_fdopen(fd, *args, **kwargs):
+            return _TrackingWriter(original_fdopen(fd, *args, **kwargs))
 
         def tracking_fsync(fd):
             kind = "dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file"
@@ -528,13 +566,16 @@ class TestReceiptPublication(PlanContractTestBase):
             events.append("replace")
             return original_replace(src, dst, **kwargs)
 
-        with patch.object(spec_apply.os, "fsync", tracking_fsync):
-            with patch.object(spec_apply.os, "replace", tracking_replace):
-                write_materialization_receipt(
-                    self.workspace_root, self._validated(), self._evidence()
-                )
+        with patch.object(spec_apply.os, "fdopen", tracking_fdopen):
+            with patch.object(spec_apply.os, "fsync", tracking_fsync):
+                with patch.object(spec_apply.os, "replace", tracking_replace):
+                    write_materialization_receipt(
+                        self.workspace_root, self._validated(), self._evidence()
+                    )
 
-        self.assertEqual(events, ["fsync:file", "replace", "fsync:dir"], events)
+        self.assertEqual(
+            events, ["write", "flush", "fsync:file", "replace", "fsync:dir"], events
+        )
 
     def test_no_receipt_published_when_fsync_fails(self):
         with patch.object(spec_apply.os, "fsync", side_effect=OSError("simulated fsync failure")):
@@ -642,6 +683,417 @@ class TestDerivedPathHardening(PlanContractTestBase):
             )
         self.assertEqual(outside_target.read_text(), "ORIGINAL")
         self.assertFalse(materialization_receipt_path(self.workspace_root, "mp_receipt").exists())
+
+
+class TestCanonicalizerFieldWiring(PlanContractTestBase):
+    """Sentinel finding 4: replacing EVERY operation-path call with a raw
+    resolve left all 43 tests green -- the canonicalizer was reachable in
+    principle and unpinned per field in practice.
+
+    Each of the seven path-bearing fields gets its own production-shaped
+    symlink fixture, so removing that specific call site turns exactly this
+    test RED. Symlink (not traversal) is the right probe: the schema
+    rejects traversal syntactically first, so only a filesystem-level
+    fixture can prove the call is actually wired."""
+
+    def _link(self, name: str) -> None:
+        outside = self.tmp / f"outside_{name}"
+        outside.mkdir(exist_ok=True)
+        link = self.workspace_root / name
+        if not link.exists():
+            link.symlink_to(outside)
+
+    def _expect_symlink_rejection(self, plan: dict[str, object], label: str) -> None:
+        with self.assertRaises(MaterializationPlanError, msg=f"{label} must be rejected") as ctx:
+            validate_materialization_plan(self.workspace_root, plan)
+        self.assertIn("symlink", str(ctx.exception), f"{label}: wrong invariant fired")
+
+    def test_clone_dest_path_is_canonicalized(self):
+        self._link("linked")
+        self._expect_symlink_rejection(
+            self._plan([self._clone_op(dest_path="linked/product")]), "clone.dest_path"
+        )
+
+    def test_clone_reference_base_is_canonicalized(self):
+        """reference_base must resolve inside .grip/cache/repos/ per the
+        schema, so the symlink is planted at the cache directory itself."""
+        outside = self.tmp / "outside_cache"
+        outside.mkdir()
+        cache_parent = self.workspace_root / ".grip" / "cache"
+        cache_parent.mkdir(parents=True, exist_ok=True)
+        (cache_parent / "repos").symlink_to(outside)
+        self._expect_symlink_rejection(
+            self._plan([self._clone_op(reference_base=".grip/cache/repos/product.git")]),
+            "clone.reference_base",
+        )
+
+    def test_venv_dest_path_is_canonicalized(self):
+        self._link("linked")
+        self._expect_symlink_rejection(
+            self._plan([self._venv_op(dest_path="linked/.venv")]), "venv.dest_path"
+        )
+
+    def test_editable_install_venv_path_is_canonicalized(self):
+        self._link("linked")
+        self._expect_symlink_rejection(
+            self._plan(
+                [
+                    {
+                        "kind": "editable_install",
+                        "venv_path": "linked/.venv",
+                        "source_path": "units/u1/src",
+                        "extras": [],
+                    }
+                ]
+            ),
+            "editable_install.venv_path",
+        )
+
+    def test_editable_install_source_path_is_canonicalized(self):
+        self._link("linked")
+        self._expect_symlink_rejection(
+            self._plan(
+                [
+                    {
+                        "kind": "editable_install",
+                        "venv_path": "units/u1/.venv",
+                        "source_path": "linked/src",
+                        "extras": [],
+                    }
+                ]
+            ),
+            "editable_install.source_path",
+        )
+
+    def test_project_file_source_path_is_canonicalized(self):
+        outside = self.tmp / "outside_staging"
+        outside.mkdir()
+        staging_parent = self.workspace_root / ".grip" / "staging"
+        staging_parent.mkdir(parents=True, exist_ok=True)
+        (staging_parent / "inputs").symlink_to(outside)
+        self._expect_symlink_rejection(
+            self._plan([self._project_file_op()]), "project_file.source_path"
+        )
+
+    def test_project_file_dest_path_is_canonicalized(self):
+        self._link("linked")
+        self._expect_symlink_rejection(
+            self._plan([self._project_file_op(dest_path="linked/AGENTS.md")]),
+            "project_file.dest_path",
+        )
+
+
+class TestCollisionParticipation(PlanContractTestBase):
+    """Sentinel finding 4b: returning None after canonicalizing the clone
+    destination -- and separately the project-file destination -- each left
+    43/43 green, because collision accounting was only ever proven with
+    venv-vs-venv pairs. Those destinations simply vanished from the ledger.
+
+    Every destination-bearing kind must participate, including across kinds."""
+
+    def _expect_collision(self, ops: list[dict[str, object]], label: str) -> None:
+        with self.assertRaises(MaterializationPlanError, msg=f"{label} must collide") as ctx:
+            validate_materialization_plan(self.workspace_root, self._plan(ops))
+        self.assertIn("collides", str(ctx.exception), f"{label}: wrong invariant fired")
+
+    def test_clone_destination_participates(self):
+        self._expect_collision(
+            [
+                self._clone_op(dest_path="units/u1/shared"),
+                self._clone_op(dest_path="units/u1/shared"),
+            ],
+            "clone vs clone",
+        )
+
+    def test_project_file_destination_participates(self):
+        self._expect_collision(
+            [
+                self._project_file_op(source_path=".grip/staging/inputs/f_01", dest_path="units/u1/X"),
+                self._project_file_op(source_path=".grip/staging/inputs/f_02", dest_path="units/u1/X"),
+            ],
+            "project_file vs project_file",
+        )
+
+    def test_clone_and_venv_collide_across_kinds(self):
+        self._expect_collision(
+            [
+                self._clone_op(dest_path="units/u1/shared"),
+                self._venv_op(dest_path="units/u1/shared"),
+            ],
+            "clone vs venv",
+        )
+
+    def test_clone_and_project_file_collide_across_kinds(self):
+        self._expect_collision(
+            [
+                self._clone_op(dest_path="units/u1/shared"),
+                self._project_file_op(dest_path="units/u1/shared"),
+            ],
+            "clone vs project_file",
+        )
+
+    def test_venv_and_project_file_collide_across_kinds(self):
+        self._expect_collision(
+            [
+                self._venv_op(dest_path="units/u1/shared"),
+                self._project_file_op(dest_path="units/u1/shared"),
+            ],
+            "venv vs project_file",
+        )
+
+    def test_unicode_nfc_nfd_destination_alias_rejected(self):
+        """Sentinel finding 7: NFC "café" and NFD "café" are distinct
+        Python strings that casefold to distinct values, yet name ONE
+        destination on a normalization-insensitive filesystem. Normalization
+        and case folding are separate aliasing axes."""
+        nfc = "units/café/.venv"
+        nfd = "units/café/.venv"
+        self.assertNotEqual(nfc, nfd)
+        self.assertNotEqual(nfc.casefold(), nfd.casefold())
+        self._expect_collision(
+            [self._venv_op(dest_path=nfc), self._venv_op(dest_path=nfd)],
+            "NFC vs NFD alias",
+        )
+
+
+class TestPlanHashOrdering(PlanContractTestBase):
+    """Sentinel finding 5: a mutant that sorts `operations` before applying
+    the otherwise-exact JSON recipe left 43/43 green. The normative formula
+    preserves list order -- sort_keys sorts KEYS, never array elements."""
+
+    def _two_op_plan(self, first_dest: str, second_dest: str) -> dict[str, object]:
+        return self._plan(
+            [self._venv_op(dest_path=first_dest), self._venv_op(dest_path=second_dest)]
+        )
+
+    def test_operation_order_changes_the_hash(self):
+        a = self._two_op_plan("units/a/.venv", "units/b/.venv")
+        b = self._two_op_plan("units/b/.venv", "units/a/.venv")
+        self.assertNotEqual(compute_plan_hash(a), compute_plan_hash(b))
+
+    def test_hash_matches_independently_computed_canonical_bytes(self):
+        plan = self._two_op_plan("units/a/.venv", "units/b/.venv")
+        expected_bytes = json.dumps(
+            plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        self.assertEqual(compute_plan_hash(plan), hashlib.sha256(expected_bytes).hexdigest())
+        # And the canonical bytes themselves preserve array order.
+        self.assertLess(
+            expected_bytes.index(b"units/a/.venv"), expected_bytes.index(b"units/b/.venv")
+        )
+
+
+class TestIdentityRejectionProductionWiring(PlanContractTestBase):
+    """Sentinel finding 6: removing the recursive-identity call from
+    validate_materialization_plan left 43/43 green, and removing "secret"
+    from the inventory also left 43/43 green -- because the only direct
+    helper test exercised "channel".
+
+    Two closures: pin the PRODUCTION call beneath a permissive validator
+    double (so the schema cannot shadow it), and table-test the complete
+    declared inventory rather than one sampled member."""
+
+    class _PermissiveValidator:
+        """Stands in for the pinned schema validator so operations reach the
+        hand layer. Without this the closed schema rejects the carrier field
+        first and the production identity call is never exercised."""
+
+        def iter_errors(self, _instance):
+            return iter(())
+
+    def test_production_call_is_wired_not_merely_present(self):
+        plan = self._plan([self._venv_op(metadata={"channel": "dev"})])
+        with patch.object(spec_apply, "_load_plan_validator", return_value=self._PermissiveValidator()):
+            with patch.object(
+                spec_apply, "_OPERATION_ALLOWED_FIELDS", dict(spec_apply._OPERATION_ALLOWED_FIELDS)
+            ) as allowed:
+                # Permit the carrier field so the allowlist cannot reject it
+                # first -- isolating the recursive identity seam itself.
+                allowed["venv"] = spec_apply._VENV_FIELDS | {"metadata"}
+                with self.assertRaises(MaterializationPlanError) as ctx:
+                    validate_materialization_plan(self.workspace_root, plan)
+        self.assertIn("identity-bearing", str(ctx.exception))
+
+    def test_forbidden_inventory_is_pinned(self):
+        """The table test below iterates the LIVE set, so it is satisfied by
+        whatever that set happens to contain: delete a member and the table
+        simply gets shorter while staying green. A self-referential table
+        cannot detect removal from the thing it enumerates.
+
+        Sentinel's probe caught the `secret` removal only because a separate
+        test hardcodes that one key -- which means every OTHER member was
+        unprotected. Pinning the literal inventory closes the whole class."""
+        self.assertEqual(
+            spec_apply._FORBIDDEN_IDENTITY_KEYS,
+            frozenset(
+                {
+                    "agent_name",
+                    "agent_id",
+                    "persistent_identity_ref",
+                    "role",
+                    "org",
+                    "project",
+                    "channel",
+                    "channels",
+                    "entitlement",
+                    "entitlement_reason",
+                    "secret",
+                    "secret_ref",
+                    "memory",
+                    "memory_body",
+                }
+            ),
+        )
+
+    def test_every_declared_forbidden_key_is_enforced(self):
+        """Table-test the whole inventory: sampling one member cannot catch
+        a removal of any other. Pairs with the pin above -- the pin catches
+        removal FROM the inventory, this catches non-enforcement OF it."""
+        for key in sorted(spec_apply._FORBIDDEN_IDENTITY_KEYS):
+            with self.subTest(forbidden_key=key):
+                with self.assertRaises(MaterializationPlanError) as ctx:
+                    spec_apply._reject_identity_fields_recursive(
+                        {"outer": {key: "x"}}, path="probe"
+                    )
+                self.assertIn("identity-bearing", str(ctx.exception))
+
+    def test_every_declared_forbidden_key_is_rejected_in_receipt_evidence(self):
+        """The same closed rule on the persisted result graph (finding 2)."""
+        validated = validate_materialization_plan(
+            self.workspace_root, self._plan([self._venv_op()], plan_id="mp_inv")
+        )
+        for key in sorted(spec_apply._FORBIDDEN_IDENTITY_KEYS):
+            with self.subTest(forbidden_key=key):
+                with self.assertRaises(MaterializationPlanError) as ctx:
+                    write_materialization_receipt(
+                        self.workspace_root, validated, [{"kind": "venv", "metadata": {key: "x"}}]
+                    )
+                # Assert WHICH invariant fired: the cardinality and kind
+                # checks run first and would reject a malformed probe for an
+                # unrelated reason, leaving this test vacuous.
+                self.assertIn("identity-bearing", str(ctx.exception))
+        self.assertFalse(materialization_receipt_path(self.workspace_root, "mp_inv").exists())
+
+
+class TestReceiptValueBinding(PlanContractTestBase):
+    """Sentinel finding 3b: replacing `operations: op_results` with
+    `operations: []`, and replacing the receipt plan_id with a constant,
+    each left 43/43 green -- the receipt test asserted a key set plus four
+    selected leaves, so every unasserted field was free to drift.
+
+    Bind the WHOLE value, reconstructed independently."""
+
+    def test_receipt_equals_independently_constructed_value(self):
+        plan = self._plan(
+            [self._venv_op(dest_path="units/a/.venv"), self._venv_op(dest_path="units/b/.venv")],
+            plan_id="mp_bind",
+            unit_key="u_bind",
+        )
+        validated = validate_materialization_plan(self.workspace_root, plan)
+        evidence = [
+            {"kind": "venv", "dest_path": "units/a/.venv", "created": True},
+            {"kind": "venv", "dest_path": "units/b/.venv", "created": False},
+        ]
+        path = write_materialization_receipt(self.workspace_root, validated, evidence)
+        receipt = json.loads(path.read_text())
+
+        applied_at = receipt.pop("applied_at")
+        self.assertIsInstance(applied_at, str)
+        self.assertTrue(applied_at)
+        self.assertEqual(
+            receipt,
+            {
+                "plan_id": "mp_bind",
+                "unit_key": "u_bind",
+                "plan_hash": compute_plan_hash(plan),
+                "schema_version": 1,
+                "workspace_spec_sha256": self.spec_sha256,
+                "stage": "MATERIALIZED",
+                "operations": evidence,
+            },
+        )
+
+
+class TestDurabilityFailureMatrix(PlanContractTestBase):
+    """Sentinel finding 3: durability is a FAILURE-PATH contract, not only
+    an ordering one. The prior failure test injected only at the FIRST
+    fsync; letting the file fsync succeed and failing the parent-directory
+    fsync left a plausible final receipt published at its path."""
+
+    def _validated(self, plan_id: str = "mp_dur"):
+        return validate_materialization_plan(
+            self.workspace_root, self._plan([self._venv_op()], plan_id=plan_id)
+        )
+
+    def _evidence(self):
+        return [{"kind": "venv"}]
+
+    def test_failure_at_file_fsync_publishes_nothing(self):
+        with patch.object(spec_apply.os, "fsync", side_effect=OSError("file fsync failed")):
+            with self.assertRaises(OSError):
+                write_materialization_receipt(self.workspace_root, self._validated(), self._evidence())
+        self.assertFalse(materialization_receipt_path(self.workspace_root, "mp_dur").exists())
+
+    def test_failure_at_parent_fsync_invalidates_the_receipt(self):
+        """The exact survivor: fsync_calls=2 and final_receipt_exists=True.
+        A publication that cannot be made durable must not remain
+        published, or a caller doing destructive cleanup on the strength of
+        a receipt acts on one that may vanish."""
+        calls = {"n": 0}
+        original_fsync = os.fsync
+
+        def fail_second_fsync(fd):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise OSError("parent-directory fsync failed")
+            return original_fsync(fd)
+
+        with patch.object(spec_apply.os, "fsync", fail_second_fsync):
+            with self.assertRaises(OSError):
+                write_materialization_receipt(self.workspace_root, self._validated(), self._evidence())
+        self.assertEqual(calls["n"], 2)
+        self.assertFalse(
+            materialization_receipt_path(self.workspace_root, "mp_dur").exists(),
+            "a receipt that could not be made durable must not remain published",
+        )
+
+    def test_failure_at_replace_publishes_nothing_and_leaves_no_residue(self):
+        original_replace = os.replace
+
+        def failing_replace(src, dst, **kwargs):
+            if "materialization" in str(src):
+                raise OSError("replace failed")
+            return original_replace(src, dst, **kwargs)
+
+        with patch.object(spec_apply.os, "replace", failing_replace):
+            with self.assertRaises(OSError):
+                write_materialization_receipt(self.workspace_root, self._validated(), self._evidence())
+        state_dir = self.workspace_root / ".grip" / "state" / "materialization"
+        self.assertFalse(materialization_receipt_path(self.workspace_root, "mp_dur").exists())
+        self.assertEqual(list(state_dir.glob("*.tmp-*")), [])
+
+    def test_successful_publication_is_a_regular_in_root_file(self):
+        """Sentinel finding 1's positive face: assert the published receipt
+        is a regular file inside the team root, not merely that something
+        exists at the path."""
+        path = write_materialization_receipt(self.workspace_root, self._validated(), self._evidence())
+        self.assertTrue(stat.S_ISREG(os.lstat(path).st_mode))
+        self.assertIn(self.workspace_root.resolve(), path.resolve().parents)
+
+    def test_symlinked_state_directory_rejected(self):
+        """Sentinel's exact fixture: `.grip/state` itself (not the
+        materialization leaf) as a symlink to an outside directory."""
+        outside = self.tmp / "outside_state"
+        outside.mkdir()
+        grip = self.workspace_root / ".grip"
+        grip.mkdir(parents=True, exist_ok=True)
+        (grip / "state").symlink_to(outside)
+
+        validated = self._validated(plan_id="mp_state")
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            write_materialization_receipt(self.workspace_root, validated, self._evidence())
+        self.assertIn("symlink", str(ctx.exception))
+        self.assertEqual(list(outside.rglob("*")), [])
 
 
 if __name__ == "__main__":

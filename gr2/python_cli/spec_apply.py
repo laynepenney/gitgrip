@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import tomllib
+import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -820,7 +821,13 @@ def validate_materialization_plan(workspace_root: Path, plan: dict[str, object])
         _reject_identity_fields_recursive(op, path=f"operations[{idx}]")
         canonical_dest = _validate_operation_shape(op, idx=idx, workspace_root=workspace_root)
         if canonical_dest is not None:
-            key = str(canonical_dest).casefold()
+            # NFC-normalize BEFORE casefolding (Sentinel finding 7):
+            # "units/café/.venv" spelled NFC vs NFD are distinct Python
+            # strings that casefold to distinct values, yet on a
+            # normalization-insensitive filesystem they name ONE
+            # destination. Normalization and case folding are separate
+            # aliasing axes; collision detection has to close both.
+            key = unicodedata.normalize("NFC", str(canonical_dest)).casefold()
             if key in seen_canonical_dests:
                 raise MaterializationPlanError(
                     f"operations[{idx}] dest_path collides (case-folded/normalized) with "
@@ -997,10 +1004,28 @@ def write_materialization_receipt(
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
-    os.replace(tmp_path, receipt_path)
-    dir_fd = os.open(receipt_dir, os.O_RDONLY)
     try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+        os.replace(tmp_path, receipt_path)
+    except BaseException:
+        # A failed replace leaves the temp behind otherwise -- found by this
+        # closure's own residue test rather than reasoned about.
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    # Sentinel finding 3: durability is a FAILURE-PATH contract, not only an
+    # ordering one. If the parent-directory fsync fails, the rename may not
+    # survive a crash -- yet the receipt is already visible at its published
+    # path, so a caller that treats "the writer returned" or "a receipt
+    # exists" as durable acknowledgement would proceed to destructive
+    # cleanup on the strength of a receipt that could vanish. A publication
+    # that cannot be made durable must not remain published.
+    try:
+        dir_fd = os.open(receipt_dir, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except BaseException:
+        receipt_path.unlink(missing_ok=True)
+        raise
     return receipt_path
