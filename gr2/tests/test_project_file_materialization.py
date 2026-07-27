@@ -238,31 +238,55 @@ class TestSingleRead(ProjectFileTestBase):
 
 
 class TestSourceConfinement(ProjectFileTestBase):
-    def test_source_outside_the_staging_inputs_prefix_is_rejected(self):
-        """Section 383. The decoy is in-workspace (so A's canonicalizer admits
-        it) and hashes correctly (so the content check does not fire first).
-        Only the staging-prefix guard can reject it."""
+    def test_the_pinned_schema_owns_staging_confinement(self):
+        """PREMISE, not a guard of this slice.
+
+        The design assumed §383 confinement was C's to enforce. It is not: the
+        spec says the source is "syntactically confined", and S4-A wired that
+        into the pinned v1 schema, so a planted in-workspace file never produces
+        a capability at all. Duplicating the check in the executor would be an
+        UNREACHABLE guard -- protection-shaped and untestable at its own level.
+
+        Pinned here so a loosened schema surfaces as this test failing, rather
+        than as a silently open hole in the executor."""
         planted = self.workspace_root / "units" / "u_test" / "planted.md"
         planted.parent.mkdir(parents=True, exist_ok=True)
         planted.write_bytes(FOUNDATION)
 
-        validated = self._validated([self._op(source_path="units/u_test/planted.md")])
-        with self.assertRaises(ProjectFileExecutionError) as ctx:
-            self._execute(validated)
-        self.assertIn("staging", str(ctx.exception))
+        with self.assertRaises(Exception) as ctx:
+            self._validated([self._op(source_path="units/u_test/planted.md")])
+        self.assertIn("pinned MaterializationPlan v1 schema", str(ctx.exception))
 
-    def test_source_that_becomes_a_symlink_after_validation_is_rejected(self):
-        """A's canonicalize_workspace_path already lstat-rejects a symlinked
-        source_path -- but only at VALIDATION. A symlink planted between
-        validation and execution never meets that guard, which is exactly why
-        this one has to exist at use. Same validation-vs-use gap S4-B closed
-        for the WorkspaceSpec."""
+    def test_the_canonicalizer_owns_the_post_validation_symlink(self):
+        """PREMISE, and a correction to this slice's own design note.
+
+        The design claimed A's symlink rejection ran only at validation, leaving
+        a validation-vs-use gap for C to close. It does not: the executor calls
+        canonicalize_workspace_path itself, and that lstat-walks every component
+        including the last, so a symlink planted between validation and
+        execution IS caught -- upstream, at execution time.
+
+        The class is still real (S4-B's WorkspaceSpec re-check was a genuine
+        instance); this particular path simply is not an instance of it."""
         validated = self._validated()
 
         outside = self.tmp / "outside-the-workspace"
         outside.write_bytes(FOUNDATION)
         self.source_path.unlink()
         self.source_path.symlink_to(outside)
+
+        with self.assertRaises(Exception) as ctx:
+            self._execute(validated)
+        self.assertIn("passes through a symlink", str(ctx.exception))
+
+    def test_an_irregular_staged_input_is_rejected(self):
+        """What is genuinely this guard's own: the input neither upstream check
+        sees. The schema is satisfied (the path is syntactically a staging
+        input), the canonicalizer is satisfied (no symlink anywhere), and the
+        thing sitting there is not a file anyone can project."""
+        validated = self._validated()
+        self.source_path.unlink()
+        os.mkfifo(self.source_path)
 
         with self.assertRaises(ProjectFileExecutionError) as ctx:
             self._execute(validated)
