@@ -158,8 +158,10 @@ class TestBuildPlanConvergence(ConvergenceTestBase):
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
     @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
-    def test_new_unit_still_uses_create_and_write(self, _repo, _dir, _hooks):
-        """Brand-new unit (no dir, no toml) uses create_unit_root + write_unit_metadata, not converge."""
+    def test_new_unit_also_converges_repos_in_first_pass(self, _repo, _dir, _hooks):
+        """grip#539: a brand-new unit (no dir, no toml) must schedule its repo
+        checkouts in the SAME planning pass as create_unit_root/write_unit_metadata,
+        not require a second apply to notice they're missing."""
         for repo in self.repo_specs:
             self._create_workspace_repo(repo)
             self._create_repo_cache(repo["name"])
@@ -169,7 +171,10 @@ class TestBuildPlanConvergence(ConvergenceTestBase):
         kinds = [op.kind for op in operations]
         self.assertIn("create_unit_root", kinds)
         self.assertIn("write_unit_metadata", kinds)
-        self.assertNotIn("converge_unit_repos", kinds)
+        self.assertIn("converge_unit_repos", kinds)
+        converge_ops = [op for op in operations if op.kind == "converge_unit_repos"]
+        self.assertEqual(len(converge_ops), 1)
+        self.assertEqual(set(converge_ops[0].details["missing_repos"]), {"repo-a", "repo-b"})
 
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)

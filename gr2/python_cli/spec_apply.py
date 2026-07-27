@@ -248,19 +248,27 @@ def build_plan(workspace_root: Path) -> tuple[dict[str, object], list[PlanOperat
                 )
             )
 
-        if unit_root.exists() and unit_toml.exists():
-            declared_repos = [str(r) for r in unit.get("repos", [])]
-            missing_repos = [r for r in declared_repos if not (unit_root / r).exists()]
-            if missing_repos:
-                operations.append(
-                    PlanOperation(
-                        kind="converge_unit_repos",
-                        subject=unit_name,
-                        target_path=str(unit_root),
-                        reason=f"missing repo checkouts: {', '.join(missing_repos)}",
-                        details={"missing_repos": missing_repos, "all_repos": declared_repos},
-                    )
+        # grip#539: computed unconditionally, not gated on unit_root/unit_toml
+        # already existing. A brand-new unit's declared repos are trivially
+        # "missing" too (unit_root doesn't exist yet, so (unit_root / r).exists()
+        # is False for every r) -- the old guard meant a first apply published
+        # the unit shell without scheduling its clones, requiring a second,
+        # separate apply to notice. Ordered after create_unit_root/
+        # write_unit_metadata in this loop, so apply_plan's execution (which
+        # processes operations in list order) creates the directory before
+        # trying to clone into it.
+        declared_repos = [str(r) for r in unit.get("repos", [])]
+        missing_repos = [r for r in declared_repos if not (unit_root / r).exists()]
+        if missing_repos:
+            operations.append(
+                PlanOperation(
+                    kind="converge_unit_repos",
+                    subject=unit_name,
+                    target_path=str(unit_root),
+                    reason=f"missing repo checkouts: {', '.join(missing_repos)}",
+                    details={"missing_repos": missing_repos, "all_repos": declared_repos},
                 )
+            )
 
     return spec, operations
 
