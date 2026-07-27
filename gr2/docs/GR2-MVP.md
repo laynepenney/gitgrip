@@ -71,7 +71,7 @@ These extend gr2 but are not required for the replacement workflow.
 | Lane checkout-pr (checkout PR branch into lane) | grip#546 |
 | Multi-platform adapters (GitLab, Azure, Bitbucket) | platform.py stubs exist |
 | Spec diffing (show drift between spec and workspace) | Rust plan command exists |
-| Agent spawn integration | External; gr2 OSS provides the exec surface only |
+| Agent spawn integration | Out of scope; gr2 provides the exec surface only |
 | Repo maintenance policies | Prototype exists |
 | CI/release surface | gr1 covers this; port later |
 | Griptree management | gr1 covers this; port later |
@@ -171,13 +171,12 @@ that the replacement workflow works end-to-end.
 ## Boundary Declaration
 
 gr2 workspace orchestration is OSS. All features in this MVP definition live in
-the grip repo. Identity resolution, org routing, agent identity, and workspace
-policy enforcement live outside this repo and connect through the plugin seam.
+the grip repo. gr2 does not resolve identity, route org membership, or enforce workspace
+policy.
 
 The exec surface, sync engine, and materialization pipeline are neutral
 infrastructure. They do not answer "who is this agent" or "what workspace owns
-this." Any feature that crosses that line goes outside OSS per the identity test
-heuristic.
+this." A feature that crosses that line does not belong in gr2.
 
 ## References
 

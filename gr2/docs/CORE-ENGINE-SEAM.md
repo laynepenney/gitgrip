@@ -160,7 +160,7 @@ Responsibilities:
 
 Non-responsibilities:
 
-- reading externally-owned lane envelopes under `.grip/lanes`
+- reading lane envelopes it does not own
 - resolving whether a caller is allowed to create the lane
 - deriving identity from branch, path, or handle strings
 
@@ -179,9 +179,8 @@ Current Python references:
 
 2. The engine does not own lane envelopes.
 
-   OSS gr2 lane records live under `agents/<owner_unit>/lanes/<lane>`.
-   Externally-owned lane envelopes may live under `.grip/lanes`, but OSS gr2 must not
-   read that namespace.
+   gr2 lane records live under `agents/<owner_unit>/lanes/<lane>`. gr2 reads
+   that location and no other, whatever else may exist in the workspace.
 
 3. The engine does not own CLI shape.
 
@@ -190,8 +189,8 @@ Current Python references:
 
 4. The engine does not own hooks policy.
 
-   The OSS UX layer exposes only a neutral hook seam; hook registration,
-   policy, and behavior live in plugins outside this repo.
+   gr2 exposes a neutral hook seam and nothing more. It does not register
+   hooks, decide hook policy, or define hook behaviour.
 
 5. The engine does not own transport.
 

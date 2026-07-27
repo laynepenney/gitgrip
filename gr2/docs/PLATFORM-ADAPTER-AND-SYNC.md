@@ -65,9 +65,10 @@ That makes third-party adapters possible later:
 - module import / entry-point registration
 - same `gr2` PR commands, different backend implementation
 
-## 3. Required Spawn-Readiness Seams
+## 3. Stable Output Surfaces
 
-For an external orchestrator to move on top of `gr2`, these are required:
+`gr2` provides these as stable, machine-readable surfaces. Each is a public
+contract: its shape does not change without a version bump.
 
 - hook invocation API with stable structured results
 - workspace / lane event outbox
@@ -154,7 +155,7 @@ Write:
 - event outbox entries
 - updated aggregated status snapshot
 
-This is the seam external consumers and QA will use.
+These are the surfaces consumers and QA read.
 
 ## 6. Sync Safety Rules
 
@@ -172,8 +173,8 @@ This is the seam external consumers and QA will use.
    Example: 3 of 5 repos updated, 1 blocked dirty, 1 platform failure.
 
 5. Event emission is part of correctness.
-   `sync` must emit enough machine-readable state for external orchestration and QA.
-   Emit failure does not block the parent operation.
+   `sync` must emit machine-readable state describing what it did and what it
+   could not do. Emit failure does not block the parent operation.
 
 6. Terminal sync state is normalized.
    `sync.completed` is the terminal event for success, blocked, failed, and
@@ -238,4 +239,4 @@ Not part of Sprint 20 `gr2` OSS:
 - release flow
 - multi-platform support beyond GitHub
 
-Those would either duplicate raw git or blur the OSS boundary.
+Those would either duplicate raw git or blur the boundary.

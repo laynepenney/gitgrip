@@ -6,7 +6,7 @@ Boundary: `grip` is OSS because this document covers workspace migration mechani
 
 ## Thesis
 
-`gr1 -> gr2` migration should be treated as a staged workspace cutover, not a flag day rewrite. `gr2` replaces `gr1` only when the workspace can be materialized, synchronized, executed, and reviewed through `gr2` without depending on hidden `gr1` behavior. Identity and org-aware behavior are not part of the OSS cutover. They must attach through a plugin seam after the workspace migration is complete.
+`gr1 -> gr2` migration should be treated as a staged workspace cutover, not a flag day rewrite. `gr2` replaces `gr1` only when the workspace can be materialized, synchronized, executed, and reviewed through `gr2` without depending on hidden `gr1` behavior. gr2 does not resolve, bind, route, or authorize identity or org membership, so none of that is part of the cutover.
 
 ## Scope
 
@@ -25,7 +25,7 @@ This playbook does **not** cover:
 - persistent identity binding
 - policy declared elsewhere
 
-Those concerns live outside OSS. The playbook may reference the seam, but it must not implement identity resolution.
+gr2 does none of those things, and this playbook does not add them.
 
 ## Definitions
 
@@ -39,7 +39,7 @@ Those concerns live outside OSS. The playbook may reference the seam, but it mus
 1. Build `gr2` in parallel. Do not destroy the `gr1` workspace first.
 2. Preserve existing `gr1` state as migration snapshots.
 3. Validate with real repos, not metadata-only mocks.
-4. Cut over workspace mechanics first. Identity migration happens later, outside OSS.
+4. Cut over workspace mechanics. gr2 does not migrate identity at all.
 5. Deprecate only after `gr2` proves equivalence on the required workflows.
 
 ## Compatibility Matrix
@@ -55,7 +55,7 @@ Those concerns live outside OSS. The playbook may reference the seam, but it mus
 | Exec in lane context | Partial / ad hoc | Targeted | `gr2 exec` must be validated before cutover |
 | Review lane checkout | Existing PR workflows in `gr` | Targeted | required for day-to-day review parity |
 | Sync / convergence | Yes | In progress | real-git sync validation is a cutover gate |
-| Identity-aware spawn / recall binding | Mixed legacy behavior | Out of scope in OSS | a plugin handles identity binding after workspace cutover |
+| Identity-aware spawn / recall binding | Mixed legacy behavior | Out of scope in OSS | gr2 does not bind identity |
 
 ## Migration Stages
 
@@ -66,7 +66,7 @@ Before starting a workspace migration:
 - `gr1` workspace is healthy
 - repos are synced
 - there is no unreviewed destructive workspace change in flight
-- identity behavior outside OSS is not required to complete the OSS migration
+- identity behavior is not required to complete the migration
 
 Recommended operator checks:
 
@@ -109,7 +109,7 @@ Current design rule:
 
 - units are workspace-local ownership buckets only
 - `gr2` must not compile or infer durable agent identity
-- if identity mapping is needed, it must be supplied separately
+- gr2 does not perform identity mapping
 
 ### Stage 3: Materialize in Parallel
 
@@ -187,7 +187,7 @@ And one explicit boundary condition:
 
 8. identity-dependent behavior is not blocking the workspace cutover in OSS
 
-If identity binding is required for a customer or internal workflow, that dependency must be satisfied outside OSS, not by adding identity logic to `grip`.
+If identity binding is required for a customer or internal workflow, it is not satisfied by `grip`, and identity logic must not be added to it.
 
 ## Cutover Criteria Matrix
 
@@ -248,7 +248,7 @@ Not allowed in `grip` migration:
 
 The correct wording in OSS documents and commands is:
 
-- identity binding is handled by plugin or provider layers
+- gr2 does not bind identity
 - `grip` only migrates workspace mechanics
 
 ## Discrete Migration Tickets
@@ -279,4 +279,4 @@ The path is:
 3. prove exec/apply/smoke parity
 4. frame gr1 1.0 and deprecation
 5. cut over workspace mechanics
-6. leave identity migration outside OSS
+6. do not add identity migration to gr2

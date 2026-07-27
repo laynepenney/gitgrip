@@ -1,7 +1,7 @@
 # gr2 Hook/Event Contract
 
 This document defines the event contract for gr2: what events the system emits,
-their schema, delivery model, and how consumers (spawn, recall, channel bridge)
+their schema, delivery model, and how consumers
 integrate.
 
 This is a **design document** for Sprint 20. It does not describe current
@@ -13,7 +13,7 @@ behavior; it defines the target contract.
 - Events are durable, append-only, and replayable.
 - Consumers read events at their own pace via cursors. gr2 does not block on
   delivery.
-- The event schema is the stable API between OSS gr2 and any external orchestrator.
+- The event schema is the stable API between gr2 and any consumer.
 - Hook execution is one event source among several, not the only one.
 
 ## 2. Event Sources
@@ -47,7 +47,7 @@ fields sit at the same level. There is no nested `payload` wrapper.
   "type": "lane.entered",
   "workspace": "synapt-dev",
   "actor": "agent:apollo",
-  "agent_id": "agent_apollo_xyz789",
+  "agent_id": "agent_7f3a9c",
   "owner_unit": "apollo",
   "lane_name": "feat/hook-events",
   "lane_type": "feature",
@@ -76,7 +76,7 @@ top-level object without unwrapping a nested payload.
 |-------|------|----------|-------------|
 | `workspace` | string | yes | Workspace name from WorkspaceSpec. |
 | `actor` | string | yes | Who triggered the event. Format: `agent:<name>`, `human:<name>`, or `system`. |
-| `agent_id` | string | no | Persistent agent identity, resolved elsewhere. Opaque in OSS. |
+| `agent_id` | string | no | Opaque caller-supplied identifier. gr2 stores and echoes it; it never parses or derives from it. |
 | `owner_unit` | string | yes | Unit that owns the context where this event occurred. |
 
 **Domain fields** vary by event type. See section 3.2 for the fields each event
@@ -286,7 +286,6 @@ Reading flow:
 |----------|----------|--------------|
 | **channel_bridge** | OSS | Derives `#dev`-style notifications from events. Posts to channel transport. |
 | **recall_indexer** | OSS | Indexes events into recall for searchable lane/activity history. |
-| **spawn_watcher** | External | Watches for events that trigger agent orchestration (lane assignments, PR readiness, hook failures). |
 
 ### 5.3 Consumer Contract
 
@@ -300,27 +299,20 @@ Consumers must:
 - Handle schema version bumps by checking `version` and ignoring events with
   a version they do not understand.
 
-### 5.4 Spawn Integration (External)
+### 5.4 Downstream Consumers
 
-Spawn is an external consumer that orchestrates multi-agent workflows. It
-consumes the same outbox as every other consumer; how it interprets those
-events is outside this contract.
+Consumers other than those listed above read the same outbox, through the same
+cursor mechanism and under the same contract in 5.3.
+What any of them does with an event is outside this document.
 
-Events that spawn cares about:
+One property of the outbox IS gr2's to state, because it is what keeps the
+event stream acyclic:
 
-| Event | Spawn Reaction |
-|-------|----------------|
-| `lane.created` | May assign agent to lane based on policy. |
-| `pr.created` | May assign reviewers based on compiled review requirements. |
-| `pr.checks_passed` | May trigger merge if auto-merge policy is active. |
-| `pr.checks_failed` | May notify owning agent or escalate. |
-| `hook.failed` with `on_failure: "block"` | May retry, reassign, or alert. |
-| `lease.expired` | May reclaim the lane or notify the agent. |
-| `sync.conflict` | May pause agent work on conflicting repos. |
-
-Spawn does not write to the outbox. Spawn's actions (assigning agents,
-triggering merges) flow back through the gr2 CLI, which then emits its own
-events. This prevents circular event chains.
+**Consumers never write to the outbox.** gr2 is the only writer. A consumer
+that wants to change workspace state invokes the gr2 CLI, and gr2 emits the
+resulting events itself. So an event can never be caused directly by another
+consumer's reaction to an event, and no consumer can manufacture history it did
+not cause.
 
 ## 6. Hook Execution Contract
 
@@ -419,7 +411,7 @@ emit(
     event_type=EventType.HOOK_FAILED,
     workspace_root=workspace_root,
     actor="agent:apollo",
-    agent_id="agent_apollo_xyz789",
+    agent_id="agent_7f3a9c",
     owner_unit="apollo",
     payload={
         "stage": "on_materialize",
@@ -775,7 +767,7 @@ Leases use TTL-first expiry with optional heartbeat renewal.
 - Notification routing to the original holder is a **channel_bridge consumer
   responsibility**, not a core gr2 concern. The `lease.force_broken` event
   carries `broken_by` and the original holder's identity in context fields.
-  The channel bridge (or spawn_watcher) decides how and where to deliver the
+  The channel bridge decides how and where to deliver the
   notification based on its own routing rules.
 
 ### 14.3 Dirty State on Lane Switch
