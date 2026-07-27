@@ -24,12 +24,19 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["gr2_overlay", "gr2", "gr2.python_cli", "gr2.prototypes"]
+# gr2_overlay is a time-bounded compat alias for gr2.overlay (grip config#491
+# gap#13): same physical directory, two import names. New materialization
+# code must import gr2.overlay; gr2_overlay stays for existing consumers
+# until they're migrated separately. Don't mix the two names for the same
+# object within one execution path -- Python treats them as distinct module
+# identities even though the underlying files are identical.
+packages = ["gr2_overlay", "gr2", "gr2.python_cli", "gr2.prototypes", "gr2.overlay"]
 
 [tool.setuptools.package-dir]
 gr2 = "gr2"
 "gr2.python_cli" = "python_cli"
 "gr2.prototypes" = "prototypes"
+"gr2.overlay" = "gr2_overlay"
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "gr2_overlay/tests"]

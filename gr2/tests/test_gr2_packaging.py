@@ -59,6 +59,22 @@ def test_gr2_overlay_still_imports_unprefixed(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_gr2_overlay_alias_resolves(tmp_path: Path) -> None:
+    """gr2.overlay (config#491 gap#13) must resolve, and to the same physical
+    file as gr2_overlay -- it's a compat alias, not a fork."""
+    result = _run(
+        [
+            sys.executable,
+            "-c",
+            "import gr2.overlay, gr2_overlay; "
+            "assert gr2.overlay.__file__ == gr2_overlay.__file__, "
+            "(gr2.overlay.__file__, gr2_overlay.__file__)",
+        ],
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_gr2_console_script_resolves(tmp_path: Path) -> None:
     """console_scripts entry point `gr2` must be on PATH and runnable after install."""
     result = _run(["gr2", "--help"], cwd=tmp_path)
