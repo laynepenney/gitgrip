@@ -160,15 +160,22 @@ class TestBuildPlanConvergence(ConvergenceTestBase):
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
     @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
-    def test_no_op_when_fully_materialized(self, _repo, _dir, _hooks):
-        """All repos present inside unit -> no converge operation."""
+    def test_fully_materialized_still_schedules_validation_but_nothing_missing(self, _repo, _dir, _hooks):
+        """Round 2 (Atlas/Sentinel P1): converge_unit_repos is now scheduled
+        whenever a unit has ANY declared repos, not only when build_plan's
+        cheap existence check finds something missing -- that's what makes
+        apply-time's real _clone_isolated validation (origin/isolation)
+        actually run on every pass, not just the first one. All repos
+        present still schedules the op (for validation), but its own
+        details correctly report nothing missing."""
         self._fully_materialize()
 
         _, operations = build_plan(self.workspace)
 
         converge_ops = [op for op in operations if op.kind == "converge_unit_repos"]
-        self.assertEqual(len(converge_ops), 0)
-        self.assertEqual(len(operations), 0)
+        self.assertEqual(len(converge_ops), 1)
+        self.assertEqual(converge_ops[0].details["missing_repos"], [])
+        self.assertEqual(len(operations), 1)
 
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
@@ -279,12 +286,18 @@ class TestApplyConvergence(ConvergenceTestBase):
     @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
     @patch("gr2.python_cli.spec_apply.clone_repo", side_effect=_fake_clone_repo)
     def test_convergence_is_idempotent(self, mock_clone, _repo, _dir, _hooks, _proj, _lc):
-        """After apply, a second build_plan should show no converge operations."""
+        """After apply, a second build_plan schedules validation (round 2:
+        always scheduled when a unit has declared repos -- see
+        test_fully_materialized_still_schedules_validation_but_nothing_missing)
+        but performs no NEW clone work: idempotence means zero mutation on
+        a rerun, not zero operations scheduled."""
         self._fully_materialize()
 
         _, operations = build_plan(self.workspace)
 
-        self.assertEqual(len(operations), 0)
+        self.assertEqual(len(operations), 1)
+        self.assertEqual(operations[0].kind, "converge_unit_repos")
+        self.assertEqual(operations[0].details["missing_repos"], [])
         mock_clone.assert_not_called()
 
     @patch("gr2.python_cli.spec_apply._validate_clone_isolation")

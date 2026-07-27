@@ -61,6 +61,12 @@ _FORBIDDEN_IDENTITY_KEYS = frozenset(
 
 
 def _reject_identity_fields_recursive(value: object, *, path: str) -> None:
+    """Defense in depth alongside the per-kind field allowlist below: even
+    an allowed field's VALUE should never carry an identity-shaped key.
+    The allowlist is what actually PROVES identity-freedom (round 2,
+    Atlas/Sentinel: "a blacklist cannot prove identity-free construction"
+    -- display_name, or any field name nobody enumerated, sails through a
+    blacklist undetected); this stays as a second layer, not the primary one."""
     if isinstance(value, dict):
         present = _FORBIDDEN_IDENTITY_KEYS & value.keys()
         if present:
@@ -86,23 +92,31 @@ def _validate_path_safe_token(value: object, *, field_name: str) -> str:
     return value
 
 
-def _resolve_contained(workspace_root: Path, relative: str, *, field_name: str) -> Path:
-    """config#491 §3: absolute paths, .., symlink escapes, and duplicate
-    destinations are blockers. Path.resolve() normalizes .. lexically and
-    follows any existing symlinks, so a single containment check after
-    resolving catches all three escape shapes. Shared by dest_path,
-    reference_base, and (via _resolve_staging_source) source_path."""
+def _canonicalize_workspace_path(workspace_root: Path, relative: str, *, field_name: str) -> Path:
+    """config#491 §3: absolute paths, .., symlink escapes, and duplicate/
+    case-folded-colliding destinations are blockers. Round 2 (Atlas): a
+    literal '..' segment that happens to resolve back inside the workspace
+    was being accepted -- the spec forbids '..' appearing at all, not just
+    "does it escape after resolution." Checked as a literal path-part scan
+    BEFORE resolving, in addition to the post-resolve containment check
+    (which independently catches symlink escapes resolve() reveals).
+    Returns the fully resolved (symlink-dereferenced) canonical path --
+    callers needing the original relative string for receipts/display keep
+    that separately; this return value is for filesystem operations and
+    ALL comparison (duplicate detection, cache-namespace checks)."""
     if not relative or relative.startswith("/") or relative.startswith("~"):
         raise MaterializationPlanError(f"{field_name} must be relative to the workspace root: {relative!r}")
+    if ".." in Path(relative).parts:
+        raise MaterializationPlanError(f"{field_name} must not contain '..' segments: {relative!r}")
     workspace_resolved = workspace_root.resolve()
     candidate = (workspace_root / relative).resolve()
     if candidate != workspace_resolved and workspace_resolved not in candidate.parents:
         raise MaterializationPlanError(f"{field_name} escapes the workspace root: {relative!r}")
-    return workspace_root / relative
+    return candidate
 
 
 def _resolve_safe_dest(workspace_root: Path, dest_path: str) -> Path:
-    return _resolve_contained(workspace_root, dest_path, field_name="dest_path")
+    return _canonicalize_workspace_path(workspace_root, dest_path, field_name="dest_path")
 
 
 _STAGING_INPUTS_SUBPATH = Path(".grip") / "staging" / "inputs"
@@ -112,14 +126,45 @@ def _resolve_staging_source(workspace_root: Path, source_path: str) -> Path:
     """config#491 §6.2, Sentinel r2 P4 ruling: source_path MUST be
     workspace-relative AND resolve beneath .grip/staging/inputs/ specifically
     -- not just anywhere in the workspace. The normative example is
-    `.grip/staging/inputs/f_01`; S7 emits `.grip/staging/inputs/<opaque-key>`."""
-    resolved = _resolve_contained(workspace_root, source_path, field_name="source_path").resolve()
+    `.grip/staging/inputs/f_01`; S7 emits `.grip/staging/inputs/<opaque-key>`.
+    _canonicalize_workspace_path already follows symlinks via .resolve(), so
+    a symlink planted inside staging/inputs pointing outside it is caught by
+    the same containment check -- pinned by a real symlink test, not just
+    reasoned about."""
+    resolved = _canonicalize_workspace_path(workspace_root, source_path, field_name="source_path")
     staging_root = (workspace_root / _STAGING_INPUTS_SUBPATH).resolve()
     if resolved != staging_root and staging_root not in resolved.parents:
         raise MaterializationPlanError(
             f"source_path must resolve beneath .grip/staging/inputs/: {source_path!r}"
         )
-    return workspace_root / source_path
+    return resolved
+
+
+_CACHE_NAMESPACE_SUBPATH = Path(".grip") / "cache" / "repos"
+
+
+def _validate_reference_base(workspace_root: Path, reference_base: str, *, repo_url: str) -> Path:
+    """config#491 §8.2, round 2 (Atlas/Sentinel): reference_base must be
+    bound to the declared cache NAMESPACE (.grip/cache/repos/*.git), not
+    just anywhere inside the workspace -- a real in-workspace mirror
+    outside that namespace was being accepted and retained as the clone's
+    alternate. Separately, if the referenced cache already exists, its own
+    canonical origin must equal repo_url -- otherwise a cache seeded from a
+    different remote could be used as if it were the right one."""
+    resolved = _canonicalize_workspace_path(workspace_root, reference_base, field_name="reference_base")
+    cache_namespace = (workspace_root / _CACHE_NAMESPACE_SUBPATH).resolve()
+    if resolved.parent != cache_namespace or resolved.suffix != ".git":
+        raise MaterializationPlanError(
+            f"reference_base must be a *.git cache directly inside .grip/cache/repos/: {reference_base!r}"
+        )
+    if resolved.exists():
+        cache_origin = remote_origin_url(resolved)
+        if cache_origin is not None and cache_origin != repo_url:
+            raise MaterializationPlanError(
+                f"reference_base {reference_base!r} has canonical origin {cache_origin!r}, "
+                f"expected {repo_url!r} -- a cache seeded from a different remote cannot be reused"
+            )
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -175,18 +220,26 @@ def _validate_clone_isolation(
         text=True,
         check=False,
     )
-    if common_dir_proc.returncode == 0:
-        common_dir_raw = common_dir_proc.stdout.strip()
-        common_dir = Path(common_dir_raw)
-        if not common_dir.is_absolute():
-            common_dir = (repo_root / common_dir).resolve()
-        else:
-            common_dir = common_dir.resolve()
-        if common_dir != git_path.resolve():
-            raise MaterializationPlanError(
-                f"clone at {repo_root} has git-common-dir {common_dir} that is not its own .git "
-                "-- it shares mutable git metadata with another checkout (config#491 §8.1)"
-            )
+    if common_dir_proc.returncode != 0:
+        # Round 2 (Sentinel): fail CLOSED, not open. The prior version
+        # silently skipped this whole check when the subprocess itself
+        # failed -- "cannot verify isolation" must reject, not be treated
+        # as "assume it's fine."
+        raise MaterializationPlanError(
+            f"clone at {repo_root}: git rev-parse --git-common-dir failed, cannot verify isolation "
+            f"(config#491 §8.1): {common_dir_proc.stderr or common_dir_proc.stdout}"
+        )
+    common_dir_raw = common_dir_proc.stdout.strip()
+    common_dir = Path(common_dir_raw)
+    if not common_dir.is_absolute():
+        common_dir = (repo_root / common_dir).resolve()
+    else:
+        common_dir = common_dir.resolve()
+    if common_dir != git_path.resolve():
+        raise MaterializationPlanError(
+            f"clone at {repo_root} has git-common-dir {common_dir} that is not its own .git "
+            "-- it shares mutable git metadata with another checkout (config#491 §8.1)"
+        )
 
     actual_origin = remote_origin_url(repo_root)
     if actual_origin != expected_origin:
@@ -526,15 +579,31 @@ def build_plan(workspace_root: Path) -> tuple[dict[str, object], list[PlanOperat
         # write_unit_metadata in this loop, so apply_plan's execution (which
         # processes operations in list order) creates the directory before
         # trying to clone into it.
+        #
+        # Round 2 (Atlas/Sentinel P1): scheduled whenever a unit has ANY
+        # declared repos, not only when build_plan's cheap existence check
+        # finds something missing. A unit whose repos are all PRESENT but
+        # one has the wrong origin was never getting converge_unit_repos
+        # scheduled at all -- build_plan can't detect an origin mismatch
+        # without running real git commands, which it deliberately avoids
+        # (planning stays cheap); the fix is to always schedule the check
+        # and let apply-time's real _clone_isolated validation (cheap
+        # existence check bypassed) catch it, not to make planning itself
+        # do git work.
         declared_repos = [str(r) for r in unit.get("repos", [])]
         missing_repos = [r for r in declared_repos if not (unit_root / r).exists()]
-        if missing_repos:
+        if declared_repos:
+            reason = (
+                f"missing repo checkouts: {', '.join(missing_repos)}"
+                if missing_repos
+                else "validate declared repo checkouts (origin/isolation) on every pass"
+            )
             operations.append(
                 PlanOperation(
                     kind="converge_unit_repos",
                     subject=unit_name,
                     target_path=str(unit_root),
-                    reason=f"missing repo checkouts: {', '.join(missing_repos)}",
+                    reason=reason,
                     details={"missing_repos": missing_repos, "all_repos": declared_repos},
                 )
             )
@@ -563,13 +632,21 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
             repo_spec = _find_repo(spec, op.subject)
             repo_root = workspace_root / str(repo_spec["path"])
             cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
-            result = _clone_isolated(
+            # Round 2 (Atlas P1): routed through the SAME operation-dict
+            # dispatch the MaterializationPlan path uses, not a manually
+            # invoked _clone_isolated -- "one executor" means one dispatch
+            # path, not just a shared leaf clone primitive underneath two
+            # separate call sites.
+            clone_result = _apply_clone_operation(
                 workspace_root,
-                repo_url=str(repo_spec["url"]),
-                dest=repo_root,
-                reference_repo_root=cache_path,
+                {
+                    "kind": "clone",
+                    "repo_url": str(repo_spec["url"]),
+                    "dest_path": _relative_workspace_path(workspace_root, repo_root),
+                    "reference_base": _relative_workspace_path(workspace_root, cache_path),
+                },
             )
-            first_materialize = result.first_materialize
+            first_materialize = bool(clone_result["first_materialize"])
             hook_payload = _run_materialize_hooks(
                 workspace_root,
                 repo_root,
@@ -628,13 +705,16 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
                 repo_spec = _find_repo(spec, repo_name)
                 clone_dest = unit_root / repo_name
                 cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
-                result = _clone_isolated(
+                clone_result = _apply_clone_operation(
                     workspace_root,
-                    repo_url=str(repo_spec["url"]),
-                    dest=clone_dest,
-                    reference_repo_root=cache_path,
+                    {
+                        "kind": "clone",
+                        "repo_url": str(repo_spec["url"]),
+                        "dest_path": _relative_workspace_path(workspace_root, clone_dest),
+                        "reference_base": _relative_workspace_path(workspace_root, cache_path),
+                    },
                 )
-                if result.first_materialize:
+                if clone_result["first_materialize"]:
                     converged.append(repo_name)
                     materialized_repos.append({"repo": repo_name, "first_materialize": True})
             unit_toml = unit_root / "unit.toml"
@@ -779,9 +859,9 @@ def _apply_clone_operation(workspace_root: Path, op: dict[str, object]) -> dict[
     reference_base = op.get("reference_base")
     reference_repo_root: Path | None = None
     if reference_base:
-        reference_repo_root = _resolve_contained(
-            workspace_root, str(reference_base), field_name="reference_base"
-        )
+        # Bound to the declared cache namespace + canonical-origin verified
+        # (round 2 §8.2), not just "somewhere in the workspace."
+        reference_repo_root = _validate_reference_base(workspace_root, str(reference_base), repo_url=repo_url)
 
     branch = op.get("branch")
     result = _clone_isolated(
@@ -792,30 +872,49 @@ def _apply_clone_operation(workspace_root: Path, op: dict[str, object]) -> dict[
         reference_repo_root=reference_repo_root,
     )
 
+    # config#491 §12.1 evidence: repo URL, destination, HEAD, and
+    # clone-state evidence; cache path and approved-alternate evidence.
     return {
         "kind": "clone",
         "repo_url": repo_url,
         "dest_path": dest_path,
         "first_materialize": result.first_materialize,
         "head_sha": result.head_sha,
+        "observed_origin": result.origin_url,
+        "cache_path": str(reference_base) if reference_base else None,
+        "alternate_approved": reference_repo_root is not None,
     }
 
 
-def _is_real_venv(dest: Path) -> bool:
-    return (dest / "pyvenv.cfg").is_file()
+def _real_venv_interpreter(dest: Path) -> Path | None:
+    """Round 2 (Sentinel): a forged pyvenv.cfg with no actual interpreter
+    was being accepted as a valid existing venv. pyvenv.cfg's presence
+    alone proves nothing -- an executable interpreter binary must exist."""
+    if not (dest / "pyvenv.cfg").is_file():
+        return None
+    for candidate_name in ("python3", "python"):
+        candidate = dest / "bin" / candidate_name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 def _apply_venv_operation(workspace_root: Path, op: dict[str, object]) -> dict[str, object]:
     dest_path = str(op["dest_path"])
     dest = _resolve_safe_dest(workspace_root, dest_path)
     if dest.exists():
-        # Sentinel r2 P5: an arbitrary existing directory must not be
-        # accepted as a valid venv just because a path exists there.
-        if not _is_real_venv(dest):
+        interpreter = _real_venv_interpreter(dest)
+        if interpreter is None:
             raise MaterializationPlanError(
-                f"venv dest {dest} exists but is not a real venv (no pyvenv.cfg)"
+                f"venv dest {dest} exists but is not a real venv "
+                "(no pyvenv.cfg, or no executable interpreter under bin/)"
             )
-        return {"kind": "venv", "dest_path": dest_path, "created": False}
+        return {
+            "kind": "venv",
+            "dest_path": dest_path,
+            "created": False,
+            "interpreter_path": str(interpreter.relative_to(dest)),
+        }
 
     python_constraint = str(op.get("python", ">=3.11"))
     staging = dest.parent / f".{dest.name}.staging-{os.getpid()}-{id(dest)}"
@@ -828,16 +927,30 @@ def _apply_venv_operation(workspace_root: Path, op: dict[str, object]) -> dict[s
         text=True,
         check=False,
     )
-    if proc.returncode != 0 or not _is_real_venv(staging):
+    interpreter = _real_venv_interpreter(staging)
+    if proc.returncode != 0 or interpreter is None:
         shutil.rmtree(staging, ignore_errors=True)
         raise MaterializationPlanError(f"uv venv failed for {dest}:\n{proc.stderr or proc.stdout}")
+    interpreter_relative = interpreter.relative_to(staging)
     staging.rename(dest)
-    return {"kind": "venv", "dest_path": dest_path, "created": True}
+    # config#491 §12.1 evidence: venv interpreter.
+    return {
+        "kind": "venv",
+        "dest_path": dest_path,
+        "created": True,
+        "interpreter_path": str(interpreter_relative),
+    }
 
 
-def _find_direct_url_evidence(venv_path: Path) -> str | None:
+def _find_direct_url_evidence(venv_path: Path) -> tuple[str, str] | None:
+    """Returns (relative direct_url.json path, distribution name) or None.
+    Distribution name is parsed from the *.dist-info directory name itself
+    (e.g. "product-0.1.0.dist-info" -> "product") -- config#491 §12.1 wants
+    distribution evidence, not just "the command exited 0"."""
     for candidate in sorted(venv_path.glob("lib/*/site-packages/*.dist-info/direct_url.json")):
-        return str(candidate.relative_to(venv_path))
+        dist_info_name = candidate.parent.name
+        distribution = dist_info_name.removesuffix(".dist-info").split("-")[0]
+        return str(candidate.relative_to(venv_path)), distribution
     return None
 
 
@@ -864,11 +977,15 @@ def _apply_editable_install_operation(workspace_root: Path, op: dict[str, object
             f"uv pip install --editable reported success for {source_path}, but no PEP 610 "
             f"direct_url.json evidence was found under {venv_path}"
         )
+    pep610_path, distribution = evidence
+    # config#491 §12.1 evidence: editable source path, extras, distribution.
     return {
         "kind": "editable_install",
         "venv_path": str(op["venv_path"]),
         "source_path": str(op["source_path"]),
-        "pep610_evidence": evidence,
+        "extras": extras,
+        "distribution": distribution,
+        "pep610_evidence": pep610_path,
     }
 
 
@@ -897,11 +1014,21 @@ def _apply_project_file_operation(workspace_root: Path, op: dict[str, object]) -
     dest.write_bytes(content)
     dest.chmod(0o600)
 
-    # config#491 §6.2: the staged input is a run-scoped opaque artifact,
-    # deleted after acknowledgement -- it must not linger once copied.
-    source_path.unlink()
-
-    return {"kind": "project_file", "dest_path": dest_path, "source_sha256": expected_sha256}
+    # config#491 §6.2: "the staging artifact is removed only after the
+    # hash-verified projection has durable acknowledgement." Round 2
+    # (Sentinel): unlinking here, immediately, meant a receipt-write
+    # failure right after this operation left the source gone with no
+    # receipt proving the projection ever happened -- deleting evidence
+    # before the transaction durably committed. _pending_unlink is an
+    # internal-only key (stripped before the result becomes receipt
+    # content): apply_materialization_plan performs the actual unlink only
+    # after _write_materialization_receipt succeeds.
+    return {
+        "kind": "project_file",
+        "dest_path": dest_path,
+        "source_sha256": expected_sha256,
+        "_pending_unlink": str(source_path),
+    }
 
 
 _MATERIALIZATION_HANDLERS = {
@@ -912,6 +1039,29 @@ _MATERIALIZATION_HANDLERS = {
 }
 
 
+# Round 2 (Atlas/Sentinel P5): exact per-kind ALLOWLISTS, not a blacklist
+# scan. "kind" is included in each set since every operation carries it.
+# Any field not on its kind's list is rejected -- this is what actually
+# proves identity-freedom: a field name nobody thought to blacklist
+# (display_name, or anything else) cannot exist on an operation at all,
+# rather than merely not being on a list of names someone enumerated.
+_CLONE_FIELDS = frozenset({"kind", "repo_url", "dest_path", "branch", "reference_base"})
+_VENV_FIELDS = frozenset({"kind", "dest_path", "engine", "python"})
+_EDITABLE_INSTALL_FIELDS = frozenset({"kind", "venv_path", "source_path", "extras"})
+_PROJECT_FILE_FIELDS = frozenset({"kind", "source_path", "dest_path", "source_sha256", "mode"})
+
+_OPERATION_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
+    "clone": _CLONE_FIELDS,
+    "venv": _VENV_FIELDS,
+    "editable_install": _EDITABLE_INSTALL_FIELDS,
+    "project_file": _PROJECT_FILE_FIELDS,
+}
+
+_PLAN_ALLOWED_TOP_LEVEL_FIELDS = frozenset(
+    {"schema_version", "plan_id", "unit_key", "workspace_spec_sha256", "operations"}
+)
+
+
 def _require_str(op: dict[str, object], key: str, prefix: str) -> str:
     value = op.get(key)
     if not isinstance(value, str) or not value:
@@ -919,72 +1069,115 @@ def _require_str(op: dict[str, object], key: str, prefix: str) -> str:
     return value
 
 
-def _validate_operation_schema(op: dict[str, object], *, idx: int, workspace_root: Path) -> None:
-    """Sentinel r2 P5: schema AND containment are validated for every
-    operation up front -- not just type-checked, and not deferred to
-    execution time. A plan whose op[2] has an unsafe dest_path must never
-    let op[0]/op[1] mutate anything first."""
+def _validate_operation_schema(
+    op: dict[str, object], *, idx: int, workspace_root: Path
+) -> Path | None:
+    """Round 2 (Atlas/Sentinel P5): schema AND containment are validated
+    for every operation up front, via an exact allowlist -- not just
+    type-checked, not deferred to execution time, and not a blacklist that
+    only catches enumerated field names. Returns the canonical (resolved)
+    dest_path for duplicate/collision detection by the caller, or None for
+    operation kinds without one."""
     kind = op.get("kind")
     prefix = f"operations[{idx}] (kind={kind!r})"
     if kind not in _MATERIALIZATION_HANDLERS:
         raise MaterializationPlanError(f"{prefix}: unknown operation kind")
 
+    allowed = _OPERATION_ALLOWED_FIELDS[kind]
+    unknown = op.keys() - allowed
+    if unknown:
+        raise MaterializationPlanError(f"{prefix}: unknown field(s) {sorted(unknown)}")
+
     if kind == "clone":
         _require_str(op, "repo_url", prefix)
         dest_path = _require_str(op, "dest_path", prefix)
-        _resolve_safe_dest(workspace_root, dest_path)
+        canonical_dest = _resolve_safe_dest(workspace_root, dest_path)
         reference_base = op.get("reference_base")
-        if reference_base:
-            _resolve_contained(workspace_root, str(reference_base), field_name=f"{prefix}.reference_base")
+        if reference_base is not None:
+            if not isinstance(reference_base, str) or not reference_base:
+                raise MaterializationPlanError(f"{prefix}: reference_base must be a non-empty string")
+            _validate_reference_base(workspace_root, reference_base, repo_url=str(op["repo_url"]))
+        branch = op.get("branch")
+        if branch is not None and (not isinstance(branch, str) or not branch):
+            raise MaterializationPlanError(f"{prefix}: branch must be a non-empty string")
+        return canonical_dest
     elif kind == "venv":
         dest_path = _require_str(op, "dest_path", prefix)
-        _resolve_safe_dest(workspace_root, dest_path)
+        canonical_dest = _resolve_safe_dest(workspace_root, dest_path)
         engine = op.get("engine", "uv")
         if engine != "uv":
             raise MaterializationPlanError(f"{prefix}: engine must be 'uv', got {engine!r}")
+        python_constraint = op.get("python")
+        if python_constraint is not None and not isinstance(python_constraint, str):
+            raise MaterializationPlanError(f"{prefix}: python must be a string")
+        return canonical_dest
     elif kind == "editable_install":
         venv_path = _require_str(op, "venv_path", prefix)
         source_path = _require_str(op, "source_path", prefix)
         _resolve_safe_dest(workspace_root, venv_path)
         _resolve_safe_dest(workspace_root, source_path)
+        extras = op.get("extras", [])
+        if not isinstance(extras, list) or not all(isinstance(e, str) for e in extras):
+            raise MaterializationPlanError(f"{prefix}: extras must be a list of strings")
+        return None
     elif kind == "project_file":
         source_path = _require_str(op, "source_path", prefix)
         dest_path = _require_str(op, "dest_path", prefix)
         _require_str(op, "source_sha256", prefix)
         _resolve_staging_source(workspace_root, source_path)
-        _resolve_safe_dest(workspace_root, dest_path)
+        canonical_dest = _resolve_safe_dest(workspace_root, dest_path)
         mode = op.get("mode", "copy")
         if mode != "copy":
             raise MaterializationPlanError(f"{prefix}: mode must be 'copy' for v1, got {mode!r}")
+        return canonical_dest
+    return None
 
 
 def _validate_plan_shape(plan: dict[str, object], *, workspace_root: Path) -> None:
-    """Sentinel r2 P5: validate the COMPLETE plan before the first
-    filesystem mutation -- not one operation validated immediately before
-    its own execution, which lets earlier operations mutate state before a
-    later operation's invalid shape is ever discovered."""
+    """Round 2 (Atlas/Sentinel P5): validate the COMPLETE plan before the
+    first filesystem mutation -- not one operation validated immediately
+    before its own execution, which lets earlier operations mutate state
+    before a later operation's invalid shape is ever discovered."""
+    unknown_top_level = plan.keys() - _PLAN_ALLOWED_TOP_LEVEL_FIELDS
+    if unknown_top_level:
+        raise MaterializationPlanError(f"plan: unknown top-level field(s) {sorted(unknown_top_level)}")
+
+    if plan.get("schema_version") != 1:
+        raise MaterializationPlanError(f"plan.schema_version must be exactly 1, got {plan.get('schema_version')!r}")
+
     _validate_path_safe_token(plan.get("plan_id"), field_name="plan_id")
     # Sentinel/Atlas r2 ruling: one MaterializationPlan is scoped to one
     # opaque unit and carries a required top-level unit_key. gr2 validates
     # it as a path-safe opaque token without interpreting identity.
     _validate_path_safe_token(plan.get("unit_key"), field_name="unit_key")
 
+    workspace_spec_sha256 = plan.get("workspace_spec_sha256")
+    if not isinstance(workspace_spec_sha256, str) or not workspace_spec_sha256:
+        raise MaterializationPlanError("plan.workspace_spec_sha256 is required and must be a non-empty string")
+
     operations = plan.get("operations")
     if not isinstance(operations, list) or not operations:
         raise MaterializationPlanError("plan.operations must be a non-empty list")
 
-    seen_dest_paths: set[str] = set()
+    # Round 2 (Atlas/Sentinel): canonical (resolved, case-folded)
+    # comparison, not raw strings -- "units/u1/.venv" and
+    # "units/u1/./.venv" are the same real path and must collide, as must
+    # case-folded collisions on case-insensitive filesystems (config#491 §3).
+    seen_canonical_dests: dict[str, int] = {}
     for idx, op in enumerate(operations):
         if not isinstance(op, dict):
             raise MaterializationPlanError(f"operations[{idx}] must be an object, got {type(op).__name__}")
         _reject_identity_fields_recursive(op, path=f"operations[{idx}]")
-        _validate_operation_schema(op, idx=idx, workspace_root=workspace_root)
+        canonical_dest = _validate_operation_schema(op, idx=idx, workspace_root=workspace_root)
 
-        dest_path = op.get("dest_path")
-        if isinstance(dest_path, str):
-            if dest_path in seen_dest_paths:
-                raise MaterializationPlanError(f"duplicate dest_path across operations: {dest_path!r}")
-            seen_dest_paths.add(dest_path)
+        if canonical_dest is not None:
+            key = str(canonical_dest).casefold()
+            if key in seen_canonical_dests:
+                raise MaterializationPlanError(
+                    f"operations[{idx}] dest_path collides (case-folded/normalized) with "
+                    f"operations[{seen_canonical_dests[key]}]: {canonical_dest}"
+                )
+            seen_canonical_dests[key] = idx
 
 
 def _materialization_receipt_path(workspace_root: Path, plan_id: str) -> Path:
@@ -1000,14 +1193,18 @@ def _write_materialization_receipt(
     key, and per-operation structural evidence -- no identity, org, channel,
     secret, or memory content. Written atomically (temp file + rename), not
     directly, matching the same publish-don't-partially-write discipline as
-    _clone_isolated's staging rename."""
+    _clone_isolated's staging rename. Round 2 (Sentinel): a test asserting
+    only "no temp file left behind" doesn't distinguish this from a direct
+    write, since a direct write also trivially leaves no temp file --
+    proven instead by a test that fails the rename itself and confirms no
+    final receipt file exists."""
     plan_hash = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
     receipt = {
         "plan_id": plan["plan_id"],
         "unit_key": plan["unit_key"],
         "plan_hash": plan_hash,
-        "schema_version": plan.get("schema_version", 1),
-        "workspace_spec_sha256": plan.get("workspace_spec_sha256"),
+        "schema_version": plan["schema_version"],
+        "workspace_spec_sha256": plan["workspace_spec_sha256"],
         "applied_at": datetime.now(UTC).isoformat(),
         "operations": op_results,
     }
@@ -1045,12 +1242,27 @@ def apply_materialization_plan(
     _validate_plan_shape(plan, workspace_root=workspace_root)
 
     op_results: list[dict[str, object]] = []
+    pending_unlinks: list[Path] = []
     for op in plan["operations"]:
         kind = str(op["kind"])
         handler = _MATERIALIZATION_HANDLERS[kind]
-        op_results.append(handler(workspace_root, op))
+        result = handler(workspace_root, op)
+        # _pending_unlink is orchestration-only, never receipt content --
+        # popped before this result is handed to the receipt writer.
+        pending_unlink = result.pop("_pending_unlink", None)
+        if pending_unlink is not None:
+            pending_unlinks.append(Path(pending_unlink))
+        op_results.append(result)
 
     receipt_path = _write_materialization_receipt(workspace_root, plan, op_results)
+
+    # config#491 §6.2: staged inputs are deleted only after durable
+    # acknowledgement -- i.e. only after the receipt above has been
+    # written successfully. A receipt-write failure now leaves the staged
+    # source intact rather than silently deleting evidence of a projection
+    # nothing durably confirms happened.
+    for source in pending_unlinks:
+        source.unlink(missing_ok=True)
 
     return {
         "workspace_root": str(workspace_root),

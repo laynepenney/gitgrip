@@ -20,6 +20,7 @@ import json
 import subprocess
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from gr2.python_cli.spec_apply import (
     MaterializationPlanError,
@@ -51,6 +52,7 @@ class MaterializationPlanTestBase(unittest.TestCase):
             "schema_version": 1,
             "plan_id": "mp_test",
             "unit_key": "u_test",
+            "workspace_spec_sha256": "a" * 64,
             "operations": operations,
         }
         plan.update(overrides)
@@ -108,14 +110,26 @@ class TestPathSafety(MaterializationPlanTestBase):
         """Sentinel r2 P3.1: reference_base was accepted as an absolute
         external path and passed straight to --reference-if-able, becoming
         its own 'approved' alternate. Must be containment-checked the same
-        as dest_path."""
+        as dest_path.
+
+        Round 2 catch (Sentinel, on my OWN test): this used repo_url =
+        "https://example.com/x.git" -- a fake URL. Removing the
+        reference_base containment check entirely still left this test
+        GREEN, because the clone then failed later for an unrelated reason
+        (DNS/network) and got converted to the same MaterializationPlanError
+        the test asserts on. A real, working URL is required so the test's
+        outcome is genuinely tied to the containment check, not a downstream
+        failure that happens to raise the same exception type -- the exact
+        class of mistake I'd already caught myself making once this session
+        (the dotdot source_path test) and repeated here without noticing."""
+        url = self._init_bare_remote("product")
         outside_cache = self.tmp / "outside.git"
         outside_cache.mkdir()
         plan = self._plan(
             [
                 {
                     "kind": "clone",
-                    "repo_url": "https://example.com/x.git",
+                    "repo_url": url,
                     "dest_path": "units/u1/product",
                     "reference_base": str(outside_cache),
                 }
@@ -123,6 +137,8 @@ class TestPathSafety(MaterializationPlanTestBase):
         )
         with self.assertRaises(MaterializationPlanError):
             apply_materialization_plan(self.workspace_root, plan, yes=True)
+        # If containment were broken, this would have cloned for real.
+        self.assertFalse((self.workspace_root / "units" / "u1" / "product").exists())
 
     def test_project_file_rejects_absolute_dest_path(self):
         source_rel = self._stage_source("f_01", b"hello")
@@ -215,6 +231,34 @@ class TestPathSafety(MaterializationPlanTestBase):
         with self.assertRaises(MaterializationPlanError):
             apply_materialization_plan(self.workspace_root, plan, yes=True)
 
+    def test_project_file_rejects_symlink_escape_inside_staging(self):
+        """Round 2 (Sentinel): a symlink planted INSIDE .grip/staging/inputs/
+        pointing outside the workspace -- a lexical staging-prefix check on
+        the string alone would miss this; must actually resolve the
+        filesystem path (following the symlink) and check containment of
+        where it REALLY points, not just where its name lexically sits."""
+        outside_target = self.tmp / "secret.txt"
+        outside_target.write_bytes(b"secret content")
+        staging_dir = self.workspace_root / ".grip" / "staging" / "inputs"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        symlink_path = staging_dir / "evil-link"
+        symlink_path.symlink_to(outside_target)
+
+        plan = self._plan(
+            [
+                {
+                    "kind": "project_file",
+                    "source_path": ".grip/staging/inputs/evil-link",
+                    "source_sha256": hashlib.sha256(b"secret content").hexdigest(),
+                    "dest_path": "units/u1/home/AGENTS.md",
+                    "mode": "copy",
+                }
+            ]
+        )
+        with self.assertRaises(MaterializationPlanError):
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertFalse((self.workspace_root / "units" / "u1" / "home" / "AGENTS.md").exists())
+
 
 class TestIdentityFreedom(MaterializationPlanTestBase):
     def test_rejects_operation_with_top_level_identity_field(self):
@@ -303,6 +347,133 @@ class TestPlanShapeValidation(MaterializationPlanTestBase):
         with self.assertRaises(MaterializationPlanError):
             apply_materialization_plan(self.workspace_root, plan, yes=True)
 
+    def test_rejects_unknown_top_level_field(self):
+        plan = self._plan(
+            [{"kind": "venv", "dest_path": "units/u1/.venv", "engine": "uv", "python": ">=3.11"}],
+            org="synapt",
+        )
+        with self.assertRaises(MaterializationPlanError):
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+
+    def test_rejects_wrong_schema_version(self):
+        plan = self._plan(
+            [{"kind": "venv", "dest_path": "units/u1/.venv", "engine": "uv", "python": ">=3.11"}],
+            schema_version=999,
+        )
+        with self.assertRaises(MaterializationPlanError):
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+
+    def test_rejects_unknown_operation_field(self):
+        """Round 2 (Atlas/Sentinel): a blacklist only catches enumerated
+        field names -- metadata.display_name="Apollo" was accepted because
+        display_name was never on the forbidden-keys list. An ALLOWLIST
+        rejects any field not explicitly permitted for that operation kind,
+        by construction, regardless of what the field is named."""
+        plan = self._plan(
+            [
+                {
+                    "kind": "venv",
+                    "dest_path": "units/u1/.venv",
+                    "engine": "uv",
+                    "python": ">=3.11",
+                    "metadata": {"display_name": "Apollo"},
+                }
+            ]
+        )
+        with self.assertRaises(MaterializationPlanError):
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertFalse((self.workspace_root / "units" / "u1" / ".venv").exists())
+
+    def test_rejects_dot_normalized_duplicate_dest_path(self):
+        """Round 2 (Sentinel): raw-string duplicate checking accepted
+        "units/u1/.venv" and "units/u1/./.venv" as different destinations,
+        even though they're the same real path -- op1 created the venv,
+        then op2 failed for an unrelated reason, violating
+        validate-before-touch in practice even though the code claims it.
+        Canonical (resolved) comparison must catch this before either runs."""
+        plan = self._plan(
+            [
+                {"kind": "venv", "dest_path": "units/u1/.venv", "engine": "uv", "python": ">=3.11"},
+                {"kind": "clone", "repo_url": "https://example.com/x.git", "dest_path": "units/u1/./.venv"},
+            ]
+        )
+        with self.assertRaises(MaterializationPlanError):
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertFalse((self.workspace_root / "units" / "u1" / ".venv").exists())
+
+    def test_rejects_forged_pyvenv_cfg_without_interpreter(self):
+        """Round 2 (Sentinel): a directory containing only a forged
+        pyvenv.cfg, with no actual interpreter binary, was accepted as a
+        valid existing venv under python=">=99" -- an impossible
+        constraint, which is exactly why this needed a real check rather
+        than trusting the marker file's mere presence."""
+        fake = self.workspace_root / "units" / "u1" / ".venv"
+        fake.mkdir(parents=True)
+        (fake / "pyvenv.cfg").write_text("home = /nonexistent\nversion = 3.99.0\n")
+
+        plan = self._plan([{"kind": "venv", "dest_path": "units/u1/.venv", "engine": "uv", "python": ">=99"}])
+        with self.assertRaises(MaterializationPlanError):
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+
+    def test_clone_evidence_includes_origin_and_cache(self):
+        """config#491 §12.1: clone results must record observed origin and
+        approved-alternate/cache evidence, not just repo_url/dest_path."""
+        url = self._init_bare_remote("product")
+        cache_dir = self.workspace_root / ".grip" / "cache" / "repos" / "product.git"
+        cache_dir.parent.mkdir(parents=True, exist_ok=True)
+        _git(self.workspace_root, "clone", "--mirror", url, str(cache_dir))
+        plan = self._plan(
+            [
+                {
+                    "kind": "clone",
+                    "repo_url": url,
+                    "dest_path": "units/u1/product",
+                    "reference_base": ".grip/cache/repos/product.git",
+                }
+            ]
+        )
+        result = apply_materialization_plan(self.workspace_root, plan, yes=True)
+        op_result = result["operations"][0]
+        self.assertEqual(op_result["observed_origin"], url)
+        self.assertTrue(op_result["alternate_approved"])
+        self.assertEqual(op_result["cache_path"], ".grip/cache/repos/product.git")
+
+    def test_venv_evidence_includes_interpreter(self):
+        """config#491 §12.1: venv results must record the interpreter, not
+        just created=True/False."""
+        plan = self._plan(
+            [{"kind": "venv", "dest_path": "units/u1/.venv", "engine": "uv", "python": ">=3.11"}]
+        )
+        result = apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertIn("interpreter_path", result["operations"][0])
+        self.assertTrue(result["operations"][0]["interpreter_path"])
+
+    def test_receipt_publish_atomicity_proven_by_failed_rename(self):
+        """Round 2 (Sentinel): a test asserting only "no temp file left
+        behind" doesn't distinguish atomic-via-rename from a direct write --
+        a direct write also trivially leaves no temp file. This makes the
+        rename step itself fail and confirms no final receipt.json ever
+        appears, proving the publish mechanism is genuinely rename-based."""
+        url = self._init_bare_remote("product")
+        plan = self._plan(
+            [{"kind": "clone", "repo_url": url, "dest_path": "units/u1/product"}],
+            plan_id="mp_atomic_proof",
+        )
+
+        original_rename = Path.rename
+
+        def selective_fail_rename(self_path, target):
+            if "materialization" in str(self_path) and ".tmp-" in str(self_path):
+                raise OSError("simulated rename failure")
+            return original_rename(self_path, target)
+
+        with patch.object(Path, "rename", selective_fail_rename):
+            with self.assertRaises(OSError):
+                apply_materialization_plan(self.workspace_root, plan, yes=True)
+
+        receipt_path = self.workspace_root / ".grip" / "state" / "materialization" / "mp_atomic_proof.json"
+        self.assertFalse(receipt_path.exists())
+
 
 class TestSharedExecutor(MaterializationPlanTestBase):
     """Sentinel r2 P1: sharing only clone_repo() as a leaf primitive does
@@ -360,6 +531,47 @@ class TestSharedExecutor(MaterializationPlanTestBase):
         with self.assertRaises(MaterializationPlanError):
             apply_plan(self.workspace_root, yes=True)
 
+    def test_all_present_unit_repo_with_wrong_origin_still_caught(self):
+        """Round 2 (Atlas/Sentinel), exact reproduction: the original P1
+        fix proved "all declared repos validated" only via a scenario with
+        a second, genuinely-missing repo to trigger scheduling at all --
+        that's a scenario-specific fix, not a clause-complete one. This
+        proves the actual clause: a SINGLE declared repo, fully PRESENT,
+        with the wrong origin, must still be caught. build_plan now
+        schedules converge_unit_repos whenever a unit has ANY declared
+        repos, not only when something is missing."""
+        unit_root = self.workspace_root / "agents" / "atlas" / "home"
+        unit_root.mkdir(parents=True)
+        (unit_root / "unit.toml").write_text('name = "atlas"\nkind = "unit"\nrepos = ["app"]\n')
+
+        present_repo_root = unit_root / "app"
+        actual_origin_url = self._init_bare_remote("actual-app")
+        _git(unit_root, "clone", actual_origin_url, str(present_repo_root))
+        declared_url = self._init_bare_remote("declared-app")
+
+        spec_path = workspace_spec_path(self.workspace_root)
+        spec_path.parent.mkdir(parents=True, exist_ok=True)
+        spec_path.write_text(
+            '\n'.join(
+                [
+                    'workspace_name = "test"',
+                    "",
+                    "[[repos]]",
+                    'name = "app"',
+                    'path = "repos/app"',
+                    f'url = "{declared_url}"',
+                    "",
+                    "[[units]]",
+                    'name = "atlas"',
+                    'path = "agents/atlas/home"',
+                    'repos = ["app"]',
+                    "",
+                ]
+            )
+        )
+        with self.assertRaises(MaterializationPlanError):
+            apply_plan(self.workspace_root, yes=True)
+
 
 class TestCloneOperation(MaterializationPlanTestBase):
     def test_clones_to_explicit_dest_path(self):
@@ -394,6 +606,72 @@ class TestCloneOperation(MaterializationPlanTestBase):
         dest = self.workspace_root / "units" / "u1" / "product"
         alternates = dest / ".git" / "objects" / "info" / "alternates"
         self.assertTrue(alternates.exists())
+
+    def test_clone_rejects_in_workspace_cache_outside_declared_namespace(self):
+        """Sentinel r2 P3.1: a real, working in-workspace mirror was
+        accepted as reference_base and retained as the clone's alternate,
+        even though config#491 §8.2 confines this to
+        .grip/cache/repos/<declared-repo>.git specifically -- containment
+        alone (is it inside the workspace at all) isn't the actual rule."""
+        url = self._init_bare_remote("product")
+        rogue_cache = self.workspace_root / "units" / "u1" / "rogue-cache.git"
+        rogue_cache.parent.mkdir(parents=True)
+        _git(self.workspace_root, "clone", "--mirror", url, str(rogue_cache))
+
+        plan = self._plan(
+            [
+                {
+                    "kind": "clone",
+                    "repo_url": url,
+                    "dest_path": "units/u1/product",
+                    "reference_base": "units/u1/rogue-cache.git",
+                }
+            ]
+        )
+        with self.assertRaises(MaterializationPlanError):
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertFalse((self.workspace_root / "units" / "u1" / "product").exists())
+
+    def test_clone_rejects_cache_with_wrong_canonical_origin(self):
+        """Sentinel r2 P3.1: a cache backed by a DIFFERENT remote than the
+        one being cloned must not be usable as reference_base, even if it
+        sits at the canonically-correct namespace path."""
+        url_a = self._init_bare_remote("product-a")
+        url_b = self._init_bare_remote("product-b")
+        cache_dir = self.workspace_root / ".grip" / "cache" / "repos" / "product-a.git"
+        cache_dir.parent.mkdir(parents=True, exist_ok=True)
+        _git(self.workspace_root, "clone", "--mirror", url_b, str(cache_dir))
+
+        plan = self._plan(
+            [
+                {
+                    "kind": "clone",
+                    "repo_url": url_a,
+                    "dest_path": "units/u1/product",
+                    "reference_base": ".grip/cache/repos/product-a.git",
+                }
+            ]
+        )
+        with self.assertRaises(MaterializationPlanError):
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+
+    def test_clone_rejects_when_common_dir_check_cannot_run(self):
+        """Round 2 (Sentinel): fail CLOSED, not open. A .git that exists as
+        a real directory but isn't actually a valid git repository
+        internally makes `git rev-parse --git-common-dir` fail -- the prior
+        version silently skipped the whole check in that case (treated
+        "cannot verify" as "assume it's fine"). Must reject instead."""
+        dest = self.workspace_root / "units" / "u1" / "product"
+        (dest / ".git").mkdir(parents=True)
+        # .git exists as a real directory (passes the worktree-pointer-file
+        # and nested-worktrees checks) but has no actual git internals, so
+        # `git rev-parse --git-common-dir` run inside it fails for real.
+
+        plan = self._plan(
+            [{"kind": "clone", "repo_url": "https://example.com/x.git", "dest_path": "units/u1/product"}]
+        )
+        with self.assertRaises(MaterializationPlanError):
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
 
     def test_clone_is_idempotent_for_existing_healthy_clone(self):
         url = self._init_bare_remote("product")
@@ -525,6 +803,9 @@ class TestEditableInstallOperation(MaterializationPlanTestBase):
         op_result = result["operations"][0]
         self.assertEqual(op_result["kind"], "editable_install")
         self.assertIsNotNone(op_result["pep610_evidence"])
+        # config#491 §12.1 evidence: editable source path, extras, distribution.
+        self.assertEqual(op_result["extras"], [])
+        self.assertEqual(op_result["distribution"], "product")
         check = subprocess.run(
             [str(venv_path / "bin" / "python"), "-c", "import product"],
             capture_output=True, text=True,
@@ -584,6 +865,43 @@ class TestProjectFileOperation(MaterializationPlanTestBase):
         )
         apply_materialization_plan(self.workspace_root, plan, yes=True)
         self.assertFalse((self.workspace_root / source_rel).exists())
+
+    def test_source_survives_receipt_write_failure(self):
+        """Sentinel r2 P4, exact reproduction: faulting the receipt write
+        after a valid project_file operation left source_exists=False,
+        dest_exists=True, receipt_exists=False -- the staged artifact was
+        deleted before durable acknowledgement (the receipt) existed. The
+        source must survive when the receipt write fails."""
+        content = b"important"
+        source_rel = self._stage_source("f_01", content)
+        plan = self._plan(
+            [
+                {
+                    "kind": "project_file",
+                    "source_path": source_rel,
+                    "source_sha256": hashlib.sha256(content).hexdigest(),
+                    "dest_path": "units/u1/home/AGENTS.md",
+                    "mode": "copy",
+                }
+            ],
+            plan_id="mp_receipt_fail_test",
+        )
+
+        with patch(
+            "gr2.python_cli.spec_apply._write_materialization_receipt",
+            side_effect=OSError("simulated disk full"),
+        ):
+            with self.assertRaises(OSError):
+                apply_materialization_plan(self.workspace_root, plan, yes=True)
+
+        source_exists = (self.workspace_root / source_rel).exists()
+        dest_exists = (self.workspace_root / "units" / "u1" / "home" / "AGENTS.md").exists()
+        receipt_exists = (
+            self.workspace_root / ".grip" / "state" / "materialization" / "mp_receipt_fail_test.json"
+        ).exists()
+        self.assertTrue(source_exists, "source must survive an acknowledgement failure")
+        self.assertTrue(dest_exists, "the copy itself is not rolled back, only the deletion is deferred")
+        self.assertFalse(receipt_exists)
 
 
 class TestReceipts(MaterializationPlanTestBase):
