@@ -18,6 +18,7 @@ assertRaises cannot tell them apart.
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -449,19 +450,27 @@ class TestReceiptPublication(PlanContractTestBase):
 
     def test_validated_plan_cannot_be_forged(self):
         """The capability is only mintable by the validator -- otherwise it
-        would be a naming convention rather than a guarantee."""
+        would be a naming convention rather than a guarantee.
+
+        The forged shell is otherwise FULLY self-consistent: a real frozen
+        snapshot, its true hash, and facts that agree with it. That makes the
+        seal check provably the thing that rejects it, rather than one of the
+        consistency checks that run ahead of it."""
+        genuine = validate_materialization_plan(
+            self.workspace_root, self._plan([self._venv_op()], plan_id="mp_forge")
+        )
         with self.assertRaises(MaterializationPlanError) as ctx:
             spec_apply.ValidatedPlan(
-                plan={},
-                plan_id="../../escaped",
-                unit_key="u",
-                schema_version=1,
-                workspace_spec_sha256="a" * 64,
-                operation_kinds=(),
-                plan_hash="b" * 64,
-                _token=object(),
+                plan=genuine.plan,
+                plan_id=genuine.plan_id,
+                unit_key=genuine.unit_key,
+                schema_version=genuine.schema_version,
+                workspace_spec_sha256=genuine.workspace_spec_sha256,
+                operation_kinds=genuine.operation_kinds,
+                plan_hash=genuine.plan_hash,
+                _seal="0" * 64,
             )
-        self.assertIn("only be constructed by", str(ctx.exception))
+        self.assertIn("not minted by", str(ctx.exception))
 
     def test_invalid_plan_id_cannot_reach_publication(self):
         """Atlas P1 fruit: plan_id="../../escaped" published
@@ -1126,6 +1135,107 @@ class TestCapabilitySnapshotIsolation(PlanContractTestBase):
         plan = self._plan([self._venv_op()], plan_id="mp_helper")
         validated = validate_materialization_plan(self.workspace_root, plan)
         self.assertEqual(compute_plan_hash(validated.plan), compute_plan_hash(plan))
+
+
+class TestCapabilityIsContentBound(PlanContractTestBase):
+    """Sentinel's converging seam: a capability keyed on OBJECT IDENTITY (an
+    opaque sentinel token) is copyable. `dataclasses.replace` re-invokes
+    __init__ with the existing field values, so the real token rides into a
+    modified shell -- a laundered "validated" object that binds facts nobody
+    validated.
+
+    Atlas's seam and this one are one design truth: the capability must bind
+    to immutable CONTENT, not to identity or to a field that copies. The
+    seal is therefore derived from the snapshot's canonical hash and every
+    fact published alongside it, and verified at every use rather than only
+    at construction."""
+
+    def _valid(self, plan_id: str = "mp_seal"):
+        return validate_materialization_plan(
+            self.workspace_root, self._plan([self._venv_op()], plan_id=plan_id)
+        )
+
+    def test_replace_cannot_launder_the_capability(self):
+        """Sentinel's witness 1, verbatim: replace() preserved the real token
+        and publication used the altered plan_id, writing `.grip/escaped.json`
+        outside the receipt directory."""
+        validated = self._valid()
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            dataclasses.replace(validated, plan_id="../../escaped")
+        self.assertIn("disagree with the plan snapshot", str(ctx.exception))
+        self.assertFalse((self.workspace_root / ".grip" / "escaped.json").exists())
+
+    def test_replace_of_any_published_fact_is_rejected(self):
+        """plan_id is the field with the escape, but every fact the receipt
+        attests to has to be bound, or the next one becomes the seam.
+
+        Each row names the layer that must reject it. The three layers shadow
+        each other -- the snapshot-agreement check fires before the seal for
+        every field it covers -- so asserting only "some capability error"
+        would let a removed layer hide behind the one beneath it. That is the
+        same shadowing Sentinel flagged for the pinned schema."""
+        validated = self._valid()
+        for field, value, reason in (
+            ("plan_id", "mp_other", "disagree with the plan snapshot"),
+            ("unit_key", "u_other", "disagree with the plan snapshot"),
+            ("schema_version", 2, "disagree with the plan snapshot"),
+            ("workspace_spec_sha256", "f" * 64, "disagree with the plan snapshot"),
+            ("operation_kinds", ("clone",), "disagree with the plan snapshot"),
+            ("plan_hash", "0" * 64, "does not describe its plan snapshot"),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaises(MaterializationPlanError) as ctx:
+                    dataclasses.replace(validated, **{field: value})
+                self.assertIn(reason, str(ctx.exception))
+
+    def test_publication_rejects_a_capability_altered_in_place(self):
+        """frozen=True blocks __setattr__, not object.__setattr__. Verifying
+        at USE, not only at construction, is what makes the binding hold
+        against an object that was already minted."""
+        validated = self._valid(plan_id="mp_inplace")
+        object.__setattr__(validated, "plan_id", "../../escaped")
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            write_materialization_receipt(
+                self.workspace_root, validated, [{"kind": "venv"}]
+            )
+        self.assertIn("disagree with the plan snapshot", str(ctx.exception))
+        self.assertFalse((self.workspace_root / ".grip" / "escaped.json").exists())
+
+    def test_publication_rejects_a_swapped_plan_snapshot(self):
+        """The snapshot itself is a published fact: plan_hash attests to it,
+        so swapping the graph must invalidate the seal too."""
+        validated = self._valid(plan_id="mp_swap")
+        other = validate_materialization_plan(
+            self.workspace_root,
+            self._plan([self._venv_op(dest_path="units/u2/.venv")], plan_id="mp_swap"),
+        )
+        object.__setattr__(validated, "plan", other.plan)
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            write_materialization_receipt(
+                self.workspace_root, validated, [{"kind": "venv"}]
+            )
+        self.assertIn("does not describe its plan snapshot", str(ctx.exception))
+
+    def test_the_seal_itself_rejects_a_self_consistent_forgery(self):
+        """The layer that has no shadow above it. Snapshot agreement and hash
+        agreement both hold here, so only the seal can refuse -- which is the
+        test that keeps the seal from being dead code."""
+        genuine = self._valid(plan_id="mp_sealonly")
+        object.__setattr__(genuine, "_seal", "0" * 64)
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            write_materialization_receipt(
+                self.workspace_root, genuine, [{"kind": "venv"}]
+            )
+        self.assertIn("not minted by", str(ctx.exception))
+
+    def test_a_genuine_capability_still_publishes(self):
+        """The seal must not be so strict it rejects the real thing."""
+        validated = self._valid(plan_id="mp_genuine")
+        path = write_materialization_receipt(
+            self.workspace_root, validated, [{"kind": "venv"}]
+        )
+        self.assertTrue(path.exists())
+        self.assertEqual(json.loads(path.read_text())["plan_id"], "mp_genuine")
 
 
 class TestDurabilityFailureMatrix(PlanContractTestBase):

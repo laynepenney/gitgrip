@@ -3,9 +3,11 @@ from __future__ import annotations
 import copy
 import dataclasses
 import hashlib
+import hmac
 import importlib.resources
 import json
 import os
+import secrets
 import stat
 import tomllib
 import unicodedata
@@ -505,13 +507,23 @@ class MaterializationPlanError(Exception):
     pass
 
 
-# Capability token. A ValidatedPlan can only be minted by
+# Capability seal. A ValidatedPlan can only be minted by
 # validate_materialization_plan, so a receipt cannot be published from a
 # plan that was never validated -- Atlas P1: the writer previously accepted
 # the raw live plan and an arbitrary result list, which let a schema-invalid
 # plan_id escape the receipt directory and let an unvalidated result graph
 # be persisted verbatim.
-_VALIDATION_TOKEN = object()
+#
+# This was an opaque sentinel object, keyed on IDENTITY. Sentinel's witness:
+# dataclasses.replace() re-invokes __init__ with the existing field values,
+# so the real token rode into a modified shell and publication used the
+# altered plan_id -- writing .grip/escaped.json outside the receipt
+# directory. Identity is copyable; the capability has to bind CONTENT.
+#
+# Process-local and never persisted: this is an in-process capability, not a
+# credential. It cannot be recomputed by a caller who did not go through
+# validation, which is the whole point.
+_CAPABILITY_SECRET = secrets.token_bytes(32)
 
 
 def _deep_freeze(value: object) -> object:
@@ -552,13 +564,88 @@ class ValidatedPlan:
     workspace_spec_sha256: str
     operation_kinds: tuple[str, ...]
     plan_hash: str
-    _token: object = dataclasses.field(repr=False)
+    _seal: str = dataclasses.field(repr=False)
 
     def __post_init__(self) -> None:
-        if self._token is not _VALIDATION_TOKEN:
+        self.verify()
+
+    def verify(self) -> None:
+        """Re-derive the seal from the current contents and compare.
+
+        Called at construction AND at every use. Construction-time checking
+        alone is not enough: `frozen=True` blocks __setattr__, not
+        object.__setattr__, so an already-minted capability can still be
+        edited in place. Re-deriving at use means the fields a publisher
+        reads are provably the fields that were sealed."""
+        # The hash must actually describe the snapshot, so swapping the graph
+        # (with or without a matching hash) cannot survive.
+        if compute_plan_hash(self.plan) != self.plan_hash:
             raise MaterializationPlanError(
-                "ValidatedPlan may only be constructed by validate_materialization_plan"
+                "ValidatedPlan capability is invalid: plan_hash does not describe its plan snapshot"
             )
+        # ...and the snapshot must agree with every fact published beside it,
+        # so the two can never diverge into "sealed but inconsistent".
+        snapshot_facts = (
+            self.plan.get("plan_id"),
+            self.plan.get("unit_key"),
+            self.plan.get("schema_version"),
+            self.plan.get("workspace_spec_sha256"),
+            tuple(str(op.get("kind")) for op in self.plan.get("operations", ())),
+        )
+        if snapshot_facts != (
+            self.plan_id,
+            self.unit_key,
+            self.schema_version,
+            self.workspace_spec_sha256,
+            tuple(self.operation_kinds),
+        ):
+            raise MaterializationPlanError(
+                "ValidatedPlan capability is invalid: published facts disagree with the plan snapshot"
+            )
+        expected = _capability_seal(
+            plan_hash=self.plan_hash,
+            plan_id=self.plan_id,
+            unit_key=self.unit_key,
+            schema_version=self.schema_version,
+            workspace_spec_sha256=self.workspace_spec_sha256,
+            operation_kinds=self.operation_kinds,
+        )
+        if not hmac.compare_digest(str(self._seal), expected):
+            raise MaterializationPlanError(
+                "ValidatedPlan capability is invalid: it was not minted by "
+                "validate_materialization_plan for these exact facts"
+            )
+
+
+def _capability_seal(
+    *,
+    plan_hash: str,
+    plan_id: str,
+    unit_key: str,
+    schema_version: int,
+    workspace_spec_sha256: str,
+    operation_kinds: tuple[str, ...],
+) -> str:
+    """Bind the seal to CONTENT, not to object identity.
+
+    Every fact publication consumes is covered, so altering any one of them
+    -- by dataclasses.replace, by object.__setattr__, or by hand-building a
+    shell -- produces a seal that no longer matches. Takes values rather than
+    an instance so the mint can compute it before the object exists."""
+    payload = json.dumps(
+        [
+            plan_hash,
+            plan_id,
+            unit_key,
+            schema_version,
+            workspace_spec_sha256,
+            list(operation_kinds),
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hmac.new(_CAPABILITY_SECRET, payload, hashlib.sha256).hexdigest()
 
 
 # The normative wire contract (config#492, merged 4b36896). A hand-rolled
@@ -875,15 +962,18 @@ def validate_materialization_plan(workspace_root: Path, plan: dict[str, object])
     # Hash the validated bytes ONCE, here, while they are still exactly what
     # passed the checks above. Recomputing at publication time is what let a
     # receipt attest to a post-validation mutation.
+    facts = {
+        "plan_hash": compute_plan_hash(plan),
+        "plan_id": str(plan["plan_id"]),
+        "unit_key": str(plan["unit_key"]),
+        "schema_version": int(plan["schema_version"]),
+        "workspace_spec_sha256": workspace_spec_sha256,
+        "operation_kinds": tuple(str(op["kind"]) for op in operations),
+    }
     return ValidatedPlan(
         plan=_deep_freeze(plan),
-        plan_id=str(plan["plan_id"]),
-        unit_key=str(plan["unit_key"]),
-        schema_version=int(plan["schema_version"]),
-        workspace_spec_sha256=workspace_spec_sha256,
-        operation_kinds=tuple(str(op["kind"]) for op in operations),
-        plan_hash=compute_plan_hash(plan),
-        _token=_VALIDATION_TOKEN,
+        _seal=_capability_seal(**facts),
+        **facts,
     )
 
 
@@ -1026,6 +1116,11 @@ def write_materialization_receipt(
             "write_materialization_receipt requires a ValidatedPlan from "
             "validate_materialization_plan, not a raw plan"
         )
+    # Re-derive the seal HERE, not just at construction. A capability that
+    # was minted honestly can still be edited afterwards -- frozen=True does
+    # not stop object.__setattr__ -- and every path below reads these fields,
+    # including the one that builds the receipt filename.
+    validated.verify()
     _screen_receipt_evidence(validated, op_results)
 
     receipt = {
