@@ -646,7 +646,13 @@ def _apply_editable_install_operation(workspace_root: Path, op: dict[str, object
 
 
 def _apply_project_file_operation(workspace_root: Path, op: dict[str, object]) -> dict[str, object]:
-    source_path = Path(str(op["source_path"]))
+    # source_path is workspace-relative, same as dest_path (config#491 §6.2's
+    # own example: ".grip/staging/inputs/f_01") -- resolved through the same
+    # containment guard as dest, not read+deleted as an arbitrary caller-
+    # supplied filesystem path. Stromus's r1 catch on #797: reading and then
+    # unlink()-ing an unvalidated path is a real arbitrary-file-delete gap,
+    # not just a style nit.
+    source_path = _resolve_safe_dest(workspace_root, str(op["source_path"]))
     dest_path = str(op["dest_path"])
     dest = _resolve_safe_dest(workspace_root, dest_path)
     expected_sha256 = str(op["source_sha256"])

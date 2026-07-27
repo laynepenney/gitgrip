@@ -40,6 +40,16 @@ class MaterializationPlanTestBase(unittest.TestCase):
 
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def _stage_source(self, relative_path: str, content: bytes) -> str:
+        """Stage a project_file source under the workspace root, at a
+        workspace-relative path -- matching config#491 §6.2's own example
+        (`.grip/staging/inputs/f_01`), not an arbitrary absolute path.
+        Returns the relative_path for use as the plan's source_path."""
+        path = self.workspace_root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return relative_path
+
     def _init_bare_remote(self, name: str) -> str:
         """Create a real local bare repo with one commit; return its URL."""
         bare = self.tmp / f"{name}.git"
@@ -85,15 +95,14 @@ class TestPathSafety(MaterializationPlanTestBase):
             apply_materialization_plan(self.workspace_root, plan, yes=True)
 
     def test_project_file_rejects_absolute_dest_path(self):
-        source = self.tmp / "staged.md"
-        source.write_text("hello")
+        source_rel = self._stage_source(".grip/staging/inputs/f_01", b"hello")
         plan = {
             "schema_version": 1,
             "plan_id": "mp_test",
             "operations": [
                 {
                     "kind": "project_file",
-                    "source_path": str(source),
+                    "source_path": source_rel,
                     "source_sha256": hashlib.sha256(b"hello").hexdigest(),
                     "dest_path": "/tmp/escape.md",
                     "mode": "copy",
@@ -102,6 +111,51 @@ class TestPathSafety(MaterializationPlanTestBase):
         }
         with self.assertRaises(MaterializationPlanError):
             apply_materialization_plan(self.workspace_root, plan, yes=True)
+
+    def test_project_file_rejects_absolute_source_path(self):
+        """The finding: source_path was read+deleted with zero containment
+        check, unlike dest_path. An absolute source must be rejected the
+        same way an absolute dest is."""
+        outside_source = self.tmp / "outside-workspace.md"
+        outside_source.write_bytes(b"hello")
+        plan = {
+            "schema_version": 1,
+            "plan_id": "mp_test",
+            "operations": [
+                {
+                    "kind": "project_file",
+                    "source_path": str(outside_source),
+                    "source_sha256": hashlib.sha256(b"hello").hexdigest(),
+                    "dest_path": "units/u1/home/AGENTS.md",
+                    "mode": "copy",
+                }
+            ],
+        }
+        with self.assertRaises(MaterializationPlanError):
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+        # The whole point: an unvalidated source must never be touched, let
+        # alone deleted, before the containment check runs.
+        self.assertTrue(outside_source.exists())
+
+    def test_project_file_rejects_source_path_escaping_via_dotdot(self):
+        outside_source = self.tmp / "outside-workspace.md"
+        outside_source.write_bytes(b"hello")
+        plan = {
+            "schema_version": 1,
+            "plan_id": "mp_test",
+            "operations": [
+                {
+                    "kind": "project_file",
+                    "source_path": f"../{outside_source.name}",
+                    "source_sha256": hashlib.sha256(b"hello").hexdigest(),
+                    "dest_path": "units/u1/home/AGENTS.md",
+                    "mode": "copy",
+                }
+            ],
+        }
+        with self.assertRaises(MaterializationPlanError):
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertTrue(outside_source.exists())
 
 
 class TestIdentityFreedom(MaterializationPlanTestBase):
@@ -254,16 +308,15 @@ class TestEditableInstallOperation(MaterializationPlanTestBase):
 
 class TestProjectFileOperation(MaterializationPlanTestBase):
     def test_copies_and_verifies_hash(self):
-        source = self.tmp / "staged-AGENTS.md"
         content = b"# Foundation\nRole: neutral executor.\n"
-        source.write_bytes(content)
+        source_rel = self._stage_source(".grip/staging/inputs/f_01", content)
         plan = {
             "schema_version": 1,
             "plan_id": "mp_test",
             "operations": [
                 {
                     "kind": "project_file",
-                    "source_path": str(source),
+                    "source_path": source_rel,
                     "source_sha256": hashlib.sha256(content).hexdigest(),
                     "dest_path": "units/u1/home/AGENTS.md",
                     "mode": "copy",
@@ -275,15 +328,14 @@ class TestProjectFileOperation(MaterializationPlanTestBase):
         self.assertEqual(dest.read_bytes(), content)
 
     def test_rejects_hash_mismatch(self):
-        source = self.tmp / "staged.md"
-        source.write_bytes(b"real content")
+        source_rel = self._stage_source(".grip/staging/inputs/f_01", b"real content")
         plan = {
             "schema_version": 1,
             "plan_id": "mp_test",
             "operations": [
                 {
                     "kind": "project_file",
-                    "source_path": str(source),
+                    "source_path": source_rel,
                     "source_sha256": hashlib.sha256(b"different content").hexdigest(),
                     "dest_path": "units/u1/home/AGENTS.md",
                     "mode": "copy",
@@ -295,16 +347,15 @@ class TestProjectFileOperation(MaterializationPlanTestBase):
 
     def test_deletes_staging_source_after_copy(self):
         """config#491 §6.2: staging artifact is deleted after acknowledgement."""
-        source = self.tmp / "staged.md"
         content = b"ephemeral"
-        source.write_bytes(content)
+        source_rel = self._stage_source(".grip/staging/inputs/f_01", content)
         plan = {
             "schema_version": 1,
             "plan_id": "mp_test",
             "operations": [
                 {
                     "kind": "project_file",
-                    "source_path": str(source),
+                    "source_path": source_rel,
                     "source_sha256": hashlib.sha256(content).hexdigest(),
                     "dest_path": "units/u1/home/AGENTS.md",
                     "mode": "copy",
@@ -312,7 +363,7 @@ class TestProjectFileOperation(MaterializationPlanTestBase):
             ],
         }
         apply_materialization_plan(self.workspace_root, plan, yes=True)
-        self.assertFalse(source.exists())
+        self.assertFalse((self.workspace_root / source_rel).exists())
 
 
 class TestReceipts(MaterializationPlanTestBase):
