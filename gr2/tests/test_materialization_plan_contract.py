@@ -1308,6 +1308,132 @@ class TestCapabilityIsContentBound(PlanContractTestBase):
         self.assertEqual(json.loads(path.read_text())["plan_id"], "mp_genuine")
 
 
+class TestConsumptionIsSnapshotBound(PlanContractTestBase):
+    """Atlas's use-time TOCTOU. It survived two heads, which is the signal
+    that the model was wrong rather than a guard missing: I had been fixing
+    the capability so it could not be *forged*, while the writer went on
+    reading the live shell AFTER verification, across a caller-controlled
+    callback.
+
+    The content seal is what made this look covered -- it gates content, so
+    tampering could not change the sealed facts. But nothing gated the READS.
+    That is the adjacent-strong-guard masking class again, this time in the
+    fix rather than in the test.
+
+    Closure is Atlas's, exactly: one verified consumption yields an immutable
+    local binding derived from the sealed snapshot, and every later evidence
+    check, receipt field, filename and temp filename consumes only that."""
+
+    def _victim(self, plan_id: str):
+        return validate_materialization_plan(
+            self.workspace_root, self._plan([self._venv_op()], plan_id=plan_id)
+        )
+
+    def test_mutation_between_verify_and_use_cannot_move_the_receipt(self):
+        """Atlas's callback witness, verbatim. It published
+        changed_after_verify.json carrying a changed identity beside the
+        original hash -- one receipt describing two different states."""
+        victim = self._victim("mp_toctou")
+
+        class MutatingEvidence(list):
+            def __iter__(inner):
+                object.__setattr__(victim, "plan_id", "changed_after_verify")
+                return super().__iter__()
+
+        path = write_materialization_receipt(
+            self.workspace_root, victim, MutatingEvidence([{"kind": "venv"}])
+        )
+        receipt = json.loads(path.read_text())
+
+        state_dir = self.workspace_root / ".grip" / "state" / "materialization"
+        self.assertFalse((state_dir / "changed_after_verify.json").exists())
+        self.assertEqual(path.name, "mp_toctou.json")
+        self.assertEqual(receipt["plan_id"], "mp_toctou")
+        self.assertEqual(receipt["plan_hash"], victim.plan_hash)
+
+    def test_temp_filename_also_comes_from_the_binding(self):
+        """The temp filename is derived from the same identity, so it has to
+        come from the binding too -- otherwise the window merely moves.
+
+        It cannot be checked by listing the directory afterwards: the rename
+        CONSUMES the temp file, so a post-hoc listing shows the same thing
+        whether or not the name was attacker-influenced. That is why this
+        mutant survived a directory assertion. Observing the transient name
+        at os.replace is the only probe that can see it.
+
+        It matters even though the temp stays inside the receipt directory:
+        a caller-chosen temp name can collide with another in-flight
+        publication's temp and have it unlinked on the failure path."""
+        victim = self._victim("mp_tmp")
+        seen: dict[str, str] = {}
+        original_replace = os.replace
+
+        def tracking_replace(src, dst, **kwargs):
+            seen["src"] = Path(src).name
+            seen["dst"] = Path(dst).name
+            return original_replace(src, dst, **kwargs)
+
+        class MutatingEvidence(list):
+            def __iter__(inner):
+                object.__setattr__(victim, "plan_id", "escaped_tmp")
+                return super().__iter__()
+
+        with patch.object(spec_apply.os, "replace", tracking_replace):
+            write_materialization_receipt(
+                self.workspace_root, victim, MutatingEvidence([{"kind": "venv"}])
+            )
+
+        self.assertTrue(seen["src"].startswith("mp_tmp.json.tmp-"), seen)
+        self.assertEqual(seen["dst"], "mp_tmp.json")
+
+    def test_evidence_is_read_once_so_it_cannot_screen_clean_and_persist_dirty(self):
+        """The other input, same class. The evidence list was walked TWICE --
+        once by the screen and once by json serialization -- so an object
+        returning different contents per iteration passed the identity screen
+        and then persisted `secret` into the receipt anyway.
+
+        That is a premium-boundary failure, not just a correctness one: the
+        receipt's whole claim is that it carries no identity-bearing content.
+        Not in Atlas's witness; found by asking what else is read after it is
+        checked."""
+        victim = self._victim("mp_twoface")
+
+        class TwoFaced(list):
+            calls = 0
+
+            def __iter__(inner):
+                TwoFaced.calls += 1
+                if TwoFaced.calls == 1:
+                    return iter([{"kind": "venv"}])
+                return iter([{"kind": "venv", "secret": "LEAKED"}])
+
+        path = write_materialization_receipt(
+            self.workspace_root, victim, TwoFaced([{"kind": "venv"}])
+        )
+        body = path.read_text()
+        self.assertNotIn("LEAKED", body)
+        self.assertEqual(json.loads(body)["operations"], [{"kind": "venv"}])
+
+    def test_evidence_screening_sees_what_gets_persisted(self):
+        """The positive face: a two-faced object that is DIRTY on its first
+        read must be rejected, proving the screen inspects the same
+        materialized value the receipt persists rather than a fresh walk."""
+        victim = self._victim("mp_dirtyfirst")
+
+        class DirtyFirst(list):
+            def __iter__(inner):
+                return iter([{"kind": "venv", "agent_id": "a-1"}])
+
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            write_materialization_receipt(
+                self.workspace_root, victim, DirtyFirst([{"kind": "venv"}])
+            )
+        self.assertIn("identity-bearing", str(ctx.exception))
+        self.assertFalse(
+            materialization_receipt_path(self.workspace_root, "mp_dirtyfirst").exists()
+        )
+
+
 class TestDurabilityFailureMatrix(PlanContractTestBase):
     """Sentinel finding 3: durability is a FAILURE-PATH contract, not only
     an ordering one. The prior failure test injected only at the FIRST

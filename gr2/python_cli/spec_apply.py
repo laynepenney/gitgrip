@@ -643,6 +643,77 @@ class ValidatedPlan:
                 "minted -- a copy preserves every field but not its provenance"
             )
 
+    def consume(self, op_results: object) -> _ConsumptionBinding:
+        """Verify once, then take ONE immutable reading of everything a
+        publisher will use.
+
+        This closes the check/use window Atlas found. Verifying and then
+        re-reading `self.plan_id` to build a filename is a live read: a
+        caller-controlled callback (his was `list.__iter__` on the evidence)
+        runs in between and mutates the shell, so the receipt is written
+        under an identity that was never verified.
+
+        Two details carry the fix:
+
+        The facts come from `self.plan`, the FROZEN snapshot, not from the
+        shell fields. The snapshot cannot be mutated at all, so deriving from
+        it makes a post-verify shell edit irrelevant rather than merely
+        detected. There is deliberately no second seal check after the
+        callback -- it would be unreachable, and an unreachable guard is
+        worse than none because it reads as protection while being untestable
+        at its own level.
+
+        The ORDER is load-bearing: facts are captured before the evidence is
+        materialized, because materializing is what runs caller code."""
+        self.verify(require_provenance=True)
+
+        # Captured first -- no caller code has run yet at this point.
+        plan = self.plan
+        facts = {
+            "plan_id": str(plan["plan_id"]),
+            "unit_key": str(plan["unit_key"]),
+            "schema_version": int(plan["schema_version"]),
+            "workspace_spec_sha256": str(plan["workspace_spec_sha256"]),
+            "operation_kinds": tuple(str(op["kind"]) for op in plan["operations"]),
+            "plan_hash": compute_plan_hash(plan),
+        }
+
+        # ...and only now touch the caller's object, exactly once.
+        if not isinstance(op_results, list):
+            raise MaterializationPlanError("receipt evidence must be a list of operation results")
+        return _ConsumptionBinding(evidence=tuple(_plain_json(list(op_results))), **facts)
+
+
+def _plain_json(value: object) -> object:
+    """Materialize a caller-supplied graph into plain JSON types, once.
+
+    Two jobs. It detaches the value from anything the caller still holds, and
+    it normalizes away container subclasses -- so nothing downstream, json
+    serialization included, can re-enter caller code and get a second,
+    different answer."""
+    if isinstance(value, (dict, MappingProxyType)):
+        return {str(k): _plain_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_json(v) for v in value]
+    return value
+
+
+@dataclasses.dataclass(frozen=True)
+class _ConsumptionBinding:
+    """The single immutable reading taken at the verified consumption
+    instant (Atlas's use-time closure).
+
+    Every field a publisher needs, captured together, so nothing downstream
+    ever reads the live capability shell or the caller's evidence again."""
+
+    plan_id: str
+    unit_key: str
+    schema_version: int
+    workspace_spec_sha256: str
+    operation_kinds: tuple[str, ...]
+    plan_hash: str
+    evidence: tuple
+
 
 def _capability_seal(
     *,
@@ -1080,9 +1151,7 @@ def materialization_receipt_path(workspace_root: Path, plan_id: str) -> Path:
     return workspace_root / ".grip" / "state" / "materialization" / f"{plan_id}.json"
 
 
-def _screen_receipt_evidence(
-    validated: ValidatedPlan, op_results: list[dict[str, object]]
-) -> None:
+def _screen_receipt_evidence(binding: _ConsumptionBinding) -> None:
     """config#492 §12.1, Atlas P1: the terminal receipt must be bound to the
     plan it claims to acknowledge, and its evidence must be as neutral as
     the plan.
@@ -1093,16 +1162,21 @@ def _screen_receipt_evidence(
     the opposite: it is open, it is what gets persisted, and it was
     previously copied verbatim. That makes it the actual smuggling boundary,
     which is why the same rejection discipline is applied here rather than
-    only upstream."""
-    if not isinstance(op_results, list):
-        raise MaterializationPlanError("receipt evidence must be a list of operation results")
-    if len(op_results) != len(validated.operation_kinds):
+    only upstream.
+
+    Screens the CONSUMPTION BINDING, never the caller's object: the evidence
+    was walked twice before -- once here, once by json serialization -- so a
+    list whose __iter__ returned different contents per call screened clean
+    and then persisted `secret` into the receipt anyway. Screening a value
+    that is not the one persisted screens nothing."""
+    op_results = binding.evidence
+    if len(op_results) != len(binding.operation_kinds):
         raise MaterializationPlanError(
             f"receipt evidence has {len(op_results)} result(s) but the validated plan has "
-            f"{len(validated.operation_kinds)} operation(s) -- a receipt cannot claim "
+            f"{len(binding.operation_kinds)} operation(s) -- a receipt cannot claim "
             "MATERIALIZED without evidence for every operation"
         )
-    for idx, (result, expected_kind) in enumerate(zip(op_results, validated.operation_kinds)):
+    for idx, (result, expected_kind) in enumerate(zip(op_results, binding.operation_kinds)):
         if not isinstance(result, dict):
             raise MaterializationPlanError(
                 f"receipt evidence[{idx}] must be an object, got {type(result).__name__}"
@@ -1145,34 +1219,33 @@ def write_materialization_receipt(
             "write_materialization_receipt requires a ValidatedPlan from "
             "validate_materialization_plan, not a raw plan"
         )
-    # Re-derive the seal HERE, not just at construction. A capability that
-    # was minted honestly can still be edited afterwards -- frozen=True does
-    # not stop object.__setattr__ -- and every path below reads these fields,
-    # including the one that builds the receipt filename.
-    validated.verify(require_provenance=True)
-    _screen_receipt_evidence(validated, op_results)
+    # ONE verified consumption. Everything below reads `binding` and nothing
+    # reads `validated` again -- verifying and then re-reading the live shell
+    # is precisely the check/use window Atlas's callback drove through.
+    binding = validated.consume(op_results)
+    _screen_receipt_evidence(binding)
 
     receipt = {
-        "plan_id": validated.plan_id,
-        "unit_key": validated.unit_key,
-        # The hash captured at validation, NOT a recomputation from a graph
-        # that may have moved since (Atlas final re-gate).
-        "plan_hash": validated.plan_hash,
-        "schema_version": validated.schema_version,
-        "workspace_spec_sha256": validated.workspace_spec_sha256,
+        "plan_id": binding.plan_id,
+        "unit_key": binding.unit_key,
+        # Derived from the sealed snapshot at the consumption instant, NOT
+        # recomputed from a graph that may have moved since.
+        "plan_hash": binding.plan_hash,
+        "schema_version": binding.schema_version,
+        "workspace_spec_sha256": binding.workspace_spec_sha256,
         # §12.1 structural stage: MATERIALIZED is the terminal state OSS gr2
         # can honestly claim on its own.
         "stage": "MATERIALIZED",
         "applied_at": datetime.now(UTC).isoformat(),
-        "operations": op_results,
+        "operations": list(binding.evidence),
     }
 
     receipt_dir = _canonical_receipt_dir(workspace_root)
-    # plan_id was validated as a path-safe token upstream; re-derived here
-    # from the capability so the filename cannot come from an unvalidated
-    # source.
-    receipt_path = receipt_dir / f"{validated.plan_id}.json"
-    tmp_path = receipt_dir / f"{validated.plan_id}.json.tmp-{os.getpid()}"
+    # Both filenames come from the binding. The temp name carries the same
+    # identity, so leaving it on a live read would only move the window
+    # rather than close it.
+    receipt_path = receipt_dir / f"{binding.plan_id}.json"
+    tmp_path = receipt_dir / f"{binding.plan_id}.json.tmp-{os.getpid()}"
 
     payload = (json.dumps(receipt, indent=2) + "\n").encode("utf-8")
     fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
