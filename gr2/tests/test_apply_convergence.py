@@ -35,9 +35,21 @@ def _fake_clone_repo(url, target_repo_root, *, reference_repo_root=None):
     enough (a directory + a .git marker) for the atomic-publish step to
     succeed; _validate_clone_isolation is mocked separately in these tests
     since real git-state validation is covered by test_materialization_plan.py.
+
+    Round 3: when a reference is supplied it also writes the alternates
+    file, because real `git clone --reference-if-able` does -- verified
+    empirically with a local bare cache, not assumed. Without this the
+    mock silently misrepresents the one thing the new declared-object-
+    sharing check inspects, which is exactly the class of unfaithful
+    fixture this whole review cycle has been about.
     """
     target_repo_root.mkdir(parents=True, exist_ok=True)
-    (target_repo_root / ".git").mkdir(exist_ok=True)
+    git_dir = target_repo_root / ".git"
+    git_dir.mkdir(exist_ok=True)
+    if reference_repo_root is not None:
+        info_dir = git_dir / "objects" / "info"
+        info_dir.mkdir(parents=True, exist_ok=True)
+        (info_dir / "alternates").write_text(f"{reference_repo_root}/objects\n")
     return True
 
 
@@ -108,9 +120,29 @@ class ConvergenceTestBase(unittest.TestCase):
         (path / ".git").mkdir()
 
     def _create_repo_cache(self, repo_name):
-        """Create a fake bare repo cache directory."""
+        """Create a REAL bare repo cache with the declared canonical origin.
+
+        Round 3 (config#492 §6.2.1 #5): cache provenance is fail-closed --
+        a bare directory that merely sits at the canonical cache path is
+        rejected, because a non-Git directory there was previously accepted,
+        silently skipped by `--reference-if-able`, and then receipted as an
+        approved alternate. Setting a remote does not require the URL to be
+        reachable, so these fixtures stay offline while being
+        production-shaped."""
+        import subprocess
+
         cache = repo_cache_path(self.workspace, repo_name)
-        cache.mkdir(parents=True, exist_ok=True)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        repo_url = next(r["url"] for r in self.repo_specs if r["name"] == repo_name)
+        subprocess.run(
+            ["git", "init", "--bare", str(cache)], capture_output=True, text=True, check=True
+        )
+        subprocess.run(
+            ["git", "--git-dir", str(cache), "remote", "add", "origin", repo_url],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
 
     def _fully_materialize(self):
         """Set up workspace as if initial apply completed: repos, caches, unit with checkouts."""
