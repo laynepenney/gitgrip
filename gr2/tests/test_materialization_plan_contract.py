@@ -458,6 +458,7 @@ class TestReceiptPublication(PlanContractTestBase):
                 schema_version=1,
                 workspace_spec_sha256="a" * 64,
                 operation_kinds=(),
+                plan_hash="b" * 64,
                 _token=object(),
             )
         self.assertIn("only be constructed by", str(ctx.exception))
@@ -1012,6 +1013,119 @@ class TestReceiptValueBinding(PlanContractTestBase):
                 "operations": evidence,
             },
         )
+
+
+class TestCapabilitySnapshotIsolation(PlanContractTestBase):
+    """Atlas final re-gate: `frozen=True` on the dataclass freezes the field
+    BINDING, not the nested graph. `plan` was the caller's live dict, and the
+    writer recomputed plan_hash from it at publication time -- so mutating
+    the plan after validation produced a receipt attesting to a graph that
+    was never validated. The capability proved one graph was checked while
+    vouching for another.
+
+    Closure is a mint-time SNAPSHOT plus captured facts: the hash is computed
+    once during validation and the receipt reads only what was captured.
+    Both aliases must be dead ends -- the caller's original dict AND the
+    representation the capability exposes."""
+
+    def test_mutating_the_callers_plan_after_validation_cannot_move_the_receipt(self):
+        """Atlas's exact repro, taken verbatim as the RED probe."""
+        op = self._venv_op()
+        plan = self._plan([op], plan_id="mp_alias")
+        pre_validation_hash = compute_plan_hash(plan)
+
+        validated = validate_materialization_plan(self.workspace_root, plan)
+
+        # Mutate the ORIGINAL operation the caller still holds: escape the
+        # workspace and smuggle an identity field, both of which validation
+        # would have rejected outright.
+        op["dest_path"] = "../../post_validation_escape"
+        op["secret"] = "POST_VALIDATION_SECRET"
+
+        path = write_materialization_receipt(
+            self.workspace_root, validated, [{"kind": "venv"}]
+        )
+        receipt = json.loads(path.read_text())
+
+        self.assertEqual(
+            receipt["plan_hash"],
+            pre_validation_hash,
+            "the receipt must attest to the bytes that were validated, not to a "
+            "post-validation mutation of the caller's dict",
+        )
+        self.assertNotEqual(receipt["plan_hash"], compute_plan_hash(plan))
+        self.assertNotIn("POST_VALIDATION_SECRET", path.read_text())
+
+    def test_mutating_the_capability_representation_is_impossible(self):
+        """A snapshot alone still leaves the second alias open: whatever the
+        capability EXPOSES is reachable by anyone holding it. Atlas asked for
+        mutation of both, so the exposed graph is deeply immutable rather
+        than merely a private copy."""
+        plan = self._plan([self._venv_op()], plan_id="mp_frozen")
+        validated = validate_materialization_plan(self.workspace_root, plan)
+
+        with self.assertRaises(TypeError):
+            validated.plan["plan_id"] = "mutated"
+        with self.assertRaises(TypeError):
+            validated.plan["operations"][0]["dest_path"] = "../escape"
+        with self.assertRaises((TypeError, AttributeError)):
+            validated.plan["operations"].append({"kind": "venv"})
+
+    def test_snapshot_is_not_the_callers_object(self):
+        """A shallow copy is explicitly insufficient (Atlas): the nested
+        operation dicts must not be shared either."""
+        op = self._venv_op()
+        plan = self._plan([op], plan_id="mp_ident")
+        validated = validate_materialization_plan(self.workspace_root, plan)
+        self.assertIsNot(validated.plan, plan)
+        self.assertIsNot(validated.plan["operations"][0], op)
+
+    def test_mutation_during_validation_cannot_reach_the_validated_bytes(self):
+        """The snapshot is taken on ENTRY, not at mint. Deep-freezing at mint
+        already builds fresh objects, so it MASKS a missing snapshot in any
+        single-threaded probe -- both the "no snapshot" and "shallow copy"
+        mutants survived every other test in this class. What freezing at
+        mint cannot do is defend the window between the checks and the
+        capture: it copies whatever the graph has become by then.
+
+        _read_canonical_workspace_spec_bytes runs after the schema check and
+        before the operation loop, so patching it to mutate the caller's
+        object reproduces that window deterministically, without threads."""
+        op = self._venv_op()
+        plan = self._plan([op], plan_id="mp_race")
+        expected = compute_plan_hash(plan)
+        original = spec_apply._read_canonical_workspace_spec_bytes
+
+        def mutate_then_read(workspace_root):
+            op["dest_path"] = "../../escape_during_validation"
+            op["secret"] = "RACE_SECRET"
+            return original(workspace_root)
+
+        with patch.object(spec_apply, "_read_canonical_workspace_spec_bytes", mutate_then_read):
+            validated = validate_materialization_plan(self.workspace_root, plan)
+
+        self.assertEqual(
+            validated.plan_hash,
+            expected,
+            "a mutation landing mid-validation must not reach the captured bytes",
+        )
+        path = write_materialization_receipt(
+            self.workspace_root, validated, [{"kind": "venv"}]
+        )
+        self.assertNotIn("RACE_SECRET", path.read_text())
+
+    def test_captured_hash_matches_the_validated_bytes(self):
+        plan = self._plan([self._venv_op()], plan_id="mp_captured")
+        expected = compute_plan_hash(plan)
+        validated = validate_materialization_plan(self.workspace_root, plan)
+        self.assertEqual(validated.plan_hash, expected)
+
+    def test_hash_helper_accepts_the_frozen_representation(self):
+        """The freeze must not turn the public canonical-hash helper into a
+        trap for the handlers that will hold these plans in B/C/D."""
+        plan = self._plan([self._venv_op()], plan_id="mp_helper")
+        validated = validate_materialization_plan(self.workspace_root, plan)
+        self.assertEqual(compute_plan_hash(validated.plan), compute_plan_hash(plan))
 
 
 class TestDurabilityFailureMatrix(PlanContractTestBase):

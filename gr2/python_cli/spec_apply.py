@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import dataclasses
 import hashlib
 import importlib.resources
@@ -10,6 +11,7 @@ import tomllib
 import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 
 from jsonschema import Draft202012Validator
 
@@ -512,6 +514,21 @@ class MaterializationPlanError(Exception):
 _VALIDATION_TOKEN = object()
 
 
+def _deep_freeze(value: object) -> object:
+    """Recursively convert a JSON-shaped graph into a read-only one.
+
+    dataclasses.dataclass(frozen=True) freezes the field BINDING, not the
+    graph the field points at -- so a `plan` field holding a live dict is
+    mutable through anyone who holds the capability. Mappings become
+    MappingProxyType and sequences become tuples, which closes both the
+    item-assignment and the append/extend routes."""
+    if isinstance(value, dict):
+        return MappingProxyType({k: _deep_freeze(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return tuple(_deep_freeze(v) for v in value)
+    return value
+
+
 @dataclasses.dataclass(frozen=True)
 class ValidatedPlan:
     """Proof that a plan passed the full v1 contract, plus the facts a
@@ -519,14 +536,22 @@ class ValidatedPlan:
 
     Immutable and unforgeable-by-accident: the token check means holding one
     of these IS the evidence of validation, so publication has a capability
-    to demand rather than a convention to trust."""
+    to demand rather than a convention to trust.
 
-    plan: dict[str, object]
+    Every field here is a mint-time CAPTURE, not a view onto something a
+    caller still holds (Atlas final re-gate). The earlier version aliased the
+    caller's dict and recomputed the hash at publication time, so mutating
+    the plan after validation produced a receipt attesting to a graph that
+    was never validated -- the capability proved one graph had been checked
+    while vouching for another. Publication now reads captured facts only."""
+
+    plan: MappingProxyType
     plan_id: str
     unit_key: str
     schema_version: int
     workspace_spec_sha256: str
     operation_kinds: tuple[str, ...]
+    plan_hash: str
     _token: object = dataclasses.field(repr=False)
 
     def __post_init__(self) -> None:
@@ -772,7 +797,19 @@ def validate_materialization_plan(workspace_root: Path, plan: dict[str, object])
     receipt cannot be written from a plan that never passed this function
     (Atlas P1) -- validation becomes something the publisher HOLDS rather
     than something a caller is trusted to have remembered to do.
+
+    The caller's object is snapshotted on entry and never consulted again.
+    Taking the snapshot FIRST (rather than copying at mint) also closes the
+    window where a concurrent mutation could land between the checks and the
+    capture, which would validate one graph and bind another.
     """
+    try:
+        plan = copy.deepcopy(plan)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise MaterializationPlanError(
+            f"plan could not be snapshotted for validation: {exc}"
+        ) from exc
+
     validator = _load_plan_validator()
     schema_errors = sorted(validator.iter_errors(plan), key=lambda e: list(e.absolute_path))
     if schema_errors:
@@ -835,13 +872,17 @@ def validate_materialization_plan(workspace_root: Path, plan: dict[str, object])
                 )
             seen_canonical_dests[key] = idx
 
+    # Hash the validated bytes ONCE, here, while they are still exactly what
+    # passed the checks above. Recomputing at publication time is what let a
+    # receipt attest to a post-validation mutation.
     return ValidatedPlan(
-        plan=plan,
+        plan=_deep_freeze(plan),
         plan_id=str(plan["plan_id"]),
         unit_key=str(plan["unit_key"]),
         schema_version=int(plan["schema_version"]),
         workspace_spec_sha256=workspace_spec_sha256,
         operation_kinds=tuple(str(op["kind"]) for op in operations),
+        plan_hash=compute_plan_hash(plan),
         _token=_VALIDATION_TOKEN,
     )
 
@@ -896,9 +937,23 @@ def compute_plan_hash(plan: dict[str, object]) -> str:
     JSON, keys sorted, no insignificant whitespace, non-ASCII unescaped.
     Default json.dumps separators and ensure_ascii=True produce different
     bytes and therefore a non-conformant hash. Public so callers and tests
-    recompute it independently rather than trusting a receipt's own value."""
+    recompute it independently rather than trusting a receipt's own value.
+
+    `default` is a TYPE adapter, not a change to the recipe: it fires only
+    for objects json cannot serialize natively, so canonical bytes for a
+    plain JSON graph are byte-identical either way. It exists so freezing a
+    validated plan does not turn this public helper into a trap for the
+    handlers that will hold one in B/C/D."""
+
+    def _unfreeze(obj: object) -> object:
+        if isinstance(obj, MappingProxyType):
+            return dict(obj)
+        raise TypeError(f"cannot canonicalize {type(obj).__name__} in a MaterializationPlan")
+
     return hashlib.sha256(
-        json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        json.dumps(
+            plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=_unfreeze
+        ).encode("utf-8")
     ).hexdigest()
 
 
@@ -973,11 +1028,12 @@ def write_materialization_receipt(
         )
     _screen_receipt_evidence(validated, op_results)
 
-    plan = validated.plan
     receipt = {
         "plan_id": validated.plan_id,
         "unit_key": validated.unit_key,
-        "plan_hash": compute_plan_hash(plan),
+        # The hash captured at validation, NOT a recomputation from a graph
+        # that may have moved since (Atlas final re-gate).
+        "plan_hash": validated.plan_hash,
         "schema_version": validated.schema_version,
         "workspace_spec_sha256": validated.workspace_spec_sha256,
         # §12.1 structural stage: MATERIALIZED is the terminal state OSS gr2
