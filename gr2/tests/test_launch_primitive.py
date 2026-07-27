@@ -110,6 +110,25 @@ class TestLaunchMeansAlive(LaunchTestBase):
             self._launch(entry)
         self.assertIn("exited with code 3", str(ctx.exception))
 
+    def test_a_bare_binary_name_resolves_through_the_constructed_PATH(self):
+        """The demo's actual shape, and the case every other test misses.
+
+        agents.toml declares `binary = "claude"` -- a BARE NAME, resolved via
+        PATH. Every other test here uses sys.executable, an ABSOLUTE path, which
+        never consults PATH at all. Now that the environment is constructed
+        rather than inherited, PATH is something the launcher supplies
+        deliberately, so bare-name resolution is a live risk that the convenient
+        fixtures happen not to exercise.
+
+        There is a test that a bare name FAILS when missing; without this one
+        there is none that it SUCCEEDS when present, which is the happy path of
+        the thing we are actually shipping."""
+        bare = Path(sys.executable).name  # e.g. "python3.13", resolvable on PATH
+        entry = self._entry(argv=[bare, "-c", "import time; time.sleep(30)"])
+        ev = self._launch(entry)
+        self.assertIs(ev["alive"], True)
+        os.kill(ev["pid"], 0)
+
     def test_a_missing_binary_is_named(self):
         entry = self._entry(argv=["definitely-not-a-real-binary-xyz"])
         with self.assertRaises(LaunchExecutionError) as ctx:
