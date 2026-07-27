@@ -59,7 +59,7 @@ Masking analysis, before implementation:
      .grip/staging/inputs/* removes exactly the right files when the directory
      holds only this plan's inputs. The probe needs an unrelated file sitting
      in that directory.
-  3. plan_hash matching is masked by plan_id matching -- a recompiled plan for
+  3. plan_hash matching is masked by plan_id matching -- a re-emitted plan for
      the same unit can carry the same opaque plan_id with different operations.
      The probe must reuse the plan_id and change the content.
      CORRECTED AFTER IMPLEMENTATION: the plan_id comparison is itself masked by
@@ -218,9 +218,10 @@ class TestAcknowledgementGate(StagingCleanupTestBase):
         self.assertTrue(self.source_path.exists())
 
     def test_refuses_a_receipt_whose_plan_hash_disagrees(self):
-        """plan_id is an opaque token premium may reuse when it recompiles a
-        plan for the same unit. Matching it alone would let yesterday's receipt
-        authorise today's deletions, so the bound is the CONTENT hash."""
+        """plan_id is an opaque token a plan producer may reuse across
+        successive plans for the same unit. Matching it alone would let
+        yesterday's receipt authorise today's deletions, so the bound is the
+        CONTENT hash."""
         validated, receipt_path = self._project_and_receipt()
         receipt = json.loads(receipt_path.read_text())
         receipt["plan_hash"] = "0" * 64
@@ -371,7 +372,8 @@ class TestCrossSliceSeam(StagingCleanupTestBase):
         production. Once cleanup has run, the staged input is gone; if the
         destination is then destroyed, this workspace cannot re-project and the
         next apply must FAIL LOUDLY rather than leave a silently absent
-        AGENTS.md. Premium re-stages; gr2's job is to refuse to pretend."""
+        AGENTS.md. Re-staging is the plan producer's responsibility; gr2's job
+        is to refuse to pretend."""
         validated, receipt_path = self._project_and_receipt()
         self._cleanup(validated, receipt_path)
         self.dest_path.unlink()

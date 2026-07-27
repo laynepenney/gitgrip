@@ -101,10 +101,10 @@ def _load_acknowledging_receipt(
         can write a file anywhere in the workspace.
       - EXISTENCE. Invariant 8's core prohibition. A successful projection and a
         correct destination are explicitly NOT acknowledgement.
-      - PLAN_HASH, not plan_id. plan_id is an opaque token premium may reuse
-        when it recompiles a plan for the same unit, so matching it alone would
-        let yesterday's receipt authorise today's deletions. The bound is the
-        CONTENT hash."""
+      - PLAN_HASH, not plan_id. plan_id is an opaque token a plan producer may
+        reuse across successive plans for the same unit, so matching it alone
+        would let yesterday's receipt authorise today's deletions. The bound is
+        the CONTENT hash."""
     canonical = materialization_receipt_path(workspace_root, validated.plan_id)
     if receipt_path.resolve() != canonical.resolve():
         raise StagingCleanupError(
@@ -133,7 +133,7 @@ def _load_acknowledging_receipt(
         raise StagingCleanupError(
             f"receipt at {canonical} records plan_hash {receipt.get('plan_hash')!r}, "
             f"not this plan's {expected_hash!r} -- an opaque plan_id may be reused "
-            "across recompilations, so the content hash is the bound"
+            "across re-emissions, so the content hash is the bound"
         )
     return receipt
 
