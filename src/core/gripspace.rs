@@ -992,7 +992,24 @@ mod tests {
         );
     }
 
+    // Ignored on Windows: this test HANGS there rather than failing, and a hang
+    // burns a runner to the workflow timeout while looking identical to "still
+    // running" -- the first instance sat 91 minutes before anyone measured
+    // elapsed against the ~8 min baseline.
+    //
+    // The hang is a REAL bug, not a flaky test, and it is tracked in grip#821
+    // along with the per-test-timeout hardening that would make this class
+    // report as a failure instead. Two Windows bugs in this test were fixed
+    // first (a malformed `file://` URL and a CRLF comparison); each was hidden
+    // behind the previous one, and fixing them is what let execution reach the
+    // `git push` / fetch against a `file:///C:/...` remote that blocks.
+    //
+    // Deferred by Layne 2026-07-27: "don't worry about windows for now. we're
+    // demoing on mac." Recorded so the next reader sees a scoped decision with a
+    // tracking issue rather than an unexplained skip -- ubuntu and macos both
+    // run this test and both pass in under three minutes.
     #[test]
+    #[cfg_attr(windows, ignore = "hangs on Windows -- see grip#821")]
     fn test_update_gripspace_advances_configured_remote_branch() {
         let temp = tempfile::tempdir().unwrap();
         let remote = temp.path().join("base.git");
