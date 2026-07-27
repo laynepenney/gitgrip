@@ -764,22 +764,38 @@ class TestCloneOperation(MaterializationPlanTestBase):
             apply_materialization_plan(self.workspace_root, plan, yes=True)
 
     def test_clone_rejects_when_common_dir_check_cannot_run(self):
-        """Round 2 (Sentinel): fail CLOSED, not open. A .git that exists as
-        a real directory but isn't actually a valid git repository
-        internally makes `git rev-parse --git-common-dir` fail -- the prior
-        version silently skipped the whole check in that case (treated
-        "cannot verify" as "assume it's fine"). Must reject instead."""
-        dest = self.workspace_root / "units" / "u1" / "product"
-        (dest / ".git").mkdir(parents=True)
-        # .git exists as a real directory (passes the worktree-pointer-file
-        # and nested-worktrees checks) but has no actual git internals, so
-        # `git rev-parse --git-common-dir` run inside it fails for real.
+        """config#492 §6.2.1: fail CLOSED, not open -- if the common-dir
+        probe cannot run, that is a rejection, not "assume it's fine".
 
-        plan = self._plan(
-            [{"kind": "clone", "branch": "main", "repo_url": "https://example.com/x.git", "dest_path": "units/u1/product"}]
-        )
-        with self.assertRaises(MaterializationPlanError):
-            apply_materialization_plan(self.workspace_root, plan, yes=True)
+        Round-3 mutation sweep caught this test itself passing for the
+        WRONG reason: its old fixture was a bare `.git` directory with no
+        git internals, which ALSO fails the origin check further down the
+        same function, so a type-only assertRaises stayed green with the
+        fail-closed branch removed entirely. Worse, I had already written
+        that exact masking into a sibling test's docstring and never came
+        back to repair this one.
+
+        Now isolated properly: a HEALTHY clone with a CORRECT origin,
+        where only the --git-common-dir probe is forced to fail, plus an
+        assertion on the specific message so no other guard can satisfy
+        it."""
+        url = self._init_bare_remote("product")
+        dest = self.workspace_root / "units" / "u1" / "product"
+        dest.parent.mkdir(parents=True)
+        _git(self.workspace_root, "clone", url, str(dest))
+
+        real_run = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "--git-common-dir" in cmd:
+                return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="simulated probe failure")
+            return real_run(cmd, *args, **kwargs)
+
+        plan = self._plan([self._clone_op(repo_url=url, dest_path="units/u1/product")])
+        with patch.object(spec_apply.subprocess, "run", fake_run):
+            with self.assertRaises(MaterializationPlanError) as ctx:
+                apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertIn("cannot verify isolation", str(ctx.exception))
 
     def test_clone_is_idempotent_for_existing_healthy_clone(self):
         url = self._init_bare_remote("product")
@@ -1281,6 +1297,56 @@ class TestPinnedSchemaConformance(MaterializationPlanTestBase):
         )
 
 
+class TestCanonicalizationDefenseInDepth(MaterializationPlanTestBase):
+    """Round-3 mutation sweep: deleting the raw-segment guards inside
+    _canonicalize_workspace_path left all 98 tests GREEN, because the
+    pinned schema's workspaceRelativePath pattern is a strictly stronger
+    FIRST gate -- every plan-level path test was being satisfied by the
+    schema, never reaching canonicalization. The defense-in-depth layer
+    had no independent coverage at all.
+
+    That matters precisely because it IS defense in depth: if the schema
+    is ever loosened, or a call site is added that reaches canonicalization
+    without schema validation (the legacy apply_plan adapter already does
+    exactly that), this layer is the only thing standing. So it gets tested
+    directly, at its own level, not through the schema that shadows it."""
+
+    def _reject(self, relative: str) -> None:
+        with self.assertRaises(MaterializationPlanError, msg=f"{relative!r} must be rejected"):
+            spec_apply._canonicalize_workspace_path(
+                self.workspace_root, relative, field_name="probe"
+            )
+
+    def test_rejects_single_dot_segment(self):
+        self._reject("a/./b")
+
+    def test_rejects_dotdot_segment(self):
+        self._reject("a/../b")
+
+    def test_rejects_empty_segment(self):
+        self._reject("a//b")
+
+    def test_rejects_backslash(self):
+        self._reject("a\\b")
+
+    def test_rejects_nul_byte(self):
+        """Without the raw guard this escapes as an UNCAUGHT ValueError
+        from Path.resolve() ("embedded null character"), i.e. a crash-class
+        regression rather than a clean rejection."""
+        self._reject("a/b\x00c")
+
+    def test_rejects_absolute_and_tilde(self):
+        self._reject("/etc/passwd")
+        self._reject("~/secrets")
+
+    def test_accepts_ordinary_relative_path(self):
+        """The positive face -- these guards must not reject legitimate paths."""
+        resolved = spec_apply._canonicalize_workspace_path(
+            self.workspace_root, "units/u1/product", field_name="probe"
+        )
+        self.assertEqual(resolved, (self.workspace_root / "units" / "u1" / "product").resolve())
+
+
 class TestUnicodeCollisionGuards(MaterializationPlanTestBase):
     """Sentinel round 3: removing .casefold() left all 13 plan-shape tests
     GREEN because no case-only collision fixture existed."""
@@ -1561,6 +1627,43 @@ class TestCacheProvenance(MaterializationPlanTestBase):
         self.assertIsNotNone(observed)
         self.assertEqual(Path(observed).resolve(), (cache / "objects").resolve())
         self.assertTrue(op_result["alternate_approved"])
+
+    def test_declared_reference_producing_no_alternate_is_rejected(self):
+        """Round-3 mutation sweep: the happy-path test above cannot
+        distinguish observed-from-disk evidence from evidence assumed off
+        the request, because when git DOES create the alternate both are
+        true. This forces the discriminating case -- a declared reference
+        that yields NO alternate -- by making the clone step produce a repo
+        without one. Observation-based evidence rejects; request-based
+        evidence would sail through and receipt alternate_approved=True for
+        a clone that shares no objects at all."""
+        url = self._init_bare_remote("product")
+        cache = self.workspace_root / ".grip" / "cache" / "repos" / "product.git"
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        _git(self.workspace_root, "clone", "--mirror", url, str(cache))
+
+        real_clone_repo = spec_apply.clone_repo
+
+        def clone_without_alternate(repo_url, target, *, reference_repo_root=None):
+            # Clone for real, but WITHOUT the reference -- simulating git
+            # declining to use a nominally-valid cache.
+            return real_clone_repo(repo_url, target, reference_repo_root=None)
+
+        plan = self._plan(
+            [
+                self._clone_op(
+                    repo_url=url,
+                    dest_path="units/u1/product",
+                    reference_base=".grip/cache/repos/product.git",
+                )
+            ]
+        )
+        with patch.object(spec_apply, "clone_repo", clone_without_alternate):
+            with self.assertRaises(MaterializationPlanError) as ctx:
+                apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertIn("carries no alternate", str(ctx.exception))
+        # Rolled back, not left half-published.
+        self.assertFalse((self.workspace_root / "units" / "u1" / "product").exists())
 
 
 class TestStagingSymlinkGuards(MaterializationPlanTestBase):
