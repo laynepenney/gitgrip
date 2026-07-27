@@ -175,13 +175,3 @@ tmux select-window -t myproject:lead
 
 Plus any custom vars from the `env` table in `agents.toml`.
 
-## Monitoring
-
-The spawn watcher (`spawn_watcher.py`) runs alongside `gr spawn` to monitor agent health:
-
-- **Heartbeat detection**: alerts when an agent hasn't posted in `timeout_threshold` seconds
-- **Process monitoring**: checks tmux pane PID status
-- **Auto-recovery**: restarts crashed agents per `restart_policy`
-- **Event logging**: writes restart events to `.synapt/recall/spawn_events.jsonl`
-
-See the watcher's own documentation for setup details.

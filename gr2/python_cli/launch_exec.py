@@ -1,9 +1,9 @@
 """Neutral launch primitive (S5).
 
 Executes a LaunchPlan entry: run this argv, in this working directory, with
-these environment KEY NAMES. gr2 cannot tell a synapt agent team from any other
-multi-repo workspace -- it sees an opaque `unit_key`, an argv, and a set of env
-key names whose VALUES the caller supplies in memory at launch.
+these environment KEY NAMES. gr2 cannot tell one caller's workspace from another -- it sees an opaque
+`unit_key`, an argv, and a set of env key names whose VALUES the caller supplies
+in memory at launch.
 
 Design: the spawn launch contract, §2 (LaunchPlan is the
 opaque tier) and §5 (cold start, no `--resume`).
@@ -11,7 +11,7 @@ opaque tier) and §5 (cold start, no `--resume`).
 THE BOUNDARY CORRECTION THIS SLICE EXISTS TO MAKE
 --------------------------------------------------
 gr1's spawn builds an on-disk launch script containing `export KEY=value` lines.
-That puts identity environment VALUES on disk -- SYNAPT_AGENT_ID, org, channel
+That puts the caller's environment VALUES on disk -- every declared key
 bindings -- inside the OSS layer, in a file that outlives the launch.
 
 The neutral plan carries key NAMES; the values are injected in memory and never

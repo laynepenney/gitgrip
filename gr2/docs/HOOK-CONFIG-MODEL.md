@@ -490,20 +490,10 @@ But keeps:
 If moving from Python `gr2` to Rust `gr2` requires users to relearn the model,
 the migration failed.
 
-## 8.4 `agents.toml` Relationship
+## 8.4 Runtime Contract
 
-Current `agents.toml` should be treated as input to the compilation step, not
-as a parallel runtime authority once Python `gr2` is active.
-
-Recommended direction:
-
-- `agents.toml` remains a control-plane input during transition
-- compilation resolves it into:
-  - workspace `units`
-  - `agent_id`
-  - repo access
-  - lane limits
-- `WorkspaceSpec` becomes the OSS runtime contract
+`WorkspaceSpec` is the runtime contract gr2 reads. gr2 accepts the fields that
+spec declares and does not consume any other configuration source at runtime.
 
 ## 9. Python-First CLI Implication
 

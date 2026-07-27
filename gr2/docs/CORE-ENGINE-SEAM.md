@@ -195,8 +195,8 @@ Current Python references:
 5. The engine does not own transport.
 
    Git is the current transport. A Rust core may optimize git inspection or
-   convergence, but cross-agent routing and channel/recall bridges stay above
-   the engine seam.
+   convergence. gr2 does not route between agents and does not bridge to chat
+   or memory systems.
 
 ## Adapter Shape
 

@@ -103,7 +103,7 @@ class TestPRCreated:
             title="feat: hook events",
             base_branch="sprint-21",
             head_branch="test/event-system-runtime",
-            repos=["grip", "synapt"],
+            repos=["app", "api"],
             adapter=adapter,
             actor="agent:apollo",
         )
@@ -120,7 +120,7 @@ class TestPRCreated:
             title="feat: hook events",
             base_branch="sprint-21",
             head_branch="test/event-system-runtime",
-            repos=["grip", "synapt"],
+            repos=["app", "api"],
             adapter=adapter,
             actor="agent:apollo",
         )
@@ -143,7 +143,7 @@ class TestPRCreated:
             title="feat: hook events",
             base_branch="sprint-21",
             head_branch="test/event-system-runtime",
-            repos=["grip"],
+            repos=["app"],
             adapter=adapter,
             actor="agent:apollo",
         )
@@ -163,7 +163,7 @@ class TestPRCreated:
             title="feat: hook events",
             base_branch="sprint-21",
             head_branch="test/event-system-runtime",
-            repos=["grip"],
+            repos=["app"],
             adapter=adapter,
             actor="agent:apollo",
         )
@@ -184,12 +184,12 @@ class TestPRCreated:
             title="feat: hook events",
             base_branch="sprint-21",
             head_branch="test/event-system-runtime",
-            repos=["grip", "synapt", "synapt-private"],
+            repos=["app", "api", "billing"],
             adapter=adapter,
             actor="agent:apollo",
         )
         assert len(adapter.created) == 3
-        assert [r.repo for r in adapter.created] == ["grip", "synapt", "synapt-private"]
+        assert [r.repo for r in adapter.created] == ["app", "api", "billing"]
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +207,7 @@ class TestPRMerged:
             title="feat: test",
             base_branch="sprint-21",
             head_branch="feat/test",
-            repos=repos or ["grip", "synapt"],
+            repos=repos or ["app", "api"],
             adapter=adapter,
             actor="agent:apollo",
         )
@@ -243,14 +243,14 @@ class TestPRMerged:
     def test_merges_in_repo_order(self, workspace: Path):
         from gr2.python_cli.pr import merge_pr_group
         adapter = FakeAdapter()
-        group = self._create_group(workspace, adapter, repos=["grip", "synapt", "synapt-private"])
+        group = self._create_group(workspace, adapter, repos=["app", "api", "billing"])
         merge_pr_group(
             workspace_root=workspace,
             pr_group_id=group["pr_group_id"],
             adapter=adapter,
             actor="agent:apollo",
         )
-        assert [r for r, _ in adapter.merged] == ["grip", "synapt", "synapt-private"]
+        assert [r for r, _ in adapter.merged] == ["app", "api", "billing"]
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +268,7 @@ class TestPRMergeFailed:
             title="feat: test",
             base_branch="sprint-21",
             head_branch="feat/test",
-            repos=["grip", "synapt"],
+            repos=["app", "api"],
             adapter=adapter,
             actor="agent:apollo",
         )
@@ -277,9 +277,9 @@ class TestPRMergeFailed:
         from gr2.python_cli.pr import merge_pr_group, PRMergeError
         adapter = FakeAdapter()
         group = self._create_group(workspace, adapter)
-        # Make synapt fail
-        synapt_pr = [p for p in group["prs"] if p["repo"] == "synapt"][0]
-        adapter.set_fail_merge("synapt", synapt_pr["pr_number"])
+        # Make api fail
+        api_pr = [p for p in group["prs"] if p["repo"] == "api"][0]
+        adapter.set_fail_merge("api", api_pr["pr_number"])
         with pytest.raises(PRMergeError):
             merge_pr_group(
                 workspace_root=workspace,
@@ -294,8 +294,8 @@ class TestPRMergeFailed:
         from gr2.python_cli.pr import merge_pr_group, PRMergeError
         adapter = FakeAdapter()
         group = self._create_group(workspace, adapter)
-        synapt_pr = [p for p in group["prs"] if p["repo"] == "synapt"][0]
-        adapter.set_fail_merge("synapt", synapt_pr["pr_number"])
+        api_pr = [p for p in group["prs"] if p["repo"] == "api"][0]
+        adapter.set_fail_merge("api", api_pr["pr_number"])
         with pytest.raises(PRMergeError):
             merge_pr_group(
                 workspace_root=workspace,
@@ -305,7 +305,7 @@ class TestPRMergeFailed:
             )
         event = _events_of_type(workspace, "pr.merge_failed")[0]
         assert event["pr_group_id"] == group["pr_group_id"]
-        assert event["repo"] == "synapt"
+        assert event["repo"] == "api"
         assert "reason" in event
 
     def test_stops_after_first_failure(self, workspace: Path):
@@ -319,13 +319,13 @@ class TestPRMergeFailed:
             title="feat: test",
             base_branch="sprint-21",
             head_branch="feat/test",
-            repos=["grip", "synapt", "synapt-private"],
+            repos=["app", "api", "billing"],
             adapter=adapter,
             actor="agent:apollo",
         )
         # Make grip (first repo) fail
-        grip_pr = [p for p in group["prs"] if p["repo"] == "grip"][0]
-        adapter.set_fail_merge("grip", grip_pr["pr_number"])
+        grip_pr = [p for p in group["prs"] if p["repo"] == "app"][0]
+        adapter.set_fail_merge("app", grip_pr["pr_number"])
         with pytest.raises(PRMergeError):
             merge_pr_group(
                 workspace_root=workspace,
@@ -333,7 +333,7 @@ class TestPRMergeFailed:
                 adapter=adapter,
                 actor="agent:apollo",
             )
-        # Only grip was attempted; synapt and synapt-private were not
+        # Only app was attempted; api and billing were not
         assert len(adapter.merged) == 0  # grip failed, not in merged list
         assert len(_events_of_type(workspace, "pr.merged")) == 0
 
@@ -353,7 +353,7 @@ class TestPRStatusEvents:
             title="feat: test",
             base_branch="sprint-21",
             head_branch="feat/test",
-            repos=["grip"],
+            repos=["app"],
             adapter=adapter,
             actor="agent:apollo",
         )
@@ -364,8 +364,8 @@ class TestPRStatusEvents:
         group = self._create_group(workspace, adapter)
         grip_pr = group["prs"][0]
         # Set checks to all passing
-        adapter.set_status("grip", grip_pr["pr_number"], PRStatus(
-            ref=PRRef(repo="grip", number=grip_pr["pr_number"]),
+        adapter.set_status("app", grip_pr["pr_number"], PRStatus(
+            ref=PRRef(repo="app", number=grip_pr["pr_number"]),
             state="OPEN",
             checks=[
                 PRCheck(name="ci/test", status="COMPLETED", conclusion="SUCCESS"),
@@ -380,7 +380,7 @@ class TestPRStatusEvents:
         )
         events = _events_of_type(workspace, "pr.checks_passed")
         assert len(events) == 1
-        assert events[0]["repo"] == "grip"
+        assert events[0]["repo"] == "app"
         assert events[0]["pr_group_id"] == group["pr_group_id"]
 
     def test_checks_failed_emitted(self, workspace: Path):
@@ -388,8 +388,8 @@ class TestPRStatusEvents:
         adapter = FakeAdapter()
         group = self._create_group(workspace, adapter)
         grip_pr = group["prs"][0]
-        adapter.set_status("grip", grip_pr["pr_number"], PRStatus(
-            ref=PRRef(repo="grip", number=grip_pr["pr_number"]),
+        adapter.set_status("app", grip_pr["pr_number"], PRStatus(
+            ref=PRRef(repo="app", number=grip_pr["pr_number"]),
             state="OPEN",
             checks=[
                 PRCheck(name="ci/test", status="COMPLETED", conclusion="FAILURE"),
@@ -404,7 +404,7 @@ class TestPRStatusEvents:
         )
         events = _events_of_type(workspace, "pr.checks_failed")
         assert len(events) == 1
-        assert events[0]["repo"] == "grip"
+        assert events[0]["repo"] == "app"
         assert "ci/test" in events[0]["failed_checks"]
 
     def test_status_changed_emitted(self, workspace: Path):
@@ -412,8 +412,8 @@ class TestPRStatusEvents:
         adapter = FakeAdapter()
         group = self._create_group(workspace, adapter)
         grip_pr = group["prs"][0]
-        adapter.set_status("grip", grip_pr["pr_number"], PRStatus(
-            ref=PRRef(repo="grip", number=grip_pr["pr_number"]),
+        adapter.set_status("app", grip_pr["pr_number"], PRStatus(
+            ref=PRRef(repo="app", number=grip_pr["pr_number"]),
             state="MERGED",
             checks=[],
         ))
@@ -425,7 +425,7 @@ class TestPRStatusEvents:
         )
         events = _events_of_type(workspace, "pr.status_changed")
         assert len(events) == 1
-        assert events[0]["repo"] == "grip"
+        assert events[0]["repo"] == "app"
         assert events[0]["new_status"] == "MERGED"
 
     def test_no_event_when_status_unchanged(self, workspace: Path):
@@ -468,7 +468,7 @@ class TestPRReviewSubmitted:
             title="feat: test",
             base_branch="sprint-21",
             head_branch="feat/test",
-            repos=["grip"],
+            repos=["app"],
             adapter=adapter,
             actor="agent:apollo",
         )
@@ -480,7 +480,7 @@ class TestPRReviewSubmitted:
         record_pr_review(
             workspace_root=workspace,
             pr_group_id=group["pr_group_id"],
-            repo="grip",
+            repo="app",
             pr_number=group["prs"][0]["pr_number"],
             reviewer="agent:sentinel",
             state="APPROVED",
@@ -496,7 +496,7 @@ class TestPRReviewSubmitted:
         record_pr_review(
             workspace_root=workspace,
             pr_group_id=group["pr_group_id"],
-            repo="grip",
+            repo="app",
             pr_number=group["prs"][0]["pr_number"],
             reviewer="agent:sentinel",
             state="CHANGES_REQUESTED",
@@ -504,7 +504,7 @@ class TestPRReviewSubmitted:
         )
         event = _events_of_type(workspace, "pr.review_submitted")[0]
         assert event["pr_group_id"] == group["pr_group_id"]
-        assert event["repo"] == "grip"
+        assert event["repo"] == "app"
         assert event["pr_number"] == group["prs"][0]["pr_number"]
         assert event["reviewer"] == "agent:sentinel"
         assert event["state"] == "CHANGES_REQUESTED"

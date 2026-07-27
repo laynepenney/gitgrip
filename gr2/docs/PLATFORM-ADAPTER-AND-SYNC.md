@@ -76,7 +76,7 @@ contract: its shape does not change without a version bump.
 - `exec status` and `exec run`
 - machine-readable failure surfaces
 
-These are not optional polish. They are spawn prerequisites.
+These are not optional polish. They are the stable gr2 contract.
 
 ## 4. Sync Goals
 

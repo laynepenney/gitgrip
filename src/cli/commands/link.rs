@@ -18,8 +18,8 @@ fn is_glob_pattern(src: &str) -> bool {
 /// Expand a glob source pattern into individual (src, dest) pairs.
 ///
 /// Given `src: "prompts/**"` and `dest: ".gitgrip/prompts/"`, this expands to:
-///   - `prompts/opus.md` -> `.gitgrip/prompts/opus.md`
-///   - `prompts/atlas.md` -> `.gitgrip/prompts/atlas.md`
+///   - `prompts/alpha.md` -> `.gitgrip/prompts/alpha.md`
+///   - `prompts/beta.md` -> `.gitgrip/prompts/beta.md`
 ///
 /// The glob base (the non-glob prefix before the first glob character) is
 /// stripped from each matched path, and the remainder is appended to `dest`.
@@ -1079,7 +1079,7 @@ mod tests {
         assert!(is_glob_pattern("config/?.toml"));
         assert!(is_glob_pattern("[abc].txt"));
         assert!(!is_glob_pattern("README.md"));
-        assert!(!is_glob_pattern("prompts/opus.md"));
+        assert!(!is_glob_pattern("prompts/alpha.md"));
     }
 
     #[test]
@@ -1098,8 +1098,8 @@ mod tests {
 
         // Create files
         std::fs::create_dir_all(base.join("prompts")).unwrap();
-        std::fs::write(base.join("prompts/opus.md"), "opus").unwrap();
-        std::fs::write(base.join("prompts/atlas.md"), "atlas").unwrap();
+        std::fs::write(base.join("prompts/alpha.md"), "alpha").unwrap();
+        std::fs::write(base.join("prompts/beta.md"), "beta").unwrap();
         std::fs::write(base.join("README.md"), "readme").unwrap();
 
         let pairs = expand_glob("prompts/*", ".gitgrip/prompts/", base);
@@ -1107,8 +1107,8 @@ mod tests {
 
         // Check that dest preserves the file name after stripping base
         let dests: Vec<String> = pairs.iter().map(|(_, d)| d.display().to_string()).collect();
-        assert!(dests.contains(&".gitgrip/prompts/opus.md".to_string()));
-        assert!(dests.contains(&".gitgrip/prompts/atlas.md".to_string()));
+        assert!(dests.contains(&".gitgrip/prompts/alpha.md".to_string()));
+        assert!(dests.contains(&".gitgrip/prompts/beta.md".to_string()));
     }
 
     #[test]
@@ -1149,8 +1149,8 @@ mod tests {
         let repo_dir = workspace.join("test-repo");
         let prompts_dir = repo_dir.join("prompts");
         std::fs::create_dir_all(&prompts_dir).unwrap();
-        std::fs::write(prompts_dir.join("opus.md"), "# Opus").unwrap();
-        std::fs::write(prompts_dir.join("atlas.md"), "# Atlas").unwrap();
+        std::fs::write(prompts_dir.join("alpha.md"), "# Alpha").unwrap();
+        std::fs::write(prompts_dir.join("beta.md"), "# Beta").unwrap();
 
         let copyfiles = vec![CopyFileConfig {
             src: "prompts/*.md".to_string(),
@@ -1162,11 +1162,11 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify both files were copied
-        assert!(workspace.join(".gitgrip/prompts/opus.md").exists());
-        assert!(workspace.join(".gitgrip/prompts/atlas.md").exists());
+        assert!(workspace.join(".gitgrip/prompts/alpha.md").exists());
+        assert!(workspace.join(".gitgrip/prompts/beta.md").exists());
         assert_eq!(
-            std::fs::read_to_string(workspace.join(".gitgrip/prompts/opus.md")).unwrap(),
-            "# Opus"
+            std::fs::read_to_string(workspace.join(".gitgrip/prompts/alpha.md")).unwrap(),
+            "# Alpha"
         );
     }
 
@@ -1179,8 +1179,8 @@ mod tests {
         let repo_dir = workspace.join("test-repo");
         let prompts_dir = repo_dir.join("prompts");
         std::fs::create_dir_all(&prompts_dir).unwrap();
-        std::fs::write(prompts_dir.join("opus.md"), "# Opus").unwrap();
-        std::fs::write(prompts_dir.join("atlas.md"), "# Atlas").unwrap();
+        std::fs::write(prompts_dir.join("alpha.md"), "# Alpha").unwrap();
+        std::fs::write(prompts_dir.join("beta.md"), "# Beta").unwrap();
 
         let linkfiles = vec![LinkFileConfig {
             src: "prompts/*.md".to_string(),
@@ -1192,12 +1192,12 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify symlinks were created
-        let opus_dest = workspace.join(".gitgrip/prompts/opus.md");
-        let atlas_dest = workspace.join(".gitgrip/prompts/atlas.md");
-        assert!(opus_dest.exists());
-        assert!(opus_dest.is_symlink());
-        assert!(atlas_dest.exists());
-        assert!(atlas_dest.is_symlink());
+        let alpha_dest = workspace.join(".gitgrip/prompts/alpha.md");
+        let beta_dest = workspace.join(".gitgrip/prompts/beta.md");
+        assert!(alpha_dest.exists());
+        assert!(alpha_dest.is_symlink());
+        assert!(beta_dest.exists());
+        assert!(beta_dest.is_symlink());
     }
 
     #[test]

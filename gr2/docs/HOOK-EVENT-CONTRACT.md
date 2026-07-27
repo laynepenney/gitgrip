@@ -45,13 +45,13 @@ fields sit at the same level. There is no nested `payload` wrapper.
   "seq": 42,
   "timestamp": "2026-04-15T16:30:00+00:00",
   "type": "lane.entered",
-  "workspace": "synapt-dev",
+  "workspace": "example-workspace",
   "actor": "agent:apollo",
   "agent_id": "agent_7f3a9c",
   "owner_unit": "apollo",
   "lane_name": "feat/hook-events",
   "lane_type": "feature",
-  "repos": ["grip", "synapt"]
+  "repos": ["app", "api"]
 }
 ```
 
@@ -402,7 +402,7 @@ emit(
     payload={
         "lane_name": "feat/hook-events",
         "lane_type": "feature",
-        "repos": ["grip", "synapt"],
+        "repos": ["app", "api"],
     },
 )
 
@@ -416,7 +416,7 @@ emit(
     payload={
         "stage": "on_materialize",
         "hook_name": "editable-install",
-        "repo": "synapt",
+        "repo": "api",
         "duration_ms": 3400,
         "exit_code": 1,
         "on_failure": "block",
@@ -511,7 +511,7 @@ produces a channel message.
 Events not listed (hook.started, hook.completed, hook.skipped, lease.acquired,
 lease.released, sync.repo_updated, workspace.file_projected, etc.) are **not**
 posted to channels by default. They exist in the outbox for recall indexing and
-spawn, but would be noise in `#dev`.
+other consumers, but would be noise in a chat channel.
 
 The channel bridge can be configured to include or exclude specific event types
 via a filter file at `.grip/events/channel_filter.toml`:
@@ -657,8 +657,8 @@ This document is a dependency for:
    on the domain (sync uses per-repo events; PR uses aggregate events with
    per-repo detail in payload arrays).
 3. **Webhook bridge**: Should gr2 support an HTTP webhook consumer in addition to
-   file-based cursor consumers? This would be relevant for remote spawn
-   deployments.
+   file-based cursor consumers? This would be relevant for consumers that do not
+   share a filesystem with the workspace.
 4. **SQLite alternative**: For workspaces with heavy event traffic (many agents,
    frequent operations), should the outbox be SQLite WAL instead of JSONL?
    JSONL is simpler and auditable; SQLite handles concurrent writes better.
@@ -692,15 +692,15 @@ Marker format:
   "operation": "sync",
   "stage": "on_enter",
   "hook_name": "editable-install",
-  "repo": "synapt",
+  "repo": "api",
   "owner_unit": "apollo",
   "lane_name": "feat/hook-events",
   "failed_at": "2026-04-15T17:00:00+00:00",
   "event_id": "9f3a7b2c1d4e8f06",
   "partial_state": {
-    "repos_completed": ["grip"],
-    "repos_pending": ["synapt-private"],
-    "repo_failed": "synapt"
+    "repos_completed": ["app"],
+    "repos_pending": ["billing"],
+    "repo_failed": "api"
   },
   "resolved": false
 }
@@ -718,8 +718,7 @@ Marker behavior:
   `failure.resolved` with payload `{operation_id, resolved_by, resolution, lane_name}`.
 
 Why no automatic retry: retrying a failed hook might produce the same failure.
-The agent (or spawn) has context about whether retry is appropriate. gr2 does
-not guess.
+The caller has context about whether retry is appropriate. gr2 does not guess.
 
 Why no rollback: reverting git operations (undo fetch+merge, undo checkout) is
 dangerous, sometimes impossible (remote state changed), and introduces a second
@@ -784,8 +783,8 @@ Lane transitions handle uncommitted changes via an explicit `--dirty` mode.
 
 **Event payloads for dirty state**:
 
-- `lane.exited` with `stashed_repos: ["synapt"]` when stash mode is used.
-- `lane.exited` with `discarded_repos: ["synapt"]` when discard mode is used.
+- `lane.exited` with `stashed_repos: ["api"]` when stash mode is used.
+- `lane.exited` with `discarded_repos: ["api"]` when discard mode is used.
 - No `lane.exited` event when block mode prevents the exit.
 
 **Re-entry with stashed state**:
