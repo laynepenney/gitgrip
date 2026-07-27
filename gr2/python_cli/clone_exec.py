@@ -37,9 +37,11 @@ evidence the alternate exists.
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -54,6 +56,22 @@ from .spec_apply import (
 )
 
 
+@dataclasses.dataclass(frozen=True)
+class _CloneBinding:
+    """One immutable reading of a clone operation, taken from A's frozen plan
+    snapshot before any caller-reachable code runs.
+
+    Mirrors A's _ConsumptionBinding for the same reason: verification and use
+    must not be separated by anything that can run caller code. Holding the
+    fields instead of re-reading the capability makes a post-verification swap
+    irrelevant rather than merely detectable."""
+
+    repo_url: str
+    branch: str
+    dest_path: str
+    reference_base: str | None
+
+
 class CloneExecutionError(MaterializationPlanError):
     """A validated plan's clone operation could not be executed safely.
 
@@ -61,8 +79,119 @@ class CloneExecutionError(MaterializationPlanError):
     working, while the type still names which layer refused."""
 
 
+# Section 8.1 names these as the mutable state a clone must OWN. The
+# --git-common-dir check proves only that the .git ROOT is local; every entry
+# beneath it can be redirected individually, which is how a clone with a
+# perfectly local common dir still reads another unit's refs or object store
+# (Sentinel, #803 review at bd7afe5).
+#
+# `objects` is on this list for a reason worth stating: object sharing has TWO
+# routes, and the alternates file is only one of them. Symlinking the objects
+# directory itself shares the store with no alternates file to inspect -- so a
+# plan declaring no reference_base passes the alternates check vacuously while
+# the clone is fully joined to another unit's objects.
+_CLONE_LOCAL_GIT_ENTRIES = (
+    "objects",
+    "refs",
+    "index",
+    "HEAD",
+    "config",
+    "logs",
+    "packed-refs",
+)
+
+
 def _alternates_file(clone_root: Path) -> Path:
     return clone_root / ".git" / "objects" / "info" / "alternates"
+
+
+def _require_local_git_internals(clone_root: Path, git_dir: Path) -> None:
+    """Every entry section 8.1 requires the clone to own must be its own, not a
+    redirection. lstat, never stat: stat() follows the link and reports the
+    target, which is precisely the thing being hidden."""
+    for name in _CLONE_LOCAL_GIT_ENTRIES:
+        entry = git_dir / name
+        try:
+            mode = os.lstat(entry).st_mode
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(mode):
+            raise CloneExecutionError(
+                f"clone at {clone_root} redirects .git/{name} through a symlink to "
+                f"{os.readlink(entry)!r} -- section 8.1 requires clone-local refs, "
+                "index, locks, config and objects, and a local .git root does not "
+                "make the state beneath it local"
+            )
+
+
+def _require_complete_history(clone_root: Path, git_dir: Path) -> None:
+    """Section 8.1: the clone must hold the complete reachable history required
+    by the profile, and the v1 plan has no shallow or partial profile to opt
+    into. A depth-1 clone is otherwise indistinguishable from a healthy one --
+    correct origin, local git dir, clean tree, valid alternate -- so nothing
+    else in this verifier can see it (Sentinel, #803 review at bd7afe5)."""
+    if (git_dir / "shallow").exists():
+        raise CloneExecutionError(
+            f"clone at {clone_root} is shallow (.git/shallow present) -- section 8.1 "
+            "requires the complete reachable history and the plan declares no shallow "
+            "profile"
+        )
+    proc = gitops.git(clone_root, "rev-parse", "--is-shallow-repository")
+    if proc.returncode == 0 and proc.stdout.strip() == "true":
+        raise CloneExecutionError(
+            f"clone at {clone_root} reports itself shallow -- section 8.1 requires the "
+            "complete reachable history"
+        )
+    for key in ("remote.origin.promisor", "remote.origin.partialclonefilter"):
+        probe = gitops.git(clone_root, "config", "--get", key)
+        if probe.returncode == 0 and probe.stdout.strip():
+            raise CloneExecutionError(
+                f"clone at {clone_root} is a partial clone ({key}="
+                f"{probe.stdout.strip()!r}) -- its history is fetched lazily from the "
+                "network, which section 8.1's complete-history requirement excludes"
+            )
+
+
+def _working_tree_state(clone_root: Path) -> str:
+    """clean | dirty | unreadable.
+
+    Three outcomes, not two. gitops.repo_dirty() maps EVERY nonzero exit to
+    False, so a corrupt .git/index reads as 'clean' and a damaged clone is
+    reused as healthy (Sentinel, #803 review at bd7afe5). Collapsing the
+    unreadable case into 'clean' is a fail-open: the one state we understand
+    least becomes the one we treat most permissively.
+
+    Deliberately local rather than a fix to gitops.repo_dirty(): that helper is
+    live in app.py and syncops.py, and changing shared dirtiness semantics
+    underneath two other call paths does not belong in this PR. Filed
+    separately."""
+    proc = gitops.git(clone_root, "status", "--porcelain")
+    if proc.returncode != 0:
+        return "unreadable"
+    return "dirty" if proc.stdout.strip() else "clean"
+
+
+def _read_alternates_of(object_dir: Path) -> set[Path]:
+    """Alternate object directories declared by an arbitrary object database.
+
+    Relative entries resolve against the OBJECT DIRECTORY, which is git's rule.
+    Resolving them against the process working directory -- the obvious
+    Path(line).resolve() -- makes this verifier and git disagree about what the
+    clone is actually reading from, and a verifier that disagrees with git is
+    worse than no verifier (Atlas, #803 review at bd7afe5)."""
+    path = object_dir / "info" / "alternates"
+    if not path.exists():
+        return set()
+    entries = set()
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        candidate = Path(line)
+        if not candidate.is_absolute():
+            candidate = object_dir / candidate
+        entries.add(candidate.resolve())
+    return entries
 
 
 def _read_alternate_entries(clone_root: Path) -> set[Path]:
@@ -81,15 +210,7 @@ def _read_alternate_entries(clone_root: Path) -> set[Path]:
     reject empty is the vacuous-truth trap: it holds for `==` and silently
     fails for the `all(entry in permitted)` spelling that any later reader may
     think is the same check."""
-    path = _alternates_file(clone_root)
-    if not path.exists():
-        return set()
-    entries = set()
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if line:
-            entries.add(Path(line).resolve())
-    return entries
+    return _read_alternates_of(clone_root / ".git" / "objects")
 
 
 def verify_cache_provenance(
@@ -134,6 +255,29 @@ def verify_cache_provenance(
             f"not from the declared upstream {repo_url!r}"
         )
 
+    # Containment is only ONE HOP without this (Atlas, #803 review at bd7afe5).
+    # A cache that sits at the right path, is bare, and carries the right origin
+    # can still reach outside the workspace two ways, and the unit clone inherits
+    # whatever it reaches: the cache's own objects dir may be a symlink, or the
+    # cache may declare its own alternate pointing at a machine-global store.
+    # Either one re-opens exactly the isolation seam section 8.2 refuses to open,
+    # one level down where the clone-side check cannot see it.
+    cache_objects = cache_resolved / "objects"
+    if stat.S_ISLNK(os.lstat(cache_objects).st_mode):
+        raise CloneExecutionError(
+            f"declared object cache {cache_root} redirects its objects directory "
+            f"through a symlink to {os.readlink(cache_objects)!r} -- the clone would "
+            "share objects with an undeclared store one hop out"
+        )
+    transitive = _read_alternates_of(cache_objects)
+    if transitive:
+        raise CloneExecutionError(
+            f"declared object cache {cache_root} declares its own alternate(s) "
+            f"{sorted(str(e) for e in transitive)} -- object sharing must terminate at "
+            "the workspace cache, and a cache that alternates onward makes every clone "
+            "reachable into an undeclared store (section 8.2)"
+        )
+
 
 def verify_clone_isolation(
     clone_root: Path,
@@ -154,11 +298,30 @@ def verify_clone_isolation(
     forbidden shape looks healthy to the obvious helper, so the checks here are
     positive statements about this clone's OWN state."""
     git_dir = clone_root / ".git"
-    if not git_dir.is_dir():
+    # lstat FIRST, and never Path.is_dir(). is_dir() follows the link, so a .git
+    # that is itself a symlink into another same-origin clone answers True --
+    # and then --git-common-dir resolves THROUGH that same link, so both sides of
+    # the common-dir comparison land on the foreign directory and agree. Two
+    # guards, one symlink, both satisfied (Atlas, #803 review at bd7afe5).
+    try:
+        git_mode = os.lstat(git_dir).st_mode
+    except FileNotFoundError:
+        raise CloneExecutionError(
+            f"clone at {clone_root} has no .git -- it is not a git repository"
+        ) from None
+    if stat.S_ISLNK(git_mode):
+        raise CloneExecutionError(
+            f"clone at {clone_root} redirects .git through a symlink to "
+            f"{os.readlink(git_dir)!r} -- .git must be a directory the clone owns "
+            "(section 8.1)"
+        )
+    if not stat.S_ISDIR(git_mode):
         raise CloneExecutionError(
             f"clone at {clone_root} is not state-isolated: .git must be a directory, "
             "not a worktree pointer file (section 8.1)"
         )
+    _require_local_git_internals(clone_root, git_dir)
+    _require_complete_history(clone_root, git_dir)
     if (git_dir / "worktrees").exists():
         raise CloneExecutionError(
             f"clone at {clone_root} hosts linked worktrees (.git/worktrees), which share "
@@ -278,10 +441,23 @@ def _reuse_existing_clone(
         repo_url=repo_url,
         reference_base=reference_base,
     )
-    if gitops.repo_dirty(dest):
+    state = _working_tree_state(dest)
+    if state == "unreadable":
+        raise CloneExecutionError(
+            f"existing clone at {dest} cannot report its working-tree state -- it is "
+            "damaged (an unreadable index or object database). Section 8.3 blocks a "
+            "damaged clone rather than repairing it, and blocking here changes none of "
+            "its bytes"
+        )
+    if state == "dirty":
         raise CloneExecutionError(
             f"existing clone at {dest} is dirty -- section 8.3 never resets or replaces "
             "a dirty clone; destructive repair requires an explicit separate command"
+        )
+    if gitops.current_head_sha(dest) is None:
+        raise CloneExecutionError(
+            f"existing clone at {dest} has no resolvable HEAD -- reuse requires a clone "
+            "that can actually be worked in, not merely one whose status command exits 0"
         )
 
 
@@ -295,6 +471,13 @@ def execute_clone_operation(
     with operation i, which is what S4-A's receipt screen requires: an executor
     that silently skipped the kinds it does not handle would shift every later
     result by one and still screen clean."""
+    # A plain Path, always. workspace_root is caller-supplied, and a Path
+    # SUBCLASS can run arbitrary code from __truediv__/resolve during the path
+    # work below -- which is the callback that reopens the window this binding
+    # exists to close. Normalising here removes the callback surface itself
+    # rather than trying to be safe around it.
+    workspace_root = Path(os.fspath(workspace_root))
+
     validated.verify(require_provenance=True)
     _require_workspace_binding(validated, workspace_root)
 
@@ -312,16 +495,31 @@ def execute_clone_operation(
             "with a later slice (venv/editable_install with S4-D, project_file with S4-C)"
         )
 
-    repo_url = str(op["repo_url"])
-    branch = str(op["branch"])
-    dest = canonicalize_workspace_path(
-        workspace_root, str(op["dest_path"]), field_name=f"operations[{index}].dest_path"
+    # ONE immutable binding taken from A's frozen snapshot, before any path work
+    # runs, and no live capability read after it (Atlas, #803 review at bd7afe5).
+    # The previous shape verified, then did callback-capable path work, then
+    # re-read validated.plan -- so a capability swapped in between was cloned
+    # from while the sealed one was never touched. This is A's own consume()
+    # lesson: the fix is not to check again, it is to stop re-reading.
+    binding = _CloneBinding(
+        repo_url=str(op["repo_url"]),
+        branch=str(op["branch"]),
+        dest_path=str(op["dest_path"]),
+        reference_base=(
+            str(op["reference_base"]) if op.get("reference_base") is not None else None
+        ),
     )
-    declared_reference = op.get("reference_base")
+
+    repo_url = binding.repo_url
+    branch = binding.branch
+    dest = canonicalize_workspace_path(
+        workspace_root, binding.dest_path, field_name=f"operations[{index}].dest_path"
+    )
+    declared_reference = binding.reference_base
     reference_base = (
         canonicalize_workspace_path(
             workspace_root,
-            str(declared_reference),
+            declared_reference,
             field_name=f"operations[{index}].reference_base",
         )
         if declared_reference is not None
@@ -352,14 +550,42 @@ def execute_clone_operation(
             reference_base=reference_base,
         )
 
+    # Section 12.1 requires repo URL, destination, HEAD, clone-state evidence,
+    # and cache path plus APPROVED-ALTERNATE evidence. The previous shape echoed
+    # the declaration back (reference_base as planned) and called it evidence --
+    # hollow-green, because a receipt that repeats the plan proves nothing about
+    # what is on disk (Atlas, #803 review at bd7afe5). What is recorded here is
+    # what was OBSERVED and proven: the alternates git will actually read, and
+    # the isolation facts the verifier established.
+    observed_alternates = sorted(
+        _relativize(entry, workspace_root) for entry in _read_alternate_entries(dest)
+    )
     return {
         "kind": "clone",
-        "dest_path": str(op["dest_path"]),
+        "repo_url": binding.repo_url,
+        "dest_path": binding.dest_path,
         "branch": gitops.current_branch(dest),
         "head_sha": gitops.current_head_sha(dest) or "",
-        "reference_base": str(declared_reference) if declared_reference is not None else None,
+        "cache_path": declared_reference,
+        "approved_alternates": observed_alternates,
+        "clone_state": {
+            "git_dir_local": True,
+            "complete_history": True,
+            "hosts_worktrees": False,
+            "working_tree": _working_tree_state(dest),
+        },
         "reused": reused,
     }
+
+
+def _relativize(path: Path, workspace_root: Path) -> str:
+    """Workspace-relative when possible. An absolute path inside a receipt is
+    not wrong, but it makes two differently-rooted clean runs produce different
+    receipts for identical work -- which acceptance fruit 16 forbids."""
+    try:
+        return str(path.relative_to(workspace_root.resolve()))
+    except ValueError:
+        return str(path)
 
 
 def _stage_and_publish(
@@ -398,7 +624,13 @@ def _stage_and_publish(
                 f"clone of {repo_url} is on branch {actual_branch!r}, not the declared "
                 f"{branch!r}"
             )
+        # Publication is INSIDE the cleanup boundary. It was outside, so an
+        # OSError from the rename kept dest correctly absent but left a fully
+        # populated staging sibling behind -- the no-residue guarantee held for
+        # every failure except the one that happens at the publication seam
+        # itself (Sentinel, #803 review at bd7afe5). Nothing follows the rename,
+        # so on success there is no staging left for the handler to remove.
+        os.replace(staging, dest)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    os.replace(staging, dest)

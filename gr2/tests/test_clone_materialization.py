@@ -42,11 +42,14 @@ obvious from the flag name:
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
 import subprocess
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from gr2.python_cli import gitops
+from gr2.python_cli import gitops, spec_apply
 from gr2.python_cli.clone_exec import (
     CloneExecutionError,
     execute_clone_operation,
@@ -671,6 +674,340 @@ class TestExecutorBinding(CloneExecTestBase):
         with self.assertRaises(CloneExecutionError) as ctx:
             execute_clone_operation(validated, 0, workspace_root=self.workspace_root)
         self.assertIn("is kind 'venv'", str(ctx.exception))
+
+
+class TestIsolationCompleteness(CloneExecTestBase):
+    """Round-2 blockers from Atlas + Sentinel at bd7afe5. Every one is a real
+    git witness they built and this executor accepted; each lands here with the
+    guard that closes it, so the mutant that reopens it has a declared victim."""
+
+    def test_a_git_dir_that_is_itself_a_symlink_is_rejected(self):
+        """Atlas 1. The nastiest of the set, because it defeats TWO guards with
+        one link: Path.is_dir() FOLLOWS the symlink and answers True, and
+        `rev-parse --git-common-dir` resolves THROUGH the same link so both
+        sides of the common-dir comparison land on the foreign directory and
+        agree. Hence lstat, never is_dir()."""
+        victim = self._make_clone(self.tmp / "victim", reference=self.cache_path)
+        foreign = self._make_clone(self.tmp / "foreign", reference=self.cache_path)
+        run_git(foreign, "checkout", "-q", "-b", "foreign-only")
+
+        shutil.rmtree(victim / ".git")
+        (victim / ".git").symlink_to(foreign / ".git")
+
+        self.assertTrue((victim / ".git").is_dir(), "premise: is_dir() follows the link")
+        with self.assertRaises(CloneExecutionError) as ctx:
+            self._verify(victim)
+        self.assertIn("redirects .git through a symlink", str(ctx.exception))
+
+    def test_symlinked_refs_are_rejected(self):
+        """Sentinel 2 / Atlas 1. .git stays a real local directory and the
+        common dir is its own, so every prior guard passes -- while the clone
+        reads another unit's refs."""
+        victim = self._make_clone(self.tmp / "victim", reference=self.cache_path)
+        foreign = self._make_clone(self.tmp / "foreign", reference=self.cache_path)
+        run_git(foreign, "checkout", "-q", "-b", "foreign-only")
+
+        shutil.rmtree(victim / ".git" / "refs")
+        (victim / ".git" / "refs").symlink_to(foreign / ".git" / "refs")
+
+        with self.assertRaises(CloneExecutionError) as ctx:
+            self._verify(victim)
+        self.assertIn(".git/refs", str(ctx.exception))
+
+    def test_symlinked_objects_are_rejected_when_no_reference_is_declared(self):
+        """Sentinel 2. The second route to object sharing, and the one the
+        alternates check structurally cannot see: with no reference_base
+        declared there is no alternates file to inspect, so that guard passes
+        VACUOUSLY while the objects directory itself is joined to another
+        unit's store."""
+        victim = self._make_clone(self.tmp / "victim")
+        foreign = self._make_clone(self.tmp / "foreign")
+
+        shutil.rmtree(victim / ".git" / "objects")
+        (victim / ".git" / "objects").symlink_to(foreign / ".git" / "objects")
+
+        with self.assertRaises(CloneExecutionError) as ctx:
+            self._verify(victim, reference_base=None)
+        self.assertIn(".git/objects", str(ctx.exception))
+
+    def test_a_shallow_clone_is_rejected(self):
+        """Sentinel 1. Correct origin, local git dir, clean tree, valid
+        alternate -- indistinguishable from healthy to every other guard.
+        Section 8.1 requires the complete reachable history and the v1 plan
+        declares no shallow profile."""
+        run_git(self.origin, "commit", "-q", "--allow-empty", "-m", "second")
+        run_git(self.cache_path, "remote", "update")
+        shallow = self.tmp / "shallow"
+        # file:// on purpose: git IGNORES --depth for a local-path clone, so a
+        # plain path silently produces a full clone and the fixture would prove
+        # nothing. Origin is then restored to the declared value, exactly as
+        # Sentinel's witness did, so the origin guard cannot be what rejects it.
+        subprocess.run(
+            ["git", "clone", "-q", "--depth", "1", "--reference-if-able",
+             str(self.cache_path), Path(self.repo_url).as_uri(), str(shallow)],
+            capture_output=True, text=True, check=False,
+        )
+        run_git(shallow, "remote", "set-url", "origin", self.repo_url)
+        self.assertTrue((shallow / ".git" / "shallow").exists(), "premise: fixture is shallow")
+        self.assertEqual(
+            run_git(shallow, "rev-list", "--count", "HEAD").strip(),
+            "1",
+            "premise: fixture holds truncated history",
+        )
+
+        with self.assertRaises(CloneExecutionError) as ctx:
+            self._verify(shallow)
+        self.assertIn("shallow", str(ctx.exception))
+
+    def test_a_partial_clone_is_rejected(self):
+        """The sibling of shallow: history fetched lazily from the network
+        rather than truncated. .git/shallow is absent, so the shallow probe
+        cannot see it -- it needs its own."""
+        clone = self._healthy_clone()
+        run_git(clone, "config", "remote.origin.promisor", "true")
+        run_git(clone, "config", "remote.origin.partialclonefilter", "blob:none")
+
+        with self.assertRaises(CloneExecutionError) as ctx:
+            self._verify(clone)
+        self.assertIn("partial clone", str(ctx.exception))
+
+
+class TestCacheBoundaryIsTransitive(CloneExecTestBase):
+    def test_a_cache_whose_objects_are_a_symlink_is_rejected(self):
+        """Atlas 2. Containment is only ONE HOP without this: the cache is at
+        the right path, bare, with the right origin -- and its object store
+        lives somewhere else entirely."""
+        outside = self.tmp / "global-cache.git"
+        run_git(self.tmp, "clone", "-q", "--mirror", self.repo_url, str(outside))
+        shutil.rmtree(self.cache_path / "objects")
+        (self.cache_path / "objects").symlink_to(outside / "objects")
+
+        with self.assertRaises(CloneExecutionError) as ctx:
+            verify_cache_provenance(
+                self.cache_path, workspace_root=self.workspace_root, repo_url=self.repo_url
+            )
+        self.assertIn("objects directory through a symlink", str(ctx.exception))
+
+    def test_a_cache_that_alternates_onward_to_a_global_store_is_rejected(self):
+        """Atlas 2, the decisive form. The clone's own alternate correctly
+        names the workspace cache -- so the clone-side check is satisfied --
+        and the cache then alternates out to a machine-global store, which the
+        clone transitively reads. Object sharing must TERMINATE at the
+        workspace cache."""
+        global_cache = self.tmp / "global-cache.git"
+        run_git(self.tmp, "clone", "-q", "--mirror", self.repo_url, str(global_cache))
+        info = self.cache_path / "objects" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "alternates").write_text(f"{global_cache / 'objects'}\n")
+
+        with self.assertRaises(CloneExecutionError) as ctx:
+            verify_cache_provenance(
+                self.cache_path, workspace_root=self.workspace_root, repo_url=self.repo_url
+            )
+        self.assertIn("must terminate at", str(ctx.exception))
+
+    def test_relative_alternate_lines_resolve_the_way_git_resolves_them(self):
+        """Atlas 2. git resolves a relative alternates entry against the OBJECT
+        DIRECTORY; resolving it against the process working directory makes the
+        verifier and git disagree about what the clone actually reads -- and a
+        verifier that disagrees with git is worse than none.
+
+        The entry below is the declared cache written relatively. It must be
+        ACCEPTED, which it can only be if resolution matches git's rule."""
+        clone = self._healthy_clone()
+        objects_dir = clone / ".git" / "objects"
+        relative = os.path.relpath(self.cache_path / "objects", objects_dir)
+        (objects_dir / "info" / "alternates").write_text(f"{relative}\n")
+
+        self._verify(clone)
+
+
+class TestDamagedCloneIsNotReused(CloneExecTestBase):
+    """Sentinel 3 AND Atlas 4 -- the one both reviewers hit independently."""
+
+    def test_a_corrupt_index_blocks_reuse_instead_of_reading_as_clean(self):
+        """gitops.repo_dirty() maps EVERY nonzero exit to False, so an
+        unreadable index reads as 'clean' and the damaged clone is reused as
+        healthy. Clean, dirty and unreadable are three outcomes; collapsing the
+        one we understand least into the most permissive one is a fail-open."""
+        validated = self._validated()
+        execute_clone_operation(validated, 0, workspace_root=self.workspace_root)
+        dest = self.workspace_root / self.dest_rel
+        index_path = dest / ".git" / "index"
+        index_path.write_bytes(b"not a git index")
+        before = index_path.read_bytes()
+
+        self.assertFalse(
+            gitops.repo_dirty(dest),
+            "premise: the shared helper reports a damaged clone as not-dirty",
+        )
+        with self.assertRaises(CloneExecutionError) as ctx:
+            execute_clone_operation(self._validated(), 0, workspace_root=self.workspace_root)
+
+        self.assertIn("damaged", str(ctx.exception))
+        self.assertEqual(
+            index_path.read_bytes(), before, "blocking must not modify the damaged clone"
+        )
+
+    def test_a_clone_whose_head_does_not_resolve_blocks_even_though_status_is_clean(self):
+        """Atlas 4's second half: 'HEAD/reachability must succeed.'
+
+        Finding the witness for this took two tries, and the first failure is
+        worth recording. Deleting the branch ref makes git report an unborn
+        branch with every tracked file staged-new, so status reads DIRTY and the
+        dirty guard rejects it -- the HEAD check would have looked covered while
+        being untested at its own level. Adjacent-guard masking inside the very
+        guard set added to close these blockers.
+
+        The witness that actually reaches it is an unborn branch with nothing
+        tracked: status exits 0 with empty output, so the tri-state answers
+        'clean', and only HEAD resolution can see that this clone has no
+        commit to work from."""
+        validated = self._validated()
+        execute_clone_operation(validated, 0, workspace_root=self.workspace_root)
+        dest = self.workspace_root / self.dest_rel
+        run_git(dest, "checkout", "-q", "--orphan", "fresh")
+        run_git(dest, "rm", "-rq", "-f", ".")
+
+        status = gitops.git(dest, "status", "--porcelain")
+        self.assertEqual(status.returncode, 0, "premise: status still succeeds")
+        self.assertEqual(status.stdout.strip(), "", "premise: status still reads clean")
+
+        with self.assertRaises(CloneExecutionError) as ctx:
+            execute_clone_operation(self._validated(), 0, workspace_root=self.workspace_root)
+        self.assertIn("no resolvable HEAD", str(ctx.exception))
+
+
+class TestPreflightRunsBeforeAnyMutation(CloneExecTestBase):
+    def test_an_invalid_cache_is_refused_before_git_clone_runs(self):
+        """Sentinel 4, and it is the masking finding I missed: my own staging
+        verifier is a stronger neighbour that produces the SAME error and the
+        SAME end state, so removing the preflight left every test green while
+        a clone had already run.
+
+        The contract requires validation before the first filesystem mutation,
+        so the assertion has to be that no clone happened -- not that an error
+        was raised."""
+        from gr2.python_cli import clone_exec
+
+        self.cache_path.rename(self.tmp / "cache-moved-away")
+        calls: list[object] = []
+
+        def spy(*args, **kwargs):
+            calls.append(args)
+
+        with patch.object(clone_exec, "_git_clone", spy):
+            with self.assertRaises(CloneExecutionError) as ctx:
+                execute_clone_operation(
+                    self._validated(), 0, workspace_root=self.workspace_root
+                )
+
+        self.assertEqual(calls, [], "git clone ran against a cache we then refused")
+        self.assertIn("does not exist", str(ctx.exception))
+
+
+class TestPublicationResidue(CloneExecTestBase):
+    def test_a_failed_rename_leaves_no_staging_residue(self):
+        """Sentinel 5. The rename sat OUTSIDE the cleanup boundary, so the
+        no-residue guarantee held for every failure except the one occurring at
+        the publication seam itself."""
+        from gr2.python_cli import clone_exec
+
+        dest = self.workspace_root / self.dest_rel
+        real_replace = os.replace
+
+        def failing_replace(src, dst, **kwargs):
+            raise OSError("injected publication failure")
+
+        with patch.object(clone_exec.os, "replace", failing_replace):
+            with self.assertRaises(OSError):
+                execute_clone_operation(
+                    self._validated(), 0, workspace_root=self.workspace_root
+                )
+
+        self.assertIs(os.replace, real_replace, "patch leaked")
+        self.assertFalse(dest.exists())
+        self.assertEqual(
+            sorted(p.name for p in dest.parent.iterdir()) if dest.parent.exists() else [],
+            [],
+            "a populated staging sibling survived a failed publication",
+        )
+
+
+class TestCapabilityWindow(CloneExecTestBase):
+    def test_a_capability_swapped_during_path_work_cannot_redirect_the_clone(self):
+        """Atlas 3, and it is the validation-vs-use class inside B's own code.
+
+        The executor verified, then ran callback-capable path work, then re-read
+        validated.plan live -- so a caller-supplied Path subclass could swap the
+        plan after verification and have the forged destination cloned while the
+        sealed one was never created.
+
+        Closed two ways, both of which this probe exercises: workspace_root is
+        normalised to a plain Path BEFORE verification, so the callback cannot
+        run at all; and every operation field is captured into one immutable
+        binding, so a later swap is irrelevant rather than merely detectable."""
+        validated = self._validated()
+        forged_dest = "units/u_forged/repos/product"
+        forged_plan = {
+            "schema_version": 1,
+            "plan_id": "mp_test",
+            "unit_key": "u_test",
+            "workspace_spec_sha256": self.spec_sha256,
+            "operations": [self._clone_op(dest_path=forged_dest)],
+        }
+
+        class SwappingPath(type(Path())):
+            def __truediv__(inner, other):
+                object.__setattr__(
+                    validated, "plan", spec_apply._deep_freeze(forged_plan)
+                )
+                return super().__truediv__(other)
+
+        execute_clone_operation(
+            validated, 0, workspace_root=SwappingPath(self.workspace_root)
+        )
+
+        self.assertTrue(
+            (self.workspace_root / self.dest_rel / ".git").is_dir(),
+            "the sealed destination was never created",
+        )
+        self.assertFalse(
+            (self.workspace_root / forged_dest).exists(),
+            "the executor cloned a destination the capability never sealed",
+        )
+
+
+class TestReceiptEvidenceCompleteness(CloneExecTestBase):
+    def test_evidence_records_what_was_observed_not_what_was_declared(self):
+        """Atlas 5. Section 12.1 requires repo URL, destination, HEAD,
+        clone-state evidence, and cache path plus APPROVED-ALTERNATE evidence.
+        Echoing the plan's reference_base back is not evidence -- a receipt that
+        repeats the plan proves nothing about what is on disk. The previous
+        receipt test asserted only stage and kind, which is what let the
+        omissions read as green."""
+        validated = self._validated()
+        evidence = execute_clone_operation(validated, 0, workspace_root=self.workspace_root)
+
+        self.assertEqual(evidence["repo_url"], self.repo_url)
+        self.assertEqual(evidence["dest_path"], self.dest_rel)
+        self.assertRegex(str(evidence["head_sha"]), r"^[0-9a-f]{40}$")
+        self.assertEqual(evidence["cache_path"], self.cache_rel)
+        self.assertEqual(
+            evidence["approved_alternates"],
+            [str(Path(self.cache_rel) / "objects")],
+            "approved-alternate evidence must be the alternate git will actually "
+            "read, expressed workspace-relatively",
+        )
+        self.assertEqual(evidence["clone_state"]["working_tree"], "clean")
+
+        receipt_path = write_materialization_receipt(
+            self.workspace_root, validated, [evidence]
+        )
+        import json
+
+        receipt = json.loads(receipt_path.read_text())
+        self.assertEqual(receipt["operations"][0]["repo_url"], self.repo_url)
 
 
 if __name__ == "__main__":
