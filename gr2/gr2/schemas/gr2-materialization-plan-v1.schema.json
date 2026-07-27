@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapt:gr2:materialization-plan:v1",
+  "title": "gr2 MaterializationPlan v1",
+  "description": "Identity-free, one-opaque-unit materialization plan consumed by the neutral gr2 executor.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "unit_key",
+    "workspace_spec_sha256",
+    "operations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "plan_id": {
+      "$ref": "#/$defs/opaqueToken"
+    },
+    "unit_key": {
+      "$ref": "#/$defs/opaqueToken"
+    },
+    "workspace_spec_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/cloneOperation"
+          },
+          {
+            "$ref": "#/$defs/venvOperation"
+          },
+          {
+            "$ref": "#/$defs/editableInstallOperation"
+          },
+          {
+            "$ref": "#/$defs/projectFileOperation"
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "opaqueToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^[^\\u0000]+$"
+    },
+    "workspaceRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?![~/])(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))[^\\u0000]+$"
+    },
+    "cacheReferencePath": {
+      "type": "string",
+      "pattern": "^\\.grip/cache/repos/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\.git$"
+    },
+    "stagedInputPath": {
+      "type": "string",
+      "pattern": "^\\.grip/staging/inputs/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "cloneOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "repo_url",
+        "dest_path",
+        "branch"
+      ],
+      "properties": {
+        "kind": {
+          "const": "clone"
+        },
+        "repo_url": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "dest_path": {
+          "$ref": "#/$defs/workspaceRelativePath"
+        },
+        "branch": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reference_base": {
+          "$ref": "#/$defs/cacheReferencePath"
+        }
+      }
+    },
+    "venvOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "dest_path",
+        "engine",
+        "python"
+      ],
+      "properties": {
+        "kind": {
+          "const": "venv"
+        },
+        "dest_path": {
+          "$ref": "#/$defs/workspaceRelativePath"
+        },
+        "engine": {
+          "const": "uv"
+        },
+        "python": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "editableInstallOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "venv_path",
+        "source_path",
+        "extras"
+      ],
+      "properties": {
+        "kind": {
+          "const": "editable_install"
+        },
+        "venv_path": {
+          "$ref": "#/$defs/workspaceRelativePath"
+        },
+        "source_path": {
+          "$ref": "#/$defs/workspaceRelativePath"
+        },
+        "extras": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          }
+        }
+      }
+    },
+    "projectFileOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "source_path",
+        "source_sha256",
+        "dest_path",
+        "mode"
+      ],
+      "properties": {
+        "kind": {
+          "const": "project_file"
+        },
+        "source_path": {
+          "$ref": "#/$defs/stagedInputPath"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "dest_path": {
+          "$ref": "#/$defs/workspaceRelativePath"
+        },
+        "mode": {
+          "const": "copy"
+        }
+      }
+    }
+  }
+}

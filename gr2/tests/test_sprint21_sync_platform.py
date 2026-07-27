@@ -327,7 +327,16 @@ def test_workspace_materialize_emits_workspace_materialized_event(tmp_path: Path
     assert materialized["workspace"] == workspace_root.name
     assert materialized["actor"] == "system"
     assert materialized["owner_unit"] == "workspace"
-    assert materialized["repos"] == [{"repo": "app", "first_materialize": True}]
+    # _write_workspace_spec declares both a workspace-level "app" repo
+    # (repos/app) and a unit ("atlas") referencing the same repo name for its
+    # own checkout (agents/atlas/home/app) -- two distinct physical clones.
+    # Pre-grip#539, the unit's own checkout was silently never scheduled on a
+    # fresh workspace (the exact bug), so only the workspace-level clone
+    # appeared here. Both are expected now.
+    assert materialized["repos"] == [
+        {"repo": "app", "first_materialize": True},
+        {"repo": "app", "first_materialize": True},
+    ]
 
 
 def test_workspace_materialize_emits_file_projected_event(tmp_path: Path) -> None:

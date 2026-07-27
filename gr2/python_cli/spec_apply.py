@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import copy
 import dataclasses
+import hashlib
+import hmac
+import importlib.resources
 import json
 import os
+import secrets
+import stat
 import tomllib
+import unicodedata
+import weakref
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
+
+from jsonschema import Draft202012Validator
 
 from .events import EventType, emit
 from .gitops import clone_repo, ensure_repo_cache, is_git_dir, is_git_repo, repo_dirty
@@ -248,19 +259,27 @@ def build_plan(workspace_root: Path) -> tuple[dict[str, object], list[PlanOperat
                 )
             )
 
-        if unit_root.exists() and unit_toml.exists():
-            declared_repos = [str(r) for r in unit.get("repos", [])]
-            missing_repos = [r for r in declared_repos if not (unit_root / r).exists()]
-            if missing_repos:
-                operations.append(
-                    PlanOperation(
-                        kind="converge_unit_repos",
-                        subject=unit_name,
-                        target_path=str(unit_root),
-                        reason=f"missing repo checkouts: {', '.join(missing_repos)}",
-                        details={"missing_repos": missing_repos, "all_repos": declared_repos},
-                    )
+        # grip#539: computed unconditionally, not gated on unit_root/unit_toml
+        # already existing. A brand-new unit's declared repos are trivially
+        # "missing" too (unit_root doesn't exist yet, so (unit_root / r).exists()
+        # is False for every r) -- the old guard meant a first apply published
+        # the unit shell without scheduling its clones, requiring a second,
+        # separate apply to notice. Ordered after create_unit_root/
+        # write_unit_metadata in this loop, so apply_plan's execution (which
+        # processes operations in list order) creates the directory before
+        # trying to clone into it.
+        declared_repos = [str(r) for r in unit.get("repos", [])]
+        missing_repos = [r for r in declared_repos if not (unit_root / r).exists()]
+        if missing_repos:
+            operations.append(
+                PlanOperation(
+                    kind="converge_unit_repos",
+                    subject=unit_name,
+                    target_path=str(unit_root),
+                    reason=f"missing repo checkouts: {', '.join(missing_repos)}",
+                    details={"missing_repos": missing_repos, "all_repos": declared_repos},
                 )
+            )
 
     return spec, operations
 
@@ -467,3 +486,799 @@ def _record_apply_state(workspace_root: Path, actions: list[str]) -> None:
         state_path.write_text(existing + "\n\n" + "\n".join(content))
     else:
         state_path.write_text("\n".join(content))
+
+
+# ---------------------------------------------------------------------------
+# Neutral MaterializationPlan v1 -- plan contract (S4-A)
+#
+# This module ships the PLAN-LEVEL contract only: schema conformance,
+# identity-freedom, opaque-token safety, WorkspaceSpec binding, path
+# canonicalization, destination-collision detection, and durable receipt
+# publication. It deliberately ships NO operation execution -- the clone,
+# staging/project_file, and venv/editable handlers arrive in S4-B/C/D,
+# each with its own domain validation and mutation set (grip#797 split).
+#
+# Carve rationale: every guarantee here is enforced before any handler
+# could run, so it is reviewable and complete on its own, and landing it
+# first cannot ship a half-hardened operation path.
+# ---------------------------------------------------------------------------
+
+
+class MaterializationPlanError(Exception):
+    pass
+
+
+# Capability seal. A ValidatedPlan can only be minted by
+# validate_materialization_plan, so a receipt cannot be published from a
+# plan that was never validated -- Atlas P1: the writer previously accepted
+# the raw live plan and an arbitrary result list, which let a schema-invalid
+# plan_id escape the receipt directory and let an unvalidated result graph
+# be persisted verbatim.
+#
+# This was an opaque sentinel object, keyed on IDENTITY. Sentinel's witness:
+# dataclasses.replace() re-invokes __init__ with the existing field values,
+# so the real token rode into a modified shell and publication used the
+# altered plan_id -- writing .grip/escaped.json outside the receipt
+# directory. Identity is copyable; the capability has to bind CONTENT.
+#
+# Process-local and never persisted: this is an in-process capability, not a
+# credential. It cannot be recomputed by a caller who did not go through
+# validation, which is the whole point.
+_CAPABILITY_SECRET = secrets.token_bytes(32)
+
+
+def _deep_freeze(value: object) -> object:
+    """Recursively convert a JSON-shaped graph into a read-only one.
+
+    dataclasses.dataclass(frozen=True) freezes the field BINDING, not the
+    graph the field points at -- so a `plan` field holding a live dict is
+    mutable through anyone who holds the capability. Mappings become
+    MappingProxyType and sequences become tuples, which closes both the
+    item-assignment and the append/extend routes."""
+    if isinstance(value, dict):
+        return MappingProxyType({k: _deep_freeze(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return tuple(_deep_freeze(v) for v in value)
+    return value
+
+
+# Provenance registry: the instances this validator actually minted.
+#
+# Orthogonal to the seal, and deliberately so. The seal binds CONTENT, which
+# closes replace() and in-place edits; provenance binds ORIGIN, which closes
+# copying that preserves authority without changing any field. They fail in
+# different ways, which is what makes them defense in depth rather than one
+# guard shadowing another.
+#
+# Weak, so holding a capability never keeps it alive; entries vanish with the
+# object. eq=False on the dataclass keeps identity hashing (a MappingProxyType
+# field is unhashable anyway) -- and two capabilities over equal facts SHOULD
+# be distinct capabilities, which is exactly what identity semantics give.
+_MINTED_CAPABILITIES: weakref.WeakSet = weakref.WeakSet()
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class ValidatedPlan:
+    """Proof that a plan passed the full v1 contract, plus the facts a
+    publisher needs to bind its evidence to that plan.
+
+    Immutable and unforgeable-by-accident: the token check means holding one
+    of these IS the evidence of validation, so publication has a capability
+    to demand rather than a convention to trust.
+
+    Every field here is a mint-time CAPTURE, not a view onto something a
+    caller still holds (Atlas final re-gate). The earlier version aliased the
+    caller's dict and recomputed the hash at publication time, so mutating
+    the plan after validation produced a receipt attesting to a graph that
+    was never validated -- the capability proved one graph had been checked
+    while vouching for another. Publication now reads captured facts only."""
+
+    plan: MappingProxyType
+    plan_id: str
+    unit_key: str
+    schema_version: int
+    workspace_spec_sha256: str
+    operation_kinds: tuple[str, ...]
+    plan_hash: str
+    _seal: str = dataclasses.field(repr=False)
+
+    def __post_init__(self) -> None:
+        # Provenance cannot be checked here: registration happens after
+        # construction, so this instance is not in the registry yet.
+        self.verify()
+
+    def verify(self, *, require_provenance: bool = False) -> None:
+        """Re-derive the seal from the current contents and compare.
+
+        Called at construction AND at every use. Construction-time checking
+        alone is not enough: `frozen=True` blocks __setattr__, not
+        object.__setattr__, so an already-minted capability can still be
+        edited in place. Re-deriving at use means the fields a publisher
+        reads are provably the fields that were sealed.
+
+        `require_provenance` adds the origin check, which only makes sense at
+        USE. Copying a capability preserves every field and therefore every
+        content check; only origin can refuse it."""
+        # The hash must actually describe the snapshot, so swapping the graph
+        # (with or without a matching hash) cannot survive.
+        if compute_plan_hash(self.plan) != self.plan_hash:
+            raise MaterializationPlanError(
+                "ValidatedPlan capability is invalid: plan_hash does not describe its plan snapshot"
+            )
+        # ...and the snapshot must agree with every fact published beside it,
+        # so the two can never diverge into "sealed but inconsistent".
+        snapshot_facts = (
+            self.plan.get("plan_id"),
+            self.plan.get("unit_key"),
+            self.plan.get("schema_version"),
+            self.plan.get("workspace_spec_sha256"),
+            tuple(str(op.get("kind")) for op in self.plan.get("operations", ())),
+        )
+        if snapshot_facts != (
+            self.plan_id,
+            self.unit_key,
+            self.schema_version,
+            self.workspace_spec_sha256,
+            tuple(self.operation_kinds),
+        ):
+            raise MaterializationPlanError(
+                "ValidatedPlan capability is invalid: published facts disagree with the plan snapshot"
+            )
+        expected = _capability_seal(
+            plan_hash=self.plan_hash,
+            plan_id=self.plan_id,
+            unit_key=self.unit_key,
+            schema_version=self.schema_version,
+            workspace_spec_sha256=self.workspace_spec_sha256,
+            operation_kinds=self.operation_kinds,
+        )
+        if not hmac.compare_digest(str(self._seal), expected):
+            raise MaterializationPlanError(
+                "ValidatedPlan capability is invalid: it was not minted by "
+                "validate_materialization_plan for these exact facts"
+            )
+        if require_provenance and self not in _MINTED_CAPABILITIES:
+            raise MaterializationPlanError(
+                "ValidatedPlan capability is invalid: it is not one this validator "
+                "minted -- a copy preserves every field but not its provenance"
+            )
+
+    def consume(self, op_results: object) -> _ConsumptionBinding:
+        """Verify once, then take ONE immutable reading of everything a
+        publisher will use.
+
+        This closes the check/use window Atlas found. Verifying and then
+        re-reading `self.plan_id` to build a filename is a live read: a
+        caller-controlled callback (his was `list.__iter__` on the evidence)
+        runs in between and mutates the shell, so the receipt is written
+        under an identity that was never verified.
+
+        Two details carry the fix:
+
+        The facts come from `self.plan`, the FROZEN snapshot, not from the
+        shell fields. The snapshot cannot be mutated at all, so deriving from
+        it makes a post-verify shell edit irrelevant rather than merely
+        detected. There is deliberately no second seal check after the
+        callback -- it would be unreachable, and an unreachable guard is
+        worse than none because it reads as protection while being untestable
+        at its own level.
+
+        The ORDER is load-bearing: facts are captured before the evidence is
+        materialized, because materializing is what runs caller code."""
+        self.verify(require_provenance=True)
+
+        # Captured first -- no caller code has run yet at this point.
+        plan = self.plan
+        facts = {
+            "plan_id": str(plan["plan_id"]),
+            "unit_key": str(plan["unit_key"]),
+            "schema_version": int(plan["schema_version"]),
+            "workspace_spec_sha256": str(plan["workspace_spec_sha256"]),
+            "operation_kinds": tuple(str(op["kind"]) for op in plan["operations"]),
+            "plan_hash": compute_plan_hash(plan),
+        }
+
+        # ...and only now touch the caller's object, exactly once.
+        if not isinstance(op_results, list):
+            raise MaterializationPlanError("receipt evidence must be a list of operation results")
+        return _ConsumptionBinding(evidence=tuple(_plain_json(list(op_results))), **facts)
+
+
+def _plain_json(value: object) -> object:
+    """Materialize a caller-supplied graph into plain JSON types, once.
+
+    Two jobs. It detaches the value from anything the caller still holds, and
+    it normalizes away container subclasses -- so nothing downstream, json
+    serialization included, can re-enter caller code and get a second,
+    different answer."""
+    if isinstance(value, (dict, MappingProxyType)):
+        return {str(k): _plain_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_json(v) for v in value]
+    return value
+
+
+@dataclasses.dataclass(frozen=True)
+class _ConsumptionBinding:
+    """The single immutable reading taken at the verified consumption
+    instant (Atlas's use-time closure).
+
+    Every field a publisher needs, captured together, so nothing downstream
+    ever reads the live capability shell or the caller's evidence again."""
+
+    plan_id: str
+    unit_key: str
+    schema_version: int
+    workspace_spec_sha256: str
+    operation_kinds: tuple[str, ...]
+    plan_hash: str
+    evidence: tuple
+
+
+def _capability_seal(
+    *,
+    plan_hash: str,
+    plan_id: str,
+    unit_key: str,
+    schema_version: int,
+    workspace_spec_sha256: str,
+    operation_kinds: tuple[str, ...],
+) -> str:
+    """Bind the seal to CONTENT, not to object identity.
+
+    Every fact publication consumes is covered, so altering any one of them
+    -- by dataclasses.replace, by object.__setattr__, or by hand-building a
+    shell -- produces a seal that no longer matches. Takes values rather than
+    an instance so the mint can compute it before the object exists."""
+    payload = json.dumps(
+        [
+            plan_hash,
+            plan_id,
+            unit_key,
+            schema_version,
+            workspace_spec_sha256,
+            list(operation_kinds),
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hmac.new(_CAPABILITY_SECRET, payload, hashlib.sha256).hexdigest()
+
+
+# The normative wire contract (config#492, merged 4b36896). A hand-rolled
+# validator is a separate, looser contract by construction -- nine plans the
+# pinned schema rejects were accepted by an earlier hand version, and
+# schema_version=True slipped a `!= 1` check because bool is an int subclass
+# in Python (True == 1) while JSON Schema's const:1 distinguishes the types.
+# The packaged bytes are verified against the pinned SHA at load and FAIL
+# CLOSED, so a tampered or unpinned schema refuses to validate at all rather
+# than silently enforcing something else.
+_PLAN_SCHEMA_SHA256 = "a5061501ba6651d7432d87d57f1c85902e5dec076f860a47faa299f5f590231c"
+_PLAN_SCHEMA_RESOURCE = "schemas/gr2-materialization-plan-v1.schema.json"
+_plan_validator: Draft202012Validator | None = None
+
+_VALID_OPERATION_KINDS = frozenset({"clone", "venv", "editable_install", "project_file"})
+
+
+def _read_plan_schema_bytes() -> bytes:
+    """importlib.resources is the real (installed) path; the sibling-directory
+    fallback covers the in-repo pytest context, where conftest.py injects a
+    bare `gr2` module without a __spec__ and resource traversal fails. Either
+    way the bytes are SHA-verified before use, so WHERE they load from cannot
+    weaken WHAT gets enforced."""
+    try:
+        return (importlib.resources.files("gr2") / _PLAN_SCHEMA_RESOURCE).read_bytes()
+    except Exception:
+        return (Path(__file__).resolve().parent.parent / "gr2" / _PLAN_SCHEMA_RESOURCE).read_bytes()
+
+
+def _load_plan_validator() -> Draft202012Validator:
+    global _plan_validator
+    if _plan_validator is None:
+        raw = _read_plan_schema_bytes()
+        actual = hashlib.sha256(raw).hexdigest()
+        if actual != _PLAN_SCHEMA_SHA256:
+            raise MaterializationPlanError(
+                f"packaged MaterializationPlan v1 schema hash mismatch: expected "
+                f"{_PLAN_SCHEMA_SHA256}, got {actual} -- refusing to validate against "
+                "an unpinned schema (config#492 §6.2.1)"
+            )
+        _plan_validator = Draft202012Validator(json.loads(raw))
+    return _plan_validator
+
+
+# config#492 §6.2.1: "The production plan must not contain: agent display
+# name, persistent agent ID, role, org or project, channel, entitlement
+# result or reason, secret reference or value, memory body." Checked
+# recursively as defence in depth -- the per-kind ALLOWLIST below is what
+# actually proves identity-freedom, since a blacklist only catches names
+# someone thought to enumerate.
+_FORBIDDEN_IDENTITY_KEYS = frozenset(
+    {
+        "agent_name",
+        "agent_id",
+        "persistent_identity_ref",
+        "role",
+        "org",
+        "project",
+        "channel",
+        "channels",
+        "entitlement",
+        "entitlement_reason",
+        "secret",
+        "secret_ref",
+        "memory",
+        "memory_body",
+    }
+)
+
+
+def _reject_identity_fields_recursive(value: object, *, path: str) -> None:
+    if isinstance(value, dict):
+        present = _FORBIDDEN_IDENTITY_KEYS & value.keys()
+        if present:
+            raise MaterializationPlanError(
+                f"{path} carries identity-bearing field(s) {sorted(present)}; "
+                "gr2 MaterializationPlan operations must be identity-free (config#492 §6.2.1)"
+            )
+        for key, nested in value.items():
+            _reject_identity_fields_recursive(nested, path=f"{path}.{key}")
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            _reject_identity_fields_recursive(item, path=f"{path}[{i}]")
+
+
+def _validate_path_safe_token(value: object, *, field_name: str) -> str:
+    """An opaque, path-safe identifier: no separators, no traversal, no
+    identity semantics interpreted. plan_id and unit_key both end up embedded
+    in filesystem paths (receipt filenames), so they are validated as tokens
+    -- gr2 never derives identity from unit_key, it only checks its shape."""
+    if not isinstance(value, str) or not value:
+        raise MaterializationPlanError(f"{field_name} must be a non-empty string")
+    if "/" in value or "\\" in value or value in (".", "..") or "\x00" in value:
+        raise MaterializationPlanError(f"{field_name} must be a path-safe token, got {value!r}")
+    return value
+
+
+def canonicalize_workspace_path(workspace_root: Path, relative: str, *, field_name: str) -> Path:
+    """config#492 §6.2.1 invariant #2: reject absolute paths, `~`,
+    backslashes, empty segments, `.` or `..` segments, NUL, any existing
+    symlink in the path prefix, and any resolved escape.
+
+    Segment checks run on the RAW string split on "/" -- Path() silently
+    normalizes single-dot segments away (Path("a/./b").parts == ("a","b")),
+    so parts-based scanning cannot see them.
+
+    The per-component symlink walk (lstat on each existing component,
+    including the last) is what a resolve()-based containment check
+    structurally cannot provide: if a directory in the prefix is itself a
+    symlink, BOTH the candidate and the root resolve through that same link,
+    so "resolved candidate is under resolved root" holds while the real bytes
+    live outside.
+
+    Returns the fully resolved canonical path -- used for filesystem access
+    AND for all comparison (collision detection), so two spellings of one
+    real path cannot both pass."""
+    if not relative or relative.startswith("/") or relative.startswith("~"):
+        raise MaterializationPlanError(f"{field_name} must be relative to the workspace root: {relative!r}")
+    if "\\" in relative or "\x00" in relative:
+        raise MaterializationPlanError(f"{field_name} must not contain backslashes or NUL: {relative!r}")
+    segments = relative.split("/")
+    if any(seg in ("", ".", "..") for seg in segments):
+        raise MaterializationPlanError(
+            f"{field_name} must not contain empty, '.', or '..' segments: {relative!r}"
+        )
+    walker = workspace_root
+    for seg in segments:
+        walker = walker / seg
+        if walker.is_symlink():
+            raise MaterializationPlanError(
+                f"{field_name} passes through a symlink at {walker} -- path prefixes must be "
+                "symlink-free (config#492 §6.2.1 #2)"
+            )
+    workspace_resolved = workspace_root.resolve()
+    candidate = (workspace_root / relative).resolve()
+    if candidate != workspace_resolved and workspace_resolved not in candidate.parents:
+        raise MaterializationPlanError(f"{field_name} escapes the workspace root: {relative!r}")
+    return candidate
+
+
+# Exact per-kind ALLOWLISTS. Any field not explicitly permitted for its kind
+# is rejected by construction -- which is what proves identity-freedom, since
+# a field nobody thought to blacklist (display_name, say) cannot exist at all.
+_CLONE_FIELDS = frozenset({"kind", "repo_url", "dest_path", "branch", "reference_base"})
+_VENV_FIELDS = frozenset({"kind", "dest_path", "engine", "python"})
+_EDITABLE_INSTALL_FIELDS = frozenset({"kind", "venv_path", "source_path", "extras"})
+_PROJECT_FILE_FIELDS = frozenset({"kind", "source_path", "dest_path", "source_sha256", "mode"})
+
+_OPERATION_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
+    "clone": _CLONE_FIELDS,
+    "venv": _VENV_FIELDS,
+    "editable_install": _EDITABLE_INSTALL_FIELDS,
+    "project_file": _PROJECT_FILE_FIELDS,
+}
+
+_PLAN_ALLOWED_TOP_LEVEL_FIELDS = frozenset(
+    {"schema_version", "plan_id", "unit_key", "workspace_spec_sha256", "operations"}
+)
+
+
+def _require_str(op: dict[str, object], key: str, prefix: str) -> str:
+    value = op.get(key)
+    if not isinstance(value, str) or not value:
+        raise MaterializationPlanError(f"{prefix}: {key} must be a non-empty string")
+    return value
+
+
+def _validate_operation_shape(
+    op: dict[str, object], *, idx: int, workspace_root: Path
+) -> Path | None:
+    """Plan-level shape + path safety for one operation. Filesystem
+    PROVENANCE (is that cache a real bare repo with the right origin, is
+    that staged input a regular file hashing to source_sha256) belongs to
+    the handler that consumes it and lands with S4-B/C/D. The pinned schema
+    already constrains reference_base and source_path syntactically.
+
+    Returns the canonical dest_path for collision detection, or None."""
+    kind = op.get("kind")
+    prefix = f"operations[{idx}] (kind={kind!r})"
+    if kind not in _VALID_OPERATION_KINDS:
+        raise MaterializationPlanError(f"{prefix}: unknown operation kind")
+
+    unknown = op.keys() - _OPERATION_ALLOWED_FIELDS[kind]
+    if unknown:
+        raise MaterializationPlanError(f"{prefix}: unknown field(s) {sorted(unknown)}")
+
+    if kind == "clone":
+        _require_str(op, "repo_url", prefix)
+        _require_str(op, "branch", prefix)
+        dest_path = _require_str(op, "dest_path", prefix)
+        reference_base = op.get("reference_base")
+        if reference_base is not None:
+            if not isinstance(reference_base, str) or not reference_base:
+                raise MaterializationPlanError(f"{prefix}: reference_base must be a non-empty string")
+            canonicalize_workspace_path(
+                workspace_root, reference_base, field_name=f"{prefix}.reference_base"
+            )
+        return canonicalize_workspace_path(workspace_root, dest_path, field_name=f"{prefix}.dest_path")
+    if kind == "venv":
+        dest_path = _require_str(op, "dest_path", prefix)
+        # No defaults anywhere: the pinned schema requires engine and python
+        # explicitly, and defaulting here would re-open the coercion the
+        # contract closed.
+        if op.get("engine") != "uv":
+            raise MaterializationPlanError(f"{prefix}: engine must be 'uv', got {op.get('engine')!r}")
+        _require_str(op, "python", prefix)
+        return canonicalize_workspace_path(workspace_root, dest_path, field_name=f"{prefix}.dest_path")
+    if kind == "editable_install":
+        venv_path = _require_str(op, "venv_path", prefix)
+        source_path = _require_str(op, "source_path", prefix)
+        canonicalize_workspace_path(workspace_root, venv_path, field_name=f"{prefix}.venv_path")
+        canonicalize_workspace_path(workspace_root, source_path, field_name=f"{prefix}.source_path")
+        extras = op.get("extras")
+        if not isinstance(extras, list) or not all(isinstance(e, str) for e in extras):
+            raise MaterializationPlanError(f"{prefix}: extras must be a list of strings (required)")
+        return None
+    # project_file
+    source_path = _require_str(op, "source_path", prefix)
+    dest_path = _require_str(op, "dest_path", prefix)
+    _require_str(op, "source_sha256", prefix)
+    canonicalize_workspace_path(workspace_root, source_path, field_name=f"{prefix}.source_path")
+    if op.get("mode") != "copy":
+        raise MaterializationPlanError(f"{prefix}: mode must be 'copy' for v1, got {op.get('mode')!r}")
+    return canonicalize_workspace_path(workspace_root, dest_path, field_name=f"{prefix}.dest_path")
+
+
+def validate_materialization_plan(workspace_root: Path, plan: dict[str, object]) -> ValidatedPlan:
+    """Validate a neutral MaterializationPlan against config#492's pinned v1
+    contract. Raises MaterializationPlanError on the first violation.
+
+    Validate-before-touch: this runs to completion over the WHOLE plan
+    before any handler executes, so an invalid operation late in the list
+    cannot let an earlier one mutate state first.
+
+    Returns a ValidatedPlan capability. Publication requires one, so a
+    receipt cannot be written from a plan that never passed this function
+    (Atlas P1) -- validation becomes something the publisher HOLDS rather
+    than something a caller is trusted to have remembered to do.
+
+    The caller's object is snapshotted on entry and never consulted again.
+    Taking the snapshot FIRST (rather than copying at mint) also closes the
+    window where a concurrent mutation could land between the checks and the
+    capture, which would validate one graph and bind another.
+    """
+    try:
+        plan = copy.deepcopy(plan)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise MaterializationPlanError(
+            f"plan could not be snapshotted for validation: {exc}"
+        ) from exc
+
+    validator = _load_plan_validator()
+    schema_errors = sorted(validator.iter_errors(plan), key=lambda e: list(e.absolute_path))
+    if schema_errors:
+        first = schema_errors[0]
+        location = "/".join(str(p) for p in first.absolute_path) or "<root>"
+        raise MaterializationPlanError(
+            f"plan rejected by pinned MaterializationPlan v1 schema at {location}: {first.message}"
+        )
+
+    unknown_top_level = plan.keys() - _PLAN_ALLOWED_TOP_LEVEL_FIELDS
+    if unknown_top_level:
+        raise MaterializationPlanError(f"plan: unknown top-level field(s) {sorted(unknown_top_level)}")
+
+    if isinstance(plan.get("schema_version"), bool) or plan.get("schema_version") != 1:
+        raise MaterializationPlanError(
+            f"plan.schema_version must be exactly 1, got {plan.get('schema_version')!r}"
+        )
+
+    _validate_path_safe_token(plan.get("plan_id"), field_name="plan_id")
+    # One MaterializationPlan is scoped to one opaque unit and carries a
+    # required top-level unit_key. gr2 validates its shape without deriving
+    # identity from it.
+    _validate_path_safe_token(plan.get("unit_key"), field_name="unit_key")
+
+    # config#492 §6.2.1 invariant #1: reopen the canonical WorkspaceSpec
+    # bytes and verify their SHA-256. Carrying the field is not verifying it.
+    workspace_spec_sha256 = str(plan["workspace_spec_sha256"])
+    actual_spec_sha256 = hashlib.sha256(_read_canonical_workspace_spec_bytes(workspace_root)).hexdigest()
+    if actual_spec_sha256 != workspace_spec_sha256:
+        raise MaterializationPlanError(
+            f"workspace_spec_sha256 mismatch: plan declares {workspace_spec_sha256}, "
+            f"canonical WorkspaceSpec bytes hash to {actual_spec_sha256} -- the plan was "
+            "compiled against a different workspace state (config#492 §6.2.1 #1)"
+        )
+
+    operations = plan["operations"]
+
+    # config#492 §6.2.1 #3: compare destinations after normalization and
+    # Unicode-aware case folding. Raw-string comparison lets "u1/.venv" and
+    # "u1/./.venv" both through, and casefold (not lower) is required so
+    # "straße"/"STRASSE" collide.
+    seen_canonical_dests: dict[str, int] = {}
+    for idx, op in enumerate(operations):
+        if not isinstance(op, dict):
+            raise MaterializationPlanError(f"operations[{idx}] must be an object, got {type(op).__name__}")
+        _reject_identity_fields_recursive(op, path=f"operations[{idx}]")
+        canonical_dest = _validate_operation_shape(op, idx=idx, workspace_root=workspace_root)
+        if canonical_dest is not None:
+            # NFC-normalize BEFORE casefolding (Sentinel finding 7):
+            # "units/café/.venv" spelled NFC vs NFD are distinct Python
+            # strings that casefold to distinct values, yet on a
+            # normalization-insensitive filesystem they name ONE
+            # destination. Normalization and case folding are separate
+            # aliasing axes; collision detection has to close both.
+            key = unicodedata.normalize("NFC", str(canonical_dest)).casefold()
+            if key in seen_canonical_dests:
+                raise MaterializationPlanError(
+                    f"operations[{idx}] dest_path collides (case-folded/normalized) with "
+                    f"operations[{seen_canonical_dests[key]}]: {canonical_dest}"
+                )
+            seen_canonical_dests[key] = idx
+
+    # Hash the validated bytes ONCE, here, while they are still exactly what
+    # passed the checks above. Recomputing at publication time is what let a
+    # receipt attest to a post-validation mutation.
+    facts = {
+        "plan_hash": compute_plan_hash(plan),
+        "plan_id": str(plan["plan_id"]),
+        "unit_key": str(plan["unit_key"]),
+        "schema_version": int(plan["schema_version"]),
+        "workspace_spec_sha256": workspace_spec_sha256,
+        "operation_kinds": tuple(str(op["kind"]) for op in operations),
+    }
+    validated = ValidatedPlan(
+        plan=_deep_freeze(plan),
+        _seal=_capability_seal(**facts),
+        **facts,
+    )
+    _MINTED_CAPABILITIES.add(validated)
+    return validated
+
+
+_WORKSPACE_SPEC_RELATIVE = ".grip/workspace_spec.toml"
+_RECEIPT_DIR_RELATIVE = ".grip/state/materialization"
+
+
+def _read_canonical_workspace_spec_bytes(workspace_root: Path) -> bytes:
+    """config#492 §6.2.1 #2 applies to the CONTRACT paths too, not only to
+    operation paths (Atlas P2): the canonical WorkspaceSpec must be reached
+    through a symlink-free prefix and be a regular non-symlink file.
+
+    Otherwise a symlink at .grip/workspace_spec.toml pointing outside the
+    team root is accepted whenever its bytes happen to hash to the declared
+    value -- the hash check confirms CONTENT, and says nothing about whether
+    the file it read is inside the workspace at all."""
+    spec_file = canonicalize_workspace_path(
+        workspace_root, _WORKSPACE_SPEC_RELATIVE, field_name="workspace_spec_path"
+    )
+    if not spec_file.exists():
+        raise MaterializationPlanError(
+            "canonical WorkspaceSpec (.grip/workspace_spec.toml) not found -- "
+            "workspace_spec_sha256 cannot be verified (config#492 §6.2.1 #1)"
+        )
+    if not stat.S_ISREG(os.lstat(spec_file).st_mode):
+        raise MaterializationPlanError(
+            f"canonical WorkspaceSpec at {spec_file} is not a regular file "
+            "(config#492 §6.2.1 #2)"
+        )
+    return spec_file.read_bytes()
+
+
+def _canonical_receipt_dir(workspace_root: Path) -> Path:
+    """The receipt directory must be a real in-root directory reached
+    through a symlink-free prefix (Atlas P2): a symlinked
+    .grip/state/materialization otherwise publishes the terminal receipt
+    outside the team root entirely."""
+    receipt_dir = canonicalize_workspace_path(
+        workspace_root, _RECEIPT_DIR_RELATIVE, field_name="receipt_dir"
+    )
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    if not stat.S_ISDIR(os.lstat(receipt_dir).st_mode):
+        raise MaterializationPlanError(
+            f"receipt directory {receipt_dir} is not a real directory (config#492 §6.2.1 #2)"
+        )
+    return receipt_dir
+
+
+def compute_plan_hash(plan: dict[str, object]) -> str:
+    """config#492 §6.2.1 #9, the exact pinned canonical serialization: UTF-8
+    JSON, keys sorted, no insignificant whitespace, non-ASCII unescaped.
+    Default json.dumps separators and ensure_ascii=True produce different
+    bytes and therefore a non-conformant hash. Public so callers and tests
+    recompute it independently rather than trusting a receipt's own value.
+
+    `default` is a TYPE adapter, not a change to the recipe: it fires only
+    for objects json cannot serialize natively, so canonical bytes for a
+    plain JSON graph are byte-identical either way. It exists so freezing a
+    validated plan does not turn this public helper into a trap for the
+    handlers that will hold one in B/C/D."""
+
+    def _unfreeze(obj: object) -> object:
+        if isinstance(obj, MappingProxyType):
+            return dict(obj)
+        raise TypeError(f"cannot canonicalize {type(obj).__name__} in a MaterializationPlan")
+
+    return hashlib.sha256(
+        json.dumps(
+            plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=_unfreeze
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def materialization_receipt_path(workspace_root: Path, plan_id: str) -> Path:
+    return workspace_root / ".grip" / "state" / "materialization" / f"{plan_id}.json"
+
+
+def _screen_receipt_evidence(binding: _ConsumptionBinding) -> None:
+    """config#492 §12.1, Atlas P1: the terminal receipt must be bound to the
+    plan it claims to acknowledge, and its evidence must be as neutral as
+    the plan.
+
+    The plan's own operations are protected by a CLOSED schema whose
+    per-kind allowlists permit no nested object carrier -- so recursive
+    identity rejection there has little left to find. The result graph is
+    the opposite: it is open, it is what gets persisted, and it was
+    previously copied verbatim. That makes it the actual smuggling boundary,
+    which is why the same rejection discipline is applied here rather than
+    only upstream.
+
+    Screens the CONSUMPTION BINDING, never the caller's object: the evidence
+    was walked twice before -- once here, once by json serialization -- so a
+    list whose __iter__ returned different contents per call screened clean
+    and then persisted `secret` into the receipt anyway. Screening a value
+    that is not the one persisted screens nothing."""
+    op_results = binding.evidence
+    if len(op_results) != len(binding.operation_kinds):
+        raise MaterializationPlanError(
+            f"receipt evidence has {len(op_results)} result(s) but the validated plan has "
+            f"{len(binding.operation_kinds)} operation(s) -- a receipt cannot claim "
+            "MATERIALIZED without evidence for every operation"
+        )
+    for idx, (result, expected_kind) in enumerate(zip(op_results, binding.operation_kinds)):
+        if not isinstance(result, dict):
+            raise MaterializationPlanError(
+                f"receipt evidence[{idx}] must be an object, got {type(result).__name__}"
+            )
+        if result.get("kind") != expected_kind:
+            raise MaterializationPlanError(
+                f"receipt evidence[{idx}] is kind {result.get('kind')!r} but the validated plan's "
+                f"operation {idx} is {expected_kind!r} -- evidence must correspond to its operation, "
+                "in order"
+            )
+        _reject_identity_fields_recursive(result, path=f"receipt.operations[{idx}]")
+
+
+def write_materialization_receipt(
+    workspace_root: Path,
+    validated: ValidatedPlan,
+    op_results: list[dict[str, object]],
+) -> Path:
+    """Publish the terminal neutral receipt for a VALIDATED plan.
+
+    Takes a ValidatedPlan capability rather than a raw dict (Atlas P1): the
+    writer previously accepted the live plan and an arbitrary result list,
+    so a schema-invalid plan_id could escape the receipt directory and an
+    unscreened result graph could be persisted verbatim. Holding the
+    capability is the proof that the contract already ran.
+
+    config#492 §6.2.1 #10 -- publication order is exact and every step is
+    load-bearing: same-directory temp -> write+flush -> fsync(temp file) ->
+    atomic replace -> fsync(parent directory). Rename success alone is not
+    durable acknowledgement; on power loss the rename can survive while the
+    bytes do not. Callers performing destructive cleanup on the strength of
+    a receipt must do it only after this returns.
+
+    The temp file is created O_EXCL|O_NOFOLLOW (Atlas P2): its name is
+    predictable, so a plain open() would happily follow a pre-created
+    symlink, overwrite whatever it points at, and then publish that symlink
+    as the final receipt."""
+    if not isinstance(validated, ValidatedPlan):
+        raise MaterializationPlanError(
+            "write_materialization_receipt requires a ValidatedPlan from "
+            "validate_materialization_plan, not a raw plan"
+        )
+    # ONE verified consumption. Everything below reads `binding` and nothing
+    # reads `validated` again -- verifying and then re-reading the live shell
+    # is precisely the check/use window Atlas's callback drove through.
+    binding = validated.consume(op_results)
+    _screen_receipt_evidence(binding)
+
+    receipt = {
+        "plan_id": binding.plan_id,
+        "unit_key": binding.unit_key,
+        # Derived from the sealed snapshot at the consumption instant, NOT
+        # recomputed from a graph that may have moved since.
+        "plan_hash": binding.plan_hash,
+        "schema_version": binding.schema_version,
+        "workspace_spec_sha256": binding.workspace_spec_sha256,
+        # §12.1 structural stage: MATERIALIZED is the terminal state OSS gr2
+        # can honestly claim on its own.
+        "stage": "MATERIALIZED",
+        "applied_at": datetime.now(UTC).isoformat(),
+        "operations": list(binding.evidence),
+    }
+
+    receipt_dir = _canonical_receipt_dir(workspace_root)
+    # Both filenames come from the binding. The temp name carries the same
+    # identity, so leaving it on a live read would only move the window
+    # rather than close it.
+    receipt_path = receipt_dir / f"{binding.plan_id}.json"
+    tmp_path = receipt_dir / f"{binding.plan_id}.json.tmp-{os.getpid()}"
+
+    payload = (json.dumps(receipt, indent=2) + "\n").encode("utf-8")
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    try:
+        os.replace(tmp_path, receipt_path)
+    except BaseException:
+        # A failed replace leaves the temp behind otherwise -- found by this
+        # closure's own residue test rather than reasoned about.
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    # Sentinel finding 3: durability is a FAILURE-PATH contract, not only an
+    # ordering one. If the parent-directory fsync fails, the rename may not
+    # survive a crash -- yet the receipt is already visible at its published
+    # path, so a caller that treats "the writer returned" or "a receipt
+    # exists" as durable acknowledgement would proceed to destructive
+    # cleanup on the strength of a receipt that could vanish. A publication
+    # that cannot be made durable must not remain published.
+    try:
+        dir_fd = os.open(receipt_dir, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except BaseException:
+        receipt_path.unlink(missing_ok=True)
+        raise
+    return receipt_path
