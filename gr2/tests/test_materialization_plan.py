@@ -1889,5 +1889,309 @@ class TestProjectFileReceiptEvidence(MaterializationPlanTestBase):
         self.assertNotIn("_pending_unlink", op, "internal orchestration key must never be receipted")
 
 
+class TestRound4Survivors(MaterializationPlanTestBase):
+    """Atlas round 4 -- three production-shaped survivors, his exact probes
+    taken verbatim as RED tests."""
+
+    def test_existing_clone_with_declared_reference_but_no_alternate_rejected(self):
+        """#1. A valid canonical mirror cache, an EXISTING ordinary clone
+        with no alternates, then a plan declaring that reference_base:
+        round 3 accepted it and receipted alternate_approved=false, because
+        the required-alternate half ran only on the fresh-clone path."""
+        url = self._init_bare_remote("product")
+        cache = self.workspace_root / ".grip" / "cache" / "repos" / "product.git"
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        _git(self.workspace_root, "clone", "--mirror", url, str(cache))
+
+        dest = self.workspace_root / "units" / "u1" / "product"
+        dest.parent.mkdir(parents=True)
+        # An ordinary clone -- no --reference, so no alternates file.
+        _git(self.workspace_root, "clone", url, str(dest))
+        self.assertFalse((dest / ".git" / "objects" / "info" / "alternates").exists())
+
+        plan = self._plan(
+            [
+                self._clone_op(
+                    repo_url=url,
+                    dest_path="units/u1/product",
+                    reference_base=".grip/cache/repos/product.git",
+                )
+            ]
+        )
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertIn("carries no alternate", str(ctx.exception))
+
+    def test_rerun_rejects_tampered_staged_source_without_deleting_it(self):
+        """#2. Apply a project file, recreate the staged path with TAMPERED
+        bytes, rerun: round 3 succeeded and deleted the tampered source
+        without ever re-verifying it."""
+        content = b"payload"
+        source_rel = self._stage_source("f_01", content)
+        plan = self._plan(
+            [
+                self._project_file_op(
+                    source_path=source_rel,
+                    source_sha256=hashlib.sha256(content).hexdigest(),
+                    dest_path="units/u1/AGENTS.md",
+                )
+            ],
+            plan_id="mp_tamper",
+        )
+        apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertFalse((self.workspace_root / source_rel).exists())
+
+        tampered = b"TAMPERED"
+        (self.workspace_root / source_rel).write_bytes(tampered)
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertIn("hash mismatch", str(ctx.exception))
+        # Destructive cleanup must not have run on unverified bytes.
+        self.assertEqual((self.workspace_root / source_rel).read_bytes(), tampered)
+
+    def test_second_editable_receipts_its_own_pep610_row(self):
+        """#3. One plan installs editable alpha then editable beta; round 3
+        receipted beta's operation with ALPHA's distribution and PEP 610
+        path, because evidence selection took the first sorted row."""
+        venv_path = self.workspace_root / "units" / "u1" / ".venv"
+        venv_path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["uv", "venv", "--python", ">=3.11", str(venv_path)], check=True, capture_output=True
+        )
+        for name in ("alpha", "beta"):
+            src = self.workspace_root / "units" / "u1" / name
+            src.mkdir(parents=True)
+            (src / "pyproject.toml").write_text(
+                f'[project]\nname = "{name}"\nversion = "0.1.0"\n'
+                '[build-system]\nrequires = ["setuptools>=68"]\n'
+                'build-backend = "setuptools.build_meta"\n'
+            )
+            (src / name).mkdir()
+            (src / name / "__init__.py").write_text("")
+
+        plan = self._plan(
+            [
+                {
+                    "kind": "editable_install",
+                    "venv_path": "units/u1/.venv",
+                    "source_path": "units/u1/alpha",
+                    "extras": [],
+                },
+                {
+                    "kind": "editable_install",
+                    "venv_path": "units/u1/.venv",
+                    "source_path": "units/u1/beta",
+                    "extras": [],
+                },
+            ]
+        )
+        ops = apply_materialization_plan(self.workspace_root, plan, yes=True)["operations"]
+        self.assertEqual(ops[0]["distribution"], "alpha")
+        self.assertEqual(ops[1]["distribution"], "beta")
+        self.assertIn("alpha", ops[0]["pep610_evidence"])
+        self.assertIn("beta", ops[1]["pep610_evidence"])
+        self.assertNotEqual(ops[0]["pep610_evidence"], ops[1]["pep610_evidence"])
+
+
+class TestStateMatrixParity(MaterializationPlanTestBase):
+    """THE CLASS-KILLER (Stromus round 4).
+
+    Every finding from rounds 1-4 was generated by the same untested
+    matrix: {fresh, existing-clone} x {first-run, rerun} x {single,
+    multi-unit}. Each was one code path skipping what its sibling path
+    does. Rather than testing each instance, these assert PARITY across
+    each axis: the same invariant must fire on BOTH sides.
+
+    The code-level counterpart is that the sibling paths now share one
+    function (_validate_clone_isolation for clones, _verify_staged_source
+    for staged inputs), so parity holds by construction and these tests
+    are the proof, not the mechanism."""
+
+    # --- axis 1: {fresh, existing-clone} -------------------------------
+
+    def _cache_for(self, url: str, name: str) -> str:
+        cache = self.workspace_root / ".grip" / "cache" / "repos" / f"{name}.git"
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        _git(self.workspace_root, "clone", "--mirror", url, str(cache))
+        return f".grip/cache/repos/{name}.git"
+
+    def test_alternate_requirement_fires_on_fresh_clone(self):
+        url = self._init_bare_remote("product")
+        ref = self._cache_for(url, "product")
+        real_clone_repo = spec_apply.clone_repo
+
+        def clone_without_reference(repo_url, target, *, reference_repo_root=None):
+            return real_clone_repo(repo_url, target, reference_repo_root=None)
+
+        plan = self._plan(
+            [self._clone_op(repo_url=url, dest_path="units/u1/product", reference_base=ref)]
+        )
+        with patch.object(spec_apply, "clone_repo", clone_without_reference):
+            with self.assertRaises(MaterializationPlanError) as ctx:
+                apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertIn("carries no alternate", str(ctx.exception))
+
+    def test_alternate_requirement_fires_on_existing_clone(self):
+        """Parity partner of the test above -- same invariant, other side
+        of the fresh/existing axis."""
+        url = self._init_bare_remote("product")
+        ref = self._cache_for(url, "product")
+        dest = self.workspace_root / "units" / "u1" / "product"
+        dest.parent.mkdir(parents=True)
+        _git(self.workspace_root, "clone", url, str(dest))
+
+        plan = self._plan(
+            [self._clone_op(repo_url=url, dest_path="units/u1/product", reference_base=ref)]
+        )
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertIn("carries no alternate", str(ctx.exception))
+
+    def test_worktree_pointer_rejected_on_existing_clone(self):
+        """The .git-as-file invariant, existing side. (Fresh side cannot be
+        constructed: we create fresh clones ourselves via git.)"""
+        dest = self.workspace_root / "units" / "u1" / "product"
+        dest.mkdir(parents=True)
+        (dest / ".git").write_text("gitdir: /elsewhere/.git/worktrees/product\n")
+        plan = self._plan(
+            [self._clone_op(repo_url="https://example.com/x.git", dest_path="units/u1/product")]
+        )
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertIn("worktree-pointer", str(ctx.exception))
+
+    # --- axis 2: {first-run, rerun} ------------------------------------
+
+    def _staged_plan(self, content: bytes, *, plan_id: str) -> tuple[dict, str]:
+        source_rel = self._stage_source("f_01", content)
+        return (
+            self._plan(
+                [
+                    self._project_file_op(
+                        source_path=source_rel,
+                        source_sha256=hashlib.sha256(content).hexdigest(),
+                        dest_path="units/u1/AGENTS.md",
+                    )
+                ],
+                plan_id=plan_id,
+            ),
+            source_rel,
+        )
+
+    def test_hash_verification_fires_on_first_run(self):
+        content = b"payload"
+        plan, source_rel = self._staged_plan(content, plan_id="mp_first")
+        (self.workspace_root / source_rel).write_bytes(b"DIFFERENT")
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertIn("hash mismatch", str(ctx.exception))
+
+    def test_hash_verification_fires_on_rerun_cleanup(self):
+        """Parity partner -- same invariant, rerun side of the axis."""
+        content = b"payload"
+        plan, source_rel = self._staged_plan(content, plan_id="mp_rerun")
+        apply_materialization_plan(self.workspace_root, plan, yes=True)
+        (self.workspace_root / source_rel).write_bytes(b"DIFFERENT")
+        with self.assertRaises(MaterializationPlanError) as ctx:
+            apply_materialization_plan(self.workspace_root, plan, yes=True)
+        self.assertIn("hash mismatch", str(ctx.exception))
+
+    def test_non_regular_source_rejected_on_first_run(self):
+        content = b"payload"
+        plan, source_rel = self._staged_plan(content, plan_id="mp_fifo_first")
+        staged = self.workspace_root / source_rel
+        staged.unlink()
+        os.mkfifo(staged)
+        try:
+            with self.assertRaises(MaterializationPlanError) as ctx:
+                apply_materialization_plan(self.workspace_root, plan, yes=True)
+            self.assertIn("not a regular file", str(ctx.exception))
+        finally:
+            staged.unlink()
+
+    def test_non_regular_source_rejected_on_rerun_cleanup(self):
+        """Parity partner -- the rerun path must apply the same
+        regular-file check, not just the hash one."""
+        content = b"payload"
+        plan, source_rel = self._staged_plan(content, plan_id="mp_fifo_rerun")
+        apply_materialization_plan(self.workspace_root, plan, yes=True)
+        staged = self.workspace_root / source_rel
+        os.mkfifo(staged)
+        try:
+            with self.assertRaises(MaterializationPlanError) as ctx:
+                apply_materialization_plan(self.workspace_root, plan, yes=True)
+            self.assertIn("not a regular file", str(ctx.exception))
+        finally:
+            staged.unlink()
+
+    # --- axis 3: {single, multi-unit} ----------------------------------
+
+    def test_receipt_rows_are_scoped_per_operation_across_units(self):
+        """Two units, each with its own clone and its own staged input:
+        every receipt row must describe ITS operation, not a sibling's."""
+        url_a = self._init_bare_remote("alpha")
+        url_b = self._init_bare_remote("beta")
+        content_a = b"alpha payload"
+        content_b = b"beta payload"
+        src_a = self._stage_source("f_alpha", content_a)
+        src_b = self._stage_source("f_beta", content_b)
+
+        plan = self._plan(
+            [
+                self._clone_op(repo_url=url_a, dest_path="units/alpha/product"),
+                self._clone_op(repo_url=url_b, dest_path="units/beta/product"),
+                self._project_file_op(
+                    source_path=src_a,
+                    source_sha256=hashlib.sha256(content_a).hexdigest(),
+                    dest_path="units/alpha/AGENTS.md",
+                ),
+                self._project_file_op(
+                    source_path=src_b,
+                    source_sha256=hashlib.sha256(content_b).hexdigest(),
+                    dest_path="units/beta/AGENTS.md",
+                ),
+            ],
+            plan_id="mp_multiunit",
+        )
+        ops = apply_materialization_plan(self.workspace_root, plan, yes=True)["operations"]
+
+        self.assertEqual(ops[0]["repo_url"], url_a)
+        self.assertEqual(ops[1]["repo_url"], url_b)
+        self.assertNotEqual(ops[0]["head_sha"], ops[1]["head_sha"])
+        self.assertEqual(ops[2]["source_path"], src_a)
+        self.assertEqual(ops[3]["source_path"], src_b)
+        self.assertEqual(ops[2]["source_sha256"], hashlib.sha256(content_a).hexdigest())
+        self.assertEqual(ops[3]["source_sha256"], hashlib.sha256(content_b).hexdigest())
+        # Each unit got its OWN bytes, not the other's.
+        self.assertEqual(
+            (self.workspace_root / "units" / "alpha" / "AGENTS.md").read_bytes(), content_a
+        )
+        self.assertEqual(
+            (self.workspace_root / "units" / "beta" / "AGENTS.md").read_bytes(), content_b
+        )
+
+    def test_multi_unit_rerun_is_idempotent_per_unit(self):
+        """Multi-unit x rerun: the corner where per-unit scoping and the
+        rerun path intersect."""
+        url_a = self._init_bare_remote("alpha")
+        url_b = self._init_bare_remote("beta")
+        plan = self._plan(
+            [
+                self._clone_op(repo_url=url_a, dest_path="units/alpha/product"),
+                self._clone_op(repo_url=url_b, dest_path="units/beta/product"),
+            ],
+            plan_id="mp_multiunit_rerun",
+        )
+        first = apply_materialization_plan(self.workspace_root, plan, yes=True)["operations"]
+        self.assertTrue(all(o["first_materialize"] for o in first))
+
+        second = apply_materialization_plan(self.workspace_root, plan, yes=True)["operations"]
+        self.assertFalse(any(o["first_materialize"] for o in second))
+        self.assertEqual(second[0]["repo_url"], url_a)
+        self.assertEqual(second[1]["repo_url"], url_b)
+        self.assertEqual(first[0]["head_sha"], second[0]["head_sha"])
+        self.assertEqual(first[1]["head_sha"], second[1]["head_sha"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -350,8 +350,24 @@ def _validate_clone_isolation(
             "-- an existing clone must match the declared repo_url"
         )
 
+    # config#492 §6.2.1 #5, round 4 (Atlas): "an existing destination is
+    # validated on every apply and, when reference_base is present, the
+    # resulting clone's only alternate is that cache." The round-3 form
+    # returned early here whenever the alternates file was absent, so the
+    # REQUIRED-alternate half ran only on the fresh-clone path -- an
+    # existing ordinary clone with no alternates was accepted under a plan
+    # declaring a reference_base. Checked here, in the one function BOTH
+    # the fresh-staging and existing-destination paths call, rather than
+    # at a fresh-only call site: that is what makes the two paths share a
+    # single validation contract instead of drifting apart again.
     alternates_file = git_path / "objects" / "info" / "alternates"
     if not alternates_file.exists():
+        if reference_repo_root is not None:
+            raise MaterializationPlanError(
+                f"clone at {repo_root} carries no alternate but the plan declares "
+                f"reference {reference_repo_root} -- declared object sharing was not achieved "
+                "(config#492 §6.2.1 #5)"
+            )
         return
     approved = (reference_repo_root.resolve() / "objects") if reference_repo_root else None
     for line in alternates_file.read_text().splitlines():
@@ -437,24 +453,18 @@ def _clone_isolated(
             raise
         raise MaterializationPlanError(f"clone staging failed for {repo_url} -> {dest}: {exc}") from exc
 
+    # Note: the declared-reference/no-alternate rejection now lives inside
+    # _validate_clone_isolation above, which ran against `staging` before
+    # this rename -- so a fresh clone that failed to realize its declared
+    # object sharing never reaches publication at all, and the existing-
+    # destination path gets the identical check. One contract, both paths.
     dest.parent.mkdir(parents=True, exist_ok=True)
     staging.rename(dest)
-    observed_alternate = _read_observed_alternate(dest)
-    if reference_repo_root is not None and observed_alternate is None:
-        # The cache was validated usable before cloning; a fresh clone that
-        # nonetheless carries no alternate means the declared object-sharing
-        # state was not achieved -- fail closed rather than receipt a state
-        # that differs from what the plan declared (config#492 §6.2.1 #5).
-        shutil.rmtree(dest, ignore_errors=True)
-        raise MaterializationPlanError(
-            f"clone at {dest} was created with declared reference {reference_repo_root} "
-            "but carries no alternate -- declared object sharing was not achieved"
-        )
     return CloneResult(
         first_materialize=True,
         origin_url=remote_origin_url(dest),
         head_sha=current_head_sha(dest),
-        observed_alternate=observed_alternate,
+        observed_alternate=_read_observed_alternate(dest),
     )
 
 
@@ -1148,12 +1158,41 @@ def _apply_venv_operation(workspace_root: Path, op: dict[str, object]) -> dict[s
     }
 
 
-def _find_direct_url_evidence(venv_path: Path) -> tuple[str, str] | None:
-    """Returns (relative direct_url.json path, distribution name) or None.
-    Distribution name is parsed from the *.dist-info directory name itself
-    (e.g. "product-0.1.0.dist-info" -> "product") -- config#491 §12.1 wants
-    distribution evidence, not just "the command exited 0"."""
+def _find_direct_url_evidence(venv_path: Path, source_path: Path) -> tuple[str, str] | None:
+    """Returns (relative direct_url.json path, distribution name) for the
+    editable install of THIS source, or None.
+
+    Round 4 (Atlas): the round-3 form returned the first sorted
+    direct_url.json in the venv, so a plan installing editable `alpha`
+    then editable `beta` receipted beta's operation with ALPHA's PEP 610
+    path and distribution -- a structurally complete receipt that is
+    false. Evidence must be bound to the artifact it claims to describe:
+    match the decoded PEP 610 `url` against this operation's resolved
+    source and require dir_info.editable, then derive the distribution
+    from the MATCHED row rather than from whichever row sorted first."""
+    from urllib.parse import unquote, urlparse
+
+    target = source_path.resolve()
     for candidate in sorted(venv_path.glob("lib/*/site-packages/*.dist-info/direct_url.json")):
+        try:
+            record = json.loads(candidate.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        url = record.get("url")
+        if not isinstance(url, str):
+            continue
+        parsed = urlparse(url)
+        if parsed.scheme != "file":
+            continue
+        try:
+            recorded = Path(unquote(parsed.path)).resolve()
+        except OSError:
+            continue
+        if recorded != target:
+            continue
+        dir_info = record.get("dir_info")
+        if not isinstance(dir_info, dict) or dir_info.get("editable") is not True:
+            continue
         dist_info_name = candidate.parent.name
         distribution = dist_info_name.removesuffix(".dist-info").split("-")[0]
         return str(candidate.relative_to(venv_path)), distribution
@@ -1178,11 +1217,12 @@ def _apply_editable_install_operation(workspace_root: Path, op: dict[str, object
         raise MaterializationPlanError(
             f"uv pip install --editable failed for {source_path}:\n{proc.stderr or proc.stdout}"
         )
-    evidence = _find_direct_url_evidence(venv_path)
+    evidence = _find_direct_url_evidence(venv_path, source_path)
     if evidence is None:
         raise MaterializationPlanError(
             f"uv pip install --editable reported success for {source_path}, but no PEP 610 "
-            f"direct_url.json evidence was found under {venv_path}"
+            f"direct_url.json evidence matching that source (editable, url == source) was "
+            f"found under {venv_path}"
         )
     pep610_path, distribution = evidence
     # config#491 §12.1 evidence: editable source path, extras, distribution.
@@ -1194,6 +1234,33 @@ def _apply_editable_install_operation(workspace_root: Path, op: dict[str, object
         "distribution": distribution,
         "pep610_evidence": pep610_path,
     }
+
+
+def _verify_staged_source(source_path: Path, expected_sha256: str) -> None:
+    """config#492 §6.2.1 #7: a staged input must exist, be a regular
+    non-symlink file, and its REOPENED bytes must hash to source_sha256.
+
+    Extracted in round 4 so the first-run and rerun-cleanup paths call one
+    function rather than each implementing their own subset -- the rerun
+    path previously skipped all three checks and deleted whatever it
+    found. Any future verification added here reaches both paths by
+    construction, which is the point: the recurring finding-generator has
+    been "the second path skips what the first path does"."""
+    if not source_path.exists():
+        raise MaterializationPlanError(f"project_file source does not exist: {source_path}")
+    # The symlink-free prefix (including the final component) is already
+    # enforced by _canonicalize_workspace_path's per-component walk; this
+    # rejects the remaining non-regular shapes (fifo, directory, device).
+    if not stat.S_ISREG(os.lstat(source_path).st_mode):
+        raise MaterializationPlanError(
+            f"project_file source is not a regular file: {source_path} (config#492 §6.2.1 #7)"
+        )
+    actual_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise MaterializationPlanError(
+            f"project_file hash mismatch for {source_path}: "
+            f"expected {expected_sha256}, got {actual_sha256}"
+        )
 
 
 def _apply_project_file_operation(workspace_root: Path, op: dict[str, object]) -> dict[str, object]:
@@ -1224,26 +1291,18 @@ def _apply_project_file_operation(workspace_root: Path, op: dict[str, object]) -
                 "already_projected": True,
             }
             if source_path.exists():
+                # Round 4 (Atlas): the rerun path scheduled ANY existing
+                # staged source for deletion without verifying it -- so a
+                # source recreated with tampered bytes after the receipt
+                # was silently destroyed. Destructive cleanup must verify
+                # the artifact it is destroying, using the SAME function
+                # the first run uses, so the two paths cannot drift.
+                _verify_staged_source(source_path, expected_sha256)
                 result["_pending_unlink"] = str(source_path)
             return result
 
-    if not source_path.exists():
-        raise MaterializationPlanError(f"project_file source does not exist: {source_path}")
-    # config#492 §6.2.1 #7: a regular, non-symlink file. The symlink-free
-    # prefix (including the final component) is already enforced by
-    # _canonicalize_workspace_path's per-component walk; this rejects the
-    # remaining non-regular shapes (fifo, directory, device).
-    if not stat.S_ISREG(os.lstat(source_path).st_mode):
-        raise MaterializationPlanError(
-            f"project_file source is not a regular file: {source_path} (config#492 §6.2.1 #7)"
-        )
+    _verify_staged_source(source_path, expected_sha256)
     content = source_path.read_bytes()
-    actual_sha256 = hashlib.sha256(content).hexdigest()
-    if actual_sha256 != expected_sha256:
-        raise MaterializationPlanError(
-            f"project_file hash mismatch for {source_path}: "
-            f"expected {expected_sha256}, got {actual_sha256}"
-        )
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(content)
