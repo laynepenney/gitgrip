@@ -911,6 +911,72 @@ mod tests {
         );
     }
 
+    /// Build a well-formed `file://` URL for a local path on any platform.
+    ///
+    /// `format!("file://{}", path.display())` is correct on Unix and WRONG on
+    /// Windows: it yields `file://C:\Users\RUNNER~1\...\base.git`. Nothing
+    /// rejects that as a URL, so the breakage surfaces later and elsewhere --
+    /// `gripspace_name` splits the last path component on `:` (for SSH URLs
+    /// like `git@host:org/repo.git`), which on Windows splits the DRIVE letter
+    /// instead, leaving `\Users\RUNNER~1\...\base`. Backslashes and `~` then
+    /// fail the `[a-zA-Z0-9._-]` name allowlist.
+    ///
+    /// A Windows file URL needs forward slashes and an extra leading slash
+    /// before the drive: `file:///C:/Users/.../base.git`, from which
+    /// `gripspace_name` correctly reads `base`.
+    fn file_url(path: &std::path::Path) -> String {
+        let s = path.display().to_string().replace('\\', "/");
+        if s.starts_with('/') {
+            format!("file://{}", s)
+        } else {
+            format!("file:///{}", s)
+        }
+    }
+
+    #[test]
+    fn file_url_is_well_formed_for_both_path_shapes() {
+        // BOTH shapes on EVERY platform, deliberately. Gating the input on
+        // cfg!(windows) would mean the case that actually broke CI is only ever
+        // exercised on Windows -- the fix would go unproven everywhere it is
+        // cheap to check, and a regression would resurface as an "Invalid
+        // gripspace name" error three call frames away, on one runner only.
+        //
+        // A backslash is an ordinary character in a Unix path, so the
+        // Windows-shaped string round-trips through PathBuf here just fine and
+        // the transformation is fully testable off Windows.
+        for raw in [r"C:\Users\test\base.git", "/tmp/test/base.git"] {
+            let url = file_url(&std::path::PathBuf::from(raw));
+            assert!(
+                url.starts_with("file:///"),
+                "not a well-formed file URL for {raw:?}: {url}"
+            );
+            assert!(
+                !url.contains('\\'),
+                "file URL kept a backslash for {raw:?}: {url}"
+            );
+            assert_eq!(
+                gripspace_name(&url),
+                "base",
+                "wrong name derived from {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_old_spelling_is_what_broke_windows() {
+        // Pins the DIAGNOSIS, not just the fix. If gripspace_name ever stops
+        // splitting on ':' this test fails and tells the next reader that the
+        // Windows workaround may no longer be needed -- rather than leaving a
+        // fix in place whose reason nobody can reconstruct.
+        let broken = format!("file://{}", r"C:\Users\RUNNER~1\Temp\base.git");
+        let derived = gripspace_name(&broken);
+        assert_ne!(derived, "base", "the old spelling no longer misderives");
+        assert!(
+            validate_space_name(&derived).is_err(),
+            "expected {derived:?} to fail the name allowlist"
+        );
+    }
+
     #[test]
     fn test_update_gripspace_advances_configured_remote_branch() {
         let temp = tempfile::tempdir().unwrap();
@@ -937,7 +1003,7 @@ mod tests {
 
         let spaces = temp.path().join("spaces");
         let config = GripspaceConfig {
-            url: format!("file://{}", remote.display()),
+            url: file_url(&remote),
             rev: Some("main".to_string()),
         };
         let gripspace_path = ensure_gripspace(&spaces, &config).unwrap();
