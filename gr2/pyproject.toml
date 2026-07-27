@@ -27,7 +27,9 @@ dev = [
 packages = ["gr2_overlay", "gr2", "gr2.python_cli", "gr2.prototypes"]
 
 [tool.setuptools.package-dir]
-gr2 = "."
+gr2 = "gr2"
+"gr2.python_cli" = "python_cli"
+"gr2.prototypes" = "prototypes"
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "gr2_overlay/tests"]
