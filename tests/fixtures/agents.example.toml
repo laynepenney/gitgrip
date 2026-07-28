@@ -1,0 +1,44 @@
+# Example team composition for `gr spawn`.
+#
+# This is a FIXTURE. It exists so the spawn integration tests have a valid
+# agents.toml to run against, and so anyone reading the repo can see the shape
+# the command expects. It describes no real team: the names, roles, and models
+# are placeholders.
+#
+# `mock_launch = true` keeps it echo-only, so running it starts no processes.
+
+[spawn]
+session_name = "example"            # tmux session name
+channel = "general"                 # default channel all agents join
+auto_journal = true                 # agents read their journal on startup
+mock_launch = true                  # echo instead of launching real processes
+
+[agents.alpha]
+role = "Example coordinator role"
+model = "example-model-a"
+tool = "claude"
+worktree = "main"
+startup_prompt = ".gitgrip/prompts/alpha.md"
+channel = "general"
+loop_interval = "1m"
+heartbeat_interval = 60
+timeout_threshold = 180
+restart_policy = "always"
+restart_delay = 5
+max_restarts = 3
+env = { AGENT_NAME = "alpha", AGENT_ROLE = "alpha" }
+
+[agents.beta]
+role = "Example implementation role"
+model = "example-model-b"
+tool = "claude"
+worktree = "beta"
+startup_prompt = ".gitgrip/prompts/beta.md"
+channel = "general"
+loop_interval = "2m"
+heartbeat_interval = 60
+timeout_threshold = 180
+restart_policy = "always"
+restart_delay = 5
+max_restarts = 3
+env = { AGENT_NAME = "beta", AGENT_ROLE = "beta" }

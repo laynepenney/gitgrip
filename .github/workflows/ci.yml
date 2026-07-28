@@ -223,7 +223,7 @@ jobs:
       - name: Setup mock gripspace
         run: |
           mkdir -p .gitgrip
-          cp agents.toml .gitgrip/agents.toml
+          cp tests/fixtures/agents.example.toml .gitgrip/agents.toml
 
       - name: Run spawn integration tests
         run: GR=./target/debug/gr ./tests/spawn_graceful_shutdown.sh
