@@ -111,7 +111,7 @@ class StagingCleanupTestBase(unittest.TestCase):
         self.source_path.write_bytes(FOUNDATION)
         self.source_sha256 = hashlib.sha256(FOUNDATION).hexdigest()
 
-        self.dest_rel = "units/u_test/home/AGENTS.md"
+        self.dest_rel = "units/u_test/home/FOUNDATION.md"
         self.dest_path = self.workspace_root / self.dest_rel
 
     def tearDown(self):
@@ -218,10 +218,9 @@ class TestAcknowledgementGate(StagingCleanupTestBase):
         self.assertTrue(self.source_path.exists())
 
     def test_refuses_a_receipt_whose_plan_hash_disagrees(self):
-        """plan_id is an opaque token a plan producer may reuse across
-        successive plans for the same unit. Matching it alone would let
-        yesterday's receipt authorise today's deletions, so the bound is the
-        CONTENT hash."""
+        """plan_id is an opaque token that may repeat across successive plans
+        for the same unit. Matching it alone would let yesterday's receipt
+        authorise today's deletions, so the bound is the CONTENT hash."""
         validated, receipt_path = self._project_and_receipt()
         receipt = json.loads(receipt_path.read_text())
         receipt["plan_hash"] = "0" * 64
@@ -372,8 +371,8 @@ class TestCrossSliceSeam(StagingCleanupTestBase):
         production. Once cleanup has run, the staged input is gone; if the
         destination is then destroyed, this workspace cannot re-project and the
         next apply must FAIL LOUDLY rather than leave a silently absent
-        AGENTS.md. Re-staging is the plan producer's responsibility; gr2's job
-        is to refuse to pretend."""
+        destination. gr2 does not re-stage, and its job here is to refuse to
+        pretend it can."""
         validated, receipt_path = self._project_and_receipt()
         self._cleanup(validated, receipt_path)
         self.dest_path.unlink()
