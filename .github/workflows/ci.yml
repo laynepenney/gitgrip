@@ -133,6 +133,13 @@ jobs:
   test-windows:
     name: Test (windows-latest)
     runs-on: windows-latest
+    # Bounded so a hang reports as a FAILURE WITH A LOG rather than running to
+    # the 6-hour default. This leg hung three times on 2026-07-27 (91 min, then
+    # 26, then 26 again) and every diagnosis was blocked on never seeing where it
+    # stopped -- a hang is worse than a failure precisely because it is
+    # indistinguishable from "still running". 15 against a ~8 min baseline is
+    # generous enough not to fire on a cold cache. See grip#821.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -141,6 +148,19 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+
+      # Compilation is split out from execution ON PURPOSE. `cargo test` does
+      # both, so a single step sitting "in_progress" cannot tell a slow Windows
+      # compile apart from a hung test -- which is the exact question three
+      # investigations could not answer. With the split, the step breakdown
+      # alone discriminates: if "Build tests" completes and "Run tests" hangs,
+      # it is a test; if "Build tests" hangs, it is the toolchain.
+      # The second invocation reuses the first's artifacts, so this costs a
+      # dependency check, not a rebuild.
+      - name: Build tests
+        run: cargo test --all-features --no-run
+        env:
+          RUSTFLAGS: '-C link-arg=advapi32.lib -C link-arg=/STACK:8388608'
 
       - name: Run tests
         run: cargo test --all-features
