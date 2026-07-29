@@ -5,8 +5,8 @@ inside the unit, and refuses unless the bytes hash to the `source_sha256` the
 plan declares. gr2 reads only the plan: it does not know what the file is for,
 and nothing here depends on its contents.
 
-Spec: config/design/zero-to-team-gr2-materialization-spec-2026-07-26.md
-      section 6.2.1 invariants 7 and 8, section 383, fruit 14/15/22.
+Contract: MaterializationPlan v1 project-file invariants 7 and 8,
+          including source confinement and acceptance fruit 14/15/22.
 
 INVARIANT 7 IS A TRAP AS LITERALLY WORDED. It says verify the source's
 "reopened bytes match source_sha256". Read word for word -- reopen, hash, then

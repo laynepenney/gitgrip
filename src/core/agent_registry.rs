@@ -4,7 +4,7 @@
 //! in `~/.synapt/orgs/<org_id>/team.db` and passed to agent sessions via
 //! the `SYNAPT_AGENT_ID` environment variable.
 //!
-//! Phase 0 of the channel scoping design (config/design/channel-scoping.md).
+//! Phase 0 of the channel-scoped agent registry.
 
 use std::path::{Path, PathBuf};
 

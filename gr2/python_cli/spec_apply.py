@@ -746,7 +746,7 @@ def _capability_seal(
     return hmac.new(_CAPABILITY_SECRET, payload, hashlib.sha256).hexdigest()
 
 
-# The normative wire contract (config#492, merged 4b36896). A hand-rolled
+# The normative MaterializationPlan v1 wire contract. A hand-rolled
 # validator is a separate, looser contract by construction -- nine plans the
 # pinned schema rejects were accepted by an earlier hand version, and
 # schema_version=True slipped a `!= 1` check because bool is an int subclass
@@ -782,13 +782,13 @@ def _load_plan_validator() -> Draft202012Validator:
             raise MaterializationPlanError(
                 f"packaged MaterializationPlan v1 schema hash mismatch: expected "
                 f"{_PLAN_SCHEMA_SHA256}, got {actual} -- refusing to validate against "
-                "an unpinned schema (config#492 §6.2.1)"
+                "an unpinned schema"
             )
         _plan_validator = Draft202012Validator(json.loads(raw))
     return _plan_validator
 
 
-# config#492 §6.2.1: "The production plan must not contain: agent display
+# MaterializationPlan v1: "The production plan must not contain: agent display
 # name, persistent agent ID, role, org or project, channel, entitlement
 # result or reason, secret reference or value, memory body." Checked
 # recursively as defence in depth -- the per-kind ALLOWLIST below is what
@@ -820,7 +820,7 @@ def _reject_identity_fields_recursive(value: object, *, path: str) -> None:
         if present:
             raise MaterializationPlanError(
                 f"{path} carries identity-bearing field(s) {sorted(present)}; "
-                "gr2 MaterializationPlan operations must be identity-free (config#492 §6.2.1)"
+                "gr2 MaterializationPlan operations must be identity-free"
             )
         for key, nested in value.items():
             _reject_identity_fields_recursive(nested, path=f"{path}.{key}")
@@ -842,7 +842,7 @@ def _validate_path_safe_token(value: object, *, field_name: str) -> str:
 
 
 def canonicalize_workspace_path(workspace_root: Path, relative: str, *, field_name: str) -> Path:
-    """config#492 §6.2.1 invariant #2: reject absolute paths, `~`,
+    """MaterializationPlan v1 invariant #2: reject absolute paths, `~`,
     backslashes, empty segments, `.` or `..` segments, NUL, any existing
     symlink in the path prefix, and any resolved escape.
 
@@ -875,7 +875,7 @@ def canonicalize_workspace_path(workspace_root: Path, relative: str, *, field_na
         if walker.is_symlink():
             raise MaterializationPlanError(
                 f"{field_name} passes through a symlink at {walker} -- path prefixes must be "
-                "symlink-free (config#492 §6.2.1 #2)"
+                "symlink-free (MaterializationPlan v1 invariant #2)"
             )
     workspace_resolved = workspace_root.resolve()
     candidate = (workspace_root / relative).resolve()
@@ -971,7 +971,7 @@ def _validate_operation_shape(
 
 
 def validate_materialization_plan(workspace_root: Path, plan: dict[str, object]) -> ValidatedPlan:
-    """Validate a neutral MaterializationPlan against config#492's pinned v1
+    """Validate a neutral MaterializationPlan against its pinned v1
     contract. Raises MaterializationPlanError on the first violation.
 
     Validate-before-touch: this runs to completion over the WHOLE plan
@@ -1019,7 +1019,7 @@ def validate_materialization_plan(workspace_root: Path, plan: dict[str, object])
     # identity from it.
     _validate_path_safe_token(plan.get("unit_key"), field_name="unit_key")
 
-    # config#492 §6.2.1 invariant #1: reopen the canonical WorkspaceSpec
+    # MaterializationPlan v1 invariant #1: reopen the canonical WorkspaceSpec
     # bytes and verify their SHA-256. Carrying the field is not verifying it.
     workspace_spec_sha256 = str(plan["workspace_spec_sha256"])
     actual_spec_sha256 = hashlib.sha256(_read_canonical_workspace_spec_bytes(workspace_root)).hexdigest()
@@ -1027,12 +1027,12 @@ def validate_materialization_plan(workspace_root: Path, plan: dict[str, object])
         raise MaterializationPlanError(
             f"workspace_spec_sha256 mismatch: plan declares {workspace_spec_sha256}, "
             f"canonical WorkspaceSpec bytes hash to {actual_spec_sha256} -- the plan was "
-            "compiled against a different workspace state (config#492 §6.2.1 #1)"
+            "compiled against a different workspace state (MaterializationPlan v1 invariant #1)"
         )
 
     operations = plan["operations"]
 
-    # config#492 §6.2.1 #3: compare destinations after normalization and
+    # MaterializationPlan v1 invariant #3: compare destinations after normalization and
     # Unicode-aware case folding. Raw-string comparison lets "u1/.venv" and
     # "u1/./.venv" both through, and casefold (not lower) is required so
     # "straße"/"STRASSE" collide.
@@ -1082,7 +1082,7 @@ _RECEIPT_DIR_RELATIVE = ".grip/state/materialization"
 
 
 def _read_canonical_workspace_spec_bytes(workspace_root: Path) -> bytes:
-    """config#492 §6.2.1 #2 applies to the CONTRACT paths too, not only to
+    """MaterializationPlan v1 invariant #2 applies to contract paths too, not only to
     operation paths (Atlas P2): the canonical WorkspaceSpec must be reached
     through a symlink-free prefix and be a regular non-symlink file.
 
@@ -1096,12 +1096,12 @@ def _read_canonical_workspace_spec_bytes(workspace_root: Path) -> bytes:
     if not spec_file.exists():
         raise MaterializationPlanError(
             "canonical WorkspaceSpec (.grip/workspace_spec.toml) not found -- "
-            "workspace_spec_sha256 cannot be verified (config#492 §6.2.1 #1)"
+            "workspace_spec_sha256 cannot be verified (MaterializationPlan v1 invariant #1)"
         )
     if not stat.S_ISREG(os.lstat(spec_file).st_mode):
         raise MaterializationPlanError(
             f"canonical WorkspaceSpec at {spec_file} is not a regular file "
-            "(config#492 §6.2.1 #2)"
+            "(MaterializationPlan v1 invariant #2)"
         )
     return spec_file.read_bytes()
 
@@ -1117,13 +1117,14 @@ def _canonical_receipt_dir(workspace_root: Path) -> Path:
     receipt_dir.mkdir(parents=True, exist_ok=True)
     if not stat.S_ISDIR(os.lstat(receipt_dir).st_mode):
         raise MaterializationPlanError(
-            f"receipt directory {receipt_dir} is not a real directory (config#492 §6.2.1 #2)"
+            f"receipt directory {receipt_dir} is not a real directory "
+            "(MaterializationPlan v1 invariant #2)"
         )
     return receipt_dir
 
 
 def compute_plan_hash(plan: dict[str, object]) -> str:
-    """config#492 §6.2.1 #9, the exact pinned canonical serialization: UTF-8
+    """MaterializationPlan v1 invariant #9, the exact pinned canonical serialization: UTF-8
     JSON, keys sorted, no insignificant whitespace, non-ASCII unescaped.
     Default json.dumps separators and ensure_ascii=True produce different
     bytes and therefore a non-conformant hash. Public so callers and tests
@@ -1152,7 +1153,7 @@ def materialization_receipt_path(workspace_root: Path, plan_id: str) -> Path:
 
 
 def _screen_receipt_evidence(binding: _ConsumptionBinding) -> None:
-    """config#492 §12.1, Atlas P1: the terminal receipt must be bound to the
+    """The terminal receipt must be bound to the
     plan it claims to acknowledge, and its evidence must be as neutral as
     the plan.
 
@@ -1203,7 +1204,7 @@ def write_materialization_receipt(
     unscreened result graph could be persisted verbatim. Holding the
     capability is the proof that the contract already ran.
 
-    config#492 §6.2.1 #10 -- publication order is exact and every step is
+    MaterializationPlan v1 invariant #10 -- publication order is exact and every step is
     load-bearing: same-directory temp -> write+flush -> fsync(temp file) ->
     atomic replace -> fsync(parent directory). Rename success alone is not
     durable acknowledgement; on power loss the rename can survive while the

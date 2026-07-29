@@ -129,7 +129,7 @@ class TestSchemaPin(PlanContractTestBase):
 
 
 class TestPinnedSchemaConformance(PlanContractTestBase):
-    """config#492's malformed-plan set. A hand-rolled validator is a
+    """The MaterializationPlan v1 malformed-plan set. A hand-rolled validator is a
     separate, looser contract by construction; these pin conformance to
     the pinned schema itself."""
 

@@ -1643,7 +1643,7 @@ workspace:
     post-checkout:
       - command: "echo ok"
   env:
-    HOME_DIR: "/Users/layne/Development"
+    HOME_DIR: "/Users/example/Development"
 "#;
         let manifest: Manifest = serde_yaml::from_str(yaml).unwrap();
         let warnings = manifest.lint_absolute_paths();

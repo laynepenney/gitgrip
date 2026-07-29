@@ -66,7 +66,7 @@ pub async fn run_migrate_from_repos(
         let parts: Vec<&str> = spec.splitn(2, '/').collect();
         if parts.len() != 2 {
             anyhow::bail!(
-                "Invalid repo format '{}': expected owner/repo (e.g. GetConversa/conversa-app)",
+                "Invalid repo format '{}': expected owner/repo (e.g. example-org/example-app)",
                 spec
             );
         }
@@ -925,7 +925,7 @@ fn worktree_repair_must_succeed(repair: &ProcessOutput) -> anyhow::Result<()> {
 }
 
 /// Derive the repo name from `git remote get-url origin`, falling back to dir name.
-/// "git@github.com:GetConversa/conversa-app.git" → "conversa-app"
+/// "git@github.com:example-org/example-app.git" → "example-app"
 fn derive_repo_name_from_remote(repo: &Path) -> String {
     let result = std::process::Command::new("git")
         .args(["remote", "get-url", "origin"])
@@ -1021,15 +1021,15 @@ mod tests {
     #[test]
     fn test_generate_manifest_yaml() {
         let repos = vec![
-            ("GetConversa".to_string(), "conversa-app".to_string()),
-            ("GetConversa".to_string(), "blessed-sound".to_string()),
+            ("example-org".to_string(), "example-app".to_string()),
+            ("example-org".to_string(), "example-api".to_string()),
         ];
-        let yaml = generate_manifest_yaml(&repos, "synapt-dev", "consult-conversa");
+        let yaml = generate_manifest_yaml(&repos, "example-org", "example-workspace");
         assert!(yaml.contains("version: 2"));
-        assert!(yaml.contains("conversa-app:"));
-        assert!(yaml.contains("blessed-sound:"));
-        assert!(yaml.contains("GetConversa/conversa-app.git"));
-        assert!(yaml.contains("consult-conversa-config:"));
+        assert!(yaml.contains("example-app:"));
+        assert!(yaml.contains("example-api:"));
+        assert!(yaml.contains("example-org/example-app.git"));
+        assert!(yaml.contains("example-workspace-config:"));
         assert!(yaml.contains("clone_strategy: clone"));
     }
 
@@ -1092,15 +1092,15 @@ mod tests {
 
     #[test]
     fn test_parse_worktree_list_marks_main_and_branch_names() {
-        let main = PathBuf::from("/tmp/conversa")
+        let main = PathBuf::from("/tmp/example-workspace")
             .canonicalize()
-            .unwrap_or_else(|_| PathBuf::from("/tmp/conversa"));
+            .unwrap_or_else(|_| PathBuf::from("/tmp/example-workspace"));
         let porcelain = "\
-worktree /tmp/conversa
+worktree /tmp/example-workspace
 HEAD deadbeef
 branch refs/heads/main
 
-worktree /tmp/conversa-dev
+worktree /tmp/example-workspace-dev
 HEAD feedface
 branch refs/heads/feat/dev
 ";
@@ -1116,8 +1116,8 @@ branch refs/heads/feat/dev
     #[tokio::test]
     async fn test_migrate_in_place_converts_linked_worktrees_into_griptrees() {
         let temp = TempDir::new().unwrap();
-        let main_root = temp.path().join("conversa");
-        let linked_root = temp.path().join("conversa-dev");
+        let main_root = temp.path().join("example-workspace");
+        let linked_root = temp.path().join("example-workspace-dev");
         std::fs::create_dir_all(&main_root).unwrap();
 
         assert_git_ok(&main_root, &["init", "-b", "main"]);
@@ -1133,7 +1133,7 @@ branch refs/heads/feat/dev
                 "remote",
                 "add",
                 "origin",
-                "git@github.com:GetConversa/conversa-app.git",
+                "git@github.com:example-org/example-app.git",
             ],
         );
 
@@ -1153,7 +1153,7 @@ branch refs/heads/feat/dev
             .await
             .unwrap();
 
-        let repo_name = "conversa-app";
+        let repo_name = "example-app";
         let main_child = main_root.join(repo_name);
         let linked_child = linked_root.join(repo_name);
 
@@ -1194,7 +1194,7 @@ branch refs/heads/feat/dev
         assert_eq!(repo.revision.as_deref(), Some("main"));
         assert_eq!(
             repo.url.as_deref(),
-            Some("git@github.com:GetConversa/conversa-app.git")
+            Some("git@github.com:example-org/example-app.git")
         );
 
         let pointer = GriptreePointer::load(&linked_root.join(".griptree")).unwrap();

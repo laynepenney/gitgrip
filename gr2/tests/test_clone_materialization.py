@@ -3,8 +3,7 @@
 S4-A landed the plan CONTRACT (validate -> capability -> receipt) and nothing
 consumed it. This is the first operation EXECUTOR: `kind == "clone"`.
 
-Spec: config/design/zero-to-team-gr2-materialization-spec-2026-07-26.md
-      section 8 (full clone contract), acceptance fruit 6/7/8/9.
+Contract: MaterializationPlan v1 clone contract and acceptance fruit 6/7/8/9.
 
 Testing discipline carried forward from the S4-A review cycle, and applied at
 DESIGN time rather than at test time: for every guard, ask what ELSE would

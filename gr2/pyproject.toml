@@ -12,8 +12,8 @@ dependencies = [
     "tomli_w>=1.0",
     "pyyaml>=6.0",
     "toml>=0.10",
-    # Draft 2020-12 validation of the pinned MaterializationPlan v1 schema
-    # (config#492). 4.18 is the first release with the modern referencing
+    # Draft 2020-12 validation of the pinned MaterializationPlan v1 schema.
+    # 4.18 is the first release with the modern referencing
     # stack; anything older silently falls back to a legacy resolver.
     "jsonschema>=4.18",
 ]
@@ -28,8 +28,8 @@ dev = [
 ]
 
 [tool.setuptools]
-# gr2_overlay is a time-bounded compat alias for gr2.overlay (config#491
-# gap#13): same physical directory, two import names. New code imports
+# gr2_overlay is a time-bounded compatibility alias for gr2.overlay:
+# same physical directory, two import names. New code imports
 # gr2.overlay; gr2_overlay stays for existing consumers until they are
 # migrated separately.
 packages = ["gr2_overlay", "gr2", "gr2.python_cli", "gr2.prototypes", "gr2.overlay"]
@@ -41,7 +41,7 @@ gr2 = "gr2"
 "gr2.overlay" = "gr2_overlay"
 
 [tool.setuptools.package-data]
-# The pinned MaterializationPlan v1 schema (config#492) ships inside the
+# The pinned MaterializationPlan v1 schema ships inside the
 # gr2 package -- spec_apply verifies its bytes against the pinned SHA-256
 # at load and fails closed on any mismatch.
 gr2 = ["schemas/*.json"]

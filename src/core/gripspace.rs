@@ -922,7 +922,7 @@ mod tests {
     /// fail the `[a-zA-Z0-9._-]` name allowlist.
     ///
     /// A Windows file URL needs forward slashes and an extra leading slash
-    /// before the drive: `file:///C:/Users/.../base.git`, from which
+    /// before the drive: `file:///C:/Users/example/base.git`, from which
     /// `gripspace_name` correctly reads `base`.
     fn file_url(path: &std::path::Path) -> String {
         let s = path.display().to_string().replace('\\', "/");

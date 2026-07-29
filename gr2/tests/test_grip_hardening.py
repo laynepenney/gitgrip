@@ -51,7 +51,7 @@ def workspace(tmp_path: Path) -> Path:
     _init_repo(ws / "recall", name="recall")
     git(ws / "recall", "remote", "add", "origin", "https://github.com/synapt-dev/recall")
     _init_repo(ws / "config", name="config")
-    git(ws / "config", "remote", "add", "origin", "https://github.com/synapt-dev/config")
+    git(ws / "config", "remote", "add", "origin", "https://github.com/example-org/config")
     return ws
 
 

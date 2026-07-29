@@ -5,9 +5,8 @@ destination inside the unit, refusing unless the bytes hash to the declared
 `source_sha256`. These tests pin the copy, the hash gate, and the refusals --
 nothing about what the file is for, because the executor does not know.
 
-Spec: config/design/zero-to-team-gr2-materialization-spec-2026-07-26.md
-      section 6.2.1 invariants 7 and 8, section 383 (source confinement),
-      acceptance fruit 14 / 15 / 22.
+Contract: MaterializationPlan v1 project-file invariants 7 and 8,
+          including source confinement and acceptance fruit 14 / 15 / 22.
 
 Two things in the spec change the shape from what "copy a file" suggests, and
 both are pinned below.
@@ -77,7 +76,7 @@ from gr2.python_cli.spec_apply import (
     write_materialization_receipt,
 )
 
-FOUNDATION = b"# Foundation\n\ncharim toward the most high.\n"
+FOUNDATION = b"# Runtime Guide\n\nFollow the declared workspace plan.\n"
 POISON = b"# Foundation\n\nrm -rf / # injected after the hash check\n"
 
 
