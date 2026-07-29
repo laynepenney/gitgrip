@@ -23,8 +23,8 @@ behavior; it defines the target design for `gr2 pr` commands.
 ### 2.1 PR Group
 
 A **PR group** is a set of related PRs across repos that belong to the same
-logical change. When an agent works on a lane that touches `grip`, `synapt`, and
-`synapt-private`, `gr2 pr create` produces one PR group with three child PRs.
+logical change. When an agent works on a lane that touches `app`, `api`, and
+`billing`, `gr2 pr create` produces one PR group with three child PRs.
 
 ```json
 {
@@ -38,17 +38,17 @@ logical change. When an agent works on a lane that touches `grip`, `synapt`, and
   "head_branch": "design/hook-event-contract",
   "prs": [
     {
-      "repo": "grip",
+      "repo": "app",
       "pr_number": 570,
-      "url": "https://github.com/synapt-dev/grip/pull/570",
+      "url": "https://github.com/example-org/app/pull/570",
       "status": "open",
       "checks_status": "pending",
       "reviews": []
     },
     {
-      "repo": "synapt",
+      "repo": "api",
       "pr_number": 583,
-      "url": "https://github.com/synapt-dev/synapt/pull/583",
+      "url": "https://github.com/example-org/api/pull/583",
       "status": "open",
       "checks_status": "passing",
       "reviews": [{"reviewer": "sentinel", "verdict": "approved"}]
@@ -124,8 +124,8 @@ Flow:
 5. Update each child PR's body to include cross-links:
    ```
    ## Linked PRs (gr2 group: pg_8a3f1b2c)
-   - synapt-dev/grip#570
-   - synapt-dev/synapt#583
+   - example-org/app#570
+   - example-org/api#583
    ```
 6. Emit `pr.created` event.
 7. Print summary.
@@ -163,10 +163,10 @@ Lane: apollo/design/hook-event-contract -> sprint-20
 
   Repo              PR    Checks    Reviews           Mergeable
   grip              #570  passing   1/1 required      yes
-  synapt            #583  pending   0/1 required      no (checks pending)
+  api               #583  pending   0/1 required      no (checks pending)
 
   Group state: checks_pending
-  Blocking: synapt checks pending
+  Blocking: api checks pending
 ```
 
 If any child PR has status changes since the last cached state, emit
@@ -246,8 +246,8 @@ Flow:
 
 ## 4. Merge Ordering
 
-When merging a PR group, the order matters. If `synapt-private` depends on
-`synapt`, merging `synapt-private` first could break CI on the base branch.
+When merging a PR group, the order matters. If `billing` depends on
+`api`, merging `billing` first could break CI on the base branch.
 
 ### 4.1 Default Order
 
@@ -262,7 +262,7 @@ The workspace spec can declare merge ordering:
 ```toml
 [workspace_constraints.merge_order]
 strategy = "explicit"
-order = ["grip", "synapt", "synapt-private"]
+order = ["app", "api", "billing"]
 ```
 
 ### 4.3 Dependency-Aware Order (Future)
@@ -408,14 +408,13 @@ keeps the event stream clean: consumers see either one `pr.merged` or one
 
 ### 7.1 Compiled Requirements
 
-Review requirements come from the compiled WorkspaceSpec (originally from
-premium's org policy):
+Review requirements come from the declared WorkspaceSpec:
 
 ```toml
 [workspace_constraints.required_reviewers]
-grip = 1
-synapt = 1
-synapt-private = 2
+app = 1
+api = 1
+billing = 2
 ```
 
 ### 7.2 Evaluation
@@ -434,7 +433,7 @@ lifecycle integrates it into the `mergeable` gate.
 
 Review requirement **evaluation** (counting approvals against a threshold) is
 OSS. Review requirement **definition** (who can review, role-based overrides,
-org-level policies) is premium. gr2 only consumes the compiled numeric
+org-level policies) is out of scope for OSS. gr2 only consumes the compiled numeric
 threshold.
 
 ## 8. Cross-Link Format
@@ -452,14 +451,13 @@ canonical GitHub repository name.
 
 | Repo | PR |
 |------|----|
-| grip | synapt-dev/grip#570 |
-| synapt | synapt-dev/synapt#583 |
-| synapt-private | synapt-dev/premium#291 |
+| app | example-org/app#570 |
+| api | example-org/api#583 |
 
 Lane: `apollo/design/hook-event-contract`
 Base: `sprint-20`
 
-*Managed by [gr2](https://github.com/synapt-dev/grip)*
+*Managed by gr2*
 ```
 
 This section is:
@@ -497,7 +495,7 @@ When `gr2 pr merge` completes successfully:
 - The PR group is marked as `merged`.
 - The lane is eligible for archival (`lane.archived` event).
 - Actual archival (deleting the lane root, cleaning up branches) is a separate
-  command or automated by spawn.
+  command or by a separate operation.
 
 ## 10. Relation to gr1
 

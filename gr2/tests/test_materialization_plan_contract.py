@@ -1392,7 +1392,7 @@ class TestConsumptionIsSnapshotBound(PlanContractTestBase):
         returning different contents per iteration passed the identity screen
         and then persisted `secret` into the receipt anyway.
 
-        That is a premium-boundary failure, not just a correctness one: the
+        That is a boundary failure, not just a correctness one: the
         receipt's whole claim is that it carries no identity-bearing content.
         Not in Atlas's witness; found by asking what else is read after it is
         checked."""

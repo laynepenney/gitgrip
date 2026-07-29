@@ -74,7 +74,6 @@ class ExecTestBase(unittest.TestCase):
             "current": {"lane_name": self.lane_name}
         }
         mock.load_lane_doc.return_value = self.lane_doc
-        mock.load_unit_rebind_doc.return_value = None
         mock.load_lane_leases.return_value = []
         mock.conflicting_leases.return_value = ([], [])
         mock.parse_repo_list.side_effect = lambda x: x.split(",")

@@ -43,47 +43,47 @@ The workspace file only declares:
 - workspace identity
 - repos
 - units
-- optional workspace-wide constraints compiled from premium
+- optional workspace-wide constraints
 
 Example:
 
 ```toml
-workspace_name = "synapt-codex"
+workspace_name = "example-workspace"
 
 [[repos]]
-name = "grip"
-path = "repos/grip"
-url = "git@github.com:synapt-dev/grip.git"
+name = "app"
+path = "repos/app"
+url = "git@github.com:example-org/app.git"
 
 [[repos]]
-name = "synapt"
-path = "repos/synapt"
-url = "git@github.com:synapt-dev/synapt.git"
+name = "api"
+path = "repos/api"
+url = "git@github.com:example-org/api.git"
 
 [[repos]]
-name = "synapt-private"
-path = "repos/synapt-private"
-url = "git@github.com:synapt-dev/premium.git"
+name = "billing"
+path = "repos/billing"
+url = "git@github.com:example-org/billing.git"
 
 [[units]]
-name = "atlas"
-path = "agents/atlas"
-agent_id = "atlas-agent"
-repos = ["grip", "synapt", "synapt-private"]
+name = "alpha"
+path = "agents/alpha"
+agent_id = "alpha-agent"
+repos = ["app", "api", "billing"]
 
 [[units]]
-name = "apollo"
-path = "agents/apollo"
-agent_id = "apollo-agent"
-repos = ["grip", "synapt", "synapt-private"]
+name = "beta"
+path = "agents/beta"
+agent_id = "beta-agent"
+repos = ["app", "api", "billing"]
 
 [workspace_constraints]
 max_concurrent_edit_leases_global = 2
 
 [workspace_constraints.required_reviewers]
-grip = 1
-synapt = 1
-synapt-private = 2
+app = 1
+api = 1
+billing = 2
 ```
 
 Rules:
@@ -116,7 +116,7 @@ The starting schema should be small and explicit.
 version = 1
 
 [repo]
-name = "synapt"
+name = "api"
 
 [[files.link]]
 src = "CLAUDE.md"
@@ -125,7 +125,7 @@ if_exists = "error"
 
 [[files.copy]]
 src = ".env.example"
-dest = "{unit_root}/repos/synapt/.env.example"
+dest = "{unit_root}/repos/api/.env.example"
 if_exists = "error"
 
 [[lifecycle.on_materialize]]
@@ -299,7 +299,7 @@ Important rule:
 
 These are grounded in the actual repos we have.
 
-### 5.1 `grip`
+### 5.1 `app`
 
 `grip` is the workspace router. Its repo-local hooks should stay light.
 
@@ -309,7 +309,7 @@ Example `.gr2/hooks.toml`:
 version = 1
 
 [repo]
-name = "grip"
+name = "app"
 
 [policy]
 required_reviewers = 1
@@ -329,10 +329,9 @@ Why:
 - `grip` should not auto-run expensive hooks on every enter
 - repo policy can still declare reviewer count and preferred test surface
 
-### 5.2 `synapt`
+### 5.2 `api`
 
-`synapt` is Python and often needs an editable install in the active
-workspace.
+`api` is Python and often needs an editable install in the active workspace.
 
 Example:
 
@@ -340,7 +339,7 @@ Example:
 version = 1
 
 [repo]
-name = "synapt"
+name = "api"
 
 [policy]
 required_reviewers = 1
@@ -356,7 +355,7 @@ on_failure = "block"
 
 [[lifecycle.on_enter]]
 name = "workspace-doctor"
-command = "python -m synapt.doctor --workspace {workspace_root}"
+command = "python -m api.doctor --workspace {workspace_root}"
 cwd = "{repo_root}"
 when = "manual"
 ```
@@ -367,10 +366,9 @@ Why:
 - making that behavior repo-local is better than hiding it in a workspace-level
   manifest
 
-### 5.3 `synapt-private`
+### 5.3 Private config repo
 
-`synapt-private` is the local worktree alias for the premium repo and already
-carries private config and stronger review needs.
+A private config repo carries private configuration and stronger review needs.
 
 Example:
 
@@ -378,7 +376,7 @@ Example:
 version = 1
 
 [repo]
-name = "synapt-private"
+name = "billing"
 
 [policy]
 required_reviewers = 2
@@ -386,8 +384,8 @@ allow_lane_kinds = ["feature", "review"]
 preferred_exec = ["pytest tests/ -q"]
 
 [[files.link]]
-src = "config/models.json"
-dest = "{lane_root}/repos/synapt-private/.gr2-linked/models.json"
+src = "config/settings.json"
+dest = "{lane_root}/repos/billing/.gr2-linked/settings.json"
 if_exists = "error"
 
 [[lifecycle.on_materialize]]
@@ -412,7 +410,7 @@ Why:
 
 ## 6. What Materialization Actually Does
 
-For a lane touching `grip`, `synapt`, and `synapt-private`, `gr2` should:
+For a lane touching `app`, `api`, and `billing`, `gr2` should:
 
 1. create the lane root
 2. materialize the lane-local or unit-local checkouts
@@ -443,13 +441,6 @@ That means:
 - repo-local lifecycle behavior
 - repo-local policy defaults
 - repo-local preferred commands
-
-### Premium owns
-
-- durable identity
-- org roles
-- entitlements
-- compilation of org/policy into workspace constraints
 
 ## 8. Migration Path
 
@@ -499,20 +490,10 @@ But keeps:
 If moving from Python `gr2` to Rust `gr2` requires users to relearn the model,
 the migration failed.
 
-## 8.4 `agents.toml` Relationship
+## 8.4 Runtime Contract
 
-Current `agents.toml` should be treated as input to the compilation step, not
-as a parallel runtime authority once Python `gr2` is active.
-
-Recommended direction:
-
-- `agents.toml` remains a premium/control-plane input during transition
-- compilation resolves it into:
-  - workspace `units`
-  - `agent_id`
-  - repo access
-  - lane limits
-- `WorkspaceSpec` becomes the OSS runtime contract
+`WorkspaceSpec` is the runtime contract gr2 reads. gr2 accepts the fields that
+spec declares and does not consume any other configuration source at runtime.
 
 ## 9. Python-First CLI Implication
 
@@ -565,9 +546,9 @@ Prototype this model in Python before touching Rust:
    - `on_enter`
    - `on_exit`
 4. validate with:
-   - `grip`
-   - `synapt`
-   - `synapt-private`
+   - `app`
+   - `api`
+   - `billing`
 
 The success condition is simple:
 

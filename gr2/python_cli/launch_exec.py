@@ -1,17 +1,17 @@
 """Neutral launch primitive (S5).
 
 Executes a LaunchPlan entry: run this argv, in this working directory, with
-these environment KEY NAMES. gr2 cannot tell a synapt agent team from any other
-multi-repo workspace -- it sees an opaque `unit_key`, an argv, and a set of env
-key names whose VALUES premium supplies in memory at launch.
+these environment KEY NAMES. gr2 cannot tell one caller's workspace from another -- it sees an opaque
+`unit_key`, an argv, and a set of env key names whose VALUES the caller supplies
+in memory at launch.
 
-Design: `synapt-spawn-premium-compiler-2026-07-27.md` §2 (LaunchPlan is the
+Design: the spawn launch contract, §2 (LaunchPlan is the
 opaque tier) and §5 (cold start, no `--resume`).
 
 THE BOUNDARY CORRECTION THIS SLICE EXISTS TO MAKE
 --------------------------------------------------
 gr1's spawn builds an on-disk launch script containing `export KEY=value` lines.
-That puts identity environment VALUES on disk -- SYNAPT_AGENT_ID, org, channel
+That puts the caller's environment VALUES on disk -- every declared key
 bindings -- inside the OSS layer, in a file that outlives the launch.
 
 The neutral plan carries key NAMES; the values are injected in memory and never
@@ -104,7 +104,7 @@ class LaunchEntry:
 def _require_exact_env(entry: LaunchEntry, values: Mapping[str, str]) -> dict[str, str]:
     """The allowlist is exact in BOTH directions.
 
-    Extra: premium supplied a value for a key the plan never declared. The plan
+    Extra: the caller supplied a value for a key the plan never declared. The plan
     is what a reviewer reads to know what a process receives, so a value outside
     it is invisible to review.
 
@@ -146,9 +146,9 @@ def _child_environment(entry: LaunchEntry, values: Mapping[str, str]) -> dict[st
     """The child's COMPLETE environment, built rather than inherited.
 
     Sentinel, #825: passing `{**os.environ, **declared}` inherits the parent's
-    entire environment, so a child sees ambient premium variables that were
-    never declared anywhere -- reproduced on a live host, where the coordinator's
-    SYNAPT_PREMIUM_FEATURES and SYNAPT_LOOP_INTERVAL reached a spawned agent.
+    entire environment, so a child sees ambient variables that were never declared
+    anywhere -- reproduced on a live host, where variables belonging to the
+    launching process reached a spawned child.
 
     My allowlist check was exact in two directions and both were about the
     SUPPLIED dict: a value for an undeclared key, and a declared key with no
@@ -161,9 +161,9 @@ def _child_environment(entry: LaunchEntry, values: Mapping[str, str]) -> dict[st
     inherited implicitly. Everything present is there because something declared
     it or because this list names it.
 
-    That matters beyond tidiness: the demo claims identity is injected in memory
-    with nothing leaked, and inheriting os.environ leaks the COORDINATOR'S
-    premium environment into every spawned agent."""
+    That matters beyond tidiness: a caller may pass values it does not want
+    written anywhere, and inheriting os.environ would put the launching
+    process's entire environment into every child regardless."""
     child = _require_exact_env(entry, values)
     for key in _LAUNCHER_OWNED_PASSTHROUGH:
         ambient = os.environ.get(key)

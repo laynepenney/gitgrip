@@ -115,20 +115,6 @@ def exec_status_payload(
     lane_name = _resolve_lane_name(workspace_root, owner_unit, lane_name)
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
 
-    rebind_doc = lane_proto.load_unit_rebind_doc(workspace_root, owner_unit)
-    if rebind_doc:
-        affected = {item["lane_name"]: item for item in rebind_doc.get("affected_lanes", [])}
-        if lane_name in affected:
-            return _blocked_payload(
-                reason="unit-rebound",
-                lane_doc=lane_doc,
-                owner_unit=owner_unit,
-                extra={
-                    "new_owner_unit": rebind_doc["new_owner_unit"],
-                    "hint": "create a continuation lane under the new unit before resuming work",
-                },
-            )
-
     leases = lane_proto.load_lane_leases(workspace_root, owner_unit, lane_name)
     active_conflicts, stale_conflicts = lane_proto.conflicting_leases(leases, actor, "exec")
     if active_conflicts:

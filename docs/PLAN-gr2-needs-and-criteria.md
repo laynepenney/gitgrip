@@ -49,17 +49,17 @@ So the system must make this split legible.
 
 ## Synapt Infrastructure Principle
 
-`gr2` should be the local workspace substrate that Synapt compiles into.
+`gr2` should be the local workspace substrate a declared spec materializes into.
 
 That means:
 
-- premium org shape compiles into `WorkspaceSpec` and lane policy
+- `gr2` accepts a declared `WorkspaceSpec` and lane policy
 - local workspaces materialize teams, agents, repo scope, and context surfaces
 - channels, recall, and agent lanes should feel native to the workspace model
 
 This is still compatible with the local-first split:
 
-- premium owns org identity, policy, entitlements, and coordination semantics
+- gr2 does not own org identity, policy, entitlements, or coordination semantics
 - `gr2` owns local workspace materialization and lane execution surfaces
 
 But the user experience should feel integrated rather than patched together.

@@ -23,7 +23,7 @@ more legible.
 And for Synapt, it is more than that:
 
 - `gr2` is the workspace infrastructure layer
-- Synapt org shape should compile into `gr2`
+- `gr2` should accept a declared workspace shape
 - channels, recall, and agent lanes should feel native to the workspace
 
 It should make it easy to:
@@ -181,11 +181,10 @@ That means:
 
 - a Synapt-backed workspace should not treat channels, recall, or agent identity
   as optional afterthoughts
-- a premium org/control-plane should compile into `WorkspaceSpec` and lane
-  policy rather than bypassing the workspace model
-- the local workspace should materialize the result of org, team, agent, and
-  access policy decisions without leaking premium-only control-plane semantics
-  into the wrong layer
+- a declared `WorkspaceSpec` and lane policy should drive the workspace model
+  rather than bypassing it
+- the local workspace should materialize what the spec declares, without
+  taking on decisions that belong to another layer
 
 The user should be able to think:
 

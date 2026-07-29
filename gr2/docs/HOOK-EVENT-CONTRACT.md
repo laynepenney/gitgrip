@@ -1,7 +1,7 @@
 # gr2 Hook/Event Contract
 
 This document defines the event contract for gr2: what events the system emits,
-their schema, delivery model, and how consumers (spawn, recall, channel bridge)
+their schema, delivery model, and how consumers
 integrate.
 
 This is a **design document** for Sprint 20. It does not describe current
@@ -13,7 +13,7 @@ behavior; it defines the target contract.
 - Events are durable, append-only, and replayable.
 - Consumers read events at their own pace via cursors. gr2 does not block on
   delivery.
-- The event schema is the stable API between OSS gr2 and premium spawn.
+- The event schema is the stable API between gr2 and any consumer.
 - Hook execution is one event source among several, not the only one.
 
 ## 2. Event Sources
@@ -45,13 +45,13 @@ fields sit at the same level. There is no nested `payload` wrapper.
   "seq": 42,
   "timestamp": "2026-04-15T16:30:00+00:00",
   "type": "lane.entered",
-  "workspace": "synapt-dev",
+  "workspace": "example-workspace",
   "actor": "agent:apollo",
-  "agent_id": "agent_apollo_xyz789",
+  "agent_id": "agent_7f3a9c",
   "owner_unit": "apollo",
   "lane_name": "feat/hook-events",
   "lane_type": "feature",
-  "repos": ["grip", "synapt"]
+  "repos": ["app", "api"]
 }
 ```
 
@@ -76,7 +76,7 @@ top-level object without unwrapping a nested payload.
 |-------|------|----------|-------------|
 | `workspace` | string | yes | Workspace name from WorkspaceSpec. |
 | `actor` | string | yes | Who triggered the event. Format: `agent:<name>`, `human:<name>`, or `system`. |
-| `agent_id` | string | no | Persistent agent identity from premium. Opaque in OSS. |
+| `agent_id` | string | no | Opaque caller-supplied identifier. gr2 stores and echoes it; it never parses or derives from it. |
 | `owner_unit` | string | yes | Unit that owns the context where this event occurred. |
 
 **Domain fields** vary by event type. See section 3.2 for the fields each event
@@ -286,7 +286,6 @@ Reading flow:
 |----------|----------|--------------|
 | **channel_bridge** | OSS | Derives `#dev`-style notifications from events. Posts to channel transport. |
 | **recall_indexer** | OSS | Indexes events into recall for searchable lane/activity history. |
-| **spawn_watcher** | Premium | Watches for events that trigger agent orchestration (lane assignments, PR readiness, hook failures). |
 
 ### 5.3 Consumer Contract
 
@@ -300,27 +299,20 @@ Consumers must:
 - Handle schema version bumps by checking `version` and ignoring events with
   a version they do not understand.
 
-### 5.4 Spawn Integration (Premium)
+### 5.4 Downstream Consumers
 
-Spawn is the premium consumer that orchestrates multi-agent workflows. It
-consumes the same outbox as OSS consumers but interprets events through the
-lens of org policy and agent identity.
+Consumers other than those listed above read the same outbox, through the same
+cursor mechanism and under the same contract in 5.3.
+What any of them does with an event is outside this document.
 
-Events that spawn cares about:
+One property of the outbox IS gr2's to state, because it is what keeps the
+event stream acyclic:
 
-| Event | Spawn Reaction |
-|-------|----------------|
-| `lane.created` | May assign agent to lane based on policy. |
-| `pr.created` | May assign reviewers based on compiled review requirements. |
-| `pr.checks_passed` | May trigger merge if auto-merge policy is active. |
-| `pr.checks_failed` | May notify owning agent or escalate. |
-| `hook.failed` with `on_failure: "block"` | May retry, reassign, or alert. |
-| `lease.expired` | May reclaim the lane or notify the agent. |
-| `sync.conflict` | May pause agent work on conflicting repos. |
-
-Spawn does not write to the outbox. Spawn's actions (assigning agents,
-triggering merges) flow back through the gr2 CLI, which then emits its own
-events. This prevents circular event chains.
+**Consumers never write to the outbox.** gr2 is the only writer. A consumer
+that wants to change workspace state invokes the gr2 CLI, and gr2 emits the
+resulting events itself. So an event can never be caused directly by another
+consumer's reaction to an event, and no consumer can manufacture history it did
+not cause.
 
 ## 6. Hook Execution Contract
 
@@ -410,7 +402,7 @@ emit(
     payload={
         "lane_name": "feat/hook-events",
         "lane_type": "feature",
-        "repos": ["grip", "synapt"],
+        "repos": ["app", "api"],
     },
 )
 
@@ -419,12 +411,12 @@ emit(
     event_type=EventType.HOOK_FAILED,
     workspace_root=workspace_root,
     actor="agent:apollo",
-    agent_id="agent_apollo_xyz789",
+    agent_id="agent_7f3a9c",
     owner_unit="apollo",
     payload={
         "stage": "on_materialize",
         "hook_name": "editable-install",
-        "repo": "synapt",
+        "repo": "api",
         "duration_ms": 3400,
         "exit_code": 1,
         "on_failure": "block",
@@ -519,7 +511,7 @@ produces a channel message.
 Events not listed (hook.started, hook.completed, hook.skipped, lease.acquired,
 lease.released, sync.repo_updated, workspace.file_projected, etc.) are **not**
 posted to channels by default. They exist in the outbox for recall indexing and
-spawn, but would be noise in `#dev`.
+other consumers, but would be noise in a chat channel.
 
 The channel bridge can be configured to include or exclude specific event types
 via a filter file at `.grip/events/channel_filter.toml`:
@@ -558,7 +550,7 @@ Query examples that this enables:
 - `recall_timeline(actor="agent:apollo", start="2026-04-15")` shows Apollo's
   full activity timeline.
 
-The recall indexer does **not** need premium logic. It consumes the same neutral
+The recall indexer needs no external logic. It consumes the same neutral
 event stream as the channel bridge.
 
 ## 10. Failure Modes and Recovery
@@ -665,13 +657,13 @@ This document is a dependency for:
    on the domain (sync uses per-repo events; PR uses aggregate events with
    per-repo detail in payload arrays).
 3. **Webhook bridge**: Should gr2 support an HTTP webhook consumer in addition to
-   file-based cursor consumers? This would be relevant for remote spawn
-   deployments.
+   file-based cursor consumers? This would be relevant for consumers that do not
+   share a filesystem with the workspace.
 4. **SQLite alternative**: For workspaces with heavy event traffic (many agents,
    frequent operations), should the outbox be SQLite WAL instead of JSONL?
    JSONL is simpler and auditable; SQLite handles concurrent writes better.
 5. **Event signing**: Should events carry a signature or checksum for tamper
-   detection? Relevant if the outbox is consumed by premium policy enforcement.
+   detection? Relevant if the outbox is consumed by external policy enforcement.
 
 ## 14. Failure Recovery Contract
 
@@ -700,15 +692,15 @@ Marker format:
   "operation": "sync",
   "stage": "on_enter",
   "hook_name": "editable-install",
-  "repo": "synapt",
+  "repo": "api",
   "owner_unit": "apollo",
   "lane_name": "feat/hook-events",
   "failed_at": "2026-04-15T17:00:00+00:00",
   "event_id": "9f3a7b2c1d4e8f06",
   "partial_state": {
-    "repos_completed": ["grip"],
-    "repos_pending": ["synapt-private"],
-    "repo_failed": "synapt"
+    "repos_completed": ["app"],
+    "repos_pending": ["billing"],
+    "repo_failed": "api"
   },
   "resolved": false
 }
@@ -726,8 +718,7 @@ Marker behavior:
   `failure.resolved` with payload `{operation_id, resolved_by, resolution, lane_name}`.
 
 Why no automatic retry: retrying a failed hook might produce the same failure.
-The agent (or spawn) has context about whether retry is appropriate. gr2 does
-not guess.
+The caller has context about whether retry is appropriate. gr2 does not guess.
 
 Why no rollback: reverting git operations (undo fetch+merge, undo checkout) is
 dangerous, sometimes impossible (remote state changed), and introduces a second
@@ -775,7 +766,7 @@ Leases use TTL-first expiry with optional heartbeat renewal.
 - Notification routing to the original holder is a **channel_bridge consumer
   responsibility**, not a core gr2 concern. The `lease.force_broken` event
   carries `broken_by` and the original holder's identity in context fields.
-  The channel bridge (or spawn_watcher) decides how and where to deliver the
+  The channel bridge decides how and where to deliver the
   notification based on its own routing rules.
 
 ### 14.3 Dirty State on Lane Switch
@@ -792,8 +783,8 @@ Lane transitions handle uncommitted changes via an explicit `--dirty` mode.
 
 **Event payloads for dirty state**:
 
-- `lane.exited` with `stashed_repos: ["synapt"]` when stash mode is used.
-- `lane.exited` with `discarded_repos: ["synapt"]` when discard mode is used.
+- `lane.exited` with `stashed_repos: ["api"]` when stash mode is used.
+- `lane.exited` with `discarded_repos: ["api"]` when discard mode is used.
 - No `lane.exited` event when block mode prevents the exit.
 
 **Re-entry with stashed state**:

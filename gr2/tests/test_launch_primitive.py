@@ -1,6 +1,6 @@
 """Neutral launch primitive (S5) -- prove the team WAKES.
 
-Design: `synapt-spawn-premium-compiler-2026-07-27.md` §2 (LaunchPlan is the
+Design: the spawn launch contract, §2 (LaunchPlan is the
 opaque tier) and §5 (cold start, no `--resume`).
 
 Three probes here exist because the HAPPY PATH CANNOT SEE THEIR FAILURES, which
@@ -196,14 +196,14 @@ class TestTheBoundary(LaunchTestBase):
         no value. Neither asks what the child ACTUALLY ENDS UP WITH. Receiving
         the right thing and receiving ONLY that are different claims.
 
-        An ambient premium variable in the coordinator's own environment reached
+        An ambient variable in the coordinator's own environment reached
         spawned agents through `{**os.environ, **declared}` while both existing
         directions stayed green. The environment is now CONSTRUCTED, so this
         asserts the child's full env equals the declared set plus the named
         launcher-owned mechanics, and nothing else."""
         from gr2.python_cli.launch_exec import _LAUNCHER_OWNED_PASSTHROUGH
 
-        marker = "AMBIENT_PREMIUM_THAT_MUST_NOT_INHERIT"
+        marker = "AMBIENT_VALUE_THAT_MUST_NOT_INHERIT"
         os.environ[marker] = "leaked-from-the-coordinator"
         self.addCleanup(os.environ.pop, marker, None)
 

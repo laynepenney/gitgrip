@@ -90,7 +90,7 @@ Keep the current layout. Document the pattern explicitly. Add a `gr sync-file` (
 
 ### Option D: Semantic Split (Recommended)
 
-Split by semantic role. **Coordination state** (config repo: agent prompts, process docs, sprint plans, skills) gets a shared clone at the gripspace root. **Code repos** (recall, premium, grip, site) remain per-agent clones.
+Split by semantic role. **Coordination state** (config repo: agent prompts, process docs, sprint plans, skills) gets a shared clone at the gripspace root. **Code repos** (recall, grip, site) remain per-agent clones.
 
 This is the control-plane-vs-data-plane split:
 - **Control plane** (config): shared, read-mostly, low-contention. Edits are infrequent and coordination-oriented. Shared clone is safe because write contention is low and the content is inherently shared
@@ -140,7 +140,7 @@ Based on review feedback, the binary control-plane/data-plane distinction holds 
 |------|---------------|-----------|
 | **config** | Control-plane (shared) | Coordination state: prompts, process, sprint plans |
 | **recall** | Data-plane (per-agent) | Code with high write concurrency |
-| **premium** | Data-plane (per-agent) | Code with high write concurrency |
+| **billing** | Data-plane (per-agent) | Code with high write concurrency |
 | **grip** | Data-plane (per-agent) | Code with high write concurrency |
 | **site** | Data-plane (per-agent) | Mixed (blog content + Eleventy build). Lean code due to build/dev workflow |
 | **codememo-benchmark** | Control-plane (shared) | Low edit frequency, pinned versions |

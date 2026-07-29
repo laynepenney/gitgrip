@@ -178,7 +178,7 @@ class TestGripSnapshotCLI:
         assert result.exit_code != 0
 
     def test_snapshot_multiple_repos(self, workspace: Path) -> None:
-        _init_repo(workspace / "premium", name="premium")
+        _init_repo(workspace / "billing", name="billing")
         runner.invoke(app, ["grip", "init", str(workspace)])
         result = runner.invoke(
             app,
@@ -187,14 +187,14 @@ class TestGripSnapshotCLI:
                 "snapshot",
                 str(workspace),
                 "--repos",
-                "recall,premium",
+                "recall,billing",
                 "--json",
             ],
         )
         assert result.exit_code == 0
         data = json.loads(result.stdout)
         assert "recall" in data["repos"]
-        assert "premium" in data["repos"]
+        assert "billing" in data["repos"]
 
 
 # ---------------------------------------------------------------------------

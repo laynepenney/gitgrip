@@ -196,12 +196,12 @@ class TestEmit:
             workspace_root=workspace,
             actor="agent:apollo",
             owner_unit="apollo",
-            agent_id="agent_apollo_xyz789",
+            agent_id="agent_7f3a9c",
             payload={"lane_name": "feat/test", "lane_type": "feature", "repos": ["grip"]},
         )
         outbox = workspace / ".grip" / "events" / "outbox.jsonl"
         event = json.loads(outbox.read_text().strip())
-        assert event["agent_id"] == "agent_apollo_xyz789"
+        assert event["agent_id"] == "agent_7f3a9c"
 
     def test_agent_id_absent_when_not_provided(self, workspace: Path):
         from gr2.python_cli.events import emit, EventType
