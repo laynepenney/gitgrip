@@ -3,8 +3,8 @@
 The last two materialization handlers. With these, the A -> B -> C -> D path is
 complete: contract, clones, projections, environments.
 
-Spec: config/design/zero-to-team-gr2-materialization-spec-2026-07-26.md
-      section 9.2, section 6.2.1 invariant 6, acceptance fruit 10/11/12.
+Contract: MaterializationPlan v1 environment invariant 6 and
+          acceptance fruit 10/11/12.
 
 Working, not exhaustively hardened (Layne's 2026-07-27 prototype doctrine).
 

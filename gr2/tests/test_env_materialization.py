@@ -3,8 +3,8 @@
 The last two materialization handlers. With these the A -> B -> C -> D path is
 complete.
 
-Spec: config/design/zero-to-team-gr2-materialization-spec-2026-07-26.md
-      section 9.2, section 6.2.1 invariant 6, acceptance fruit 10/11/12.
+Contract: MaterializationPlan v1 environment invariant 6 and
+          acceptance fruit 10/11/12.
 
 Prototype posture (Layne 2026-07-27): working end-to-end, not exhaustively
 hardened. The probes below cover the guards the spec names explicitly; broader

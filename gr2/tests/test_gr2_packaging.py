@@ -60,7 +60,7 @@ def test_gr2_overlay_still_imports_unprefixed(tmp_path: Path) -> None:
 
 
 def test_gr2_overlay_alias_resolves(tmp_path: Path) -> None:
-    """gr2.overlay (config#491 gap#13) must resolve, and to the same physical
+    """gr2.overlay must resolve to the same physical
     file as gr2_overlay -- it's a compat alias, not a fork."""
     result = _run(
         [
@@ -77,7 +77,7 @@ def test_gr2_overlay_alias_resolves(tmp_path: Path) -> None:
 
 def test_pinned_plan_schema_is_packaged_and_matches_sha(tmp_path: Path) -> None:
     """The pinned MaterializationPlan v1 schema must ship INSIDE the installed
-    package (config#492), not merely exist in the source tree -- and its bytes
+    package, not merely exist in the source tree -- and its bytes
     must match the pinned SHA-256."""
     result = _run(
         [

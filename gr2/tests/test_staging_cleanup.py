@@ -5,8 +5,7 @@ surface with a copy. C stages, projects, and publishes a receipt, and deletes
 nothing. This slice is the only thing in the system permitted to remove a
 staged input.
 
-Spec: config/design/zero-to-team-gr2-materialization-spec-2026-07-26.md
-      section 6.2.1 invariant 8.
+Contract: MaterializationPlan v1 staged-input durability invariant 8.
 
     "Do not delete a staged project-file input until the final materialization
     receipt containing that operation's evidence has been atomically published
@@ -93,7 +92,7 @@ from gr2.python_cli.staging_cleanup import (
     cleanup_staged_inputs,
 )
 
-FOUNDATION = b"# Foundation\n\ncharim toward the most high.\n"
+FOUNDATION = b"# Runtime Guide\n\nFollow the declared workspace plan.\n"
 
 
 class StagingCleanupTestBase(unittest.TestCase):

@@ -604,10 +604,10 @@ Closes #130
 ```
 Griptrees
 
-  feat-auth -> /Users/layne/Development/feat-auth
+  feat-auth -> /Users/example/Development/feat-auth
 
 ⚠ Found unregistered griptrees:
-  codi-dev -> /Users/layne/Development/codi-dev (unregistered)
+  codi-dev -> /Users/example/Development/codi-dev (unregistered)
 
 These griptrees point to this workspace but are not in griptrees.json.
 You can manually add them to griptrees.json if needed.
@@ -626,7 +626,7 @@ You can manually add them to griptrees.json if needed.
 
 **Problem**: When a branch is checked out in another worktree, git gives a cryptic error:
 ```
-fatal: 'main' is already used by worktree at '/Users/layne/Development/codi-workspace/gitgrip'
+fatal: 'main' is already used by worktree at '/Users/example/Development/codi-workspace/gitgrip'
 ```
 
 **Solution**: Enhanced error handling in `checkout_branch()` and `create_and_checkout_branch()` to detect worktree conflicts and provide actionable guidance:
@@ -763,7 +763,7 @@ gh pr merge 16 --repo laynepenney/codi-strategy --squash --delete-branch
 
 **Raw commands used**:
 ```bash
-cd /Users/layne/Development/codi-gripspace/.gitgrip/manifests
+cd /Users/example/Development/codi-gripspace/.gitgrip/manifests
 git push -u origin codi-gripspace
 gh pr create --title "..." --body "..." --repo laynepenney/codi-workspace
 ```

@@ -3,8 +3,7 @@
 S4-A landed the plan CONTRACT: validate -> un-forgeable ValidatedPlan
 capability -> durable receipt. This is the first thing that consumes it.
 
-Spec: config/design/zero-to-team-gr2-materialization-spec-2026-07-26.md
-      section 8 (full clone contract), acceptance fruit 6/7/8/9.
+Contract: MaterializationPlan v1 clone contract and acceptance fruit 6/7/8/9.
 
 Why this is its own module rather than more of `gitops.py`: gitops is a thin
 subprocess layer over git. The substance here is POLICY -- which object sharing
