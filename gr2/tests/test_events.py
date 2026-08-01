@@ -462,14 +462,17 @@ class TestOutboxPath:
 
 class TestEmitErrorHandling:
 
-    def test_emit_does_not_raise_on_write_failure(self, workspace: Path):
-        """emit() logs to stderr but does not crash on write failure."""
-        from gr2.python_cli.events import emit, EventType
-        # Make the events directory read-only to force a write failure
+    def test_emit_fails_closed_on_write_failure(self, workspace: Path):
+        """A caller must not receive silent success when no event was recorded."""
+        from gr2.python_cli.events import EventEmitError, EventType, emit
+
+        # A file at the directory path is a deterministic failure on every
+        # runner. Permission-bit tests can stay writable under privileged users.
         events_dir = workspace / ".grip" / "events"
-        events_dir.chmod(0o444)
-        try:
-            # Should not raise
+        events_dir.rmdir()
+        events_dir.write_text("not a directory")
+
+        with pytest.raises(EventEmitError) as exc_info:
             emit(
                 event_type=EventType.LANE_ENTERED,
                 workspace_root=workspace,
@@ -477,8 +480,36 @@ class TestEmitErrorHandling:
                 owner_unit="apollo",
                 payload={"lane_name": "feat/test", "lane_type": "feature", "repos": ["grip"]},
             )
-        finally:
-            events_dir.chmod(0o755)
+
+        assert isinstance(exc_info.value.__cause__, OSError)
+
+    def test_emit_fails_closed_when_existing_sequence_cannot_be_read(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Restoring _current_seq's OSError-to-zero fallback must turn this RED."""
+        from gr2.python_cli.events import EventEmitError, EventType, _outbox_path, emit
+
+        outbox = _outbox_path(workspace)
+        outbox.write_text('{"seq":41}\n')
+        original_read_text = Path.read_text
+
+        def fail_for_outbox(path: Path, *args, **kwargs):
+            if path == outbox:
+                raise OSError("forced sequence-read failure")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", fail_for_outbox)
+        with pytest.raises(EventEmitError) as exc_info:
+            emit(
+                event_type=EventType.LANE_ENTERED,
+                workspace_root=workspace,
+                actor="agent:apollo",
+                owner_unit="apollo",
+                payload={"lane_name": "feat/test"},
+            )
+
+        assert isinstance(exc_info.value.__cause__, OSError)
+        assert outbox.read_bytes() == b'{"seq":41}\n'
 
     def test_emit_creates_events_dir_if_missing(self, workspace: Path):
         """emit() creates .grip/events/ if it doesn't exist."""
