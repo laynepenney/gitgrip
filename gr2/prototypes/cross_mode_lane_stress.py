@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -31,6 +32,10 @@ class ScenarioResult:
     holds: list[str]
     gaps: list[str]
     evidence: list[str]
+
+
+class HarnessCommandError(RuntimeError):
+    """A child command failed with its diagnostic output preserved."""
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,14 +63,24 @@ def lane_proto(root: Path) -> Path:
     return root / "gr2" / "prototypes" / "lane_workspace_prototype.py"
 
 
-def run(argv: list[str], *, capture: bool = False, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+def run(
+    argv: list[str], *, capture: bool = False, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.run(
         argv,
         cwd=cwd,
-        check=True,
+        check=False,
         text=True,
         capture_output=capture,
     )
+    if proc.returncode != 0:
+        stdout = proc.stdout or "<not captured>"
+        stderr = proc.stderr or "<not captured>"
+        raise HarnessCommandError(
+            f"child command failed with exit {proc.returncode}: {' '.join(argv)}\n"
+            f"stdout:\n{stdout}\nstderr:\n{stderr}"
+        )
+    return proc
 
 
 def init_workspace(workspace_root: Path) -> None:
@@ -788,6 +803,7 @@ def scenario_solo_human_forgets_lane(root: Path, workspace_root: Path) -> Scenar
 
 
 def scenario_global_edit_lease_cap(root: Path, workspace_root: Path) -> ScenarioResult:
+    """Verify the workspace cap sequentially; concurrency has a separate stress harness."""
     create_lane(root, workspace_root, "atlas", "feat-cap-a", "app", "feat/cap-a")
     create_lane(root, workspace_root, "apollo", "feat-cap-b", "api", "feat/cap-b")
     create_lane(root, workspace_root, "layne", "feat-cap-c", "web", "feat/cap-c")
@@ -818,7 +834,7 @@ def scenario_global_edit_lease_cap(root: Path, workspace_root: Path) -> Scenario
     evidence = [lease_c.stdout.strip(), stale_force.stdout.strip()]
 
     if lease_a.returncode == 0 and lease_b.returncode == 0 and lease_c.returncode != 0:
-        holds.append("third edit lease is blocked when global cap of 2 is reached")
+        holds.append("third sequential edit lease is blocked when global cap of 2 is reached")
     else:
         gaps.append("global edit lease cap did not block the third concurrent edit lease")
 
@@ -850,7 +866,7 @@ def scenario_global_edit_lease_cap(root: Path, workspace_root: Path) -> Scenario
     return ScenarioResult(
         scenario_id="global-edit-lease-cap",
         user_mode="cross-mode",
-        title="workspace-wide edit lease cap is enforced across all units",
+        title="workspace-wide edit lease cap is enforced sequentially across all units",
         verdict=verdict,
         holds=holds,
         gaps=gaps,
@@ -941,20 +957,23 @@ def print_human(results: list[ScenarioResult], workspace_root: Path) -> None:
 
 def main() -> int:
     args = parse_args()
-
-    if args.workspace_root:
-        workspace_root = args.workspace_root.resolve()
-        workspace_root.mkdir(parents=True, exist_ok=True)
-        results = run_scenarios(workspace_root)
-    else:
-        with tempfile.TemporaryDirectory(prefix="gr2-cross-mode-") as tmp:
-            workspace_root = Path(tmp)
+    try:
+        if args.workspace_root:
+            workspace_root = args.workspace_root.resolve()
+            workspace_root.mkdir(parents=True, exist_ok=True)
             results = run_scenarios(workspace_root)
-            if args.json:
-                print(json.dumps([asdict(result) for result in results], indent=2))
+        else:
+            with tempfile.TemporaryDirectory(prefix="gr2-cross-mode-") as tmp:
+                workspace_root = Path(tmp)
+                results = run_scenarios(workspace_root)
+                if args.json:
+                    print(json.dumps([asdict(result) for result in results], indent=2))
+                    return 0
+                print_human(results, workspace_root)
                 return 0
-            print_human(results, workspace_root)
-            return 0
+    except Exception as exc:
+        print(f"gr2 cross-mode lane stress FAILED: {exc}", file=sys.stderr)
+        return 1
 
     if args.json:
         print(json.dumps([asdict(result) for result in results], indent=2))

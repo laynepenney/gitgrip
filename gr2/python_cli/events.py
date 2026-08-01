@@ -8,13 +8,15 @@ Implements the event contract from HOOK-EVENT-CONTRACT.md sections 3-8:
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sys
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-
 
 _RESERVED_NAMES = frozenset(
     {
@@ -31,6 +33,10 @@ _RESERVED_NAMES = frozenset(
 )
 
 _ROTATION_THRESHOLD = 10 * 1024 * 1024
+
+
+class EventEmitError(RuntimeError):
+    """The event could not be durably recorded."""
 
 
 class EventType(str, Enum):
@@ -87,13 +93,33 @@ def _cursors_dir(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "events" / "cursors"
 
 
+def _lock_path(outbox: Path) -> Path:
+    return outbox.parent / "outbox.lock"
+
+
+def _event_locking_enabled() -> bool:
+    """Allow the stress harness to reproduce the pre-lock behavior."""
+    return os.environ.get("GR2_DISABLE_EVENT_LOCKING") != "1"
+
+
+@contextmanager
+def _event_write_lock(outbox: Path):
+    """Serialize sequence allocation, rotation, and append across processes."""
+    with _lock_path(outbox).open("a+") as lock_file:
+        locking_enabled = _event_locking_enabled()
+        if locking_enabled:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if locking_enabled:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _current_seq(outbox: Path) -> int:
     if not outbox.exists():
         return 0
-    try:
-        text = outbox.read_text()
-    except OSError:
-        return 0
+    text = outbox.read_text()
     last_seq = 0
     for line in text.strip().split("\n"):
         line = line.strip()
@@ -135,33 +161,67 @@ def emit(
     if collisions:
         raise ValueError(f"payload keys collide with reserved envelope/context names: {collisions}")
 
+    outbox = _outbox_path(workspace_root)
     try:
-        outbox = _outbox_path(workspace_root)
         outbox.parent.mkdir(parents=True, exist_ok=True)
+        with _event_write_lock(outbox):
+            seq = _current_seq(outbox) + 1
+            delay = float(os.environ.get("GR2_EVENT_TEST_DELAY", "0"))
+            if delay:
+                time.sleep(delay)
+            _maybe_rotate(outbox)
 
-        seq = _current_seq(outbox) + 1
-        _maybe_rotate(outbox)
+            event: dict[str, object] = {
+                "version": 1,
+                "event_id": os.urandom(8).hex(),
+                "seq": seq,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "type": str(event_type.value),
+                "workspace": workspace_root.name,
+                "actor": actor,
+                "owner_unit": owner_unit,
+            }
+            if agent_id is not None:
+                event["agent_id"] = agent_id
+            event.update(payload)
 
-        event: dict[str, object] = {
-            "version": 1,
-            "event_id": os.urandom(8).hex(),
-            "seq": seq,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "type": str(event_type.value),
-            "workspace": workspace_root.name,
-            "actor": actor,
-            "owner_unit": owner_unit,
-        }
-        if agent_id is not None:
-            event["agent_id"] = agent_id
-        event.update(payload)
-
-        with outbox.open("a") as f:
-            f.write(json.dumps(event, separators=(",", ":")) + "\n")
-            f.flush()
-
+            with outbox.open("a") as event_file:
+                event_file.write(json.dumps(event, separators=(",", ":")) + "\n")
+                event_file.flush()
+                os.fsync(event_file.fileno())
     except Exception as exc:
-        print(f"gr2: event emit failed: {exc}", file=sys.stderr)
+        raise EventEmitError(f"event emit failed for {outbox}") from exc
+
+
+def emit_after_outcome(
+    event_type: EventType,
+    workspace_root: Path,
+    actor: str,
+    owner_unit: str,
+    payload: dict[str, object],
+    *,
+    agent_id: str | None = None,
+) -> None:
+    """Report a completed outcome without replacing it on sink failure.
+
+    Callers must use this only after work that cannot honestly be reported as
+    failed. Pre-work and no-work sites use strict ``emit`` directly.
+    """
+
+    try:
+        emit(
+            event_type=event_type,
+            workspace_root=workspace_root,
+            actor=actor,
+            owner_unit=owner_unit,
+            payload=payload,
+            agent_id=agent_id,
+        )
+    except EventEmitError as exc:
+        print(
+            f"gr2: could not record {event_type.value} after its outcome completed ({exc})",
+            file=sys.stderr,
+        )
 
 
 def read_events(workspace_root: Path, consumer: str) -> list[dict[str, object]]:

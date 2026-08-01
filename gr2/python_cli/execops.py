@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from gr2.prototypes import lane_workspace_prototype as lane_proto
-from gr2.python_cli.events import emit, EventType
+from gr2.python_cli.events import EventType, emit_after_outcome
 
 
 @dataclass
@@ -281,7 +281,7 @@ def run_exec(
     parallelism = str(rows[0]["parallelism"]) if rows else "sequential"
     acquire_exec_lease(workspace_root, owner_unit, resolved_lane, actor, ttl_seconds)
 
-    emit(
+    emit_after_outcome(
         event_type=EventType.EXEC_STARTED,
         workspace_root=workspace_root,
         actor=actor,
@@ -318,7 +318,7 @@ def run_exec(
     failed_repos = [r.repo for r in exec_results if not r.succeeded]
 
     if overall == "success":
-        emit(
+        emit_after_outcome(
             event_type=EventType.EXEC_COMPLETED,
             workspace_root=workspace_root,
             actor=actor,
@@ -331,7 +331,7 @@ def run_exec(
             },
         )
     else:
-        emit(
+        emit_after_outcome(
             event_type=EventType.EXEC_FAILED,
             workspace_root=workspace_root,
             actor=actor,

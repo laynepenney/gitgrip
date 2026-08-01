@@ -8,18 +8,38 @@ import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from gr2.python_cli.app import app
-from gr2.python_cli import app as app_module
-from gr2.python_cli.platform import CreatePRRequest, PRCheck, PRRef, PRStatus
-from gr2.python_cli.syncops import run_sync
 from gr2.prototypes import lane_workspace_prototype as lane_proto
-
+from gr2.python_cli import app as app_module
+from gr2.python_cli.app import app
+from gr2.python_cli.platform import (
+    CreatePRRequest,
+    MergeMethod,
+    MergeReceipt,
+    PRCheck,
+    PRRef,
+    PRStatus,
+)
+from gr2.python_cli.syncops import run_sync
 
 runner = CliRunner()
+
+
+def _merge_receipt(repo: str, number: int, method: MergeMethod) -> MergeReceipt:
+    return MergeReceipt(
+        requested=PRRef(repo=repo, number=number),
+        observed=PRRef(
+            repo=repo,
+            number=number,
+            url=f"https://example.test/{repo}/{number}",
+        ),
+        commit_sha=None,
+        requested_method=method,
+    )
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -197,6 +217,59 @@ def _stash_list(repo_root: Path) -> list[str]:
     proc = _git(repo_root, "stash", "list")
     assert proc.returncode == 0
     return [line for line in proc.stdout.splitlines() if line.strip()]
+
+
+def test_merge_target_uses_source_identity_and_declared_local_path(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    repo_root = workspace_root / "shared" / "product-checkout"
+    repo_root.mkdir(parents=True)
+    assert _git(repo_root, "init", "-b", "main").returncode == 0
+    spec_path = workspace_root / ".grip" / "workspace_spec.toml"
+    spec_path.parent.mkdir(parents=True)
+    spec_path.write_text(
+        textwrap.dedent(
+            """
+            workspace_name = "alias-test"
+
+            [[repos]]
+            name = "product"
+            path = "shared/product-checkout"
+            url = "https://github.com/example/actual-repository.git"
+            """
+        ).strip()
+        + "\n"
+    )
+
+    targets = app_module._merge_verification_targets(workspace_root)
+
+    assert set(targets) == {"example/actual-repository"}
+    target = targets["example/actual-repository"]
+    assert target.repo_root == repo_root.resolve()
+    assert target.remote == "https://github.com/example/actual-repository.git"
+
+
+def test_missing_local_merge_dag_refuses_with_a_domain_error(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    spec_path = workspace_root / ".grip" / "workspace_spec.toml"
+    spec_path.parent.mkdir(parents=True)
+    spec_path.write_text(
+        textwrap.dedent(
+            """
+            workspace_name = "missing-dag"
+
+            [[repos]]
+            name = "product"
+            path = "repos/missing"
+            url = "https://github.com/example/product.git"
+            """
+        ).strip()
+        + "\n"
+    )
+
+    with pytest.raises(SystemExit, match="local merge-verification DAG is unavailable"):
+        app_module._merge_verification_targets(workspace_root)
 
 
 def test_sync_run_emits_contract_payloads_and_cache_events(tmp_path: Path) -> None:
@@ -488,6 +561,8 @@ def test_pr_commands_route_through_platform_adapter(tmp_path: Path, monkeypatch)
     workspace_root.mkdir()
     _, repo_url = _init_bare_remote(tmp_path, "app")
     _write_workspace_spec(workspace_root, "app", repo_url)
+    spec_path = workspace_root / ".grip" / "workspace_spec.toml"
+    spec_path.write_text(spec_path.read_text() + '\n[settings]\nmerge_method = "squash"\n')
     run_sync(workspace_root)
 
     ns = SimpleNamespace(
@@ -518,9 +593,15 @@ def test_pr_commands_route_through_platform_adapter(tmp_path: Path, monkeypatch)
                 title=request.title,
             )
 
-        def merge_pr(self, repo: str, number: int) -> PRRef:
-            calls.append(("merge", (repo, number)))
-            return PRRef(repo=repo, number=number, url="https://example.test/pr/42")
+        def merge_pr(
+            self,
+            repo: str,
+            number: int,
+            *,
+            method: MergeMethod,
+        ) -> MergeReceipt:
+            calls.append(("merge", (repo, number, method)))
+            return _merge_receipt(repo, number, method)
 
         def pr_status(self, repo: str, number: int) -> PRStatus:
             calls.append(("status", (repo, number)))
@@ -551,7 +632,148 @@ def test_pr_commands_route_through_platform_adapter(tmp_path: Path, monkeypatch)
 
     result = runner.invoke(app, ["pr", "merge", str(workspace_root), "atlas", "feat-auth", "--json"])
     assert result.exit_code == 0
-    assert any(kind == "merge" for kind, _ in calls)
+    assert ("merge", ("app", 42, MergeMethod.SQUASH)) in calls
+
+    result = runner.invoke(
+        app,
+        [
+            "pr",
+            "merge",
+            str(workspace_root),
+            "atlas",
+            "feat-auth",
+            "--method",
+            "rebase",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0
+    assert ("merge", ("app", 42, MergeMethod.REBASE)) in calls
+
+
+def test_pr_merge_success_consumes_the_returned_completed_subset(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    repo_rows: list[tuple[str, str]] = []
+    for repo in ("app", "api", "web"):
+        _, repo_url = _init_bare_remote(tmp_path, repo)
+        repo_rows.append((repo, repo_url))
+    _write_workspace_spec_multi(workspace_root, repo_rows)
+    run_sync(workspace_root)
+
+    pr_group_id = "pg_success_subset"
+    group_path = workspace_root / ".grip" / "pr_groups" / f"{pr_group_id}.json"
+    group_path.parent.mkdir(parents=True, exist_ok=True)
+    group = {
+        "pr_group_id": pr_group_id,
+        "owner_unit": "atlas",
+        "lane_name": "feat-subset",
+        "platform": "github",
+        "prs": [
+            {"repo": repo, "pr_number": number}
+            for number, repo in enumerate(("app", "api", "web"), start=41)
+        ],
+    }
+    group_path.write_text(json.dumps(group))
+    returned = {
+        **group,
+        "completed": [
+            {
+                "repo": "app",
+                "pr_number": 41,
+                "url": "https://example.test/app/41",
+                "commit_sha": "a" * 40,
+                "requested_method": "merge",
+                "parent_verdict": {"kind": "verified"},
+            }
+        ],
+    }
+
+    def merge_subset(**_kwargs: object) -> dict[str, object]:
+        group_path.write_text(json.dumps(returned))
+        return returned
+
+    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": object())
+    monkeypatch.setattr(app_module.pr_ops, "merge_pr_group", merge_subset)
+
+    result = runner.invoke(
+        app,
+        ["pr", "merge", str(workspace_root), "atlas", "feat-subset", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["merged"] == ["app"]
+    assert payload["merged_receipts"] == returned["completed"]
+    assert [item["repo"] for item in json.loads(group_path.read_text())["completed"]] == [
+        "app"
+    ]
+
+
+def test_pr_merge_success_receipts_keep_adapter_provenance_when_membership_matches(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    repo_rows: list[tuple[str, str]] = []
+    for repo in ("app", "api"):
+        _, repo_url = _init_bare_remote(tmp_path, repo)
+        repo_rows.append((repo, repo_url))
+    _write_workspace_spec_multi(workspace_root, repo_rows)
+    run_sync(workspace_root)
+
+    pr_group_id = "pg_success_provenance"
+    group_path = workspace_root / ".grip" / "pr_groups" / f"{pr_group_id}.json"
+    group_path.parent.mkdir(parents=True, exist_ok=True)
+    group = {
+        "pr_group_id": pr_group_id,
+        "owner_unit": "atlas",
+        "lane_name": "feat-provenance",
+        "platform": "github",
+        "prs": [
+            {"repo": repo, "pr_number": number}
+            for number, repo in enumerate(("app", "api"), start=41)
+        ],
+    }
+    group_path.write_text(json.dumps(group))
+    returned = {
+        **group,
+        "completed": [
+            {
+                "repo": repo,
+                "pr_number": number,
+                "url": f"observed://{repo}/{number}",
+                "commit_sha": "a" * 40,
+                "requested_method": "merge",
+                "parent_verdict": {"kind": "verified"},
+            }
+            for number, repo in enumerate(("app", "api"), start=41)
+        ],
+    }
+
+    def merge_all(**_kwargs: object) -> dict[str, object]:
+        group_path.write_text(json.dumps(returned))
+        return returned
+
+    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": object())
+    monkeypatch.setattr(app_module.pr_ops, "merge_pr_group", merge_all)
+
+    result = runner.invoke(
+        app,
+        ["pr", "merge", str(workspace_root), "atlas", "feat-provenance", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["merged"] == ["app", "api"]
+    assert [item["url"] for item in payload["merged_receipts"]] == [
+        "observed://app/41",
+        "observed://api/42",
+    ]
 
 
 def test_pr_create_persists_group_state_by_pr_group_id(tmp_path: Path, monkeypatch) -> None:
@@ -588,7 +810,13 @@ def test_pr_create_persists_group_state_by_pr_group_id(tmp_path: Path, monkeypat
                 title=request.title,
             )
 
-        def merge_pr(self, repo: str, number: int) -> PRRef:  # pragma: no cover - not used here
+        def merge_pr(
+            self,
+            repo: str,
+            number: int,
+            *,
+            method: MergeMethod,
+        ) -> MergeReceipt:  # pragma: no cover - not used here
             raise AssertionError("merge_pr should not be called")
 
         def pr_status(self, repo: str, number: int) -> PRStatus:  # pragma: no cover - not used here
@@ -647,7 +875,13 @@ def test_pr_status_aggregates_group_state(tmp_path: Path, monkeypatch) -> None:
         def create_pr(self, request: CreatePRRequest) -> PRRef:  # pragma: no cover
             raise AssertionError("create_pr should not be called")
 
-        def merge_pr(self, repo: str, number: int) -> PRRef:  # pragma: no cover
+        def merge_pr(
+            self,
+            repo: str,
+            number: int,
+            *,
+            method: MergeMethod,
+        ) -> MergeReceipt:  # pragma: no cover
             raise AssertionError("merge_pr should not be called")
 
         def pr_status(self, repo: str, number: int) -> PRStatus:
@@ -675,7 +909,11 @@ def test_pr_merge_reports_partial_failure_and_preserves_state(tmp_path: Path, mo
     workspace_root.mkdir()
     _, app_url = _init_bare_remote(tmp_path, "app")
     _, api_url = _init_bare_remote(tmp_path, "api")
-    _write_workspace_spec_multi(workspace_root, [("app", app_url), ("api", api_url)])
+    _, web_url = _init_bare_remote(tmp_path, "web")
+    _write_workspace_spec_multi(
+        workspace_root,
+        [("app", app_url), ("api", api_url), ("web", web_url)],
+    )
     run_sync(workspace_root)
 
     pr_group_id = "pg_badmerge"
@@ -689,13 +927,15 @@ def test_pr_merge_reports_partial_failure_and_preserves_state(tmp_path: Path, mo
                 "lane_name": "feat-router",
                 "platform": "github",
                 "prs": [
-                    {"repo": "app", "pr_number": 41, "url": "https://example.test/app/41"},
-                    {"repo": "api", "pr_number": 42, "url": "https://example.test/api/42"},
+                    {"repo": "app", "pr_number": 41, "url": "declared://app/41"},
+                    {"repo": "api", "pr_number": 42, "url": "declared://api/42"},
+                    {"repo": "web", "pr_number": 43, "url": "declared://web/43"},
                 ],
-                "status": {"app": "OPEN", "api": "OPEN"},
+                "status": {"app": "OPEN", "api": "OPEN", "web": "OPEN"},
             }
         )
     )
+    calls: list[str] = []
 
     class FakeAdapter:
         name = "fake"
@@ -703,12 +943,19 @@ def test_pr_merge_reports_partial_failure_and_preserves_state(tmp_path: Path, mo
         def create_pr(self, request: CreatePRRequest) -> PRRef:  # pragma: no cover
             raise AssertionError("create_pr should not be called")
 
-        def merge_pr(self, repo: str, number: int) -> PRRef:
+        def merge_pr(
+            self,
+            repo: str,
+            number: int,
+            *,
+            method: MergeMethod,
+        ) -> MergeReceipt:
+            calls.append(repo)
             if repo == "api":
                 from gr2.python_cli.platform import AdapterError
 
                 raise AdapterError("merge conflict")
-            return PRRef(repo=repo, number=number, url=f"https://example.test/{repo}/{number}")
+            return _merge_receipt(repo, number, method)
 
         def pr_status(self, repo: str, number: int) -> PRStatus:  # pragma: no cover
             raise AssertionError("pr_status should not be called")
@@ -727,10 +974,18 @@ def test_pr_merge_reports_partial_failure_and_preserves_state(tmp_path: Path, mo
     assert payload["status"] == "partial_failure"
     assert payload["pr_group_id"] == pr_group_id
     assert payload["merged"] == ["app"]
+    assert [item["url"] for item in payload["merged_receipts"]] == [
+        "https://example.test/app/41"
+    ]
     assert payload["failed"][0]["repo"] == "api"
+    assert calls == ["app", "api"]
 
     stored = json.loads(group_path.read_text())
     assert stored["group_state"] == "partially_merged"
+    assert stored["merged"] == ["app"]
+    assert [item["url"] for item in stored["completed"]] == [
+        "https://example.test/app/41"
+    ]
 
 
 def test_sync_run_reports_terminal_blocked_event_on_lock_contention(tmp_path: Path) -> None:

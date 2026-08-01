@@ -855,6 +855,7 @@ fn create_root_gripspace_manifest(
         settings: ManifestSettings {
             pr_prefix: "[cross-repo]".to_string(),
             merge_strategy: MergeStrategy::default(),
+            merge_method: Default::default(),
             revision: Some(revision.to_string()),
             target: None,
             sync_remote: None,

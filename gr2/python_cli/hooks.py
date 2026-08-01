@@ -8,7 +8,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from .events import emit, EventType
+from .events import EventType, emit, emit_after_outcome
 
 
 VALID_IF_EXISTS = {"skip", "overwrite", "merge", "error"}
@@ -350,7 +350,7 @@ def run_lifecycle_stage(
         )
         duration_ms = int((time.monotonic() - t0) * 1000)
         if proc.returncode == 0:
-            emit(
+            emit_after_outcome(
                 event_type=EventType.HOOK_COMPLETED,
                 workspace_root=ctx.workspace_root,
                 actor="system",
@@ -378,7 +378,7 @@ def run_lifecycle_stage(
             )
             continue
         stderr_tail = proc.stderr[-500:] if proc.stderr else ""
-        emit(
+        emit_after_outcome(
             event_type=EventType.HOOK_FAILED,
             workspace_root=ctx.workspace_root,
             actor="system",

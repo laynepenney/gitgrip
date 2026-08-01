@@ -13,10 +13,13 @@ import json
 from pathlib import Path
 
 import pytest
-
+from gr2.python_cli.events import EventEmitError
+from gr2.python_cli.merge_verification import MergeVerificationTarget
 from gr2.python_cli.platform import (
     AdapterError,
     CreatePRRequest,
+    MergeMethod,
+    MergeReceipt,
     PRCheck,
     PRRef,
     PRStatus,
@@ -46,11 +49,22 @@ class FakeAdapter:
             title=request.title,
         )
 
-    def merge_pr(self, repo: str, number: int) -> PRRef:
+    def merge_pr(
+        self,
+        repo: str,
+        number: int,
+        *,
+        method: MergeMethod,
+    ) -> MergeReceipt:
         if (repo, number) in self._fail_merge:
             raise AdapterError(f"merge conflict in {repo}#{number}")
         self.merged.append((repo, number))
-        return PRRef(repo=repo, number=number)
+        return MergeReceipt(
+            requested=PRRef(repo=repo, number=number),
+            observed=PRRef(repo=repo, number=number, url=f"observed://{repo}/{number}"),
+            commit_sha=None,
+            requested_method=method,
+        )
 
     def pr_status(self, repo: str, number: int) -> PRStatus:
         key = (repo, number)
@@ -87,11 +101,58 @@ def _events_of_type(workspace: Path, event_type: str) -> list[dict]:
     return [e for e in _read_outbox(workspace) if e["type"] == event_type]
 
 
+def _merge_contract(workspace: Path, group: dict) -> dict[str, object]:
+    return {
+        "method": MergeMethod.MERGE,
+        "verification_targets": {
+            str(item["repo"]): MergeVerificationTarget(
+                repo_root=workspace / str(item["repo"]),
+                remote="unused-for-missing-oid",
+            )
+            for item in group["prs"]
+        },
+        "report": lambda _message: None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 1. pr.created (section 3.2, PR-LIFECYCLE.md section 3.1)
 # ---------------------------------------------------------------------------
 
 class TestPRCreated:
+
+    def test_event_failure_does_not_erase_created_prs(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from gr2.python_cli import events as events_module
+        from gr2.python_cli import pr as pr_module
+
+        adapter = FakeAdapter()
+        monkeypatch.setattr(
+            events_module,
+            "emit",
+            lambda **_kwargs: (_ for _ in ()).throw(EventEmitError("event sink unavailable")),
+        )
+
+        result = pr_module.create_pr_group(
+            workspace_root=workspace,
+            owner_unit="apollo",
+            lane_name="feat/hook-events",
+            title="feat: hook events",
+            base_branch="sprint-21",
+            head_branch="test/event-system-runtime",
+            repos=["app", "api"],
+            adapter=adapter,
+            actor="agent:apollo",
+        )
+
+        persisted = json.loads(Path(result["state_path"]).read_text())
+        assert [request.repo for request in adapter.created] == ["app", "api"]
+        assert persisted["prs"] == result["prs"]
+        assert "could not record pr.created" in capsys.readouterr().err
 
     def test_emits_pr_created(self, workspace: Path):
         from gr2.python_cli.pr import create_pr_group
@@ -198,6 +259,38 @@ class TestPRCreated:
 
 class TestPRMerged:
 
+    def test_event_failure_does_not_erase_merged_outcome(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from gr2.python_cli import events as events_module
+        from gr2.python_cli import pr as pr_module
+
+        adapter = FakeAdapter()
+        group = self._create_group(workspace, adapter)
+        monkeypatch.setattr(
+            events_module,
+            "emit",
+            lambda **_kwargs: (_ for _ in ()).throw(EventEmitError("event sink unavailable")),
+        )
+
+        result = pr_module.merge_pr_group(
+            workspace_root=workspace,
+            pr_group_id=group["pr_group_id"],
+            adapter=adapter,
+            actor="agent:apollo",
+            **_merge_contract(workspace, group),
+        )
+
+        state_path = workspace / ".grip" / "pr_groups" / f"{group['pr_group_id']}.json"
+        persisted = json.loads(state_path.read_text())
+        assert [repo for repo, _number in adapter.merged] == ["app", "api"]
+        assert result["group_state"] == "merged"
+        assert persisted["group_state"] == "merged"
+        assert "could not record pr.merged" in capsys.readouterr().err
+
     def _create_group(self, workspace: Path, adapter: FakeAdapter, repos: list[str] | None = None) -> dict:
         from gr2.python_cli.pr import create_pr_group
         return create_pr_group(
@@ -221,6 +314,7 @@ class TestPRMerged:
             pr_group_id=group["pr_group_id"],
             adapter=adapter,
             actor="agent:apollo",
+            **_merge_contract(workspace, group),
         )
         events = _events_of_type(workspace, "pr.merged")
         assert len(events) == 1
@@ -234,6 +328,7 @@ class TestPRMerged:
             pr_group_id=group["pr_group_id"],
             adapter=adapter,
             actor="agent:apollo",
+            **_merge_contract(workspace, group),
         )
         event = _events_of_type(workspace, "pr.merged")[0]
         assert event["pr_group_id"] == group["pr_group_id"]
@@ -249,6 +344,7 @@ class TestPRMerged:
             pr_group_id=group["pr_group_id"],
             adapter=adapter,
             actor="agent:apollo",
+            **_merge_contract(workspace, group),
         )
         assert [r for r, _ in adapter.merged] == ["app", "api", "billing"]
 
@@ -274,7 +370,7 @@ class TestPRMergeFailed:
         )
 
     def test_emits_merge_failed(self, workspace: Path):
-        from gr2.python_cli.pr import merge_pr_group, PRMergeError
+        from gr2.python_cli.pr import PRMergeError, merge_pr_group
         adapter = FakeAdapter()
         group = self._create_group(workspace, adapter)
         # Make api fail
@@ -286,12 +382,13 @@ class TestPRMergeFailed:
                 pr_group_id=group["pr_group_id"],
                 adapter=adapter,
                 actor="agent:apollo",
+                **_merge_contract(workspace, group),
             )
         events = _events_of_type(workspace, "pr.merge_failed")
         assert len(events) == 1
 
     def test_merge_failed_payload(self, workspace: Path):
-        from gr2.python_cli.pr import merge_pr_group, PRMergeError
+        from gr2.python_cli.pr import PRMergeError, merge_pr_group
         adapter = FakeAdapter()
         group = self._create_group(workspace, adapter)
         api_pr = [p for p in group["prs"] if p["repo"] == "api"][0]
@@ -302,15 +399,17 @@ class TestPRMergeFailed:
                 pr_group_id=group["pr_group_id"],
                 adapter=adapter,
                 actor="agent:apollo",
+                **_merge_contract(workspace, group),
             )
         event = _events_of_type(workspace, "pr.merge_failed")[0]
         assert event["pr_group_id"] == group["pr_group_id"]
         assert event["repo"] == "api"
         assert "reason" in event
+        assert [item["repo"] for item in event["completed"]] == ["app"]
 
     def test_stops_after_first_failure(self, workspace: Path):
         """Merge stops at first failure; remaining repos are not attempted."""
-        from gr2.python_cli.pr import create_pr_group, merge_pr_group, PRMergeError
+        from gr2.python_cli.pr import PRMergeError, create_pr_group, merge_pr_group
         adapter = FakeAdapter()
         group = create_pr_group(
             workspace_root=workspace,
@@ -326,14 +425,16 @@ class TestPRMergeFailed:
         # Make grip (first repo) fail
         grip_pr = [p for p in group["prs"] if p["repo"] == "app"][0]
         adapter.set_fail_merge("app", grip_pr["pr_number"])
-        with pytest.raises(PRMergeError):
+        with pytest.raises(PRMergeError) as raised:
             merge_pr_group(
                 workspace_root=workspace,
                 pr_group_id=group["pr_group_id"],
                 adapter=adapter,
                 actor="agent:apollo",
+                **_merge_contract(workspace, group),
             )
         # Only app was attempted; api and billing were not
+        assert raised.value.completed == []
         assert len(adapter.merged) == 0  # grip failed, not in merged list
         assert len(_events_of_type(workspace, "pr.merged")) == 0
 
@@ -359,7 +460,7 @@ class TestPRStatusEvents:
         )
 
     def test_checks_passed_emitted(self, workspace: Path):
-        from gr2.python_cli.pr import create_pr_group, check_pr_group_status
+        from gr2.python_cli.pr import check_pr_group_status, create_pr_group
         adapter = FakeAdapter()
         group = self._create_group(workspace, adapter)
         grip_pr = group["prs"][0]
@@ -384,7 +485,7 @@ class TestPRStatusEvents:
         assert events[0]["pr_group_id"] == group["pr_group_id"]
 
     def test_checks_failed_emitted(self, workspace: Path):
-        from gr2.python_cli.pr import create_pr_group, check_pr_group_status
+        from gr2.python_cli.pr import check_pr_group_status, create_pr_group
         adapter = FakeAdapter()
         group = self._create_group(workspace, adapter)
         grip_pr = group["prs"][0]
@@ -408,7 +509,7 @@ class TestPRStatusEvents:
         assert "ci/test" in events[0]["failed_checks"]
 
     def test_status_changed_emitted(self, workspace: Path):
-        from gr2.python_cli.pr import create_pr_group, check_pr_group_status
+        from gr2.python_cli.pr import check_pr_group_status, create_pr_group
         adapter = FakeAdapter()
         group = self._create_group(workspace, adapter)
         grip_pr = group["prs"][0]
@@ -430,7 +531,7 @@ class TestPRStatusEvents:
 
     def test_no_event_when_status_unchanged(self, workspace: Path):
         """Second status check with no changes emits no events."""
-        from gr2.python_cli.pr import create_pr_group, check_pr_group_status
+        from gr2.python_cli.pr import check_pr_group_status, create_pr_group
         adapter = FakeAdapter()
         group = self._create_group(workspace, adapter)
         # Default status is OPEN with no checks -- first check caches it

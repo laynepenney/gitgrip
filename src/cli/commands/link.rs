@@ -812,6 +812,7 @@ mod tests {
             settings: ManifestSettings {
                 pr_prefix: "[cross-repo]".to_string(),
                 merge_strategy: MergeStrategy::default(),
+                merge_method: Default::default(),
                 revision: None,
                 target: None,
                 sync_remote: None,
@@ -1018,6 +1019,7 @@ mod tests {
             settings: ManifestSettings {
                 pr_prefix: "[cross-repo]".to_string(),
                 merge_strategy: MergeStrategy::default(),
+                merge_method: Default::default(),
                 revision: None,
                 target: None,
                 sync_remote: None,

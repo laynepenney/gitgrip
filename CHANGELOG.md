@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`gr pr merge` no longer defaults to squash** (#829) — with no `--method`, the command queried the host for its allowed methods and took the first of squash > merge > rebase, so on any repo permitting squash the tool actively chose it. A workspace whose policy is merge-commit-only got squashes from its own tooling, and on a private repo — where hosting rulesets are unavailable on most plans — nothing downstream could reject the result. The default is now a real merge commit, configurable via `settings.merge_method` in the manifest. Choosing is the workspace's job; the host is asked only whether the choice is permitted.
+- **An unavailable merge method is refused, not substituted** (#829) — if the chosen method is not permitted by the host, `gr pr merge` says so and stops rather than quietly using a different one. Silent substitution is the original defect in a politer form: the operator asks for one strategy, another happens, and the only way to find out is to count parents afterwards.
+- **`gr pr merge` verifies the merge commit has two parents** (#829) — after a `merge`, the resulting commit is checked against the LOCAL repository rather than the platform's response, because the API reports that a merge happened and not which strategy produced it. Squash and rebase are exempt: they produce single-parent commits by design, and warning on them would make the check noise.
+
+### Changed
+- **`gr pr merge` gates are individually waivable, and what is waived is printed at the moment of the merge** (#837) — `--force` was a single boolean that suppressed the approval, checks and mergeability gates together. In a workspace whose ratification convention is review *comments* rather than formal platform approvals, the approval gate can never pass, so `--force` became mandatory on every merge — and took the other gates with it, silently. A gate that must always be bypassed does not gate; it trains the bypass. New `--skip-gate <approval|checks|mergeable>` waives exactly one, repeatable; `--force` still waives all but now names what it suppressed. An unknown gate name is an error rather than a silent no-op, because a misspelled waiver that quietly waives nothing reads exactly like a gate that passed.
+- **`gr pr merge` prints the resolved target and method at the moment of the irreversible act** (#837) — `owner/repo#N branch -> base method=Merge`, printed durably immediately before the merge call rather than from the plan beforehand or the result afterwards. `gr pr merge` takes no PR number: it merges whatever PR the current branch owns, so the operator's belief about the target and the command's resolution of it are separate facts. Everything that goes wrong with this command goes wrong in that gap.
+
 ## [1.0.1] - 2026-07-23
 
 ### Fixed

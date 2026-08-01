@@ -348,10 +348,41 @@ Merge all linked PRs atomically.
 
 | Option | Description |
 |--------|-------------|
-| `-m, --method <method>` | merge, squash, or rebase |
-| `-f, --force` | Merge even if checks pending |
+| `-m, --method <method>` | merge, squash, or rebase. Defaults to `settings.merge_method`, or a merge commit |
+| `--skip-gate <gate>` | Waive ONE named gate and no others: `approval`, `checks`, `mergeable`. Repeatable |
+| `-f, --force` | Waive every gate. Prefer `--skip-gate` |
 | `-u, --update` | Update branch from base if behind, then retry merge |
 | `--auto` | Enable auto-merge (merges when all checks pass) |
+
+Three gates run before a merge: `approval` (a formal platform approval exists),
+`checks` (status checks are passing), and `mergeable` (the platform reports the
+PR as mergeable). Waiving one names it; `--force` waives all three.
+
+Prefer `--skip-gate` whenever a single gate does not apply to your workflow. A
+workspace that ratifies by review *comments* rather than formal approvals, for
+example, can never pass the `approval` gate — reaching for `--force` there
+suppresses the check and mergeability gates too, every time, invisibly.
+
+Whatever is waived is printed **at the moment of the merge**, alongside the
+resolved target:
+
+```
+MERGING acme/widgets#412  fix/parser -> main  method=Merge  WAIVED=approval
+  suppressed: widgets PR #412: no formal approval [approval]
+```
+
+`gr pr merge` takes no PR number — it merges whatever PR the current branch
+owns — so that line is what tells you the command resolved to the PR you meant.
+
+**Merge method.** With no `--method`, the method comes from `settings.merge_method`
+in the manifest, defaulting to `merge` — a real merge commit with two parents.
+The host is never asked to *choose* a method, only whether the chosen one is
+permitted; if it is not, the merge is refused rather than silently performed with
+a different strategy.
+
+After a `merge`, the resulting commit is checked in the local repository and a
+warning is printed if it does not have two parents. A hosting platform reports
+*that* a merge happened, not *which strategy* produced the commit.
 
 #### `gr repo add <url>`
 

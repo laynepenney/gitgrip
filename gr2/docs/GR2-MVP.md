@@ -28,7 +28,7 @@ These features gate the MVP. Without any one of them, the workflow above breaks.
 
 | Feature | Module | Status | Issue |
 |---------|--------|--------|-------|
-| WorkspaceSpec schema + validation | spec_apply.py | Done | - |
+| Workspace schema + validation | spec_apply.py | Done | - |
 | Plan dry-run (show what apply would do) | spec_apply.py | Done (Rust) | - |
 | Apply materialization (clone/checkout repos from spec) | spec_apply.py | Partial | grip#539 |
 | Lane CRUD (create, enter, exit, current) | app.py | Done | - |
@@ -71,10 +71,20 @@ These extend gr2 but are not required for the replacement workflow.
 | Lane checkout-pr (checkout PR branch into lane) | grip#546 |
 | Multi-platform adapters (GitLab, Azure, Bitbucket) | platform.py stubs exist |
 | Spec diffing (show drift between spec and workspace) | Rust plan command exists |
-| Agent spawn integration | Out of scope; gr2 provides the exec surface only |
+| Caller-driven process launch | gr2 provides neutral materialize, exec, and launch primitives; product-specific orchestration is out of scope. |
 | Repo maintenance policies | Prototype exists |
 | CI/release surface | gr1 covers this; port later |
 | Griptree management | gr1 covers this; port later |
+
+This Tier 3 row assigns product integration outside gr2. It does not defer the
+neutral primitives that integration drives. gr2 may materialize opaque units
+and launch caller-supplied commands. It must not infer or persist product-level
+membership, authorization, or policy.
+
+The existing Rust `TeamCommands::{Add,List,Remove}` surface maintains a
+product-specific registry in OSS. Treat it as a non-conforming prototype, not
+the target contract. A future OSS listing surface may list neutral units, but
+it must not become a second product registry.
 
 ## MVP Gaps: What Needs To Be Built
 
@@ -170,13 +180,19 @@ that the replacement workflow works end-to-end.
 
 ## Boundary Declaration
 
-gr2 workspace orchestration is OSS. All features in this MVP definition live in
-the grip repo. gr2 does not resolve identity, route org membership, or enforce workspace
-policy.
+gr2 workspace orchestration is OSS. All neutral features in this MVP definition
+live in the grip repo. Callers supply neutral workspace operations and opaque
+process commands for gr2 to execute. gr2 does not depend on product-specific
+orchestration.
 
-The exec surface, sync engine, and materialization pipeline are neutral
-infrastructure. They do not answer "who is this agent" or "what workspace owns
-this." A feature that crosses that line does not belong in gr2.
+The exec surface, sync engine, materialization pipeline, and process-launch
+primitive are neutral infrastructure. They interpret only the fields required
+for workspace and process execution. Product-specific membership,
+authorization, and policy are out of scope for gr2.
+
+grip#457 is closed as superseded by this declaration-first contract. Worktree
+discovery may assist migration and validate disk state, but discovered
+directories never become declarations or policy.
 
 ## References
 

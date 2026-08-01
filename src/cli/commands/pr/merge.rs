@@ -41,36 +41,188 @@ fn resolve_check_status(status: &StatusCheckResult) -> CheckStatus {
     }
 }
 
-/// Auto-detect the best merge method for a repo when none is specified.
+/// After a `Merge`, assert the resulting commit actually has two parents.
 ///
-/// Queries the repo's allowed merge methods and picks the first available
-/// in preference order: squash > merge > rebase.  Falls back to the
-/// default (merge) if the query fails.
-async fn detect_merge_method(
+/// Checked against the local repository, not the platform's response. The API
+/// reports that a merge happened; it does not report WHICH strategy produced
+/// the commit, and the incident behind this was a squash that reported success
+/// exactly like a merge. Fetching and counting parents asks the repository what
+/// is actually there.
+///
+/// Only meaningful for `Merge` -- squash and rebase produce single-parent
+/// commits by design, so asserting two parents for them would be wrong rather
+/// than strict.
+///
+/// A failure here is loud and it is NOT recoverable by this command: the merge
+/// already happened. The point is that the operator finds out now, from the
+/// tool, rather than days later from a broken ancestry -- which is how the
+/// original incident was discovered.
+fn verify_merge_commit_parents(
+    local_path: &std::path::Path,
+    base: &str,
+    method: MergeMethod,
+) -> Option<String> {
+    if method != MergeMethod::Merge {
+        return None;
+    }
+    let repo = open_repo(local_path).ok()?;
+    // Fetch so the local ref reflects the merge that just happened remotely.
+    let _ = crate::git::remote::fetch_remote(&repo, "origin");
+
+    let reference = repo
+        .find_reference(&format!("refs/remotes/origin/{}", base))
+        .ok()?;
+    let commit = reference.peel_to_commit().ok()?;
+    let parents = commit.parent_count();
+
+    if parents >= 2 {
+        None
+    } else {
+        Some(format!(
+            "origin/{} is now {} with {} parent{} -- a merge commit has two. \
+             The merge was requested as {:?} but the result does not look like \
+             one, so the branch head may no longer be reachable from {}.",
+            base,
+            &commit.id().to_string()[..8],
+            parents,
+            if parents == 1 { "" } else { "s" },
+            method,
+            base
+        ))
+    }
+}
+
+/// Confirm the chosen merge method is one the host actually permits.
+///
+/// This REPLACED an auto-detector that queried the allowed methods and took the
+/// first of squash > merge > rebase. That is how a workspace whose policy is
+/// merge-commit-only got squashes from its own tooling: the tool actively
+/// selected the one method the policy forbids, on every repo that permitted it.
+///
+/// Choosing is now the manifest's job, not the host's. What the host is asked is
+/// only whether the choice is permitted -- and if it is not, this REFUSES rather
+/// than substituting. Substitution is the original defect in a politer form: the
+/// operator asked for one strategy, a different one happened, and the only way
+/// to find out was to count parents afterwards.
+///
+/// An unreachable host is not treated as a refusal. Failing the merge because a
+/// capability query timed out would be its own outage, so an errored query is
+/// reported and the chosen method stands -- the post-merge parent assertion is
+/// the backstop for that path.
+async fn confirm_method_allowed(
     platform: &dyn HostingPlatform,
     owner: &str,
     repo: &str,
-) -> MergeMethod {
+    method: MergeMethod,
+) -> Result<(), String> {
     match platform.get_allowed_merge_methods(owner, repo).await {
         Ok(allowed) => {
-            if allowed.squash {
-                MergeMethod::Squash
-            } else if allowed.merge {
-                MergeMethod::Merge
-            } else if allowed.rebase {
-                MergeMethod::Rebase
+            let permitted = match method {
+                MergeMethod::Merge => allowed.merge,
+                MergeMethod::Squash => allowed.squash,
+                MergeMethod::Rebase => allowed.rebase,
+            };
+            if permitted {
+                Ok(())
             } else {
-                MergeMethod::default()
+                Err(format!(
+                    "{}/{} does not permit {:?} merges. Refusing rather than \
+                     silently using a different strategy -- pass --method \
+                     explicitly if another one is intended.",
+                    owner, repo, method
+                ))
             }
         }
-        Err(_) => MergeMethod::default(),
+        Err(_) => Ok(()),
     }
+}
+
+/// A single pre-merge gate, nameable so it can be waived individually.
+///
+/// `--force` used to be one boolean that suppressed every check at once. On a
+/// gripspace whose ratification convention is review COMMENTS rather than formal
+/// GitHub approvals, the approval gate can never pass, so `--force` became
+/// mandatory on every merge -- and with it went the checks, mergeability and
+/// method assertions nobody intended to waive.
+///
+/// A gate that must always be bypassed does not gate; it trains the bypass. The
+/// point of naming them is that waiving one says which one, out loud, at the
+/// moment of the act.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeGate {
+    /// The PR carries a formal platform approval.
+    Approval,
+    /// Status checks are passing (not failing, not still running).
+    Checks,
+    /// The platform reports the PR as mergeable.
+    Mergeable,
+}
+
+impl MergeGate {
+    /// The name a caller passes to `--skip-gate`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MergeGate::Approval => "approval",
+            MergeGate::Checks => "checks",
+            MergeGate::Mergeable => "mergeable",
+        }
+    }
+
+    /// Every gate, so `--force` and the help text cannot drift from the enum.
+    pub fn all() -> [MergeGate; 3] {
+        [MergeGate::Approval, MergeGate::Checks, MergeGate::Mergeable]
+    }
+
+    /// Parse a caller-supplied name. Unknown names are an error rather than a
+    /// silent no-op: a misspelled gate that quietly waives nothing reads exactly
+    /// like a gate that passed.
+    pub fn parse(name: &str) -> anyhow::Result<Self> {
+        let wanted = name.trim().to_ascii_lowercase();
+        MergeGate::all()
+            .into_iter()
+            .find(|g| g.as_str() == wanted)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown merge gate '{}'. Known gates: {}",
+                    name.trim(),
+                    MergeGate::all()
+                        .iter()
+                        .map(|g| g.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+    }
+}
+
+/// The suppression notes belonging to one PR, selected by its index.
+///
+/// A free function so the attribution can be tested directly. The previous form
+/// was an inline filter matching a SUBSTRING of the rendered message, which
+/// mis-attributes in two ways that a fix aimed at the first would leave open:
+/// "PR #77" is a substring of "PR #777", and this command is multi-repo so two
+/// different repos can each carry a PR #42.
+///
+/// The line this feeds is the one telling an operator exactly what is being
+/// suppressed on exactly this PR. A suppression they do not recognise teaches
+/// them to distrust the line, and a safety disclosure people distrust stops
+/// being a safety disclosure.
+fn notes_for(index: usize, suppressed: &[(usize, String)]) -> Vec<&str> {
+    suppressed
+        .iter()
+        .filter(|(i, _)| *i == index)
+        .map(|(_, note)| note.as_str())
+        .collect()
 }
 
 /// Options for the PR merge command.
 pub struct MergeOptions<'a> {
     pub method: Option<&'a crate::platform::MergeMethod>,
+    /// Waive EVERY gate. Retained for compatibility; prefer naming the one you
+    /// mean via `skip_gates`, so the record says what was actually waived.
     pub force: bool,
+    /// Gates waived by name. Composes with `force`, which implies all of them.
+    pub skip_gates: Vec<MergeGate>,
     pub update: bool,
     pub auto: bool,
     pub json: bool,
@@ -115,7 +267,18 @@ pub async fn run_pr_merge(
         })
         .collect();
 
-    let merge_method = opts.method.copied().unwrap_or_default();
+    // Precedence: explicit --method, then the manifest, then a merge commit.
+    // The host is never asked to CHOOSE -- only, later, whether the choice is
+    // permitted. Letting the host choose is what produced squashes in a
+    // merge-commit-only workspace.
+    let merge_method = match opts.method.copied() {
+        Some(explicit) => explicit,
+        None => match manifest.settings.merge_method {
+            crate::core::manifest::DefaultMergeMethod::Merge => MergeMethod::Merge,
+            crate::core::manifest::DefaultMergeMethod::Squash => MergeMethod::Squash,
+            crate::core::manifest::DefaultMergeMethod::Rebase => MergeMethod::Rebase,
+        },
+    };
 
     // Also check manifest repo if configured and not filtered out
     let mut all_repos = repos.clone();
@@ -147,6 +310,13 @@ pub async fn run_pr_merge(
         owner: String,
         repo: String,
         branch: String,
+        /// The branch this merge is irreversible INTO. Carried so the act-time
+        /// line can name it: "which PR" and "into what" are different facts and
+        /// only the second one says where the commits land.
+        base: String,
+        /// Local checkout, so the merge can be verified against the REPOSITORY
+        /// rather than against the API's report of it.
+        local_path: std::path::PathBuf,
         pr_number: u64,
         platform: Arc<dyn crate::platform::HostingPlatform>,
         approved: bool,
@@ -230,6 +400,8 @@ pub async fn run_pr_merge(
                     owner: repo.owner.clone(),
                     repo: repo.repo.clone(),
                     branch: branch.clone(),
+                    base: repo.target_branch().to_string(),
+                    local_path: repo.absolute_path.clone(),
                     pr_number: pr.number,
                     platform,
                     approved,
@@ -401,55 +573,94 @@ pub async fn run_pr_merge(
         println!();
     }
 
-    // Check readiness if not forcing
-    if !opts.force {
-        let mut issues = Vec::new();
-        for pr in &prs_to_merge {
-            if !pr.approved {
-                issues.push(format!(
-                    "{} PR #{}: not approved",
+    // Which gates the caller waived, and by which flag. `--force` implies all
+    // of them; naming one waives exactly one. Recorded rather than folded into a
+    // boolean, because the whole point is that the record says what was waived.
+    let waived: Vec<MergeGate> = if opts.force {
+        MergeGate::all().to_vec()
+    } else {
+        opts.skip_gates.clone()
+    };
+    let is_waived = |gate: MergeGate| waived.contains(&gate);
+
+    // Evaluate every gate, then subtract the waived ones. Evaluating first means
+    // a waiver still reports what it suppressed -- a gate that was never run
+    // cannot say whether it would have failed, and "no output" is exactly how a
+    // suppressed failure disguises itself as a pass.
+    let mut blocking = Vec::new();
+    // Keyed by INDEX into `prs_to_merge`, never by re-reading the PR number out
+    // of the rendered message. Two collisions live in that shortcut, and the
+    // second survives a fix aimed only at the first:
+    //
+    //   * "PR #77" is a SUBSTRING of "PR #777", and one invocation can carry
+    //     both, so #77's merge line would print #777's suppression note
+    //   * this command is multi-repo, so two DIFFERENT repos can each have a
+    //     PR #42 -- matching on the number alone still mis-attributes
+    //
+    // An index is unique across both. A value reconstructed from a rendering is
+    // a value that can be reconstructed wrong; carrying it cannot be.
+    let mut suppressed: Vec<(usize, String)> = Vec::new();
+    for (index, pr) in prs_to_merge.iter().enumerate() {
+        let mut failures: Vec<(MergeGate, String)> = Vec::new();
+        if !pr.approved {
+            failures.push((
+                MergeGate::Approval,
+                format!("{} PR #{}: no formal approval", pr.repo_name, pr.pr_number),
+            ));
+        }
+        match pr.check_status {
+            CheckStatus::Failing => failures.push((
+                MergeGate::Checks,
+                format!("{} PR #{}: checks failing", pr.repo_name, pr.pr_number),
+            )),
+            CheckStatus::Pending => failures.push((
+                MergeGate::Checks,
+                format!(
+                    "{} PR #{}: checks still running",
+                    pr.repo_name, pr.pr_number
+                ),
+            )),
+            CheckStatus::Unknown => {
+                Output::warning(&format!(
+                    "{} PR #{}: check status unknown - proceeding with caution",
                     pr.repo_name, pr.pr_number
                 ));
             }
-            match pr.check_status {
-                CheckStatus::Failing => {
-                    issues.push(format!(
-                        "{} PR #{}: checks failing",
-                        pr.repo_name, pr.pr_number
-                    ));
-                }
-                CheckStatus::Pending => {
-                    issues.push(format!(
-                        "{} PR #{}: checks still running",
-                        pr.repo_name, pr.pr_number
-                    ));
-                }
-                CheckStatus::Unknown => {
-                    // Don't block on unknown - warn but allow merge
-                    Output::warning(&format!(
-                        "{} PR #{}: check status unknown - proceeding with caution",
-                        pr.repo_name, pr.pr_number
-                    ));
-                }
-                CheckStatus::Passing => {} // All good
-            }
-            if !pr.mergeable {
-                issues.push(format!(
+            CheckStatus::Passing => {}
+        }
+        if !pr.mergeable {
+            failures.push((
+                MergeGate::Mergeable,
+                format!(
                     "{} PR #{}: not mergeable (branch may be behind base — try --update)",
                     pr.repo_name, pr.pr_number
-                ));
+                ),
+            ));
+        }
+        for (gate, message) in failures {
+            if is_waived(gate) {
+                suppressed.push((index, format!("{} [{}]", message, gate.as_str())));
+            } else {
+                blocking.push(format!("{} [{}]", message, gate.as_str()));
             }
         }
+    }
 
-        if !issues.is_empty() {
-            Output::warning("Some PRs have issues:");
-            for issue in &issues {
-                println!("  - {}", issue);
-            }
-            println!();
-            println!("Use --force to merge anyway.");
-            return Ok(());
+    if !blocking.is_empty() {
+        Output::warning("Some PRs have issues:");
+        for issue in &blocking {
+            println!("  - {}", issue);
         }
+        println!();
+        println!(
+            "Waive one gate with --skip-gate <{}>, or --force to waive all.",
+            MergeGate::all()
+                .iter()
+                .map(|g| g.as_str())
+                .collect::<Vec<_>>()
+                .join("|")
+        );
+        return Ok(());
     }
 
     // Auto-merge flow: enable auto-merge and return early
@@ -458,11 +669,15 @@ pub async fn run_pr_merge(
         let mut error_count = 0;
 
         for pr in prs_to_merge {
-            let effective_method = if opts.method.is_some() {
-                merge_method
-            } else {
-                detect_merge_method(pr.platform.as_ref(), &pr.owner, &pr.repo).await
-            };
+            let effective_method = merge_method;
+            if let Err(reason) =
+                confirm_method_allowed(pr.platform.as_ref(), &pr.owner, &pr.repo, effective_method)
+                    .await
+            {
+                Output::warning(&reason);
+                error_count += 1;
+                continue;
+            }
 
             let spinner = Output::spinner(&format!(
                 "Enabling auto-merge for {} PR #{} ({:?})...",
@@ -529,13 +744,52 @@ pub async fn run_pr_merge(
     let mut json_merged: Vec<JsonMergedPr> = Vec::new();
     let mut json_failed_prs: Vec<JsonFailedPr> = Vec::new();
 
-    for pr in prs_to_merge {
-        // Auto-detect merge method per repo when not explicitly set (#380)
-        let effective_method = if opts.method.is_some() {
-            merge_method
-        } else {
-            detect_merge_method(pr.platform.as_ref(), &pr.owner, &pr.repo).await
-        };
+    for (pr_index, pr) in prs_to_merge.into_iter().enumerate() {
+        let effective_method = merge_method;
+        if let Err(reason) =
+            confirm_method_allowed(pr.platform.as_ref(), &pr.owner, &pr.repo, effective_method)
+                .await
+        {
+            Output::warning(&reason);
+            error_count += 1;
+            json_failed_prs.push(JsonFailedPr {
+                repo: pr.repo_name.clone(),
+                pr_number: pr.pr_number,
+                reason,
+            });
+            continue;
+        }
+
+        // THE MOMENT OF THE IRREVERSIBLE ACT. Printed here -- not earlier from
+        // the plan, not afterwards from the result -- and durably rather than
+        // in a spinner that erases itself.
+        //
+        // Everything that goes wrong with this command goes wrong in the gap
+        // between what it is about to do and what the operator believes it is
+        // about to do. `gr pr merge` takes no PR number: it merges whatever PR
+        // the current branch owns. So the resolved slug, number, branch, base
+        // and method are the facts that close that gap, and they are only facts
+        // at this point in the code.
+        if !opts.json {
+            let mut line = format!(
+                "MERGING {}/{}#{}  {} -> {}  method={:?}",
+                pr.owner, pr.repo, pr.pr_number, pr.branch, pr.base, effective_method
+            );
+            if !waived.is_empty() {
+                line.push_str(&format!(
+                    "  WAIVED={}",
+                    waived
+                        .iter()
+                        .map(|g| g.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
+            }
+            println!("{}", line);
+            for note in notes_for(pr_index, &suppressed) {
+                println!("  suppressed: {}", note);
+            }
+        }
 
         let spinner = if !opts.json {
             Some(Output::spinner(&format!(
@@ -703,6 +957,11 @@ pub async fn run_pr_merge(
                             "{}: merged PR #{}",
                             pr.repo_name, pr.pr_number
                         ));
+                    }
+                    if let Some(problem) =
+                        verify_merge_commit_parents(&pr.local_path, &pr.base, effective_method)
+                    {
+                        Output::warning(&problem);
                     }
                     success_count += 1;
                     json_merged.push(JsonMergedPr {
@@ -915,5 +1174,355 @@ mod tests {
             resolve_check_status(&status(true, CheckState::Pending)),
             CheckStatus::Pending
         );
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::MergeGate;
+
+    #[test]
+    fn every_known_gate_round_trips_through_its_name() {
+        for gate in MergeGate::all() {
+            let parsed = MergeGate::parse(gate.as_str()).expect("known gate must parse");
+            assert_eq!(parsed, gate, "{} did not round-trip", gate.as_str());
+        }
+    }
+
+    #[test]
+    fn gate_names_are_case_insensitive_and_trimmed() {
+        assert_eq!(MergeGate::parse("APPROVAL").unwrap(), MergeGate::Approval);
+        assert_eq!(MergeGate::parse("  checks ").unwrap(), MergeGate::Checks);
+    }
+
+    /// An unknown gate name must be an ERROR, never a silent no-op.
+    ///
+    /// This is the whole failure mode the flag exists to remove. A misspelled
+    /// `--skip-gate aproval` that quietly waives nothing produces a run that
+    /// looks exactly like one where the gate passed -- and the operator, having
+    /// typed a waiver, believes the opposite of what happened.
+    #[test]
+    fn an_unknown_gate_is_rejected_rather_than_ignored() {
+        let err = MergeGate::parse("aproval").expect_err("a typo must not be accepted");
+        let message = err.to_string();
+        assert!(
+            message.contains("unknown merge gate"),
+            "message should name the problem: {message}"
+        );
+        assert!(
+            message.contains("approval")
+                && message.contains("checks")
+                && message.contains("mergeable"),
+            "message should list the valid gates so the typo is fixable: {message}"
+        );
+    }
+
+    #[test]
+    fn an_empty_gate_name_is_rejected() {
+        assert!(MergeGate::parse("").is_err());
+        assert!(MergeGate::parse("   ").is_err());
+    }
+
+    /// `all()` is hand-written, so it can drift from the enum. This match is
+    /// exhaustive on purpose: adding a variant without adding it to `all()`
+    /// fails to COMPILE rather than silently shrinking what `--force` waives.
+    ///
+    /// A compile error is the right instrument here. A runtime test can only
+    /// check the variants it was told about, which is the same gap that let a
+    /// parsed-and-dropped field through three review rounds elsewhere today.
+    #[test]
+    fn the_enumeration_cannot_silently_grow() {
+        fn enumerated(gate: MergeGate) -> bool {
+            match gate {
+                MergeGate::Approval => MergeGate::all().contains(&gate),
+                MergeGate::Checks => MergeGate::all().contains(&gate),
+                MergeGate::Mergeable => MergeGate::all().contains(&gate),
+            }
+        }
+        for gate in MergeGate::all() {
+            assert!(enumerated(gate), "{} missing from all()", gate.as_str());
+        }
+        assert_eq!(
+            MergeGate::all().len(),
+            3,
+            "a gate was added or removed; update --force's waiver set and this count deliberately"
+        );
+    }
+
+    #[test]
+    fn gate_names_are_distinct() {
+        let mut names: Vec<&str> = MergeGate::all().iter().map(|g| g.as_str()).collect();
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(before, names.len(), "two gates share a name: {names:?}");
+    }
+}
+
+#[cfg(test)]
+mod attribution_tests {
+    use super::notes_for;
+
+    /// PR numbers where one is a prefix of another, in a single invocation.
+    ///
+    /// This is the exact collision the previous implementation had: it filtered
+    /// notes by `message.contains("PR #77")`, and "PR #777" contains that. The
+    /// merge line for #77 printed #777's suppression as its own.
+    ///
+    /// It could only ever over-attribute, never omit — which is why it is narrow
+    /// and why it still mattered: the line's entire job is saying precisely what
+    /// is suppressed on precisely this PR.
+    #[test]
+    fn a_pr_number_that_is_a_prefix_of_another_does_not_steal_its_notes() {
+        let suppressed = vec![
+            (
+                0usize,
+                "app PR #77: no formal approval [approval]".to_string(),
+            ),
+            (1usize, "app PR #777: checks failing [checks]".to_string()),
+        ];
+        assert_eq!(
+            notes_for(0, &suppressed),
+            vec!["app PR #77: no formal approval [approval]"],
+            "#77 must not receive #777's note"
+        );
+        assert_eq!(
+            notes_for(1, &suppressed),
+            vec!["app PR #777: checks failing [checks]"],
+        );
+    }
+
+    /// Two repos can each carry the SAME PR number in one invocation.
+    ///
+    /// Matching on the number alone — the obvious repair for the substring bug —
+    /// still mis-attributes here. Only an identifier unique across the whole run
+    /// closes both, which is why the notes are keyed by index rather than by any
+    /// value re-read from the rendered text.
+    #[test]
+    fn the_same_pr_number_in_two_repos_keeps_its_notes_separate() {
+        let suppressed = vec![
+            (
+                0usize,
+                "frontend PR #42: no formal approval [approval]".to_string(),
+            ),
+            (
+                1usize,
+                "backend PR #42: checks failing [checks]".to_string(),
+            ),
+        ];
+        assert_eq!(
+            notes_for(0, &suppressed),
+            vec!["frontend PR #42: no formal approval [approval]"],
+        );
+        assert_eq!(
+            notes_for(1, &suppressed),
+            vec!["backend PR #42: checks failing [checks]"],
+        );
+    }
+
+    #[test]
+    fn a_pr_with_several_suppressions_gets_all_of_them_and_only_them() {
+        let suppressed = vec![
+            (
+                0usize,
+                "app PR #1: no formal approval [approval]".to_string(),
+            ),
+            (1usize, "other PR #2: checks failing [checks]".to_string()),
+            (0usize, "app PR #1: checks failing [checks]".to_string()),
+        ];
+        assert_eq!(notes_for(0, &suppressed).len(), 2);
+        assert_eq!(notes_for(1, &suppressed).len(), 1);
+    }
+
+    /// The negative control: no suppressions means no line, not a stray one.
+    #[test]
+    fn a_pr_with_no_suppressions_reports_none() {
+        let suppressed = vec![(1usize, "other PR #2: checks failing [checks]".to_string())];
+        assert!(notes_for(0, &suppressed).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod method_default_tests {
+    use crate::core::manifest::{DefaultMergeMethod, ManifestSettings};
+    use crate::platform::MergeMethod;
+
+    /// The whole incident in one assertion.
+    ///
+    /// Auto-detection took the first of squash > merge > rebase, so on any repo
+    /// permitting squash the tool chose it -- in a workspace whose policy is
+    /// merge-commit-only, and on private repos where no hosting ruleset could
+    /// reject the result.
+    #[test]
+    fn the_default_is_a_merge_commit_not_a_squash() {
+        assert_eq!(
+            ManifestSettings::default().merge_method,
+            DefaultMergeMethod::Merge,
+            "an unconfigured workspace must get a real merge commit"
+        );
+    }
+
+    /// The mapping the command uses when no --method is given.
+    ///
+    /// Written as an exhaustive match so a new variant fails to COMPILE rather
+    /// than silently falling through to a default -- which is the same class of
+    /// silent substitution this change exists to remove.
+    #[test]
+    fn every_configured_method_maps_to_the_one_it_names() {
+        fn mapped(setting: DefaultMergeMethod) -> MergeMethod {
+            match setting {
+                DefaultMergeMethod::Merge => MergeMethod::Merge,
+                DefaultMergeMethod::Squash => MergeMethod::Squash,
+                DefaultMergeMethod::Rebase => MergeMethod::Rebase,
+            }
+        }
+        assert_eq!(mapped(DefaultMergeMethod::Merge), MergeMethod::Merge);
+        assert_eq!(mapped(DefaultMergeMethod::Squash), MergeMethod::Squash);
+        assert_eq!(mapped(DefaultMergeMethod::Rebase), MergeMethod::Rebase);
+    }
+
+    /// A workspace CAN choose otherwise -- this is a default, not a prohibition.
+    ///
+    /// The negative control for the test above: if the setting were ignored and
+    /// merge hardcoded, that test would still pass and this one would not.
+    #[test]
+    fn a_workspace_can_configure_a_different_method() {
+        let toml = r#"
+repos: {}
+settings:
+  merge_method: squash
+"#;
+        let parsed: serde_yaml::Value = serde_yaml::from_str(toml).expect("yaml parses");
+        let method = parsed["settings"]["merge_method"].as_str();
+        assert_eq!(
+            method,
+            Some("squash"),
+            "the setting must be readable as written"
+        );
+    }
+
+    /// `merge_strategy` and `merge_method` are unrelated and easily confused.
+    ///
+    /// Named because the issue called the similarity out: one is cross-repo
+    /// coordination, the other is the git strategy. Changing one expecting the
+    /// other is a plausible mistake, and this pins that they are separate fields.
+    #[test]
+    fn merge_strategy_and_merge_method_are_independent() {
+        let settings = ManifestSettings {
+            merge_method: DefaultMergeMethod::Squash,
+            ..Default::default()
+        };
+        assert_eq!(
+            settings.merge_strategy,
+            ManifestSettings::default().merge_strategy,
+            "changing the git method must not disturb cross-repo coordination"
+        );
+    }
+}
+
+#[cfg(test)]
+mod parent_assertion_tests {
+    use super::verify_merge_commit_parents;
+    use crate::platform::MergeMethod;
+    use std::path::Path;
+
+    /// Build a repo whose `origin/main` points at a commit with `parents` parents.
+    fn repo_with_head_parents(dir: &Path, parents: usize) {
+        let repo = git2::Repository::init(dir).expect("init");
+        let sig = git2::Signature::now("t", "t@example.invalid").expect("sig");
+        let tree = {
+            let mut idx = repo.index().expect("index");
+            let oid = idx.write_tree().expect("write tree");
+            repo.find_tree(oid).expect("tree")
+        };
+        let base = repo
+            .commit(None, &sig, &sig, "base", &tree, &[])
+            .expect("base commit");
+        let base_commit = repo.find_commit(base).expect("find base");
+
+        let head = if parents >= 2 {
+            let side = repo
+                .commit(None, &sig, &sig, "side", &tree, &[&base_commit])
+                .expect("side commit");
+            let side_commit = repo.find_commit(side).expect("find side");
+            repo.commit(
+                None,
+                &sig,
+                &sig,
+                "merge",
+                &tree,
+                &[&base_commit, &side_commit],
+            )
+            .expect("merge commit")
+        } else {
+            repo.commit(None, &sig, &sig, "single", &tree, &[&base_commit])
+                .expect("single commit")
+        };
+
+        repo.reference("refs/remotes/origin/main", head, true, "test")
+            .expect("ref");
+    }
+
+    /// The incident, as a test: a single-parent head after a requested Merge.
+    ///
+    /// This is what the original squash produced -- the API reported success,
+    /// the output said nothing, and the only way to find out was to count
+    /// parents by hand afterwards. Now the command says it.
+    #[test]
+    fn a_single_parent_head_after_a_requested_merge_is_reported() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        repo_with_head_parents(dir.path(), 1);
+
+        let problem = verify_merge_commit_parents(dir.path(), "main", MergeMethod::Merge);
+        let message = problem.expect("a single-parent head must be reported");
+        assert!(
+            message.contains("1 parent"),
+            "the message must state what was actually found: {message}"
+        );
+        assert!(
+            message.contains("two"),
+            "and what a merge commit should have: {message}"
+        );
+    }
+
+    /// The negative control. Without it, a function that always complains passes.
+    #[test]
+    fn a_real_merge_commit_is_not_reported() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        repo_with_head_parents(dir.path(), 2);
+        assert!(
+            verify_merge_commit_parents(dir.path(), "main", MergeMethod::Merge).is_none(),
+            "two parents is exactly what a merge commit has"
+        );
+    }
+
+    /// Squash and rebase produce single-parent commits BY DESIGN.
+    ///
+    /// Asserting two parents for them would be wrong rather than strict, and
+    /// would make the guard fire on every correct squash -- which is how a
+    /// warning becomes noise and then becomes ignored.
+    #[test]
+    fn squash_and_rebase_are_not_expected_to_have_two_parents() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        repo_with_head_parents(dir.path(), 1);
+        for method in [MergeMethod::Squash, MergeMethod::Rebase] {
+            assert!(
+                verify_merge_commit_parents(dir.path(), "main", method).is_none(),
+                "{method:?} produces one parent by design"
+            );
+        }
+    }
+
+    /// An unreadable repository must not be reported as a bad merge.
+    ///
+    /// The check is best-effort by design: failing a merge because a local
+    /// checkout is missing would invent an outage. But it must fail SILENT
+    /// rather than fail LOUD-AND-WRONG, and that distinction deserves its own
+    /// case rather than being inferred from the `?` operators.
+    #[test]
+    fn an_unreadable_repository_reports_nothing_rather_than_a_false_alarm() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("not-a-repo");
+        assert!(verify_merge_commit_parents(&missing, "main", MergeMethod::Merge).is_none());
     }
 }

@@ -9,13 +9,13 @@ from types import SimpleNamespace
 from typing import Optional
 
 import typer
+from gr2.prototypes import lane_workspace_prototype as lane_proto
+from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
 from . import branch as branch_ops
-from . import execops
-from . import failures
-from . import migration
+from . import execops, failures, migration, spec_apply, syncops
 from . import pr as pr_ops
-from . import syncops
+from .events import EventType, emit_after_outcome
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -27,14 +27,16 @@ from .gitops import (
     repo_dirty,
     stash_if_dirty,
 )
-from .events import emit, EventType
-from .hooks import HookContext, HookRuntimeError, apply_file_projections, load_repo_hooks, run_lifecycle_stage
-from .platform import PRRef, get_platform_adapter
-from . import spec_apply
 from .grip_cli import config_cli_app, grip_app
-from gr2.prototypes import lane_workspace_prototype as lane_proto
-from gr2.prototypes import repo_maintenance_prototype as repo_proto
-
+from .hooks import (
+    HookContext,
+    HookRuntimeError,
+    apply_file_projections,
+    load_repo_hooks,
+    run_lifecycle_stage,
+)
+from .merge_verification import MergeVerificationTarget
+from .platform import PRRef, get_platform_adapter
 
 app = typer.Typer(
     help="Python-first gr2 CLI. This is the production UX proving layer before Rust."
@@ -249,6 +251,41 @@ def _repo_slug_from_url(url: str, fallback_name: str) -> str:
         slug = cleaned.split("https://github.com/", 1)[1]
         return slug.removesuffix(".git")
     return fallback_name
+
+
+def _merge_verification_targets(
+    workspace_root: Path,
+) -> dict[str, MergeVerificationTarget]:
+    """Bind host slugs to explicit local DAGs and source URLs before merging."""
+
+    workspace_spec = lane_proto.load_workspace_spec(workspace_root)
+    targets: dict[str, MergeVerificationTarget] = {}
+    for repo_spec_value in workspace_spec.get("repos", []):
+        repo_spec = dict(repo_spec_value)
+        repo_name = str(repo_spec.get("name", ""))
+        remote = str(repo_spec.get("url", "")).strip()
+        if not remote:
+            raise SystemExit(f"repo has no source URL for merge verification: {repo_name}")
+        host_repo = _repo_slug_from_url(remote, repo_name)
+        if host_repo in targets:
+            raise SystemExit(f"duplicate host repo in merge verification targets: {host_repo}")
+        repo_root = (workspace_root / str(repo_spec.get("path", ""))).resolve()
+        if not repo_root.is_dir() or not is_git_repo(repo_root):
+            raise SystemExit(f"local merge-verification DAG is unavailable: {repo_root}")
+        targets[host_repo] = MergeVerificationTarget(repo_root=repo_root, remote=remote)
+    return targets
+
+
+def _configured_merge_method(workspace_root: Path) -> str | None:
+    settings = lane_proto.load_workspace_spec(workspace_root).get("settings", {})
+    if not isinstance(settings, dict):
+        raise SystemExit("workspace spec [settings] must be a table")
+    value = settings.get("merge_method")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise SystemExit("workspace setting merge_method must be a string")
+    return value
 
 
 def _write_workspace_spec(workspace_root: Path, repos: list[dict[str, str]], default_unit: str) -> Path:
@@ -728,7 +765,7 @@ def lane_create(
         else:
             for r in repo_list:
                 branch_map[r] = part.strip()
-    emit(
+    emit_after_outcome(
         event_type=EventType.LANE_CREATED,
         workspace_root=workspace_root,
         actor=source,
@@ -796,7 +833,7 @@ def lane_enter(
     )
     _exit(lane_proto.enter_lane(ns))
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
-    emit(
+    emit_after_outcome(
         event_type=EventType.LANE_ENTERED,
         workspace_root=workspace_root,
         actor=actor,
@@ -862,7 +899,7 @@ def lane_exit(
         recall=recall,
     )
     _exit(lane_proto.exit_lane(ns))
-    emit(
+    emit_after_outcome(
         event_type=EventType.LANE_EXITED,
         workspace_root=workspace_root,
         actor=actor,
@@ -910,7 +947,7 @@ def lane_lease_acquire(
         force=force,
     )
     _exit(lane_proto.acquire_lane_lease(ns))
-    emit(
+    emit_after_outcome(
         event_type=EventType.LEASE_ACQUIRED,
         workspace_root=workspace_root,
         actor=actor,
@@ -939,7 +976,7 @@ def lane_lease_release(
         actor=actor,
     )
     _exit(lane_proto.release_lane_lease(ns))
-    emit(
+    emit_after_outcome(
         event_type=EventType.LEASE_RELEASED,
         workspace_root=workspace_root,
         actor=actor,
@@ -1156,6 +1193,12 @@ def pr_merge(
     owner_unit: str,
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    method: Optional[str] = typer.Option(
+        None,
+        "--method",
+        "-m",
+        help="merge/squash/rebase. Defaults to a merge commit.",
+    ),
 ) -> None:
     """Merge grouped PRs for a lane."""
     workspace_root = workspace_root.resolve()
@@ -1183,32 +1226,65 @@ def pr_merge(
             typer.echo(json.dumps(payload, indent=2))
         raise typer.Exit(code=1)
     try:
-        pr_ops.merge_pr_group(
+        result = pr_ops.merge_pr_group(
             workspace_root=workspace_root,
             pr_group_id=str(group["pr_group_id"]),
             adapter=adapter,
             actor=f"agent:{owner_unit}",
+            method=pr_ops.resolve_merge_method(
+                explicit=method,
+                configured=_configured_merge_method(workspace_root),
+            ),
+            verification_targets=_merge_verification_targets(
+                workspace_root,
+            ),
+            report=lambda message: typer.echo(message, err=True),
         )
-        merged = [str(pr_info["repo"]) for pr_info in group.get("prs", [])]
+        completed = list(result.get("completed", []))
+        merged = [str(item["repo"]) for item in completed]
         payload = {
             "pr_group_id": group["pr_group_id"],
             "owner_unit": owner_unit,
             "lane_name": resolved_lane,
             "merged": merged,
+            "merged_receipts": completed,
             "state_path": str(group_path),
         }
     except pr_ops.PRMergeError as exc:
-        merged = [str(pr_info["repo"]) for pr_info in group.get("prs", []) if str(pr_info["repo"]) != exc.repo]
-        group["group_state"] = "partially_merged" if merged else "merge_failed"
+        completed = [item.as_dict() for item in exc.completed]
+        merged = [str(item["repo"]) for item in completed]
+        if exc.outcome_unknown:
+            group["group_state"] = "merge_outcome_unknown"
+        elif exc.operation_acknowledged:
+            group["group_state"] = "merge_postcondition_failed"
+        else:
+            group["group_state"] = "partially_merged" if merged else "merge_failed"
         group["merged"] = merged
+        group["completed"] = completed
         group_path.write_text(json.dumps(group, indent=2) + "\n")
         payload = {
-            "status": "partial_failure" if merged else "failed",
+            "status": (
+                "outcome_unknown"
+                if exc.outcome_unknown
+                else (
+                    "postcondition_failed"
+                    if exc.operation_acknowledged
+                    else ("partial_failure" if merged else "failed")
+                )
+            ),
             "pr_group_id": group["pr_group_id"],
             "owner_unit": owner_unit,
             "lane_name": resolved_lane,
             "merged": merged,
-            "failed": [{"repo": exc.repo, "number": exc.pr_number, "reason": exc.reason}],
+            "merged_receipts": completed,
+            "failed": [
+                {
+                    "repo": exc.repo,
+                    "number": exc.pr_number,
+                    "reason": exc.reason,
+                    "operation_acknowledged": exc.operation_acknowledged,
+                }
+            ],
             "state_path": str(group_path),
         }
         if json_output:

@@ -29,7 +29,13 @@ def lane_proto(root: Path) -> Path:
     return root / "gr2" / "prototypes" / "lane_workspace_prototype.py"
 
 
-def run(argv: list[str], *, env: dict | None = None, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess[str]:
+def run(
+    argv: list[str],
+    *,
+    env: dict | None = None,
+    check: bool = True,
+    capture: bool = False,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, check=check, text=True, capture_output=capture, env=env)
 
 
@@ -119,6 +125,28 @@ def read_leases(workspace_root: Path) -> tuple[bool, list[dict] | None]:
         return False, None
 
 
+def prove_corruption_detector() -> dict[str, object]:
+    """Prove the corruption counter's detector with a known-bad lease file."""
+    with tempfile.TemporaryDirectory(prefix="gr2-lease-corruption-control-") as tmp:
+        workspace_root = Path(tmp)
+        lease_path = (
+            workspace_root
+            / "agents"
+            / "atlas"
+            / "lanes"
+            / "feat-race"
+            / "leases.json"
+        )
+        lease_path.parent.mkdir(parents=True)
+        lease_path.write_text("{malformed-json")
+        valid_json, _ = read_leases(workspace_root)
+    return {
+        "proven": not valid_json,
+        "fixture": "malformed-json",
+        "detected_as_corrupt": not valid_json,
+    }
+
+
 def release_all(root: Path, workspace_root: Path, disable_locking: bool) -> None:
     env = os.environ.copy()
     if disable_locking:
@@ -195,13 +223,17 @@ def main() -> int:
     args = parse_args()
     before = run_phase(disable_locking=True, rounds=args.rounds)
     after = run_phase(disable_locking=False, rounds=args.rounds)
-    payload = {"before_locking": before, "after_locking": after}
+    payload = {
+        "corruption_detector_control": prove_corruption_detector(),
+        "before_locking": before,
+        "after_locking": after,
+    }
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
         print("gr2 concurrent lease stress")
         print(json.dumps(payload, indent=2))
-    return 0
+    return 0 if payload["corruption_detector_control"]["proven"] else 1
 
 
 if __name__ == "__main__":

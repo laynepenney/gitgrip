@@ -295,6 +295,7 @@ pub async fn dispatch_command(
                 PrCommands::Merge {
                     method,
                     force,
+                    skip_gate,
                     update,
                     auto,
                     wait,
@@ -310,6 +311,10 @@ pub async fn dispatch_command(
                         &crate::cli::commands::pr::MergeOptions {
                             method: method.as_ref(),
                             force,
+                            skip_gates: skip_gate
+                                .iter()
+                                .map(|g| crate::cli::commands::pr::MergeGate::parse(g))
+                                .collect::<anyhow::Result<Vec<_>>>()?,
                             update,
                             auto,
                             json: ctx.json,
