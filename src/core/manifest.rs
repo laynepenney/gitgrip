@@ -274,15 +274,44 @@ pub enum MergeStrategy {
     Independent,
 }
 
+/// The git merge method used when `gr pr merge` is given no `--method`.
+///
+/// `Merge` is the default deliberately: it is the only method that preserves
+/// both parents, and a workspace that wants a different one should have to say
+/// so in the manifest rather than inherit it from whatever a host happens to
+/// allow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DefaultMergeMethod {
+    #[default]
+    Merge,
+    Squash,
+    Rebase,
+}
+
 /// Global manifest settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestSettings {
     /// PR title prefix (e.g., "[cross-repo]")
     #[serde(default = "default_pr_prefix")]
     pub pr_prefix: String,
-    /// Merge strategy for linked PRs
+    /// Cross-repo coordination for linked PRs (all-or-nothing vs independent).
+    ///
+    /// NOT the git merge method -- see `merge_method`. The two names read
+    /// confusingly alike and mean unrelated things; the issue that prompted
+    /// `merge_method` called that out explicitly.
     #[serde(default)]
     pub merge_strategy: MergeStrategy,
+    /// The git merge METHOD `gr pr merge` uses when `--method` is not passed.
+    ///
+    /// Defaults to `merge`, a real merge commit. Auto-detection used to pick
+    /// the first method a repo allowed, in the order squash > merge > rebase,
+    /// which meant the tool actively selected squash on any repo permitting it.
+    /// A workspace whose policy is merge-commit-only got squashes from its own
+    /// tooling, and on a private repo -- where hosting rulesets are unavailable
+    /// on most plans -- nothing downstream could reject it.
+    #[serde(default)]
+    pub merge_method: DefaultMergeMethod,
     /// Upstream revision for all repos (e.g. "main"). Overridden by per-repo revision.
     #[serde(
         default,
@@ -315,6 +344,7 @@ impl Default for ManifestSettings {
         Self {
             pr_prefix: default_pr_prefix(),
             merge_strategy: MergeStrategy::default(),
+            merge_method: DefaultMergeMethod::default(),
             revision: None,
             target: None,
             sync_remote: None,

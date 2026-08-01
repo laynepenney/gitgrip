@@ -41,29 +41,99 @@ fn resolve_check_status(status: &StatusCheckResult) -> CheckStatus {
     }
 }
 
-/// Auto-detect the best merge method for a repo when none is specified.
+/// After a `Merge`, assert the resulting commit actually has two parents.
 ///
-/// Queries the repo's allowed merge methods and picks the first available
-/// in preference order: squash > merge > rebase.  Falls back to the
-/// default (merge) if the query fails.
-async fn detect_merge_method(
+/// Checked against the local repository, not the platform's response. The API
+/// reports that a merge happened; it does not report WHICH strategy produced
+/// the commit, and the incident behind this was a squash that reported success
+/// exactly like a merge. Fetching and counting parents asks the repository what
+/// is actually there.
+///
+/// Only meaningful for `Merge` -- squash and rebase produce single-parent
+/// commits by design, so asserting two parents for them would be wrong rather
+/// than strict.
+///
+/// A failure here is loud and it is NOT recoverable by this command: the merge
+/// already happened. The point is that the operator finds out now, from the
+/// tool, rather than days later from a broken ancestry -- which is how the
+/// original incident was discovered.
+fn verify_merge_commit_parents(
+    local_path: &std::path::Path,
+    base: &str,
+    method: MergeMethod,
+) -> Option<String> {
+    if method != MergeMethod::Merge {
+        return None;
+    }
+    let repo = open_repo(local_path).ok()?;
+    // Fetch so the local ref reflects the merge that just happened remotely.
+    let _ = crate::git::remote::fetch_remote(&repo, "origin");
+
+    let reference = repo
+        .find_reference(&format!("refs/remotes/origin/{}", base))
+        .ok()?;
+    let commit = reference.peel_to_commit().ok()?;
+    let parents = commit.parent_count();
+
+    if parents >= 2 {
+        None
+    } else {
+        Some(format!(
+            "origin/{} is now {} with {} parent{} -- a merge commit has two. \
+             The merge was requested as {:?} but the result does not look like \
+             one, so the branch head may no longer be reachable from {}.",
+            base,
+            &commit.id().to_string()[..8],
+            parents,
+            if parents == 1 { "" } else { "s" },
+            method,
+            base
+        ))
+    }
+}
+
+/// Confirm the chosen merge method is one the host actually permits.
+///
+/// This REPLACED an auto-detector that queried the allowed methods and took the
+/// first of squash > merge > rebase. That is how a workspace whose policy is
+/// merge-commit-only got squashes from its own tooling: the tool actively
+/// selected the one method the policy forbids, on every repo that permitted it.
+///
+/// Choosing is now the manifest's job, not the host's. What the host is asked is
+/// only whether the choice is permitted -- and if it is not, this REFUSES rather
+/// than substituting. Substitution is the original defect in a politer form: the
+/// operator asked for one strategy, a different one happened, and the only way
+/// to find out was to count parents afterwards.
+///
+/// An unreachable host is not treated as a refusal. Failing the merge because a
+/// capability query timed out would be its own outage, so an errored query is
+/// reported and the chosen method stands -- the post-merge parent assertion is
+/// the backstop for that path.
+async fn confirm_method_allowed(
     platform: &dyn HostingPlatform,
     owner: &str,
     repo: &str,
-) -> MergeMethod {
+    method: MergeMethod,
+) -> Result<(), String> {
     match platform.get_allowed_merge_methods(owner, repo).await {
         Ok(allowed) => {
-            if allowed.squash {
-                MergeMethod::Squash
-            } else if allowed.merge {
-                MergeMethod::Merge
-            } else if allowed.rebase {
-                MergeMethod::Rebase
+            let permitted = match method {
+                MergeMethod::Merge => allowed.merge,
+                MergeMethod::Squash => allowed.squash,
+                MergeMethod::Rebase => allowed.rebase,
+            };
+            if permitted {
+                Ok(())
             } else {
-                MergeMethod::default()
+                Err(format!(
+                    "{}/{} does not permit {:?} merges. Refusing rather than \
+                     silently using a different strategy -- pass --method \
+                     explicitly if another one is intended.",
+                    owner, repo, method
+                ))
             }
         }
-        Err(_) => MergeMethod::default(),
+        Err(_) => Ok(()),
     }
 }
 
@@ -197,7 +267,18 @@ pub async fn run_pr_merge(
         })
         .collect();
 
-    let merge_method = opts.method.copied().unwrap_or_default();
+    // Precedence: explicit --method, then the manifest, then a merge commit.
+    // The host is never asked to CHOOSE -- only, later, whether the choice is
+    // permitted. Letting the host choose is what produced squashes in a
+    // merge-commit-only workspace.
+    let merge_method = match opts.method.copied() {
+        Some(explicit) => explicit,
+        None => match manifest.settings.merge_method {
+            crate::core::manifest::DefaultMergeMethod::Merge => MergeMethod::Merge,
+            crate::core::manifest::DefaultMergeMethod::Squash => MergeMethod::Squash,
+            crate::core::manifest::DefaultMergeMethod::Rebase => MergeMethod::Rebase,
+        },
+    };
 
     // Also check manifest repo if configured and not filtered out
     let mut all_repos = repos.clone();
@@ -233,6 +314,9 @@ pub async fn run_pr_merge(
         /// line can name it: "which PR" and "into what" are different facts and
         /// only the second one says where the commits land.
         base: String,
+        /// Local checkout, so the merge can be verified against the REPOSITORY
+        /// rather than against the API's report of it.
+        local_path: std::path::PathBuf,
         pr_number: u64,
         platform: Arc<dyn crate::platform::HostingPlatform>,
         approved: bool,
@@ -317,6 +401,7 @@ pub async fn run_pr_merge(
                     repo: repo.repo.clone(),
                     branch: branch.clone(),
                     base: repo.target_branch().to_string(),
+                    local_path: repo.absolute_path.clone(),
                     pr_number: pr.number,
                     platform,
                     approved,
@@ -584,11 +669,15 @@ pub async fn run_pr_merge(
         let mut error_count = 0;
 
         for pr in prs_to_merge {
-            let effective_method = if opts.method.is_some() {
-                merge_method
-            } else {
-                detect_merge_method(pr.platform.as_ref(), &pr.owner, &pr.repo).await
-            };
+            let effective_method = merge_method;
+            if let Err(reason) =
+                confirm_method_allowed(pr.platform.as_ref(), &pr.owner, &pr.repo, effective_method)
+                    .await
+            {
+                Output::warning(&reason);
+                error_count += 1;
+                continue;
+            }
 
             let spinner = Output::spinner(&format!(
                 "Enabling auto-merge for {} PR #{} ({:?})...",
@@ -656,12 +745,20 @@ pub async fn run_pr_merge(
     let mut json_failed_prs: Vec<JsonFailedPr> = Vec::new();
 
     for (pr_index, pr) in prs_to_merge.into_iter().enumerate() {
-        // Auto-detect merge method per repo when not explicitly set (#380)
-        let effective_method = if opts.method.is_some() {
-            merge_method
-        } else {
-            detect_merge_method(pr.platform.as_ref(), &pr.owner, &pr.repo).await
-        };
+        let effective_method = merge_method;
+        if let Err(reason) =
+            confirm_method_allowed(pr.platform.as_ref(), &pr.owner, &pr.repo, effective_method)
+                .await
+        {
+            Output::warning(&reason);
+            error_count += 1;
+            json_failed_prs.push(JsonFailedPr {
+                repo: pr.repo_name.clone(),
+                pr_number: pr.pr_number,
+                reason,
+            });
+            continue;
+        }
 
         // THE MOMENT OF THE IRREVERSIBLE ACT. Printed here -- not earlier from
         // the plan, not afterwards from the result -- and durably rather than
@@ -860,6 +957,11 @@ pub async fn run_pr_merge(
                             "{}: merged PR #{}",
                             pr.repo_name, pr.pr_number
                         ));
+                    }
+                    if let Some(problem) =
+                        verify_merge_commit_parents(&pr.local_path, &pr.base, effective_method)
+                    {
+                        Output::warning(&problem);
                     }
                     success_count += 1;
                     json_merged.push(JsonMergedPr {
@@ -1237,5 +1339,190 @@ mod attribution_tests {
     fn a_pr_with_no_suppressions_reports_none() {
         let suppressed = vec![(1usize, "other PR #2: checks failing [checks]".to_string())];
         assert!(notes_for(0, &suppressed).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod method_default_tests {
+    use crate::core::manifest::{DefaultMergeMethod, ManifestSettings};
+    use crate::platform::MergeMethod;
+
+    /// The whole incident in one assertion.
+    ///
+    /// Auto-detection took the first of squash > merge > rebase, so on any repo
+    /// permitting squash the tool chose it -- in a workspace whose policy is
+    /// merge-commit-only, and on private repos where no hosting ruleset could
+    /// reject the result.
+    #[test]
+    fn the_default_is_a_merge_commit_not_a_squash() {
+        assert_eq!(
+            ManifestSettings::default().merge_method,
+            DefaultMergeMethod::Merge,
+            "an unconfigured workspace must get a real merge commit"
+        );
+    }
+
+    /// The mapping the command uses when no --method is given.
+    ///
+    /// Written as an exhaustive match so a new variant fails to COMPILE rather
+    /// than silently falling through to a default -- which is the same class of
+    /// silent substitution this change exists to remove.
+    #[test]
+    fn every_configured_method_maps_to_the_one_it_names() {
+        fn mapped(setting: DefaultMergeMethod) -> MergeMethod {
+            match setting {
+                DefaultMergeMethod::Merge => MergeMethod::Merge,
+                DefaultMergeMethod::Squash => MergeMethod::Squash,
+                DefaultMergeMethod::Rebase => MergeMethod::Rebase,
+            }
+        }
+        assert_eq!(mapped(DefaultMergeMethod::Merge), MergeMethod::Merge);
+        assert_eq!(mapped(DefaultMergeMethod::Squash), MergeMethod::Squash);
+        assert_eq!(mapped(DefaultMergeMethod::Rebase), MergeMethod::Rebase);
+    }
+
+    /// A workspace CAN choose otherwise -- this is a default, not a prohibition.
+    ///
+    /// The negative control for the test above: if the setting were ignored and
+    /// merge hardcoded, that test would still pass and this one would not.
+    #[test]
+    fn a_workspace_can_configure_a_different_method() {
+        let toml = r#"
+repos: {}
+settings:
+  merge_method: squash
+"#;
+        let parsed: serde_yaml::Value = serde_yaml::from_str(toml).expect("yaml parses");
+        let method = parsed["settings"]["merge_method"].as_str();
+        assert_eq!(
+            method,
+            Some("squash"),
+            "the setting must be readable as written"
+        );
+    }
+
+    /// `merge_strategy` and `merge_method` are unrelated and easily confused.
+    ///
+    /// Named because the issue called the similarity out: one is cross-repo
+    /// coordination, the other is the git strategy. Changing one expecting the
+    /// other is a plausible mistake, and this pins that they are separate fields.
+    #[test]
+    fn merge_strategy_and_merge_method_are_independent() {
+        let settings = ManifestSettings {
+            merge_method: DefaultMergeMethod::Squash,
+            ..Default::default()
+        };
+        assert_eq!(
+            settings.merge_strategy,
+            ManifestSettings::default().merge_strategy,
+            "changing the git method must not disturb cross-repo coordination"
+        );
+    }
+}
+
+#[cfg(test)]
+mod parent_assertion_tests {
+    use super::verify_merge_commit_parents;
+    use crate::platform::MergeMethod;
+    use std::path::Path;
+
+    /// Build a repo whose `origin/main` points at a commit with `parents` parents.
+    fn repo_with_head_parents(dir: &Path, parents: usize) {
+        let repo = git2::Repository::init(dir).expect("init");
+        let sig = git2::Signature::now("t", "t@example.invalid").expect("sig");
+        let tree = {
+            let mut idx = repo.index().expect("index");
+            let oid = idx.write_tree().expect("write tree");
+            repo.find_tree(oid).expect("tree")
+        };
+        let base = repo
+            .commit(None, &sig, &sig, "base", &tree, &[])
+            .expect("base commit");
+        let base_commit = repo.find_commit(base).expect("find base");
+
+        let head = if parents >= 2 {
+            let side = repo
+                .commit(None, &sig, &sig, "side", &tree, &[&base_commit])
+                .expect("side commit");
+            let side_commit = repo.find_commit(side).expect("find side");
+            repo.commit(
+                None,
+                &sig,
+                &sig,
+                "merge",
+                &tree,
+                &[&base_commit, &side_commit],
+            )
+            .expect("merge commit")
+        } else {
+            repo.commit(None, &sig, &sig, "single", &tree, &[&base_commit])
+                .expect("single commit")
+        };
+
+        repo.reference("refs/remotes/origin/main", head, true, "test")
+            .expect("ref");
+    }
+
+    /// The incident, as a test: a single-parent head after a requested Merge.
+    ///
+    /// This is what the original squash produced -- the API reported success,
+    /// the output said nothing, and the only way to find out was to count
+    /// parents by hand afterwards. Now the command says it.
+    #[test]
+    fn a_single_parent_head_after_a_requested_merge_is_reported() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        repo_with_head_parents(dir.path(), 1);
+
+        let problem = verify_merge_commit_parents(dir.path(), "main", MergeMethod::Merge);
+        let message = problem.expect("a single-parent head must be reported");
+        assert!(
+            message.contains("1 parent"),
+            "the message must state what was actually found: {message}"
+        );
+        assert!(
+            message.contains("two"),
+            "and what a merge commit should have: {message}"
+        );
+    }
+
+    /// The negative control. Without it, a function that always complains passes.
+    #[test]
+    fn a_real_merge_commit_is_not_reported() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        repo_with_head_parents(dir.path(), 2);
+        assert!(
+            verify_merge_commit_parents(dir.path(), "main", MergeMethod::Merge).is_none(),
+            "two parents is exactly what a merge commit has"
+        );
+    }
+
+    /// Squash and rebase produce single-parent commits BY DESIGN.
+    ///
+    /// Asserting two parents for them would be wrong rather than strict, and
+    /// would make the guard fire on every correct squash -- which is how a
+    /// warning becomes noise and then becomes ignored.
+    #[test]
+    fn squash_and_rebase_are_not_expected_to_have_two_parents() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        repo_with_head_parents(dir.path(), 1);
+        for method in [MergeMethod::Squash, MergeMethod::Rebase] {
+            assert!(
+                verify_merge_commit_parents(dir.path(), "main", method).is_none(),
+                "{method:?} produces one parent by design"
+            );
+        }
+    }
+
+    /// An unreadable repository must not be reported as a bad merge.
+    ///
+    /// The check is best-effort by design: failing a merge because a local
+    /// checkout is missing would invent an outage. But it must fail SILENT
+    /// rather than fail LOUD-AND-WRONG, and that distinction deserves its own
+    /// case rather than being inferred from the `?` operators.
+    #[test]
+    fn an_unreadable_repository_reports_nothing_rather_than_a_false_alarm() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("not-a-repo");
+        assert!(verify_merge_commit_parents(&missing, "main", MergeMethod::Merge).is_none());
     }
 }
