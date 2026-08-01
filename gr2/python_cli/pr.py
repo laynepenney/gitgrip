@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 from .events import EventType, emit
@@ -91,13 +92,48 @@ def resolve_merge_method(
 
 
 class PRMergeError(RuntimeError):
-    """Raised when a PR merge fails."""
+    """Raised when a PR merge fails, carrying the merges that already succeeded.
 
-    def __init__(self, repo: str, pr_number: int, reason: str) -> None:
+    `completed` is REQUIRED and keyword-only, with no default, because this is the
+    reliable half of G9 (grip#842). Merging is irreversible: by the time one repo fails,
+    earlier repos are merged on the host and no amount of unwinding changes that. A caller
+    that cannot learn which ones will re-attempt them.
+
+        Irreversible work that is not recorded is worse than work not done,
+        because the next actor plans against a state that is false.
+
+    An optional field would be omitted at exactly one call site within a year and the
+    guarantee would quietly become a convention. An empty list is a claim -- "nothing had
+    merged" -- and must be stated, not defaulted; "nothing merged" and "nobody recorded
+    what merged" are different facts and a default would make them identical.
+
+    This is the layer a retry reads. The event log is the other layer and is best-effort:
+    `emit` swallows every exception (grip#843), so correctness must not rest on it. The two
+    fail by different routes, which is the only thing that makes them depth rather than
+    the same chance twice.
+    """
+
+    def __init__(
+        self,
+        repo: str,
+        pr_number: int,
+        reason: str,
+        *,
+        completed: list[dict],
+    ) -> None:
         self.repo = repo
         self.pr_number = pr_number
         self.reason = reason
-        super().__init__(f"merge failed for {repo}#{pr_number}: {reason}")
+        self.completed = list(completed)
+        already = ", ".join(str(c.get("repo")) for c in self.completed)
+        super().__init__(
+            f"merge failed for {repo}#{pr_number}: {reason}"
+            + (
+                f" (ALREADY MERGED, do not retry: {already})"
+                if self.completed
+                else " (nothing had merged yet)"
+            )
+        )
 
 
 def _pr_groups_dir(workspace_root: Path) -> Path:
@@ -200,19 +236,34 @@ def merge_pr_group(
         try:
             adapter.merge_pr(repo, number, method=method)
         except AdapterError as exc:
-            emit(
-                event_type=EventType.PR_MERGE_FAILED,
-                workspace_root=workspace_root,
-                actor=actor,
-                owner_unit=group.get("owner_unit", actor),
-                payload={
-                    "pr_group_id": pr_group_id,
-                    "repo": repo,
-                    "pr_number": number,
-                    "reason": str(exc),
-                },
-            )
-            raise PRMergeError(repo, number, str(exc)) from exc
+            # Best-effort durable layer. Wrapped so a failure HERE cannot replace the
+            # PRMergeError below with the event subsystem's own exception -- if a broken
+            # event layer can take the in-process layer down with it, they were never two
+            # layers. `emit` swallows everything today (grip#843); this guards the day it
+            # does not, rather than depending on that staying true.
+            try:
+                emit(
+                    event_type=EventType.PR_MERGE_FAILED,
+                    workspace_root=workspace_root,
+                    actor=actor,
+                    owner_unit=group.get("owner_unit", actor),
+                    payload={
+                        "pr_group_id": pr_group_id,
+                        "repo": repo,
+                        "pr_number": number,
+                        "reason": str(exc),
+                        # The irreversible work that already happened. Recorded on the
+                        # FAILURE event because there may never be a success event.
+                        "completed": merged,
+                    },
+                )
+            except Exception as emit_exc:  # noqa: BLE001 - deliberately broad
+                print(
+                    f"gr2: could not record partial merge ({emit_exc}); "
+                    f"the completed list is still on the raised PRMergeError",
+                    file=sys.stderr,
+                )
+            raise PRMergeError(repo, number, str(exc), completed=merged) from exc
         merged.append(pr_info)
 
     emit(
