@@ -359,6 +359,10 @@ def lane_leases_lock_file(workspace_root: Path, owner_unit: str, lane_name: str)
     return lane_dir(workspace_root, owner_unit, lane_name) / "leases.lock"
 
 
+def workspace_edit_leases_lock_file(workspace_root: Path) -> Path:
+    return workspace_root / ".grip" / "state" / "workspace_edit_leases.lock"
+
+
 def shared_lane_access_file(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
     return (
         workspace_root
@@ -551,6 +555,55 @@ def mutate_lane_leases(
         if lease_locking_enabled():
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
         return result
+
+
+def mutate_workspace_edit_lease(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    actor: str,
+    mutator,
+):
+    """Check the workspace cap and mutate one lane in a single critical section."""
+    lock_path = workspace_edit_leases_lock_file(workspace_root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_fh:
+        if lease_locking_enabled():
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+
+        cap = max_global_edit_leases(workspace_root)
+        if cap is not None:
+            active_edits = [
+                lease
+                for lease in active_workspace_edit_leases(workspace_root)
+                if not (
+                    lease["owner_unit"] == owner_unit
+                    and lease["lane_name"] == lane_name
+                    and lease["actor"] == actor
+                )
+            ]
+            if len(active_edits) >= cap:
+                return {
+                    "status": "blocked",
+                    "payload": {
+                        "status": "blocked",
+                        "reason": "workspace-edit-lease-cap",
+                        "requested": {
+                            "owner_unit": owner_unit,
+                            "lane_name": lane_name,
+                            "actor": actor,
+                            "mode": "edit",
+                        },
+                        "active_edit_leases": active_edits,
+                        "max_concurrent_edit_leases_global": cap,
+                    },
+                    "write": False,
+                }
+
+        delay = float(os.environ.get("GR2_WORKSPACE_CAP_TEST_DELAY", "0"))
+        if delay > 0:
+            time.sleep(delay)
+        return mutate_lane_leases(workspace_root, owner_unit, lane_name, mutator)
 
 
 def iter_lane_files(workspace_root: Path, owner_unit: str | None = None) -> list[Path]:
@@ -863,40 +916,22 @@ def lane_history(args: argparse.Namespace) -> int:
 def acquire_lane_lease(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
+    mutator = lambda leases: _acquire_lane_lease_mutation(leases, args)
     if args.mode == "edit":
-        cap = max_global_edit_leases(workspace_root)
-        if cap is not None:
-            active_edits = active_workspace_edit_leases(workspace_root)
-            active_edits = [
-                lease
-                for lease in active_edits
-                if not (
-                    lease["owner_unit"] == args.owner_unit
-                    and lease["lane_name"] == args.lane_name
-                    and lease["actor"] == args.actor
-                )
-            ]
-            if len(active_edits) >= cap:
-                payload = {
-                    "status": "blocked",
-                    "reason": "workspace-edit-lease-cap",
-                    "requested": {
-                        "owner_unit": args.owner_unit,
-                        "lane_name": args.lane_name,
-                        "actor": args.actor,
-                        "mode": args.mode,
-                    },
-                    "active_edit_leases": active_edits,
-                    "max_concurrent_edit_leases_global": cap,
-                }
-                print(json.dumps(payload, indent=2))
-                return 1
-    result = mutate_lane_leases(
-        workspace_root,
-        args.owner_unit,
-        args.lane_name,
-        lambda leases: _acquire_lane_lease_mutation(leases, args),
-    )
+        result = mutate_workspace_edit_lease(
+            workspace_root,
+            args.owner_unit,
+            args.lane_name,
+            args.actor,
+            mutator,
+        )
+    else:
+        result = mutate_lane_leases(
+            workspace_root,
+            args.owner_unit,
+            args.lane_name,
+            mutator,
+        )
     if result["status"] == "blocked":
         print(json.dumps(result["payload"], indent=2))
         return 1
@@ -921,7 +956,6 @@ def acquire_lane_lease(args: argparse.Namespace) -> int:
     )
     print(lane_leases_file(workspace_root, args.owner_unit, args.lane_name))
     return 0
-
 
 def _acquire_lane_lease_mutation(leases: list[dict], args: argparse.Namespace) -> dict:
     retained = [lease for lease in leases if lease["actor"] != args.actor]
