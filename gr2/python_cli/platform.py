@@ -1,11 +1,39 @@
 from __future__ import annotations
 
+import enum
 import json
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol
+
+
+class MergeMethod(enum.Enum):
+    """The git strategy a merge uses. Decided by the workspace, never by the host.
+
+    gr1 asked the host which methods it permitted and took the first of
+    `squash > merge > rebase` -- delegating a workspace-policy decision to a party with no
+    knowledge of the workspace. gr2's version of the same class is quieter and harder to
+    see: it passed no strategy flag at all, so gh and the host decided by default. There
+    was no wrong line to point at, only an absent one.
+
+    `MERGE` is the default deliberately. It is the only method that preserves both
+    parents, and losing shared ancestry is not a formatting preference -- it is how two
+    branches become unrelated histories that no later merge can reconcile.
+
+    Lives here rather than in `pr.py` because the flag mapping is a platform concern, and
+    because `pr.py` imports this module: the enum has to sit on the lower side of that
+    edge. `pr.py` re-exports it, so the operational contract reads from either.
+    """
+
+    MERGE = "merge"
+    SQUASH = "squash"
+    REBASE = "rebase"
+
+    @property
+    def gh_flag(self) -> str:
+        return f"--{self.value}"
 
 
 @dataclass(frozen=True)
@@ -68,7 +96,7 @@ class PlatformAdapter(Protocol):
 
     def create_pr(self, request: CreatePRRequest) -> PRRef: ...
 
-    def merge_pr(self, repo: str, number: int) -> PRRef: ...
+    def merge_pr(self, repo: str, number: int, *, method: MergeMethod) -> PRRef: ...
 
     def pr_status(self, repo: str, number: int) -> PRStatus: ...
 
@@ -135,9 +163,17 @@ class GitHubAdapter:
             title=request.title,
         )
 
-    def merge_pr(self, repo: str, number: int) -> PRRef:
+    def merge_pr(self, repo: str, number: int, *, method: MergeMethod) -> PRRef:
+        """Merge, naming the strategy explicitly.
+
+        `method` is REQUIRED and has no default on purpose. A default would be a promise
+        that every future call site remembers to think about it; a required argument is a
+        refusal. The absent flag is precisely the defect being closed here -- with no
+        strategy named, gh and the host choose, and a squash reports success identically
+        to a merge commit.
+        """
         proc = subprocess.run(
-            [self.gh_binary, "pr", "merge", str(number), "--repo", repo],
+            [self.gh_binary, "pr", "merge", str(number), "--repo", repo, method.gh_flag],
             capture_output=True,
             text=True,
             check=False,
