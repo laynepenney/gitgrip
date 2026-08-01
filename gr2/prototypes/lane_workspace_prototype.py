@@ -14,19 +14,50 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import os
+import fcntl
 import json
+import os
 import shlex
 import sys
 import time
 import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-import fcntl
 
+import tomli_w
 
 LANE_SCHEMA_VERSION = 1
 SCRATCHPAD_SCHEMA_VERSION = 1
+MAX_PORTABLE_COMPONENT_BYTES = 255
+
+
+def serialize_toml(document: dict[str, object]) -> str:
+    """Serialize structured data without interpolating values into TOML source."""
+    return tomli_w.dumps(document)
+
+
+def validate_lane_path_component(value: str, field: str) -> None:
+    """Require one portable path component while allowing TOML-significant text."""
+    try:
+        encoded_length = len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        encoded_length = MAX_PORTABLE_COMPONENT_BYTES + 1
+    invalid = (
+        not value
+        or len(value) > 128
+        or encoded_length > MAX_PORTABLE_COMPONENT_BYTES
+        or value != value.strip()
+        or value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    )
+    if invalid:
+        raise SystemExit(
+            f"invalid {field}: expected 1-128 characters and at most "
+            f"{MAX_PORTABLE_COMPONENT_BYTES} UTF-8 bytes forming one path component; "
+            "no separators, control characters, dot components, or outer whitespace"
+        )
 
 
 @dataclasses.dataclass
@@ -47,63 +78,27 @@ class LaneMetadata:
     handoff_source: dict[str, str] | None
 
     def as_toml(self) -> str:
-        # repos/shared_with are pre-formatted here, not inlined into the
-        # f-strings below: an f-string expression part can't safely nest a
-        # string literal using the same quote character as the outer
-        # f-string (pre-3.12 tokenizers can't tell a nested string's quote
-        # from the outer delimiter -- see grip#793's Python 3.11 CI catch).
-        repos_toml = ", ".join(f'"{r}"' for r in self.repos)
-        shared_with_toml = ", ".join(f'"{u}"' for u in self.shared_with)
-        lines = [
-            f"schema_version = {self.schema_version}",
-            f'lane_name = "{self.lane_name}"',
-            f'owner_unit = "{self.owner_unit}"',
-            f'agent_id = "{self.agent_id or ""}"',
-            f'lane_type = "{self.lane_type}"',
-            f'creation_source = "{self.creation_source}"',
-            "",
-            f"repos = [{repos_toml}]",
-            f"shared_with = [{shared_with_toml}]",
-            "",
-            "[branch_map]",
-        ]
-        for repo, branch in sorted(self.branch_map.items()):
-            lines.append(f'{repo} = "{branch}"')
-
-        lines.extend(["", "[context]", "shared_roots = ["])
-        for root in self.shared_context_roots:
-            lines.append(f'  "{root}",')
-        lines.extend(["]", "private_roots = ["])
-        for root in self.private_context_roots:
-            lines.append(f'  "{root}",')
-
-        lines.extend(["]", "", "[exec_defaults]"])
-        for key, value in self.exec_defaults.items():
-            if isinstance(value, bool):
-                encoded = str(value).lower()
-            elif isinstance(value, int):
-                encoded = str(value)
-            elif isinstance(value, list):
-                encoded = "[" + ", ".join(f'"{item}"' for item in value) + "]"
-            else:
-                encoded = f'"{value}"'
-            lines.append(f"{key} = {encoded}")
-
-        for assoc in self.pr_associations:
-            lines.extend(["", "[[pr_associations]]", f'ref = "{assoc}"'])
-
+        document: dict[str, object] = {
+            "schema_version": self.schema_version,
+            "lane_name": self.lane_name,
+            "owner_unit": self.owner_unit,
+            "agent_id": self.agent_id or "",
+            "lane_type": self.lane_type,
+            "creation_source": self.creation_source,
+            "repos": self.repos,
+            "shared_with": self.shared_with,
+            "branch_map": dict(sorted(self.branch_map.items())),
+            "context": {
+                "shared_roots": self.shared_context_roots,
+                "private_roots": self.private_context_roots,
+            },
+            "exec_defaults": self.exec_defaults,
+        }
+        if self.pr_associations:
+            document["pr_associations"] = [{"ref": ref} for ref in self.pr_associations]
         if self.handoff_source:
-            lines.extend(
-                [
-                    "",
-                    "[handoff]",
-                    f'kind = "{self.handoff_source["kind"]}"',
-                    f'source_owner_unit = "{self.handoff_source["source_owner_unit"]}"',
-                    f'source_lane = "{self.handoff_source["source_lane"]}"',
-                ]
-            )
-
-        return "\n".join(lines) + "\n"
+            document["handoff"] = self.handoff_source
+        return serialize_toml(document)
 
 
 @dataclasses.dataclass
@@ -123,30 +118,25 @@ class SharedScratchpad:
     updated_at: str
 
     def as_toml(self) -> str:
-        # See LaneWorkspaceSpec.as_toml's comment above: pre-formatted here
-        # rather than inlined, to avoid nesting a same-quote string literal
-        # inside another f-string's expression part (grip#793).
-        participants_toml = ", ".join(f'"{p}"' for p in self.participants)
-        linked_refs_toml = ", ".join(f'"{r}"' for r in self.linked_refs)
-        lines = [
-            f"schema_version = {self.schema_version}",
-            f'name = "{self.name}"',
-            f'kind = "{self.kind}"',
-            f'purpose = "{self.purpose}"',
-            f'lifecycle = "{self.lifecycle}"',
-            f'creation_source = "{self.creation_source}"',
-            f'created_at = "{self.created_at}"',
-            f'updated_at = "{self.updated_at}"',
-            "",
-            f"participants = [{participants_toml}]",
-            f"linked_refs = [{linked_refs_toml}]",
-            "",
-            "[paths]",
-            f'docs_root = "{self.docs_root}"',
-            f'notes_root = "{self.notes_root}"',
-            f'context_root = "{self.context_root}"',
-        ]
-        return "\n".join(lines) + "\n"
+        return serialize_toml(
+            {
+                "schema_version": self.schema_version,
+                "name": self.name,
+                "kind": self.kind,
+                "purpose": self.purpose,
+                "lifecycle": self.lifecycle,
+                "creation_source": self.creation_source,
+                "created_at": self.created_at,
+                "updated_at": self.updated_at,
+                "participants": self.participants,
+                "linked_refs": self.linked_refs,
+                "paths": {
+                    "docs_root": self.docs_root,
+                    "notes_root": self.notes_root,
+                    "context_root": self.context_root,
+                },
+            }
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -715,6 +705,8 @@ def parse_branch_arg(raw: str, repos: list[str]) -> dict[str, str]:
 
 def create_lane(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
+    validate_lane_path_component(args.owner_unit, "owner_unit")
+    validate_lane_path_component(args.lane_name, "lane_name")
     spec = load_workspace_spec(workspace_root)
     unit_spec = find_unit_spec(workspace_root, args.owner_unit)
     repo_names = [item["name"] for item in spec.get("repos", [])]
@@ -737,7 +729,7 @@ def create_lane(args: argparse.Namespace) -> int:
         lane_type=args.type,
         repos=repos,
         branch_map=parse_branch_arg(args.branch, repos),
-        pr_associations=[],
+        pr_associations=list(getattr(args, "pr_associations", [])),
         shared_context_roots=["config", ".grip/context/shared"],
         private_context_roots=[
             f"agents/{args.owner_unit}/home/context",
@@ -1057,8 +1049,27 @@ def show_lane_leases(args: argparse.Namespace) -> int:
 def create_review_lane(args: argparse.Namespace) -> int:
     lane_name = args.lane_name or f"review-{args.pr_number}"
     branch = args.branch or f"pr/{args.pr_number}"
+    workspace_root = args.workspace_root.resolve()
+    validate_lane_path_component(args.owner_unit, "owner_unit")
+    validate_lane_path_component(lane_name, "lane_name")
+    lane_path = lane_file(workspace_root, args.owner_unit, lane_name)
+    association = f"{args.repo}#{args.pr_number}"
+    if lane_path.exists():
+        document = load_lane_doc(workspace_root, args.owner_unit, lane_name)
+        if document.get("lane_type") != "review" or args.repo not in document.get("repos", []):
+            raise SystemExit(
+                f"existing lane is not a review lane for repo {args.repo}: "
+                f"{args.owner_unit}/{lane_name}"
+            )
+        associations = document.setdefault("pr_associations", [])
+        if association not in [item.get("ref") for item in associations]:
+            associations.append({"ref": association})
+        lane_path.write_text(serialize_toml(document))
+        print(f"created review lane {args.owner_unit}/{lane_name} for {association}")
+        return 0
+
     create_args = argparse.Namespace(
-        workspace_root=args.workspace_root,
+        workspace_root=workspace_root,
         owner_unit=args.owner_unit,
         lane_name=lane_name,
         type="review",
@@ -1066,13 +1077,10 @@ def create_review_lane(args: argparse.Namespace) -> int:
         branch=f"{args.repo}={branch}",
         source="pull-request",
         default_commands=[],
+        pr_associations=[association],
     )
     create_lane(create_args)
-    lane_path = lane_file(args.workspace_root.resolve(), args.owner_unit, lane_name)
-    content = lane_path.read_text().rstrip()
-    content += f'\n\n[[pr_associations]]\nref = "{args.repo}#{args.pr_number}"\n'
-    lane_path.write_text(content)
-    print(f"created review lane {args.owner_unit}/{lane_name} for {args.repo}#{args.pr_number}")
+    print(f"created review lane {args.owner_unit}/{lane_name} for {association}")
     return 0
 
 
@@ -1138,6 +1146,8 @@ def share_lane(args: argparse.Namespace) -> int:
 
 def create_continuation_lane(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
+    validate_lane_path_component(args.target_unit, "target_unit")
+    validate_lane_path_component(args.target_lane_name, "target_lane_name")
     source = load_lane_doc(workspace_root, args.source_owner_unit, args.source_lane_name)
     unit_spec = find_unit_spec(workspace_root, args.target_unit)
     lane_root = lane_dir(workspace_root, args.target_unit, args.target_lane_name)
@@ -1242,6 +1252,7 @@ def plan_handoff(args: argparse.Namespace) -> int:
 
 def create_shared_scratchpad(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
+    validate_lane_path_component(args.name, "name")
     root = shared_scratchpad_dir(workspace_root, args.name)
     root.mkdir(parents=True, exist_ok=True)
     (root / "docs").mkdir(exist_ok=True)
