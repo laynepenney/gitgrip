@@ -335,7 +335,8 @@ All commands use `gr` (or `gitgrip`):
   - `gr pr create --push --draft` - Push and create as draft
   - `gr pr merge --update` - Update branch from base if behind, then merge
   - `gr pr merge --auto` - Enable auto-merge (merges when checks pass)
-  - `gr pr merge --force` - Merge even if checks pending
+  - `gr pr merge --skip-gate <gate>` - Waive ONE named gate (`approval`, `checks`, `mergeable`) and no others; repeatable
+  - `gr pr merge --force` - Waive every gate. Prefer `--skip-gate`; both print what was waived at the moment of the merge
 - `gr repo add/list/remove` - Manage repositories
 - `gr group list` - List all groups and their repos
   - `gr group add <group> <repos...>` - Add repos to a group

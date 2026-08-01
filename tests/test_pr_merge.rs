@@ -35,6 +35,7 @@ async fn test_pr_merge_no_open_prs() {
         &gitgrip::cli::commands::pr::MergeOptions {
             method: None,
             force: false,
+            skip_gates: Vec::new(),
             update: false,
             auto: false,
             json: false,
@@ -87,6 +88,7 @@ async fn test_pr_merge_skip_default_branch() {
         &gitgrip::cli::commands::pr::MergeOptions {
             method: None,
             force: false,
+            skip_gates: Vec::new(),
             update: false,
             auto: false,
             json: false,
@@ -133,6 +135,7 @@ async fn test_pr_merge_skip_reference_repos() {
         &gitgrip::cli::commands::pr::MergeOptions {
             method: None,
             force: false,
+            skip_gates: Vec::new(),
             update: false,
             auto: false,
             json: false,
@@ -178,6 +181,7 @@ async fn test_pr_merge_mixed_repos_all_skipped() {
         &gitgrip::cli::commands::pr::MergeOptions {
             method: None,
             force: false,
+            skip_gates: Vec::new(),
             update: false,
             auto: false,
             json: false,
@@ -242,6 +246,7 @@ async fn test_pr_merge_force_bypasses_checks() {
         &gitgrip::cli::commands::pr::MergeOptions {
             method: None,
             force: true,
+            skip_gates: Vec::new(),
             update: false,
             auto: false,
             json: false,
@@ -312,6 +317,7 @@ async fn test_pr_merge_branch_behind_suggests_update() {
         &gitgrip::cli::commands::pr::MergeOptions {
             method: None,
             force: true,
+            skip_gates: Vec::new(),
             update: false,
             auto: false,
             json: false,
@@ -391,6 +397,7 @@ async fn test_pr_merge_repo_filter_excludes_non_target() {
         &gitgrip::cli::commands::pr::MergeOptions {
             method: None,
             force: true,
+            skip_gates: Vec::new(),
             update: false,
             auto: false,
             json: false,
@@ -442,6 +449,7 @@ async fn test_pr_merge_repo_filter_no_match_finds_no_prs() {
         &gitgrip::cli::commands::pr::MergeOptions {
             method: None,
             force: false,
+            skip_gates: Vec::new(),
             update: false,
             auto: false,
             json: false,
@@ -500,6 +508,7 @@ async fn test_pr_merge_force_yes_merges_without_prompt() {
         &gitgrip::cli::commands::pr::MergeOptions {
             method: None,
             force: true,
+            skip_gates: Vec::new(),
             update: false,
             auto: false,
             json: false,
@@ -572,6 +581,7 @@ async fn test_pr_merge_unscoped_multi_match_sends_zero_merge_puts() {
         &gitgrip::cli::commands::pr::MergeOptions {
             method: None,
             force: false,
+            skip_gates: Vec::new(),
             update: false,
             auto: false,
             json: false,
@@ -636,6 +646,7 @@ async fn test_pr_merge_all_flag_proceeds_and_merges_every_match() {
         &gitgrip::cli::commands::pr::MergeOptions {
             method: None,
             force: false,
+            skip_gates: Vec::new(),
             update: false,
             auto: false,
             json: false,
@@ -714,6 +725,7 @@ async fn test_pr_merge_wait_does_not_block_when_no_checks_are_configured() {
         &gitgrip::cli::commands::pr::MergeOptions {
             method: None,
             force: false,
+            skip_gates: Vec::new(),
             update: false,
             auto: false,
             json: false,
@@ -747,5 +759,138 @@ async fn test_pr_merge_wait_does_not_block_when_no_checks_are_configured() {
             .iter()
             .any(|r| r.method == Method::PUT && r.url.path().ends_with("/merge")),
         "expected the merge to actually proceed, not just avoid timing out"
+    );
+}
+
+// ── Gate decomposition ──────────────────────────────────────────
+// `--force` waived approval, checks and mergeability together. On a workspace
+// that ratifies by review COMMENTS rather than formal approvals, the approval
+// gate can never pass — so `--force` became mandatory on every merge and took
+// the other gates with it, invisibly. These pin that waiving one waives ONE.
+
+/// Waiving `approval` must NOT waive `checks`.
+///
+/// This is the test that makes the decomposition real rather than cosmetic. The
+/// PR here has no approval AND a still-running check. Under `--force` it merges.
+/// Under `--skip-gate approval` it must refuse, because the caller waived the
+/// gate that does not apply to their workflow and nothing else.
+#[tokio::test]
+async fn test_skip_gate_approval_does_not_also_waive_checks() {
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let mut manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
+    git_helpers::commit_file(&ws.repo_path("app"), "feature.txt", "feature", "Add feature");
+
+    let repo_config = manifest.repos.get_mut("app").unwrap();
+    repo_config.url = Some("https://github.com/owner/repo.git".to_string());
+    repo_config.platform = Some(PlatformConfig {
+        platform_type: PlatformType::GitHub,
+        base_url: Some(server.uri()),
+    });
+
+    mock_list_prs(&server, vec![(42, "feat/test")]).await;
+    mock_get_pr(&server, 42, "open", false).await;
+    // Reviewed by comment only — the ratification this workspace actually uses,
+    // and never a formal approval.
+    mock_pr_reviews(&server, 42, vec![("COMMENTED", "alice")]).await;
+    // And a check that has not finished.
+    mock_check_runs(&server, "feat/test", vec![("CI", "in_progress", None)]).await;
+    mock_merge_pr(&server, 42, true).await;
+
+    let result = gitgrip::cli::commands::pr::run_pr_merge(
+        &ws.workspace_root,
+        &manifest,
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: false,
+            skip_gates: vec![gitgrip::cli::commands::pr::MergeGate::Approval],
+            update: false,
+            auto: false,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+            repo_filter: None,
+            yes: true,
+            allow_all: false,
+        },
+    )
+    .await;
+
+    assert!(result.is_ok(), "should report, not error: {:?}", result.err());
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        !requests
+            .iter()
+            .any(|r| r.method == Method::PUT && r.url.path().ends_with("/merge")),
+        "checks were still running and only `approval` was waived — no merge must be sent. \
+         If this fires, --skip-gate is behaving as a blanket --force."
+    );
+}
+
+/// Waiving `approval` on a PR whose only failing gate IS approval must proceed.
+///
+/// The negative control for the test above. Without it, a `--skip-gate` that
+/// simply refused everything would pass — "waives nothing" and "waives only what
+/// was named" are indistinguishable from a single blocked case.
+#[tokio::test]
+async fn test_skip_gate_approval_allows_a_comment_ratified_merge() {
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let mut manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
+    git_helpers::commit_file(&ws.repo_path("app"), "feature.txt", "feature", "Add feature");
+
+    let repo_config = manifest.repos.get_mut("app").unwrap();
+    repo_config.url = Some("https://github.com/owner/repo.git".to_string());
+    repo_config.platform = Some(PlatformConfig {
+        platform_type: PlatformType::GitHub,
+        base_url: Some(server.uri()),
+    });
+
+    mock_list_prs(&server, vec![(42, "feat/test")]).await;
+    // `merged: false` — the mock derives `mergeable` as `!merged`, so this is a
+    // PR that is open and mergeable. Passing `true` here made it UNmergeable and
+    // the merge was correctly blocked by the `mergeable` gate, which looked like
+    // the waiver failing. The scenario was wrong, not the waiver.
+    mock_get_pr(&server, 42, "open", false).await;
+    mock_pr_reviews(&server, 42, vec![("COMMENTED", "alice")]).await;
+    mock_check_runs(&server, "feat/test", vec![("CI", "completed", Some("success"))]).await;
+    mock_merge_pr(&server, 42, true).await;
+
+    let result = gitgrip::cli::commands::pr::run_pr_merge(
+        &ws.workspace_root,
+        &manifest,
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: false,
+            skip_gates: vec![gitgrip::cli::commands::pr::MergeGate::Approval],
+            update: false,
+            auto: false,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+            repo_filter: None,
+            yes: true,
+            allow_all: false,
+        },
+    )
+    .await;
+
+    assert!(result.is_ok(), "should not error: {:?}", result.err());
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.method == Method::PUT && r.url.path().ends_with("/merge")),
+        "approval was the only failing gate and it was waived by name — the merge must proceed"
     );
 }

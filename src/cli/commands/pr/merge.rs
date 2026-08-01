@@ -67,10 +67,72 @@ async fn detect_merge_method(
     }
 }
 
+/// A single pre-merge gate, nameable so it can be waived individually.
+///
+/// `--force` used to be one boolean that suppressed every check at once. On a
+/// gripspace whose ratification convention is review COMMENTS rather than formal
+/// GitHub approvals, the approval gate can never pass, so `--force` became
+/// mandatory on every merge -- and with it went the checks, mergeability and
+/// method assertions nobody intended to waive.
+///
+/// A gate that must always be bypassed does not gate; it trains the bypass. The
+/// point of naming them is that waiving one says which one, out loud, at the
+/// moment of the act.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeGate {
+    /// The PR carries a formal platform approval.
+    Approval,
+    /// Status checks are passing (not failing, not still running).
+    Checks,
+    /// The platform reports the PR as mergeable.
+    Mergeable,
+}
+
+impl MergeGate {
+    /// The name a caller passes to `--skip-gate`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MergeGate::Approval => "approval",
+            MergeGate::Checks => "checks",
+            MergeGate::Mergeable => "mergeable",
+        }
+    }
+
+    /// Every gate, so `--force` and the help text cannot drift from the enum.
+    pub fn all() -> [MergeGate; 3] {
+        [MergeGate::Approval, MergeGate::Checks, MergeGate::Mergeable]
+    }
+
+    /// Parse a caller-supplied name. Unknown names are an error rather than a
+    /// silent no-op: a misspelled gate that quietly waives nothing reads exactly
+    /// like a gate that passed.
+    pub fn parse(name: &str) -> anyhow::Result<Self> {
+        let wanted = name.trim().to_ascii_lowercase();
+        MergeGate::all()
+            .into_iter()
+            .find(|g| g.as_str() == wanted)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown merge gate '{}'. Known gates: {}",
+                    name.trim(),
+                    MergeGate::all()
+                        .iter()
+                        .map(|g| g.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+    }
+}
+
 /// Options for the PR merge command.
 pub struct MergeOptions<'a> {
     pub method: Option<&'a crate::platform::MergeMethod>,
+    /// Waive EVERY gate. Retained for compatibility; prefer naming the one you
+    /// mean via `skip_gates`, so the record says what was actually waived.
     pub force: bool,
+    /// Gates waived by name. Composes with `force`, which implies all of them.
+    pub skip_gates: Vec<MergeGate>,
     pub update: bool,
     pub auto: bool,
     pub json: bool,
@@ -147,6 +209,10 @@ pub async fn run_pr_merge(
         owner: String,
         repo: String,
         branch: String,
+        /// The branch this merge is irreversible INTO. Carried so the act-time
+        /// line can name it: "which PR" and "into what" are different facts and
+        /// only the second one says where the commits land.
+        base: String,
         pr_number: u64,
         platform: Arc<dyn crate::platform::HostingPlatform>,
         approved: bool,
@@ -230,6 +296,7 @@ pub async fn run_pr_merge(
                     owner: repo.owner.clone(),
                     repo: repo.repo.clone(),
                     branch: branch.clone(),
+                    base: repo.target_branch().to_string(),
                     pr_number: pr.number,
                     platform,
                     approved,
@@ -401,55 +468,83 @@ pub async fn run_pr_merge(
         println!();
     }
 
-    // Check readiness if not forcing
-    if !opts.force {
-        let mut issues = Vec::new();
-        for pr in &prs_to_merge {
-            if !pr.approved {
-                issues.push(format!(
-                    "{} PR #{}: not approved",
+    // Which gates the caller waived, and by which flag. `--force` implies all
+    // of them; naming one waives exactly one. Recorded rather than folded into a
+    // boolean, because the whole point is that the record says what was waived.
+    let waived: Vec<MergeGate> = if opts.force {
+        MergeGate::all().to_vec()
+    } else {
+        opts.skip_gates.clone()
+    };
+    let is_waived = |gate: MergeGate| waived.contains(&gate);
+
+    // Evaluate every gate, then subtract the waived ones. Evaluating first means
+    // a waiver still reports what it suppressed -- a gate that was never run
+    // cannot say whether it would have failed, and "no output" is exactly how a
+    // suppressed failure disguises itself as a pass.
+    let mut blocking = Vec::new();
+    let mut suppressed = Vec::new();
+    for pr in &prs_to_merge {
+        let mut failures: Vec<(MergeGate, String)> = Vec::new();
+        if !pr.approved {
+            failures.push((
+                MergeGate::Approval,
+                format!("{} PR #{}: no formal approval", pr.repo_name, pr.pr_number),
+            ));
+        }
+        match pr.check_status {
+            CheckStatus::Failing => failures.push((
+                MergeGate::Checks,
+                format!("{} PR #{}: checks failing", pr.repo_name, pr.pr_number),
+            )),
+            CheckStatus::Pending => failures.push((
+                MergeGate::Checks,
+                format!(
+                    "{} PR #{}: checks still running",
+                    pr.repo_name, pr.pr_number
+                ),
+            )),
+            CheckStatus::Unknown => {
+                Output::warning(&format!(
+                    "{} PR #{}: check status unknown - proceeding with caution",
                     pr.repo_name, pr.pr_number
                 ));
             }
-            match pr.check_status {
-                CheckStatus::Failing => {
-                    issues.push(format!(
-                        "{} PR #{}: checks failing",
-                        pr.repo_name, pr.pr_number
-                    ));
-                }
-                CheckStatus::Pending => {
-                    issues.push(format!(
-                        "{} PR #{}: checks still running",
-                        pr.repo_name, pr.pr_number
-                    ));
-                }
-                CheckStatus::Unknown => {
-                    // Don't block on unknown - warn but allow merge
-                    Output::warning(&format!(
-                        "{} PR #{}: check status unknown - proceeding with caution",
-                        pr.repo_name, pr.pr_number
-                    ));
-                }
-                CheckStatus::Passing => {} // All good
-            }
-            if !pr.mergeable {
-                issues.push(format!(
+            CheckStatus::Passing => {}
+        }
+        if !pr.mergeable {
+            failures.push((
+                MergeGate::Mergeable,
+                format!(
                     "{} PR #{}: not mergeable (branch may be behind base — try --update)",
                     pr.repo_name, pr.pr_number
-                ));
+                ),
+            ));
+        }
+        for (gate, message) in failures {
+            if is_waived(gate) {
+                suppressed.push(format!("{} [{}]", message, gate.as_str()));
+            } else {
+                blocking.push(format!("{} [{}]", message, gate.as_str()));
             }
         }
+    }
 
-        if !issues.is_empty() {
-            Output::warning("Some PRs have issues:");
-            for issue in &issues {
-                println!("  - {}", issue);
-            }
-            println!();
-            println!("Use --force to merge anyway.");
-            return Ok(());
+    if !blocking.is_empty() {
+        Output::warning("Some PRs have issues:");
+        for issue in &blocking {
+            println!("  - {}", issue);
         }
+        println!();
+        println!(
+            "Waive one gate with --skip-gate <{}>, or --force to waive all.",
+            MergeGate::all()
+                .iter()
+                .map(|g| g.as_str())
+                .collect::<Vec<_>>()
+                .join("|")
+        );
+        return Ok(());
     }
 
     // Auto-merge flow: enable auto-merge and return early
@@ -536,6 +631,40 @@ pub async fn run_pr_merge(
         } else {
             detect_merge_method(pr.platform.as_ref(), &pr.owner, &pr.repo).await
         };
+
+        // THE MOMENT OF THE IRREVERSIBLE ACT. Printed here -- not earlier from
+        // the plan, not afterwards from the result -- and durably rather than
+        // in a spinner that erases itself.
+        //
+        // Everything that goes wrong with this command goes wrong in the gap
+        // between what it is about to do and what the operator believes it is
+        // about to do. `gr pr merge` takes no PR number: it merges whatever PR
+        // the current branch owns. So the resolved slug, number, branch, base
+        // and method are the facts that close that gap, and they are only facts
+        // at this point in the code.
+        if !opts.json {
+            let mut line = format!(
+                "MERGING {}/{}#{}  {} -> {}  method={:?}",
+                pr.owner, pr.repo, pr.pr_number, pr.branch, pr.base, effective_method
+            );
+            if !waived.is_empty() {
+                line.push_str(&format!(
+                    "  WAIVED={}",
+                    waived
+                        .iter()
+                        .map(|g| g.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
+            }
+            println!("{}", line);
+            for note in suppressed
+                .iter()
+                .filter(|n| n.contains(&format!("PR #{}", pr.pr_number)))
+            {
+                println!("  suppressed: {}", note);
+            }
+        }
 
         let spinner = if !opts.json {
             Some(Output::spinner(&format!(
@@ -915,5 +1044,87 @@ mod tests {
             resolve_check_status(&status(true, CheckState::Pending)),
             CheckStatus::Pending
         );
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::MergeGate;
+
+    #[test]
+    fn every_known_gate_round_trips_through_its_name() {
+        for gate in MergeGate::all() {
+            let parsed = MergeGate::parse(gate.as_str()).expect("known gate must parse");
+            assert_eq!(parsed, gate, "{} did not round-trip", gate.as_str());
+        }
+    }
+
+    #[test]
+    fn gate_names_are_case_insensitive_and_trimmed() {
+        assert_eq!(MergeGate::parse("APPROVAL").unwrap(), MergeGate::Approval);
+        assert_eq!(MergeGate::parse("  checks ").unwrap(), MergeGate::Checks);
+    }
+
+    /// An unknown gate name must be an ERROR, never a silent no-op.
+    ///
+    /// This is the whole failure mode the flag exists to remove. A misspelled
+    /// `--skip-gate aproval` that quietly waives nothing produces a run that
+    /// looks exactly like one where the gate passed -- and the operator, having
+    /// typed a waiver, believes the opposite of what happened.
+    #[test]
+    fn an_unknown_gate_is_rejected_rather_than_ignored() {
+        let err = MergeGate::parse("aproval").expect_err("a typo must not be accepted");
+        let message = err.to_string();
+        assert!(
+            message.contains("unknown merge gate"),
+            "message should name the problem: {message}"
+        );
+        assert!(
+            message.contains("approval")
+                && message.contains("checks")
+                && message.contains("mergeable"),
+            "message should list the valid gates so the typo is fixable: {message}"
+        );
+    }
+
+    #[test]
+    fn an_empty_gate_name_is_rejected() {
+        assert!(MergeGate::parse("").is_err());
+        assert!(MergeGate::parse("   ").is_err());
+    }
+
+    /// `all()` is hand-written, so it can drift from the enum. This match is
+    /// exhaustive on purpose: adding a variant without adding it to `all()`
+    /// fails to COMPILE rather than silently shrinking what `--force` waives.
+    ///
+    /// A compile error is the right instrument here. A runtime test can only
+    /// check the variants it was told about, which is the same gap that let a
+    /// parsed-and-dropped field through three review rounds elsewhere today.
+    #[test]
+    fn the_enumeration_cannot_silently_grow() {
+        fn enumerated(gate: MergeGate) -> bool {
+            match gate {
+                MergeGate::Approval => MergeGate::all().contains(&gate),
+                MergeGate::Checks => MergeGate::all().contains(&gate),
+                MergeGate::Mergeable => MergeGate::all().contains(&gate),
+            }
+        }
+        for gate in MergeGate::all() {
+            assert!(enumerated(gate), "{} missing from all()", gate.as_str());
+        }
+        assert_eq!(
+            MergeGate::all().len(),
+            3,
+            "a gate was added or removed; update --force's waiver set and this count deliberately"
+        );
+    }
+
+    #[test]
+    fn gate_names_are_distinct() {
+        let mut names: Vec<&str> = MergeGate::all().iter().map(|g| g.as_str()).collect();
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(before, names.len(), "two gates share a name: {names:?}");
     }
 }

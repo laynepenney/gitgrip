@@ -624,6 +624,7 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
                 &crate::cli::commands::pr::MergeOptions {
                     method: None,
                     force: false,
+                    skip_gates: Vec::new(),
                     update: false,
                     auto: false,
                     json: opts.json,
