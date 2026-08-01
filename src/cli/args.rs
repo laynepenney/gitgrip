@@ -721,9 +721,17 @@ pub enum PrCommands {
         /// Merge method (merge, squash, rebase)
         #[arg(long, value_enum)]
         method: Option<MergeMethod>,
-        /// Force merge without readiness checks
+        /// Waive EVERY readiness gate. Prefer --skip-gate, which names the one
+        /// you mean; whatever is waived is printed at the moment of the merge.
         #[arg(short, long)]
         force: bool,
+        /// Waive ONE named gate and no others: approval, checks, mergeable.
+        /// Repeatable. Use this instead of --force when a single gate does not
+        /// apply -- e.g. a workspace that ratifies by review comments rather
+        /// than formal platform approvals, where the approval gate can never
+        /// pass and --force would silently take the others with it.
+        #[arg(long = "skip-gate", value_name = "GATE")]
+        skip_gate: Vec<String>,
         /// Update branch from base if behind before merging
         #[arg(short = 'u', long)]
         update: bool,
