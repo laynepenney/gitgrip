@@ -189,3 +189,143 @@ class TestTheFlagActuallyReachesGh:
             f"decide -- which is guarantee 1's failure in its least visible form, because "
             f"there is no wrong line to point at, only an absent one."
         )
+
+
+class TestTheConfiguredWorkspaceMethodIsActuallyREACHED:
+    """The resolver being correct proves nothing if production never calls it.
+
+    Sentinel's r1 mutation: replace production method resolution with the constant
+    `MergeMethod.MERGE` and all 56 tests stay green -- because every caller passed
+    `configured=None`, so the workspace setting was never read and the default was the
+    only value the resolver could return. The resolver was correct and UNREACHED, which
+    is guarantee 3 again: pinning a function does not pin its invocation.
+
+    These tests fail if the constant is substituted, because they require a NON-default
+    method to arrive at the adapter by way of the workspace file.
+    """
+
+    def _workspace(self, tmp_path, method: str | None):
+        import json as _json
+
+        spec = '\nschema_version = 1\nworkspace_name = "w"\n\n[[repos]]\nname = "app"\npath = "repos/app"\nurl = "https://example.invalid/app.git"\n'
+        if method is not None:
+            spec += f'\n[workspace_constraints]\nmerge_method = "{method}"\n'
+        (tmp_path / ".grip").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".grip" / "workspace_spec.toml").write_text(spec)
+        return tmp_path
+
+    def test_the_workspace_setting_is_read_from_the_spec(self, tmp_path):
+        from python_cli.app import _configured_merge_method
+
+        assert _configured_merge_method(self._workspace(tmp_path, "squash")) == "squash"
+
+    def test_absent_setting_reads_as_None_not_as_a_default(self, tmp_path):
+        """`None` means the workspace said nothing, which the resolver turns into a merge
+        commit. Returning the string "merge" here would collapse 'unset' and 'chose
+        merge' into one value, and a later change of default would silently never reach
+        the workspaces that never expressed a preference."""
+        from python_cli.app import _configured_merge_method
+
+        assert _configured_merge_method(self._workspace(tmp_path, None)) is None
+
+    def test_a_configured_method_reaches_resolution(self, tmp_path):
+        """End of the wire: spec file -> helper -> resolver -> a NON-default method.
+
+        This is the assertion the constant-MERGE mutation cannot satisfy.
+        """
+        from python_cli.app import _configured_merge_method
+
+        configured = _configured_merge_method(self._workspace(tmp_path, "squash"))
+        assert resolve_merge_method(explicit=None, configured=configured) is MergeMethod.SQUASH
+
+    def test_explicit_still_beats_the_workspace_setting(self, tmp_path):
+        from python_cli.app import _configured_merge_method
+
+        configured = _configured_merge_method(self._workspace(tmp_path, "squash"))
+        assert resolve_merge_method(explicit="rebase", configured=configured) is MergeMethod.REBASE
+
+
+class TestTheCLICallSiteActuallyResolves:
+    """Pins the INVOCATION, not the resolver -- because the resolver was already correct.
+
+    The first version of the P1-TWO fix added tests for `_configured_merge_method` and
+    for `resolve_merge_method`, both passing, and Sentinel's mutation SURVIVED: replacing
+    the CLI's resolution with the constant `MergeMethod.MERGE` left all of them green,
+    because none of them traversed the call site. Guarantee 3, inside the fix for a
+    guarantee-3 finding, on the third occurrence of the same shape in one change.
+
+    The only assertion that can distinguish "resolved" from "constant" is one that
+    observes what the CLI HANDS DOWNSTREAM when the workspace asks for a NON-default
+    method.
+    """
+
+    def test_a_squash_workspace_makes_the_CLI_pass_SQUASH_downstream(
+        self, tmp_path, monkeypatch
+    ):
+        import json as _json
+
+        from typer.testing import CliRunner
+
+        from python_cli import app as app_mod
+
+        (tmp_path / ".grip").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".grip" / "workspace_spec.toml").write_text(
+            '\nschema_version = 1\nworkspace_name = "w"\n\n'
+            '[workspace_constraints]\nmerge_method = "squash"\n'
+        )
+        group = {"pr_group_id": "pg", "owner_unit": "apollo", "lane_name": "lane", "prs": []}
+        gpath = tmp_path / "g.json"
+        gpath.write_text(_json.dumps(group))
+
+        seen: dict[str, object] = {}
+
+        monkeypatch.setattr(app_mod, "_resolve_lane_name", lambda *a, **k: "lane")
+        monkeypatch.setattr(app_mod, "_find_pr_group", lambda *a, **k: (gpath, group))
+        monkeypatch.setattr(app_mod, "get_platform_adapter", lambda *a, **k: object())
+        monkeypatch.setattr(
+            app_mod.pr_ops,
+            "merge_pr_group",
+            lambda **kw: seen.update(kw) or {"completed": []},
+        )
+
+        CliRunner().invoke(app_mod.app, ["pr", "merge", str(tmp_path), "apollo", "lane", "--json"])
+
+        assert seen.get("method") is MergeMethod.SQUASH, (
+            f"the CLI handed down {seen.get('method')!r}. The workspace configured "
+            f"'squash'; a constant, or an unwired `configured=None`, yields MERGE and is "
+            f"indistinguishable from a correct default."
+        )
+
+    def test_an_explicit_flag_still_overrides_the_workspace_at_the_CLI(
+        self, tmp_path, monkeypatch
+    ):
+        import json as _json
+
+        from typer.testing import CliRunner
+
+        from python_cli import app as app_mod
+
+        (tmp_path / ".grip").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".grip" / "workspace_spec.toml").write_text(
+            '\nschema_version = 1\nworkspace_name = "w"\n\n'
+            '[workspace_constraints]\nmerge_method = "squash"\n'
+        )
+        group = {"pr_group_id": "pg", "owner_unit": "apollo", "lane_name": "lane", "prs": []}
+        gpath = tmp_path / "g.json"
+        gpath.write_text(_json.dumps(group))
+        seen: dict[str, object] = {}
+
+        monkeypatch.setattr(app_mod, "_resolve_lane_name", lambda *a, **k: "lane")
+        monkeypatch.setattr(app_mod, "_find_pr_group", lambda *a, **k: (gpath, group))
+        monkeypatch.setattr(app_mod, "get_platform_adapter", lambda *a, **k: object())
+        monkeypatch.setattr(
+            app_mod.pr_ops,
+            "merge_pr_group",
+            lambda **kw: seen.update(kw) or {"completed": []},
+        )
+
+        CliRunner().invoke(
+            app_mod.app,
+            ["pr", "merge", str(tmp_path), "apollo", "lane", "--json", "--method", "rebase"],
+        )
+        assert seen.get("method") is MergeMethod.REBASE

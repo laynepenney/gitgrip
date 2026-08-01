@@ -19,8 +19,9 @@ rather than the same chance twice:
 
   - `PRMergeError` carries the completed list. In-process, structural; its failure mode is
     a raised exception. **This is what a retry must read.**
-  - The event stays best-effort and durable. `emit` swallows every exception and returns
-    `None` (see grip#843), so correctness must not rest on it.
+  - The event stays best-effort and durable. As of grip#843 `emit` RAISES rather than
+    swallowing, which is why the wrap below is load-bearing: a failure in the durable
+    layer must not replace the real error. See grip#844 for the wider call-site class.
 """
 from __future__ import annotations
 
@@ -199,8 +200,9 @@ class TestTheTwoLayersAreIndependent:
     """Depth is only depth if the layers fail by different routes.
 
     A durable record that the in-process path depends on is the same chance twice. These
-    tests exist because `emit` swallows every exception (grip#843): if correctness rested
-    on it, G9 would be satisfied by a mechanism that can silently do nothing.
+    tests exist because the durable layer is not trustworthy in either regime: before
+    grip#843 `emit` swallowed everything and could silently do nothing; after it, `emit`
+    raises and can take the caller down with it. Both are reasons not to rest on it.
     """
 
     def test_a_durable_event_records_the_partial_merge(self, tmp_path):
@@ -258,3 +260,84 @@ class TestTheTwoLayersAreIndependent:
             "a failure in the best-effort layer must not erase the reliable one, and "
             "must not replace PRMergeError with the event layer's own exception"
         )
+
+
+class TestTheCLIConsumesTheListRatherThanRebuildingIt:
+    """The survivor relocated one layer out, to the next consumer.
+
+    `merge_pr_group` carries the completed list correctly. The CLI above it was computing
+    `merged` as DECLARED-MINUS-FAILED:
+
+        [repo for repo in group["prs"] if repo != exc.repo]
+
+    With prs = [app, api, web] and api failing, that yields **[app, web]** -- and the loop
+    stopped at api, so web was never called. A repo that was never touched is persisted as
+    merged, a retry skips a PR that is still open, and the operator reads a merge that did
+    not happen.
+
+    Physics 005: a defect does not die when fixed, it moves one layer outward. The list
+    existed and was correct; nothing consumed it.
+    """
+
+    def _invoke(self, tmp_path, monkeypatch, declared, completed, failing):
+        from typer.testing import CliRunner
+
+        from python_cli import app as app_mod
+
+        group = {
+            "pr_group_id": "pg_x",
+            "owner_unit": "apollo",
+            "lane_name": "lane",
+            "prs": [{"repo": r, "pr_number": i + 1} for i, r in enumerate(declared)],
+        }
+        gpath = tmp_path / "group.json"
+        gpath.write_text(json.dumps(group))
+
+        monkeypatch.setattr(app_mod, "_resolve_lane_name", lambda *a, **k: "lane")
+        monkeypatch.setattr(app_mod, "_find_pr_group", lambda *a, **k: (gpath, group))
+        monkeypatch.setattr(app_mod, "get_platform_adapter", lambda *a, **k: object())
+
+        def _boom(**kwargs):
+            raise PRMergeError(
+                failing,
+                2,
+                "simulated",
+                completed=[{"repo": r, "pr_number": i + 1, "url": None} for i, r in enumerate(completed)],
+            )
+
+        monkeypatch.setattr(app_mod.pr_ops, "merge_pr_group", _boom)
+        res = CliRunner().invoke(
+            app_mod.app, ["pr", "merge", str(tmp_path), "apollo", "lane", "--json"]
+        )
+        return json.loads(res.stdout), json.loads(gpath.read_text())
+
+    def test_a_repo_the_loop_never_reached_is_NOT_recorded_as_merged(
+        self, tmp_path, monkeypatch
+    ):
+        payload, persisted = self._invoke(
+            tmp_path,
+            monkeypatch,
+            declared=["app", "api", "web"],
+            completed=["app"],
+            failing="api",
+        )
+
+        assert payload["merged"] == ["app"], (
+            f"got {payload['merged']}. 'web' is declared in the group and was never "
+            f"called -- the loop stopped at 'api'. Declared-minus-failed cannot tell "
+            f"'not reached' from 'succeeded'."
+        )
+        assert "web" not in persisted.get("merged", []), (
+            "the FALSE record was persisted to disk, which is the part a retry reads"
+        )
+
+    def test_the_persisted_state_matches_what_actually_merged(self, tmp_path, monkeypatch):
+        payload, persisted = self._invoke(
+            tmp_path,
+            monkeypatch,
+            declared=["app", "api", "web", "docs"],
+            completed=["app"],
+            failing="api",
+        )
+        assert persisted["merged"] == ["app"]
+        assert persisted["group_state"] == "partially_merged"

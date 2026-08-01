@@ -108,7 +108,9 @@ class PRMergeError(RuntimeError):
     what merged" are different facts and a default would make them identical.
 
     This is the layer a retry reads. The event log is the other layer and is best-effort:
-    `emit` swallows every exception (grip#843), so correctness must not rest on it. The two
+    `emit` RAISES `EventEmitError` as of grip#843 (it previously swallowed everything);
+    either way correctness must not rest on it -- fail-open lost the record silently, and
+    fail-closed turns a logging failure into an operation failure. The two
     fail by different routes, which is the only thing that makes them depth rather than
     the same chance twice.
     """
@@ -239,8 +241,9 @@ def merge_pr_group(
             # Best-effort durable layer. Wrapped so a failure HERE cannot replace the
             # PRMergeError below with the event subsystem's own exception -- if a broken
             # event layer can take the in-process layer down with it, they were never two
-            # layers. `emit` swallows everything today (grip#843); this guards the day it
-            # does not, rather than depending on that staying true.
+            # layers. This was written while `emit` still swallowed everything; grip#843
+            # made it RAISE, so the wrap is now load-bearing rather than defensive. The
+            # broader class -- emits sitting after irreversible work -- is grip#844.
             try:
                 emit(
                     event_type=EventType.PR_MERGE_FAILED,
@@ -287,6 +290,11 @@ def merge_pr_group(
         payload={"pr_group_id": pr_group_id, "repos": merged},
     )
 
+    # Hand the caller what ACTUALLY merged. Without this the layer above has
+    # nothing to consume and re-derives completion from the group's declared
+    # `prs` -- which names repos the loop may never have reached. G9's list is
+    # only worth carrying if the next consumer can read it.
+    group["completed"] = merged
     return group
 
 

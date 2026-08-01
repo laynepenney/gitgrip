@@ -74,6 +74,31 @@ def _workspace_spec_path(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "workspace_spec.toml"
 
 
+def _configured_merge_method(workspace_root: Path) -> str | None:
+    """The workspace's merge-method policy, or None if it never expressed one.
+
+    Lives under `[workspace_constraints]` because that is where merge policy already
+    lives (`merge_order`, `required_reviewers`) -- following the existing section rather
+    than inventing one.
+
+    Returns `None`, never the string "merge", when the key is absent. Collapsing "unset"
+    into "chose merge" would make a workspace that never expressed a preference
+    indistinguishable from one that pinned the current default, so a later change of
+    default would silently never reach the workspaces that were only ever defaulting.
+    Absence is the honest encoding of "take the default, and follow it if it moves".
+
+    Missing spec is tolerated: this is a policy lookup on a merge path, and a workspace
+    without a spec file has plainly not configured a method. It must not become a second
+    failure mode on top of whatever the merge itself is doing.
+    """
+    try:
+        spec = lane_proto.load_workspace_spec(workspace_root)
+    except (FileNotFoundError, OSError):
+        return None
+    value = spec.get("workspace_constraints", {}).get("merge_method")
+    return None if value is None else str(value)
+
+
 def _lane_repo_root(workspace_root: Path, owner_unit: str, lane_name: str, repo_name: str) -> Path:
     return lane_proto.lane_dir(workspace_root, owner_unit, lane_name) / "repos" / repo_name
 
@@ -1189,14 +1214,19 @@ def pr_merge(
             typer.echo(json.dumps(payload, indent=2))
         raise typer.Exit(code=1)
     try:
-        pr_ops.merge_pr_group(
+        result = pr_ops.merge_pr_group(
             workspace_root=workspace_root,
             pr_group_id=str(group["pr_group_id"]),
             adapter=adapter,
             actor=f"agent:{owner_unit}",
-            method=pr_ops.resolve_merge_method(explicit=method, configured=None),
+            method=pr_ops.resolve_merge_method(
+                explicit=method,
+                configured=_configured_merge_method(workspace_root),
+            ),
         )
-        merged = [str(pr_info["repo"]) for pr_info in group.get("prs", [])]
+        # What the merge loop actually completed, not what the group DECLARED.
+        # Re-deriving from `prs` names repos the loop may never have reached.
+        merged = [str(c["repo"]) for c in result.get("completed", [])]
         payload = {
             "pr_group_id": group["pr_group_id"],
             "owner_unit": owner_unit,
@@ -1205,7 +1235,15 @@ def pr_merge(
             "state_path": str(group_path),
         }
     except pr_ops.PRMergeError as exc:
-        merged = [str(pr_info["repo"]) for pr_info in group.get("prs", []) if str(pr_info["repo"]) != exc.repo]
+        # DECLARED-MINUS-FAILED IS WRONG, and wrong in the dangerous direction.
+        # With prs = [app, api, web] and api failing, it yields [app, web] --
+        # recording web as merged when the loop stopped before ever calling it.
+        # A retry then skips a PR that is still open, and the operator reads a
+        # merge that never happened.
+        #
+        # `exc.completed` is the list the merge loop actually built, carried on
+        # the exception precisely so this layer never has to reconstruct it.
+        merged = [str(c["repo"]) for c in exc.completed]
         group["group_state"] = "partially_merged" if merged else "merge_failed"
         group["merged"] = merged
         group_path.write_text(json.dumps(group, indent=2) + "\n")
