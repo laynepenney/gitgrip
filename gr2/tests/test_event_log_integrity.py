@@ -145,6 +145,39 @@ def test_repeated_stress_distinguishes_unlocked_and_locked_paths() -> None:
     assert locked["worker_failure_rounds"] == 0
 
 
+def test_spawned_worker_rejects_gr2_import_outside_expected_worktree(
+    tmp_path: Path,
+) -> None:
+    """Removing the worker-side provenance guard turns this positive control RED."""
+    from gr2.prototypes.concurrent_event_stress import _worker
+
+    (tmp_path / ".grip").mkdir()
+    ctx = multiprocessing.get_context("spawn")
+    start = ctx.Event()
+    queue = ctx.Queue()
+    process = ctx.Process(
+        target=_worker,
+        args=(
+            str(tmp_path),
+            "provenance-control",
+            start,
+            queue,
+            False,
+            str(tmp_path / "deliberately-wrong-worktree"),
+        ),
+    )
+    process.start()
+    start.set()
+    process.join(timeout=10)
+
+    assert not process.is_alive(), "provenance-control worker hung"
+    assert process.exitcode == 0
+    outcome = queue.get(timeout=2)
+    assert outcome["ok"] is False
+    assert "outside expected worktree" in outcome["error"]
+    assert not (tmp_path / ".grip" / "events" / "outbox.jsonl").exists()
+
+
 def test_cross_mode_child_failure_preserves_exit_and_output() -> None:
     """Captured child failure must be loud rather than indistinguishable from silence."""
     from gr2.prototypes.cross_mode_lane_stress import HarnessCommandError, run

@@ -25,14 +25,29 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _worker(workspace: str, actor: str, start: object, queue: object, unlocked: bool) -> None:
-    if unlocked:
-        os.environ["GR2_DISABLE_EVENT_LOCKING"] = "1"
-        os.environ["GR2_EVENT_TEST_DELAY"] = "0.03"
-    if not start.wait(timeout=10):
-        queue.put({"ok": False, "error": "start gate timed out"})
-        return
+def _worker(
+    workspace: str,
+    actor: str,
+    start: object,
+    queue: object,
+    unlocked: bool,
+    expected_source_root: str,
+) -> None:
     try:
+        import gr2
+
+        module_file = Path(gr2.__file__).resolve() if gr2.__file__ is not None else None
+        source_root = Path(expected_source_root).resolve()
+        if module_file is None or not module_file.is_relative_to(source_root):
+            raise RuntimeError(
+                f"spawned worker imported gr2 outside expected worktree: "
+                f"module={module_file}, expected_root={source_root}"
+            )
+        if unlocked:
+            os.environ["GR2_DISABLE_EVENT_LOCKING"] = "1"
+            os.environ["GR2_EVENT_TEST_DELAY"] = "0.03"
+        if not start.wait(timeout=10):
+            raise TimeoutError("start gate timed out")
         emit(
             event_type=EventType.LANE_ENTERED,
             workspace_root=Path(workspace),
@@ -43,7 +58,7 @@ def _worker(workspace: str, actor: str, start: object, queue: object, unlocked: 
     except Exception as exc:
         queue.put({"ok": False, "error": repr(exc)})
     else:
-        queue.put({"ok": True})
+        queue.put({"ok": True, "gr2_module": str(module_file)})
 
 
 def _read_rows(outbox: Path) -> tuple[list[dict[str, object]], int]:
@@ -85,7 +100,14 @@ def _run_round(writers: int, unlocked: bool) -> dict[str, object]:
         processes = [
             ctx.Process(
                 target=_worker,
-                args=(str(workspace), f"writer:{index}", start, queue, unlocked),
+                args=(
+                    str(workspace),
+                    f"writer:{index}",
+                    start,
+                    queue,
+                    unlocked,
+                    str(SOURCE_ROOT),
+                ),
             )
             for index in range(writers)
         ]
@@ -95,9 +117,7 @@ def _run_round(writers: int, unlocked: bool) -> dict[str, object]:
         for process in processes:
             process.join(timeout=15)
         outcomes = [queue.get(timeout=2) for _ in processes]
-        rows, corruption_count = _read_rows(
-            workspace / ".grip" / "events" / "outbox.jsonl"
-        )
+        rows, corruption_count = _read_rows(workspace / ".grip" / "events" / "outbox.jsonl")
         seqs = [row.get("seq") for row in rows]
         return {
             "all_workers_succeeded": all(outcome["ok"] for outcome in outcomes),
@@ -146,9 +166,7 @@ def sequential_control(writes: int = 8) -> dict[str, object]:
                 os.environ.pop("GR2_EVENT_TEST_DELAY", None)
             else:
                 os.environ["GR2_EVENT_TEST_DELAY"] = old_delay
-        rows, corruption_count = _read_rows(
-            workspace / ".grip" / "events" / "outbox.jsonl"
-        )
+        rows, corruption_count = _read_rows(workspace / ".grip" / "events" / "outbox.jsonl")
         seqs = [row.get("seq") for row in rows]
         return {
             "writes": writes,
