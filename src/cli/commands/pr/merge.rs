@@ -125,6 +125,26 @@ impl MergeGate {
     }
 }
 
+/// The suppression notes belonging to one PR, selected by its index.
+///
+/// A free function so the attribution can be tested directly. The previous form
+/// was an inline filter matching a SUBSTRING of the rendered message, which
+/// mis-attributes in two ways that a fix aimed at the first would leave open:
+/// "PR #77" is a substring of "PR #777", and this command is multi-repo so two
+/// different repos can each carry a PR #42.
+///
+/// The line this feeds is the one telling an operator exactly what is being
+/// suppressed on exactly this PR. A suppression they do not recognise teaches
+/// them to distrust the line, and a safety disclosure people distrust stops
+/// being a safety disclosure.
+fn notes_for(index: usize, suppressed: &[(usize, String)]) -> Vec<&str> {
+    suppressed
+        .iter()
+        .filter(|(i, _)| *i == index)
+        .map(|(_, note)| note.as_str())
+        .collect()
+}
+
 /// Options for the PR merge command.
 pub struct MergeOptions<'a> {
     pub method: Option<&'a crate::platform::MergeMethod>,
@@ -483,8 +503,19 @@ pub async fn run_pr_merge(
     // cannot say whether it would have failed, and "no output" is exactly how a
     // suppressed failure disguises itself as a pass.
     let mut blocking = Vec::new();
-    let mut suppressed = Vec::new();
-    for pr in &prs_to_merge {
+    // Keyed by INDEX into `prs_to_merge`, never by re-reading the PR number out
+    // of the rendered message. Two collisions live in that shortcut, and the
+    // second survives a fix aimed only at the first:
+    //
+    //   * "PR #77" is a SUBSTRING of "PR #777", and one invocation can carry
+    //     both, so #77's merge line would print #777's suppression note
+    //   * this command is multi-repo, so two DIFFERENT repos can each have a
+    //     PR #42 -- matching on the number alone still mis-attributes
+    //
+    // An index is unique across both. A value reconstructed from a rendering is
+    // a value that can be reconstructed wrong; carrying it cannot be.
+    let mut suppressed: Vec<(usize, String)> = Vec::new();
+    for (index, pr) in prs_to_merge.iter().enumerate() {
         let mut failures: Vec<(MergeGate, String)> = Vec::new();
         if !pr.approved {
             failures.push((
@@ -523,7 +554,7 @@ pub async fn run_pr_merge(
         }
         for (gate, message) in failures {
             if is_waived(gate) {
-                suppressed.push(format!("{} [{}]", message, gate.as_str()));
+                suppressed.push((index, format!("{} [{}]", message, gate.as_str())));
             } else {
                 blocking.push(format!("{} [{}]", message, gate.as_str()));
             }
@@ -624,7 +655,7 @@ pub async fn run_pr_merge(
     let mut json_merged: Vec<JsonMergedPr> = Vec::new();
     let mut json_failed_prs: Vec<JsonFailedPr> = Vec::new();
 
-    for pr in prs_to_merge {
+    for (pr_index, pr) in prs_to_merge.into_iter().enumerate() {
         // Auto-detect merge method per repo when not explicitly set (#380)
         let effective_method = if opts.method.is_some() {
             merge_method
@@ -658,10 +689,7 @@ pub async fn run_pr_merge(
                 ));
             }
             println!("{}", line);
-            for note in suppressed
-                .iter()
-                .filter(|n| n.contains(&format!("PR #{}", pr.pr_number)))
-            {
+            for note in notes_for(pr_index, &suppressed) {
                 println!("  suppressed: {}", note);
             }
         }
@@ -1126,5 +1154,88 @@ mod gate_tests {
         let before = names.len();
         names.dedup();
         assert_eq!(before, names.len(), "two gates share a name: {names:?}");
+    }
+}
+
+#[cfg(test)]
+mod attribution_tests {
+    use super::notes_for;
+
+    /// PR numbers where one is a prefix of another, in a single invocation.
+    ///
+    /// This is the exact collision the previous implementation had: it filtered
+    /// notes by `message.contains("PR #77")`, and "PR #777" contains that. The
+    /// merge line for #77 printed #777's suppression as its own.
+    ///
+    /// It could only ever over-attribute, never omit — which is why it is narrow
+    /// and why it still mattered: the line's entire job is saying precisely what
+    /// is suppressed on precisely this PR.
+    #[test]
+    fn a_pr_number_that_is_a_prefix_of_another_does_not_steal_its_notes() {
+        let suppressed = vec![
+            (
+                0usize,
+                "app PR #77: no formal approval [approval]".to_string(),
+            ),
+            (1usize, "app PR #777: checks failing [checks]".to_string()),
+        ];
+        assert_eq!(
+            notes_for(0, &suppressed),
+            vec!["app PR #77: no formal approval [approval]"],
+            "#77 must not receive #777's note"
+        );
+        assert_eq!(
+            notes_for(1, &suppressed),
+            vec!["app PR #777: checks failing [checks]"],
+        );
+    }
+
+    /// Two repos can each carry the SAME PR number in one invocation.
+    ///
+    /// Matching on the number alone — the obvious repair for the substring bug —
+    /// still mis-attributes here. Only an identifier unique across the whole run
+    /// closes both, which is why the notes are keyed by index rather than by any
+    /// value re-read from the rendered text.
+    #[test]
+    fn the_same_pr_number_in_two_repos_keeps_its_notes_separate() {
+        let suppressed = vec![
+            (
+                0usize,
+                "frontend PR #42: no formal approval [approval]".to_string(),
+            ),
+            (
+                1usize,
+                "backend PR #42: checks failing [checks]".to_string(),
+            ),
+        ];
+        assert_eq!(
+            notes_for(0, &suppressed),
+            vec!["frontend PR #42: no formal approval [approval]"],
+        );
+        assert_eq!(
+            notes_for(1, &suppressed),
+            vec!["backend PR #42: checks failing [checks]"],
+        );
+    }
+
+    #[test]
+    fn a_pr_with_several_suppressions_gets_all_of_them_and_only_them() {
+        let suppressed = vec![
+            (
+                0usize,
+                "app PR #1: no formal approval [approval]".to_string(),
+            ),
+            (1usize, "other PR #2: checks failing [checks]".to_string()),
+            (0usize, "app PR #1: checks failing [checks]".to_string()),
+        ];
+        assert_eq!(notes_for(0, &suppressed).len(), 2);
+        assert_eq!(notes_for(1, &suppressed).len(), 1);
+    }
+
+    /// The negative control: no suppressions means no line, not a stray one.
+    #[test]
+    fn a_pr_with_no_suppressions_reports_none() {
+        let suppressed = vec![(1usize, "other PR #2: checks failing [checks]".to_string())];
+        assert!(notes_for(0, &suppressed).is_empty());
     }
 }

@@ -782,7 +782,12 @@ async fn test_skip_gate_approval_does_not_also_waive_checks() {
     let mut manifest = ws.load_manifest();
 
     git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
-    git_helpers::commit_file(&ws.repo_path("app"), "feature.txt", "feature", "Add feature");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "feature.txt",
+        "feature",
+        "Add feature",
+    );
 
     let repo_config = manifest.repos.get_mut("app").unwrap();
     repo_config.url = Some("https://github.com/owner/repo.git".to_string());
@@ -820,7 +825,11 @@ async fn test_skip_gate_approval_does_not_also_waive_checks() {
     )
     .await;
 
-    assert!(result.is_ok(), "should report, not error: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "should report, not error: {:?}",
+        result.err()
+    );
 
     let requests = server.received_requests().await.unwrap();
     assert!(
@@ -845,7 +854,12 @@ async fn test_skip_gate_approval_allows_a_comment_ratified_merge() {
     let mut manifest = ws.load_manifest();
 
     git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
-    git_helpers::commit_file(&ws.repo_path("app"), "feature.txt", "feature", "Add feature");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "feature.txt",
+        "feature",
+        "Add feature",
+    );
 
     let repo_config = manifest.repos.get_mut("app").unwrap();
     repo_config.url = Some("https://github.com/owner/repo.git".to_string());
@@ -861,7 +875,12 @@ async fn test_skip_gate_approval_allows_a_comment_ratified_merge() {
     // the waiver failing. The scenario was wrong, not the waiver.
     mock_get_pr(&server, 42, "open", false).await;
     mock_pr_reviews(&server, 42, vec![("COMMENTED", "alice")]).await;
-    mock_check_runs(&server, "feat/test", vec![("CI", "completed", Some("success"))]).await;
+    mock_check_runs(
+        &server,
+        "feat/test",
+        vec![("CI", "completed", Some("success"))],
+    )
+    .await;
     mock_merge_pr(&server, 42, true).await;
 
     let result = gitgrip::cli::commands::pr::run_pr_merge(
