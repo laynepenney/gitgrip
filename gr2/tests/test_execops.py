@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from gr2.python_cli.events import EventType, _outbox_path
+from gr2.python_cli.events import EventEmitError, EventType, _outbox_path
 from gr2.python_cli.execops import run_exec, ExecResult, run_exec_parallel
 
 
@@ -89,6 +89,53 @@ class ExecTestBase(unittest.TestCase):
 
 class TestExecRunSequential(ExecTestBase):
     """Test sequential execution across lane repos."""
+
+    @patch("gr2.python_cli.execops.lane_proto")
+    def test_sink_failure_cannot_replace_started_or_completed_outcomes(self, mock_proto):
+        from gr2.python_cli import events
+
+        for attr in dir(self._mock_lane_proto()):
+            if not attr.startswith("_"):
+                setattr(mock_proto, attr, getattr(self._mock_lane_proto(), attr))
+        real_emit = events.emit
+        for victim in (EventType.EXEC_STARTED, EventType.EXEC_COMPLETED):
+            with self.subTest(victim=victim.value), patch.object(
+                events,
+                "emit",
+                side_effect=lambda **kwargs: (
+                    (_ for _ in ()).throw(EventEmitError("sink unavailable"))
+                    if kwargs["event_type"] is victim
+                    else real_emit(**kwargs)
+                ),
+            ):
+                result = run_exec(
+                    self.workspace, self.owner_unit, self.lane_name,
+                    actor=self.actor, command=["echo", "hello"],
+                )
+                self.assertEqual(result["status"], "success")
+                self.assertEqual(len(result["results"]), 3)
+
+    @patch("gr2.python_cli.execops.lane_proto")
+    def test_sink_failure_cannot_replace_failed_outcome(self, mock_proto):
+        from gr2.python_cli import events
+
+        for attr in dir(self._mock_lane_proto()):
+            if not attr.startswith("_"):
+                setattr(mock_proto, attr, getattr(self._mock_lane_proto(), attr))
+        real_emit = events.emit
+
+        def fail_exec_failed(**kwargs):
+            if kwargs["event_type"] is EventType.EXEC_FAILED:
+                raise EventEmitError("sink unavailable")
+            return real_emit(**kwargs)
+
+        with patch.object(events, "emit", side_effect=fail_exec_failed):
+            result = run_exec(
+                self.workspace, self.owner_unit, self.lane_name,
+                actor=self.actor, command=["false"],
+            )
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["results"][0]["returncode"], 1)
 
     @patch("gr2.python_cli.execops.lane_proto")
     def test_runs_command_in_each_repo(self, mock_proto):

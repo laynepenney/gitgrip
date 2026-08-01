@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 import pytest
+from gr2.python_cli.events import EventEmitError
 from gr2.python_cli.merge_verification import MergeVerificationTarget
 from gr2.python_cli.platform import (
     AdapterError,
@@ -120,6 +121,39 @@ def _merge_contract(workspace: Path, group: dict) -> dict[str, object]:
 
 class TestPRCreated:
 
+    def test_event_failure_does_not_erase_created_prs(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from gr2.python_cli import events as events_module
+        from gr2.python_cli import pr as pr_module
+
+        adapter = FakeAdapter()
+        monkeypatch.setattr(
+            events_module,
+            "emit",
+            lambda **_kwargs: (_ for _ in ()).throw(EventEmitError("event sink unavailable")),
+        )
+
+        result = pr_module.create_pr_group(
+            workspace_root=workspace,
+            owner_unit="apollo",
+            lane_name="feat/hook-events",
+            title="feat: hook events",
+            base_branch="sprint-21",
+            head_branch="test/event-system-runtime",
+            repos=["app", "api"],
+            adapter=adapter,
+            actor="agent:apollo",
+        )
+
+        persisted = json.loads(Path(result["state_path"]).read_text())
+        assert [request.repo for request in adapter.created] == ["app", "api"]
+        assert persisted["prs"] == result["prs"]
+        assert "could not record pr.created" in capsys.readouterr().err
+
     def test_emits_pr_created(self, workspace: Path):
         from gr2.python_cli.pr import create_pr_group
         adapter = FakeAdapter()
@@ -224,6 +258,38 @@ class TestPRCreated:
 # ---------------------------------------------------------------------------
 
 class TestPRMerged:
+
+    def test_event_failure_does_not_erase_merged_outcome(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from gr2.python_cli import events as events_module
+        from gr2.python_cli import pr as pr_module
+
+        adapter = FakeAdapter()
+        group = self._create_group(workspace, adapter)
+        monkeypatch.setattr(
+            events_module,
+            "emit",
+            lambda **_kwargs: (_ for _ in ()).throw(EventEmitError("event sink unavailable")),
+        )
+
+        result = pr_module.merge_pr_group(
+            workspace_root=workspace,
+            pr_group_id=group["pr_group_id"],
+            adapter=adapter,
+            actor="agent:apollo",
+            **_merge_contract(workspace, group),
+        )
+
+        state_path = workspace / ".grip" / "pr_groups" / f"{group['pr_group_id']}.json"
+        persisted = json.loads(state_path.read_text())
+        assert [repo for repo, _number in adapter.merged] == ["app", "api"]
+        assert result["group_state"] == "merged"
+        assert persisted["group_state"] == "merged"
+        assert "could not record pr.merged" in capsys.readouterr().err
 
     def _create_group(self, workspace: Path, adapter: FakeAdapter, repos: list[str] | None = None) -> dict:
         from gr2.python_cli.pr import create_pr_group

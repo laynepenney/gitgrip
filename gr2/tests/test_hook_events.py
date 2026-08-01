@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from gr2.python_cli.events import EventEmitError
+
 from gr2.python_cli.hooks import (
     HookContext,
     HookRuntimeError,
@@ -61,6 +63,29 @@ def _read_outbox(workspace: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 class TestHookCompleted:
+
+    def test_sink_failure_after_success_preserves_success(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from gr2.python_cli import events
+
+        ctx = _make_ctx(workspace)
+        hooks = _make_hooks([LifecycleHook(
+            stage="on_enter", name="completed-outcome", command="true",
+            cwd=str(ctx.repo_root), when="always", on_failure="block",
+        )])
+        real_emit = events.emit
+
+        def fail_completed(**kwargs):
+            if kwargs["event_type"].value == "hook.completed":
+                raise EventEmitError("sink unavailable")
+            return real_emit(**kwargs)
+
+        monkeypatch.setattr(events, "emit", fail_completed)
+        results = run_lifecycle_stage(
+            hooks, "on_enter", ctx, repo_dirty=False, first_materialize=False
+        )
+        assert results[0].status == "applied"
 
     def test_emits_started_and_completed(self, workspace: Path):
         """Successful hook emits hook.started then hook.completed."""
@@ -116,6 +141,30 @@ class TestHookCompleted:
 # ---------------------------------------------------------------------------
 
 class TestHookFailedBlock:
+
+    def test_sink_failure_after_command_failure_preserves_hook_failure(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from gr2.python_cli import events
+
+        ctx = _make_ctx(workspace)
+        hooks = _make_hooks([LifecycleHook(
+            stage="on_enter", name="failed-outcome", command="false",
+            cwd=str(ctx.repo_root), when="always", on_failure="block",
+        )])
+        real_emit = events.emit
+
+        def fail_failed(**kwargs):
+            if kwargs["event_type"].value == "hook.failed":
+                raise EventEmitError("sink unavailable")
+            return real_emit(**kwargs)
+
+        monkeypatch.setattr(events, "emit", fail_failed)
+        with pytest.raises(HookRuntimeError) as exc_info:
+            run_lifecycle_stage(
+                hooks, "on_enter", ctx, repo_dirty=False, first_materialize=False
+            )
+        assert exc_info.value.payload["returncode"] != 0
 
     def test_emits_started_and_failed(self, workspace: Path):
         ctx = _make_ctx(workspace)

@@ -5,7 +5,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .events import EventType, emit
+from .events import EventType, emit_after_outcome
 
 
 def _now_utc() -> str:
@@ -78,7 +78,7 @@ def resolve_failure_marker(
         raise SystemExit(f"failure marker not found: {operation_id}")
     marker = json.loads(path.read_text())
     path.unlink()
-    emit(
+    emit_after_outcome(
         event_type=EventType.FAILURE_RESOLVED,
         workspace_root=workspace_root,
         actor=resolved_by,

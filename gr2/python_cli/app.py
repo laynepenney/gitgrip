@@ -15,7 +15,7 @@ from gr2.prototypes import repo_maintenance_prototype as repo_proto
 from . import branch as branch_ops
 from . import execops, failures, migration, spec_apply, syncops
 from . import pr as pr_ops
-from .events import EventType, emit
+from .events import EventType, emit_after_outcome
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -765,7 +765,7 @@ def lane_create(
         else:
             for r in repo_list:
                 branch_map[r] = part.strip()
-    emit(
+    emit_after_outcome(
         event_type=EventType.LANE_CREATED,
         workspace_root=workspace_root,
         actor=source,
@@ -833,7 +833,7 @@ def lane_enter(
     )
     _exit(lane_proto.enter_lane(ns))
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
-    emit(
+    emit_after_outcome(
         event_type=EventType.LANE_ENTERED,
         workspace_root=workspace_root,
         actor=actor,
@@ -899,7 +899,7 @@ def lane_exit(
         recall=recall,
     )
     _exit(lane_proto.exit_lane(ns))
-    emit(
+    emit_after_outcome(
         event_type=EventType.LANE_EXITED,
         workspace_root=workspace_root,
         actor=actor,
@@ -947,7 +947,7 @@ def lane_lease_acquire(
         force=force,
     )
     _exit(lane_proto.acquire_lane_lease(ns))
-    emit(
+    emit_after_outcome(
         event_type=EventType.LEASE_ACQUIRED,
         workspace_root=workspace_root,
         actor=actor,
@@ -976,7 +976,7 @@ def lane_lease_release(
         actor=actor,
     )
     _exit(lane_proto.release_lane_lease(ns))
-    emit(
+    emit_after_outcome(
         event_type=EventType.LEASE_RELEASED,
         workspace_root=workspace_root,
         actor=actor,
