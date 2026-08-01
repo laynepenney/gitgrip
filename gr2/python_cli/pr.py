@@ -17,7 +17,77 @@ import os
 from pathlib import Path
 
 from .events import EventType, emit
-from .platform import AdapterError, CreatePRRequest, PlatformAdapter
+from .platform import AdapterError, CreatePRRequest, MergeMethod, PlatformAdapter
+
+__all__ = [
+    "MergeMethod",
+    "UnpermittedMergeMethodError",
+    "resolve_merge_method",
+    "PRMergeError",
+    "create_pr_group",
+    "merge_pr_group",
+    "check_pr_group_status",
+    "record_pr_review",
+]
+
+
+class UnpermittedMergeMethodError(RuntimeError):
+    """The requested method is not permitted, and no other method was substituted.
+
+    Deliberately NOT a subclass of the parse error. A name we cannot read and a name we
+    can read but may not use are different facts, and a caller that wants to distinguish
+    them should not have to inspect a message to do it.
+    """
+
+    def __init__(self, requested: MergeMethod, permitted: list[str]) -> None:
+        self.requested = requested
+        self.permitted = list(permitted)
+        super().__init__(
+            f"merge method {requested.value!r} is not permitted here "
+            f"(permitted: {', '.join(self.permitted) or 'none'}). "
+            f"Refusing rather than substituting: a merge that silently uses a different "
+            f"strategy than the one requested reports success identically, and the only "
+            f"way to discover it is counting parents afterwards."
+        )
+
+
+def _parse_method(name: str, *, source: str) -> MergeMethod:
+    try:
+        return MergeMethod(name)
+    except ValueError:
+        raise ValueError(
+            f"unrecognised merge method {name!r} from {source} "
+            f"(expected one of: {', '.join(m.value for m in MergeMethod)}). "
+            f"Not falling back to a default: you asked for something, and quietly doing "
+            f"something else is the defect this guard exists to prevent."
+        ) from None
+
+
+def resolve_merge_method(
+    explicit: str | None = None,
+    configured: str | None = None,
+    permitted: list[str] | None = None,
+) -> MergeMethod:
+    """Resolve the merge strategy. The host is asked *whether*, never *which*.
+
+    Precedence: explicit `--method`, then the workspace setting, then a merge commit.
+
+    `permitted` is what the host allows, when we happen to know it. Passing `None` means
+    **we did not ask** -- which must not read as "anything goes". No refusal is claimed in
+    that case, and nothing asserts the method was permitted; unverifiable stays
+    distinguishable from verified.
+    """
+    if explicit is not None:
+        chosen = _parse_method(explicit, source="--method")
+    elif configured is not None:
+        chosen = _parse_method(configured, source="workspace setting")
+    else:
+        chosen = MergeMethod.MERGE
+
+    if permitted is not None and chosen.value not in permitted:
+        raise UnpermittedMergeMethodError(chosen, permitted)
+
+    return chosen
 
 
 class PRMergeError(RuntimeError):
@@ -111,8 +181,16 @@ def merge_pr_group(
     pr_group_id: str,
     adapter: PlatformAdapter,
     actor: str,
+    *,
+    method: MergeMethod,
 ) -> dict:
-    """Merge all PRs in a group. Stops on first failure."""
+    """Merge all PRs in a group. Stops on first failure.
+
+    `method` is required and keyword-only. Resolving a strategy correctly and then not
+    threading it to the call is the same outcome as never resolving one -- a decided
+    method that never reaches `gh` is indistinguishable from an undecided one, and the
+    unit tests for the resolver stay green either way.
+    """
     group = _load_group(workspace_root, pr_group_id)
     merged: list[dict] = []
 
@@ -120,7 +198,7 @@ def merge_pr_group(
         repo = pr_info["repo"]
         number = pr_info["pr_number"]
         try:
-            adapter.merge_pr(repo, number)
+            adapter.merge_pr(repo, number, method=method)
         except AdapterError as exc:
             emit(
                 event_type=EventType.PR_MERGE_FAILED,

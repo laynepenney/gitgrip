@@ -16,6 +16,7 @@ import pytest
 
 from gr2.python_cli.platform import (
     AdapterError,
+    MergeMethod,
     CreatePRRequest,
     PRCheck,
     PRRef,
@@ -46,7 +47,7 @@ class FakeAdapter:
             title=request.title,
         )
 
-    def merge_pr(self, repo: str, number: int) -> PRRef:
+    def merge_pr(self, repo: str, number: int, *, method=None) -> PRRef:
         if (repo, number) in self._fail_merge:
             raise AdapterError(f"merge conflict in {repo}#{number}")
         self.merged.append((repo, number))
@@ -221,6 +222,7 @@ class TestPRMerged:
             pr_group_id=group["pr_group_id"],
             adapter=adapter,
             actor="agent:apollo",
+            method=MergeMethod.MERGE,
         )
         events = _events_of_type(workspace, "pr.merged")
         assert len(events) == 1
@@ -234,6 +236,7 @@ class TestPRMerged:
             pr_group_id=group["pr_group_id"],
             adapter=adapter,
             actor="agent:apollo",
+            method=MergeMethod.MERGE,
         )
         event = _events_of_type(workspace, "pr.merged")[0]
         assert event["pr_group_id"] == group["pr_group_id"]
@@ -249,6 +252,7 @@ class TestPRMerged:
             pr_group_id=group["pr_group_id"],
             adapter=adapter,
             actor="agent:apollo",
+            method=MergeMethod.MERGE,
         )
         assert [r for r, _ in adapter.merged] == ["app", "api", "billing"]
 
@@ -286,6 +290,7 @@ class TestPRMergeFailed:
                 pr_group_id=group["pr_group_id"],
                 adapter=adapter,
                 actor="agent:apollo",
+                method=MergeMethod.MERGE,
             )
         events = _events_of_type(workspace, "pr.merge_failed")
         assert len(events) == 1
@@ -302,6 +307,7 @@ class TestPRMergeFailed:
                 pr_group_id=group["pr_group_id"],
                 adapter=adapter,
                 actor="agent:apollo",
+                method=MergeMethod.MERGE,
             )
         event = _events_of_type(workspace, "pr.merge_failed")[0]
         assert event["pr_group_id"] == group["pr_group_id"]
@@ -332,6 +338,7 @@ class TestPRMergeFailed:
                 pr_group_id=group["pr_group_id"],
                 adapter=adapter,
                 actor="agent:apollo",
+                method=MergeMethod.MERGE,
             )
         # Only app was attempted; api and billing were not
         assert len(adapter.merged) == 0  # grip failed, not in merged list

@@ -1156,6 +1156,12 @@ def pr_merge(
     owner_unit: str,
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    method: Optional[str] = typer.Option(
+        None,
+        "--method",
+        "-m",
+        help="merge/squash/rebase. Defaults to a merge commit. An unpermitted method is refused, never substituted.",
+    ),
 ) -> None:
     """Merge grouped PRs for a lane."""
     workspace_root = workspace_root.resolve()
@@ -1188,6 +1194,7 @@ def pr_merge(
             pr_group_id=str(group["pr_group_id"]),
             adapter=adapter,
             actor=f"agent:{owner_unit}",
+            method=pr_ops.resolve_merge_method(explicit=method, configured=None),
         )
         merged = [str(pr_info["repo"]) for pr_info in group.get("prs", [])]
         payload = {
