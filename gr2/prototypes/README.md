@@ -269,8 +269,23 @@ This harness runs two phases in one command:
 It reports:
 
 - JSON corruption count
+- a malformed-JSON positive control proving the corruption detector
 - rounds where both conflicting edit acquisitions succeeded
 - rounds where the final lease count was wrong
+
+## Concurrent Event Stress
+
+To verify that event sequence allocation survives contention, run:
+
+```bash
+python3 gr2/prototypes/concurrent_event_stress.py --rounds 30 --writers 2
+python3 gr2/prototypes/concurrent_event_stress.py --rounds 30 --writers 8
+```
+
+Each command reports an intentionally unlocked phase, the locked production
+path, and a sequential control. It also injects one malformed event to prove
+that a zero corruption count is an observed zero rather than an unexercised
+field.
 
 Bootstrap command:
 
