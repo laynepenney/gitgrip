@@ -803,6 +803,7 @@ def scenario_solo_human_forgets_lane(root: Path, workspace_root: Path) -> Scenar
 
 
 def scenario_global_edit_lease_cap(root: Path, workspace_root: Path) -> ScenarioResult:
+    """Verify the workspace cap sequentially; concurrency has a separate stress harness."""
     create_lane(root, workspace_root, "atlas", "feat-cap-a", "app", "feat/cap-a")
     create_lane(root, workspace_root, "apollo", "feat-cap-b", "api", "feat/cap-b")
     create_lane(root, workspace_root, "layne", "feat-cap-c", "web", "feat/cap-c")
@@ -833,7 +834,7 @@ def scenario_global_edit_lease_cap(root: Path, workspace_root: Path) -> Scenario
     evidence = [lease_c.stdout.strip(), stale_force.stdout.strip()]
 
     if lease_a.returncode == 0 and lease_b.returncode == 0 and lease_c.returncode != 0:
-        holds.append("third edit lease is blocked when global cap of 2 is reached")
+        holds.append("third sequential edit lease is blocked when global cap of 2 is reached")
     else:
         gaps.append("global edit lease cap did not block the third concurrent edit lease")
 
@@ -865,7 +866,7 @@ def scenario_global_edit_lease_cap(root: Path, workspace_root: Path) -> Scenario
     return ScenarioResult(
         scenario_id="global-edit-lease-cap",
         user_mode="cross-mode",
-        title="workspace-wide edit lease cap is enforced across all units",
+        title="workspace-wide edit lease cap is enforced sequentially across all units",
         verdict=verdict,
         holds=holds,
         gaps=gaps,
