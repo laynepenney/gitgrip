@@ -234,7 +234,7 @@ def merge_pr_group(
         repo = pr_info["repo"]
         number = pr_info["pr_number"]
         try:
-            adapter.merge_pr(repo, number, method=method)
+            receipt = adapter.merge_pr(repo, number, method=method)
         except AdapterError as exc:
             # Best-effort durable layer. Wrapped so a failure HERE cannot replace the
             # PRMergeError below with the event subsystem's own exception -- if a broken
@@ -264,7 +264,20 @@ def merge_pr_group(
                     file=sys.stderr,
                 )
             raise PRMergeError(repo, number, str(exc), completed=merged) from exc
-        merged.append(pr_info)
+
+        # Carried back from the ADAPTER, never rebuilt from `pr_info`. Rebuilding from the
+        # group file produces the same repo names in the same order -- the loop visits
+        # repos in group order -- so the two are indistinguishable by inspection while one
+        # is evidence that a merge happened and the other is a restatement of what we
+        # intended. The second is exactly what a loop that never contacted the host would
+        # also produce.
+        #
+        # `PRRef` is a thin receipt today and carries no commit id (grip#842 item 3 makes
+        # it real). This shape is the seam: when the richer receipt lands it swaps in here
+        # without the meaning of the record changing.
+        merged.append(
+            {"repo": receipt.repo, "pr_number": receipt.number, "url": receipt.url}
+        )
 
     emit(
         event_type=EventType.PR_MERGED,

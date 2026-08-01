@@ -53,7 +53,12 @@ class _FailAfter:
         if repo == self.fail_on:
             raise AdapterError(f"simulated host refusal for {repo}")
         self.merged.append(repo)
-        return PRRef(repo=repo, number=number)
+        # `url` is ADAPTER-AUTHORED and appears nowhere in the group file, which is what
+        # makes provenance observable. Without it, a completed list rebuilt from
+        # `group["prs"]` and one carried back from the adapter are byte-identical, and
+        # every assertion passes over either -- the values agree by coincidence because
+        # the loop visits repos in group order.
+        return PRRef(repo=repo, number=number, url=f"observed://{repo}/{number}")
 
 
 def _group(workspace: Path, repos: list[str]) -> str:
@@ -140,10 +145,19 @@ class TestTheErrorCarriesWhatActuallyMerged:
     def test_the_completed_list_matches_the_ADAPTER_not_the_group(self, tmp_path):
         """Evidence, not a token.
 
-        Reconstructing the list from the group's own `prs` would produce a plausible
-        value that is right by construction and could never be wrong -- the same shape as
-        `PRRef(repo=repo, number=number)` returning its own inputs. The assertion is
-        against what the adapter observed, which a shortcut cannot fabricate.
+        Reconstructing the list from the group's own `prs` produces a plausible value that
+        is right by construction and could never be wrong -- the same shape as
+        `PRRef(repo=repo, number=number)` returning its own inputs.
+
+        The first version of this test asserted only on `repo`, and it PASSED against a
+        loop that appended `pr_info` straight from the group file. Both provenances
+        produce the same repo names in the same order, because the loop visits repos in
+        group order. **A value that agrees with the truth by coincidence passes every
+        assertion the real one would**, and the test carried this name while proving
+        nothing of the kind.
+
+        So the assertion moved onto a field only the ADAPTER authors. `url` appears
+        nowhere in the group file; a shortcut cannot fabricate it.
         """
         gid = _group(tmp_path, ["app", "api", "web"])
         adapter = _FailAfter(fail_on="api")
@@ -157,7 +171,14 @@ class TestTheErrorCarriesWhatActuallyMerged:
                 method=MergeMethod.MERGE,
             )
 
-        assert [c["repo"] for c in excinfo.value.completed] == adapter.merged == ["app"]
+        completed = excinfo.value.completed
+        assert [c["repo"] for c in completed] == adapter.merged == ["app"]
+        assert [c.get("url") for c in completed] == ["observed://app/1"], (
+            "the completed list was rebuilt from the group file rather than carried back "
+            "from the adapter. It happens to name the right repos, and it is not evidence "
+            "that anything merged -- the same list is produced by a loop that never "
+            "consulted the host at all."
+        )
 
     def test_failure_on_the_FIRST_repo_reports_an_empty_list_not_a_missing_one(self, tmp_path):
         gid = _group(tmp_path, ["app", "api"])
