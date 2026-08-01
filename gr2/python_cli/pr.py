@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from .events import EventType, emit
+from .events import EventType, emit, emit_after_outcome
 from .merge_verification import (
     CompletedMerge,
     MergeVerificationTarget,
@@ -237,7 +237,7 @@ def create_pr_group(
     }
     path = _save_group(workspace_root, group)
 
-    emit(
+    emit_after_outcome(
         event_type=EventType.PR_CREATED,
         workspace_root=workspace_root,
         actor=actor,
@@ -337,7 +337,11 @@ def merge_pr_group(
 
     records = _completed_records(merged)
 
-    emit(
+    group["completed"] = records
+    group["group_state"] = "merged"
+    _save_group(workspace_root, group)
+
+    emit_after_outcome(
         event_type=EventType.PR_MERGED,
         workspace_root=workspace_root,
         actor=actor,
@@ -345,9 +349,6 @@ def merge_pr_group(
         payload={"pr_group_id": pr_group_id, "repos": records},
     )
 
-    group["completed"] = records
-    group["group_state"] = "merged"
-    _save_group(workspace_root, group)
     return group
 
 

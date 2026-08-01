@@ -11,6 +11,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -190,6 +191,37 @@ def emit(
                 os.fsync(event_file.fileno())
     except Exception as exc:
         raise EventEmitError(f"event emit failed for {outbox}") from exc
+
+
+def emit_after_outcome(
+    event_type: EventType,
+    workspace_root: Path,
+    actor: str,
+    owner_unit: str,
+    payload: dict[str, object],
+    *,
+    agent_id: str | None = None,
+) -> None:
+    """Report a completed outcome without replacing it on sink failure.
+
+    Callers must use this only after work that cannot honestly be reported as
+    failed. Pre-work and no-work sites use strict ``emit`` directly.
+    """
+
+    try:
+        emit(
+            event_type=event_type,
+            workspace_root=workspace_root,
+            actor=actor,
+            owner_unit=owner_unit,
+            payload=payload,
+            agent_id=agent_id,
+        )
+    except EventEmitError as exc:
+        print(
+            f"gr2: could not record {event_type.value} after its outcome completed ({exc})",
+            file=sys.stderr,
+        )
 
 
 def read_events(workspace_root: Path, consumer: str) -> list[dict[str, object]]:

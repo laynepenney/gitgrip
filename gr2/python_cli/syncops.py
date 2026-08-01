@@ -25,7 +25,7 @@ from .gitops import (
     repo_dirty,
     stash_if_dirty,
 )
-from .events import EventType, emit
+from .events import EventType, emit, emit_after_outcome
 from .hooks import load_repo_hooks
 from .spec_apply import (
     ValidationIssue,
@@ -205,11 +205,17 @@ def _sync_lock_file(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "state" / "sync.lock"
 
 
-def _emit_sync_event(workspace_root: Path, payload: dict[str, object]) -> None:
+def _emit_sync_event(
+    workspace_root: Path,
+    payload: dict[str, object],
+    *,
+    after_outcome: bool = False,
+) -> None:
     event_type = EventType(str(payload.pop("type")))
     payload.pop("workspace", None)
     agent_id = payload.pop("agent_id", None)
-    emit(
+    emitter = emit_after_outcome if after_outcome else emit
+    emitter(
         event_type=event_type,
         workspace_root=workspace_root,
         actor=str(payload.pop("actor")),
@@ -555,6 +561,7 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
                 "strategy": SYNC_STRATEGY,
                 "cache_path": str(cache_path),
             },
+            after_outcome=True,
         )
         if op.kind == "seed_repo_cache":
             return f"seeded repo cache for '{op.subject}' at {cache_path}"
@@ -580,6 +587,7 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
                 "strategy": SYNC_STRATEGY,
                 "commits_pulled": commits_between(repo_root, before_sha, after_sha),
             },
+            after_outcome=True,
         )
         return f"cloned shared repo '{op.subject}' into {repo_root}"
 
@@ -602,6 +610,7 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
                 "old_ref": old_ref,
                 "new_ref": new_ref,
             },
+            after_outcome=True,
         )
         return f"fetched remote refs for shared repo '{op.subject}'"
 
@@ -637,6 +646,7 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
                 "strategy": SYNC_STRATEGY,
                 "commits_pulled": commits_between(target_repo_root, before_sha, after_sha),
             },
+            after_outcome=True,
         )
         return f"materialized lane repo '{op.subject}' at {target_repo_root}"
 
@@ -661,6 +671,7 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
                     "repo": op.subject.split(":")[-1],
                     "reason": "dirty_stashed",
                 },
+                after_outcome=True,
             )
             return f"stashed dirty repo state for '{op.subject}'"
         return f"repo already clean for '{op.subject}'"
@@ -676,6 +687,7 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
                     "repo": op.subject.split(":")[-1],
                     "reason": "dirty_discarded",
                 },
+                after_outcome=True,
             )
             return f"discarded dirty repo state for '{op.subject}'"
         return f"repo already clean for '{op.subject}'"
@@ -753,56 +765,70 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
             operation_id=operation_id,
         )
 
-    _emit_sync_event(
-        workspace_root,
-        {
-            "type": "sync.started",
-            **_sync_context(workspace_root),
-            "repos": _plan_repo_names(build_sync_plan(workspace_root, dirty_mode=dirty_mode)),
-            "strategy": SYNC_STRATEGY,
-        },
-    )
-    plan = build_sync_plan(workspace_root, dirty_mode=dirty_mode)
-    blocked = [issue for issue in plan.issues if issue.blocks]
-    if blocked:
-        for issue in blocked:
-            if issue.code == "lease_blocked_sync":
-                _emit_sync_event(
-                    workspace_root,
-                    {
-                        "type": "sync.conflict",
-                        **_sync_context(workspace_root, owner_unit=issue.subject.split("/", 1)[0]),
-                        "reason": "active_lease",
-                        "repo": issue.subject,
-                        "conflicting_files": [],
-                    },
-                )
-            elif issue.code in {"dirty_shared_repo", "dirty_lane_repo"} and issue.details.get("conflicting_files"):
-                repo_name = issue.subject.split(":")[-1]
-                _emit_sync_event(
-                    workspace_root,
-                    {
-                        "type": "sync.conflict",
-                        **_sync_context(
-                            workspace_root,
-                            owner_unit=issue.subject.split("/", 1)[0] if issue.scope == "lane" else "workspace",
-                        ),
-                        "repo": repo_name,
-                        "conflicting_files": list(issue.details.get("conflicting_files", [])),
-                    },
-                )
+    try:
         _emit_sync_event(
             workspace_root,
             {
-                "type": "sync.completed",
+                "type": "sync.started",
                 **_sync_context(workspace_root),
-                "status": "blocked",
-                "repos_updated": 0,
-                "repos_skipped": 0,
-                "repos_failed": len(blocked),
-                "duration_ms": int((time.monotonic() - started_at) * 1000),
+                "repos": _plan_repo_names(build_sync_plan(workspace_root, dirty_mode=dirty_mode)),
+                "strategy": SYNC_STRATEGY,
             },
         )
+    except Exception:
+        _release_sync_lock(lock_fh)
+        raise
+    plan = build_sync_plan(workspace_root, dirty_mode=dirty_mode)
+    blocked = [issue for issue in plan.issues if issue.blocks]
+    if blocked:
+        try:
+            for issue in blocked:
+                if issue.code == "lease_blocked_sync":
+                    _emit_sync_event(
+                        workspace_root,
+                        {
+                            "type": "sync.conflict",
+                            **_sync_context(workspace_root, owner_unit=issue.subject.split("/", 1)[0]),
+                            "reason": "active_lease",
+                            "repo": issue.subject,
+                            "conflicting_files": [],
+                        },
+                    )
+                elif issue.code in {"dirty_shared_repo", "dirty_lane_repo"} and issue.details.get(
+                    "conflicting_files"
+                ):
+                    repo_name = issue.subject.split(":")[-1]
+                    _emit_sync_event(
+                        workspace_root,
+                        {
+                            "type": "sync.conflict",
+                            **_sync_context(
+                                workspace_root,
+                                owner_unit=(
+                                    issue.subject.split("/", 1)[0]
+                                    if issue.scope == "lane"
+                                    else "workspace"
+                                ),
+                            ),
+                            "repo": repo_name,
+                            "conflicting_files": list(issue.details.get("conflicting_files", [])),
+                        },
+                    )
+            _emit_sync_event(
+                workspace_root,
+                {
+                    "type": "sync.completed",
+                    **_sync_context(workspace_root),
+                    "status": "blocked",
+                    "repos_updated": 0,
+                    "repos_skipped": 0,
+                    "repos_failed": len(blocked),
+                    "duration_ms": int((time.monotonic() - started_at) * 1000),
+                },
+            )
+        except Exception:
+            _release_sync_lock(lock_fh)
+            raise
         _release_sync_lock(lock_fh)
         return SyncResult(
             workspace_root=str(workspace_root),
@@ -848,6 +874,7 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
                 "repos_failed": len(failures),
                 "duration_ms": int((time.monotonic() - started_at) * 1000),
             },
+            after_outcome=True,
         )
 
         return SyncResult(

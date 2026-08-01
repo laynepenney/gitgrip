@@ -18,7 +18,7 @@ from types import MappingProxyType
 
 from jsonschema import Draft202012Validator
 
-from .events import EventType, emit
+from .events import EventType, emit_after_outcome
 from .gitops import clone_repo, ensure_repo_cache, is_git_dir, is_git_repo, repo_dirty
 from .hooks import HookContext, apply_file_projections, load_repo_hooks, run_lifecycle_stage
 
@@ -314,7 +314,7 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
                 manual_hooks=manual_hooks,
             )
             for projection in hook_payload["projected_files"]:
-                emit(
+                emit_after_outcome(
                     event_type=EventType.WORKSPACE_FILE_PROJECTED,
                     workspace_root=workspace_root,
                     actor="system",
@@ -371,7 +371,7 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
     if applied:
         _record_apply_state(workspace_root, applied)
     if materialized_repos:
-        emit(
+        emit_after_outcome(
             event_type=EventType.WORKSPACE_MATERIALIZED,
             workspace_root=workspace_root,
             actor="system",
