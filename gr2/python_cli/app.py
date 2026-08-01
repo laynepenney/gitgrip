@@ -1226,12 +1226,21 @@ def pr_merge(
         )
         # What the merge loop actually completed, not what the group DECLARED.
         # Re-deriving from `prs` names repos the loop may never have reached.
-        merged = [str(c["repo"]) for c in result.get("completed", [])]
+        #
+        # BOTH fields come from this ONE source, deliberately. On the success path
+        # `completed` and `prs` hold the same repos in the same order -- the token and
+        # the truth coincide whenever nothing fails -- so a membership list cannot
+        # distinguish them and every error-path test leaves this path free to re-derive.
+        # `merged_receipts` carries the ADAPTER-AUTHORED fields, which the group file
+        # cannot reproduce. Membership coincides on success; provenance does not.
+        completed = result.get("completed", [])
+        merged = [str(c["repo"]) for c in completed]
         payload = {
             "pr_group_id": group["pr_group_id"],
             "owner_unit": owner_unit,
             "lane_name": resolved_lane,
             "merged": merged,
+            "merged_receipts": completed,
             "state_path": str(group_path),
         }
     except pr_ops.PRMergeError as exc:
@@ -1253,6 +1262,7 @@ def pr_merge(
             "owner_unit": owner_unit,
             "lane_name": resolved_lane,
             "merged": merged,
+            "merged_receipts": exc.completed,
             "failed": [{"repo": exc.repo, "number": exc.pr_number, "reason": exc.reason}],
             "state_path": str(group_path),
         }

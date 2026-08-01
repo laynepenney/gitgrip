@@ -302,7 +302,10 @@ class TestTheCLIConsumesTheListRatherThanRebuildingIt:
                 failing,
                 2,
                 "simulated",
-                completed=[{"repo": r, "pr_number": i + 1, "url": None} for i, r in enumerate(completed)],
+                completed=[
+                    {"repo": r, "pr_number": i + 1, "url": f"observed://{r}/{i + 1}"}
+                    for i, r in enumerate(completed)
+                ],
             )
 
         monkeypatch.setattr(app_mod.pr_ops, "merge_pr_group", _boom)
@@ -330,6 +333,13 @@ class TestTheCLIConsumesTheListRatherThanRebuildingIt:
         assert "web" not in persisted.get("merged", []), (
             "the FALSE record was persisted to disk, which is the part a retry reads"
         )
+        # Provenance on the ERROR path too. Membership alone leaves this substitutable:
+        # `group["prs"]` minus nothing still contains 'app', so an assertion on names
+        # passes over either source. The url is adapter-authored and cannot be rebuilt.
+        assert [r.get("url") for r in payload["merged_receipts"]] == ["observed://app/1"], (
+            f'got {payload["merged_receipts"]}. Rebuilt from the group file, these carry '
+            f"no url -- the same coincidence that hid this on the success path."
+        )
 
     def test_the_persisted_state_matches_what_actually_merged(self, tmp_path, monkeypatch):
         payload, persisted = self._invoke(
@@ -341,3 +351,75 @@ class TestTheCLIConsumesTheListRatherThanRebuildingIt:
         )
         assert persisted["merged"] == ["app"]
         assert persisted["group_state"] == "partially_merged"
+
+
+class TestTheSUCCESSPathCarriesProvenanceToo:
+    """The third layer this one claim had to be pinned at: loop, error path, success path.
+
+    Each time the coincidence was the same: **the two sources agree except when it
+    matters.** On the success path `completed` and the group's declared `prs` hold the
+    same repos in the same order, so replacing one with the other leaves every
+    membership assertion green -- and every partial-failure test pins only the error
+    path, leaving the happy path free to re-derive.
+
+    Membership coincides on success. Provenance does not. So the success assertion has
+    to be on a field only the adapter can author, exactly as inside `merge_pr_group`.
+    """
+
+    def _run(self, tmp_path, monkeypatch, repos):
+        from typer.testing import CliRunner
+
+        from python_cli import app as app_mod
+
+        group = {
+            "pr_group_id": "pg_ok",
+            "owner_unit": "apollo",
+            "lane_name": "lane",
+            "prs": [{"repo": r, "pr_number": i + 1} for i, r in enumerate(repos)],
+        }
+        gpath = tmp_path / "group.json"
+        gpath.write_text(json.dumps(group))
+
+        monkeypatch.setattr(app_mod, "_resolve_lane_name", lambda *a, **k: "lane")
+        monkeypatch.setattr(app_mod, "_find_pr_group", lambda *a, **k: (gpath, group))
+        monkeypatch.setattr(app_mod, "get_platform_adapter", lambda *a, **k: object())
+        monkeypatch.setattr(
+            app_mod.pr_ops,
+            "merge_pr_group",
+            lambda **kw: {
+                **group,
+                "completed": [
+                    {"repo": r, "pr_number": i + 1, "url": f"observed://{r}/{i + 1}"}
+                    for i, r in enumerate(repos)
+                ],
+            },
+        )
+        res = CliRunner().invoke(
+            app_mod.app, ["pr", "merge", str(tmp_path), "apollo", "lane", "--json"]
+        )
+        return json.loads(res.stdout)
+
+    def test_success_output_carries_the_ADAPTER_AUTHORED_field(self, tmp_path, monkeypatch):
+        payload = self._run(tmp_path, monkeypatch, ["app", "api"])
+
+        urls = [r.get("url") for r in payload["merged_receipts"]]
+        assert urls == ["observed://app/1", "observed://api/2"], (
+            f"got {urls}. The group file has no `url`, so a payload rebuilt from "
+            f"`group['prs']` cannot produce these. Asserting membership here proves "
+            f"nothing: on success, completed and declared are the same list."
+        )
+
+    def test_membership_alone_would_NOT_have_caught_it(self, tmp_path, monkeypatch):
+        """Documents why the assertion above is on `url` and not on repo names.
+
+        This asserts the coincidence itself: the names ARE identical to the group's, so
+        any test pinned to them is satisfied by either source. Kept as an explicit
+        record so a later reader does not 'simplify' the test above back to a
+        membership check.
+        """
+        payload = self._run(tmp_path, monkeypatch, ["app", "api"])
+        declared = ["app", "api"]
+        assert payload["merged"] == declared, (
+            "if this ever differs, the coincidence has broken and the reasoning above "
+            "needs revisiting"
+        )
