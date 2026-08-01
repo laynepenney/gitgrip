@@ -15,40 +15,49 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 from .events import EventType, emit
-from .platform import AdapterError, CreatePRRequest, MergeMethod, PlatformAdapter
+from .merge_verification import (
+    CompletedMerge,
+    MergeVerificationTarget,
+    consume_merge_receipt,
+)
+from .platform import (
+    AdapterError,
+    CreatePRRequest,
+    MergeEvidenceError,
+    MergeMethod,
+    MergeReceipt,
+    PlatformAdapter,
+)
 
 __all__ = [
     "MergeMethod",
-    "UnpermittedMergeMethodError",
-    "resolve_merge_method",
     "PRMergeError",
+    "PRMergeOutcomeUnknownError",
+    "PRMergePostconditionError",
+    "UnpermittedMergeMethodError",
+    "check_pr_group_status",
     "create_pr_group",
     "merge_pr_group",
-    "check_pr_group_status",
     "record_pr_review",
+    "resolve_merge_method",
 ]
 
 
 class UnpermittedMergeMethodError(RuntimeError):
-    """The requested method is not permitted, and no other method was substituted.
-
-    Deliberately NOT a subclass of the parse error. A name we cannot read and a name we
-    can read but may not use are different facts, and a caller that wants to distinguish
-    them should not have to inspect a message to do it.
-    """
+    """The requested method is known, but workspace policy does not permit it."""
 
     def __init__(self, requested: MergeMethod, permitted: list[str]) -> None:
         self.requested = requested
         self.permitted = list(permitted)
+        allowed = ", ".join(self.permitted) or "none"
         super().__init__(
             f"merge method {requested.value!r} is not permitted here "
-            f"(permitted: {', '.join(self.permitted) or 'none'}). "
-            f"Refusing rather than substituting: a merge that silently uses a different "
-            f"strategy than the one requested reports success identically, and the only "
-            f"way to discover it is counting parents afterwards."
+            f"(permitted: {allowed}); refusing rather than substituting another method"
         )
 
 
@@ -56,11 +65,10 @@ def _parse_method(name: str, *, source: str) -> MergeMethod:
     try:
         return MergeMethod(name)
     except ValueError:
+        expected = ", ".join(method.value for method in MergeMethod)
         raise ValueError(
             f"unrecognised merge method {name!r} from {source} "
-            f"(expected one of: {', '.join(m.value for m in MergeMethod)}). "
-            f"Not falling back to a default: you asked for something, and quietly doing "
-            f"something else is the defect this guard exists to prevent."
+            f"(expected one of: {expected}); refusing rather than falling back"
         ) from None
 
 
@@ -69,15 +77,8 @@ def resolve_merge_method(
     configured: str | None = None,
     permitted: list[str] | None = None,
 ) -> MergeMethod:
-    """Resolve the merge strategy. The host is asked *whether*, never *which*.
+    """Resolve explicit, then configured, then merge-commit strategy."""
 
-    Precedence: explicit `--method`, then the workspace setting, then a merge commit.
-
-    `permitted` is what the host allows, when we happen to know it. Passing `None` means
-    **we did not ask** -- which must not read as "anything goes". No refusal is claimed in
-    that case, and nothing asserts the method was permitted; unverifiable stays
-    distinguishable from verified.
-    """
     if explicit is not None:
         chosen = _parse_method(explicit, source="--method")
     elif configured is not None:
@@ -87,33 +88,14 @@ def resolve_merge_method(
 
     if permitted is not None and chosen.value not in permitted:
         raise UnpermittedMergeMethodError(chosen, permitted)
-
     return chosen
 
 
 class PRMergeError(RuntimeError):
-    """Raised when a PR merge fails, carrying the merges that already succeeded.
+    """A merge command failed, carrying prior completed host operations."""
 
-    `completed` is REQUIRED and keyword-only, with no default, because this is the
-    reliable half of G9 (grip#842). Merging is irreversible: by the time one repo fails,
-    earlier repos are merged on the host and no amount of unwinding changes that. A caller
-    that cannot learn which ones will re-attempt them.
-
-        Irreversible work that is not recorded is worse than work not done,
-        because the next actor plans against a state that is false.
-
-    An optional field would be omitted at exactly one call site within a year and the
-    guarantee would quietly become a convention. An empty list is a claim -- "nothing had
-    merged" -- and must be stated, not defaulted; "nothing merged" and "nobody recorded
-    what merged" are different facts and a default would make them identical.
-
-    This is the layer a retry reads. The event log is the other layer and is best-effort:
-    `emit` RAISES `EventEmitError` as of grip#843 (it previously swallowed everything);
-    either way correctness must not rest on it -- fail-open lost the record silently, and
-    fail-closed turns a logging failure into an operation failure. The two
-    fail by different routes, which is the only thing that makes them depth rather than
-    the same chance twice.
-    """
+    operation_acknowledged = False
+    outcome_unknown = False
 
     def __init__(
         self,
@@ -121,20 +103,73 @@ class PRMergeError(RuntimeError):
         pr_number: int,
         reason: str,
         *,
-        completed: list[dict],
+        completed: list[CompletedMerge],
     ) -> None:
         self.repo = repo
         self.pr_number = pr_number
         self.reason = reason
         self.completed = list(completed)
-        already = ", ".join(str(c.get("repo")) for c in self.completed)
-        super().__init__(
-            f"merge failed for {repo}#{pr_number}: {reason}"
-            + (
-                f" (ALREADY MERGED, do not retry: {already})"
-                if self.completed
-                else " (nothing had merged yet)"
-            )
+        already = ", ".join(item.receipt.observed.repo for item in self.completed)
+        suffix = (
+            f" (ALREADY MERGED, do not retry: {already})"
+            if self.completed
+            else " (nothing had merged yet)"
+        )
+        super().__init__(f"merge failed for {repo}#{pr_number}: {reason}{suffix}")
+
+
+class PRMergeOutcomeUnknownError(PRMergeError):
+    """The host acknowledged the command but no immutable receipt was available."""
+
+    operation_acknowledged = True
+    outcome_unknown = True
+
+    def __init__(
+        self,
+        repo: str,
+        pr_number: int,
+        reason: str,
+        *,
+        completed: list[CompletedMerge],
+    ) -> None:
+        self.repo = repo
+        self.pr_number = pr_number
+        self.reason = reason
+        self.completed = list(completed)
+        already = ", ".join(item.receipt.observed.repo for item in self.completed)
+        suffix = f"; earlier completed: {already}" if already else ""
+        RuntimeError.__init__(
+            self,
+            f"merge outcome unknown for {repo}#{pr_number}: {reason}; "
+            f"the command was acknowledged, so do not retry{suffix}",
+        )
+
+
+class PRMergePostconditionError(PRMergeError):
+    """The merge is known to have happened but its evidence was not consumed."""
+
+    operation_acknowledged = True
+    outcome_unknown = False
+
+    def __init__(
+        self,
+        receipt: MergeReceipt,
+        reason: str,
+        *,
+        completed: list[CompletedMerge],
+    ) -> None:
+        observed = receipt.observed
+        self.receipt = receipt
+        self.repo = str(observed.repo)
+        self.pr_number = int(observed.number)
+        self.reason = reason
+        self.completed = list(completed)
+        already = ", ".join(item.receipt.observed.repo for item in self.completed)
+        suffix = f"; earlier completed: {already}" if already else ""
+        RuntimeError.__init__(
+            self,
+            f"merge postcondition failed for {self.repo}#{self.pr_number}: {reason}; "
+            f"the host merge is acknowledged, so do not retry{suffix}",
         )
 
 
@@ -221,81 +256,141 @@ def merge_pr_group(
     actor: str,
     *,
     method: MergeMethod,
+    verification_targets: Mapping[str, MergeVerificationTarget],
+    report: Callable[[str], Any],
 ) -> dict:
-    """Merge all PRs in a group. Stops on first failure.
-
-    `method` is required and keyword-only. Resolving a strategy correctly and then not
-    threading it to the call is the same outcome as never resolving one -- a decided
-    method that never reaches `gh` is indistinguishable from an undecided one, and the
-    unit tests for the resolver stay green either way.
-    """
+    """Merge all PRs, consuming host evidence before recording completion."""
     group = _load_group(workspace_root, pr_group_id)
-    merged: list[dict] = []
+    merged: list[CompletedMerge] = []
+    targets = dict(verification_targets)
+
+    missing_targets = [
+        str(item["repo"]) for item in group["prs"] if str(item["repo"]) not in targets
+    ]
+    if missing_targets:
+        raise ValueError(
+            "merge verification has no explicit local target for: "
+            + ", ".join(missing_targets)
+        )
 
     for pr_info in group["prs"]:
-        repo = pr_info["repo"]
-        number = pr_info["pr_number"]
+        repo = str(pr_info["repo"])
+        number = int(pr_info["pr_number"])
         try:
             receipt = adapter.merge_pr(repo, number, method=method)
+        except MergeEvidenceError as exc:
+            _record_merge_failure(
+                workspace_root=workspace_root,
+                group=group,
+                actor=actor,
+                repo=repo,
+                number=number,
+                reason=str(exc),
+                completed=merged,
+                operation_acknowledged=True,
+            )
+            raise PRMergeOutcomeUnknownError(
+                repo,
+                number,
+                str(exc),
+                completed=merged,
+            ) from exc
         except AdapterError as exc:
-            # Best-effort durable layer. Wrapped so a failure HERE cannot replace the
-            # PRMergeError below with the event subsystem's own exception -- if a broken
-            # event layer can take the in-process layer down with it, they were never two
-            # layers. This was written while `emit` still swallowed everything; grip#843
-            # made it RAISE, so the wrap is now load-bearing rather than defensive. The
-            # broader class -- emits sitting after irreversible work -- is grip#844.
-            try:
-                emit(
-                    event_type=EventType.PR_MERGE_FAILED,
-                    workspace_root=workspace_root,
-                    actor=actor,
-                    owner_unit=group.get("owner_unit", actor),
-                    payload={
-                        "pr_group_id": pr_group_id,
-                        "repo": repo,
-                        "pr_number": number,
-                        "reason": str(exc),
-                        # The irreversible work that already happened. Recorded on the
-                        # FAILURE event because there may never be a success event.
-                        "completed": merged,
-                    },
-                )
-            except Exception as emit_exc:  # noqa: BLE001 - deliberately broad
-                print(
-                    f"gr2: could not record partial merge ({emit_exc}); "
-                    f"the completed list is still on the raised PRMergeError",
-                    file=sys.stderr,
-                )
+            _record_merge_failure(
+                workspace_root=workspace_root,
+                group=group,
+                actor=actor,
+                repo=repo,
+                number=number,
+                reason=str(exc),
+                completed=merged,
+                operation_acknowledged=False,
+            )
             raise PRMergeError(repo, number, str(exc), completed=merged) from exc
 
-        # Carried back from the ADAPTER, never rebuilt from `pr_info`. Rebuilding from the
-        # group file produces the same repo names in the same order -- the loop visits
-        # repos in group order -- so the two are indistinguishable by inspection while one
-        # is evidence that a merge happened and the other is a restatement of what we
-        # intended. The second is exactly what a loop that never contacted the host would
-        # also produce.
-        #
-        # `PRRef` is a thin receipt today and carries no commit id (grip#842 item 3 makes
-        # it real). This shape is the seam: when the richer receipt lands it swaps in here
-        # without the meaning of the record changing.
-        merged.append(
-            {"repo": receipt.repo, "pr_number": receipt.number, "url": receipt.url}
-        )
+        target = targets[repo]
+        try:
+            completed = consume_merge_receipt(
+                repo_root=target.repo_root,
+                receipt=receipt,
+                remote=target.remote,
+                report=report,
+            )
+        except Exception as exc:  # noqa: BLE001 - host operation already happened
+            reason = f"could not consume merge evidence: {exc}"
+            _record_merge_failure(
+                workspace_root=workspace_root,
+                group=group,
+                actor=actor,
+                repo=repo,
+                number=number,
+                reason=reason,
+                completed=merged,
+                operation_acknowledged=True,
+            )
+            raise PRMergePostconditionError(
+                receipt,
+                reason,
+                completed=merged,
+            ) from exc
+        merged.append(completed)
+
+    records = _completed_records(merged)
 
     emit(
         event_type=EventType.PR_MERGED,
         workspace_root=workspace_root,
         actor=actor,
         owner_unit=group.get("owner_unit", actor),
-        payload={"pr_group_id": pr_group_id, "repos": merged},
+        payload={"pr_group_id": pr_group_id, "repos": records},
     )
 
-    # Hand the caller what ACTUALLY merged. Without this the layer above has
-    # nothing to consume and re-derives completion from the group's declared
-    # `prs` -- which names repos the loop may never have reached. G9's list is
-    # only worth carrying if the next consumer can read it.
-    group["completed"] = merged
+    group["completed"] = records
+    group["group_state"] = "merged"
+    _save_group(workspace_root, group)
     return group
+
+
+def _record_merge_failure(
+    *,
+    workspace_root: Path,
+    group: dict[str, object],
+    actor: str,
+    repo: str,
+    number: int,
+    reason: str,
+    completed: list[CompletedMerge],
+    operation_acknowledged: bool,
+) -> None:
+    """Best-effort durable layer; never replaces the in-process error."""
+
+    try:
+        emit(
+            event_type=EventType.PR_MERGE_FAILED,
+            workspace_root=workspace_root,
+            actor=actor,
+            owner_unit=str(group.get("owner_unit", actor)),
+            payload={
+                "pr_group_id": group["pr_group_id"],
+                "repo": repo,
+                "pr_number": number,
+                "reason": reason,
+                "completed": _completed_records(completed),
+                "operation_acknowledged": operation_acknowledged,
+            },
+        )
+    except Exception as emit_exc:  # noqa: BLE001 - event logging is best effort
+        print(
+            f"gr2: could not record partial merge ({emit_exc}); "
+            "the completed list remains on the raised error",
+            file=sys.stderr,
+        )
+
+
+def _completed_records(completed: list[CompletedMerge]) -> list[dict[str, object]]:
+    """Flatten earned evidence only at a JSON serialization boundary."""
+
+    return [item.as_dict() for item in completed]
 
 
 def check_pr_group_status(

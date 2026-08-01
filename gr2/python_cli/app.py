@@ -9,13 +9,13 @@ from types import SimpleNamespace
 from typing import Optional
 
 import typer
+from gr2.prototypes import lane_workspace_prototype as lane_proto
+from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
 from . import branch as branch_ops
-from . import execops
-from . import failures
-from . import migration
+from . import execops, failures, migration, spec_apply, syncops
 from . import pr as pr_ops
-from . import syncops
+from .events import EventType, emit
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -27,14 +27,16 @@ from .gitops import (
     repo_dirty,
     stash_if_dirty,
 )
-from .events import emit, EventType
-from .hooks import HookContext, HookRuntimeError, apply_file_projections, load_repo_hooks, run_lifecycle_stage
-from .platform import PRRef, get_platform_adapter
-from . import spec_apply
 from .grip_cli import config_cli_app, grip_app
-from gr2.prototypes import lane_workspace_prototype as lane_proto
-from gr2.prototypes import repo_maintenance_prototype as repo_proto
-
+from .hooks import (
+    HookContext,
+    HookRuntimeError,
+    apply_file_projections,
+    load_repo_hooks,
+    run_lifecycle_stage,
+)
+from .merge_verification import MergeVerificationTarget
+from .platform import PRRef, get_platform_adapter
 
 app = typer.Typer(
     help="Python-first gr2 CLI. This is the production UX proving layer before Rust."
@@ -72,31 +74,6 @@ def _workspace_repo_spec(workspace_root: Path, repo_name: str) -> dict[str, obje
 
 def _workspace_spec_path(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "workspace_spec.toml"
-
-
-def _configured_merge_method(workspace_root: Path) -> str | None:
-    """The workspace's merge-method policy, or None if it never expressed one.
-
-    Lives under `[workspace_constraints]` because that is where merge policy already
-    lives (`merge_order`, `required_reviewers`) -- following the existing section rather
-    than inventing one.
-
-    Returns `None`, never the string "merge", when the key is absent. Collapsing "unset"
-    into "chose merge" would make a workspace that never expressed a preference
-    indistinguishable from one that pinned the current default, so a later change of
-    default would silently never reach the workspaces that were only ever defaulting.
-    Absence is the honest encoding of "take the default, and follow it if it moves".
-
-    Missing spec is tolerated: this is a policy lookup on a merge path, and a workspace
-    without a spec file has plainly not configured a method. It must not become a second
-    failure mode on top of whatever the merge itself is doing.
-    """
-    try:
-        spec = lane_proto.load_workspace_spec(workspace_root)
-    except (FileNotFoundError, OSError):
-        return None
-    value = spec.get("workspace_constraints", {}).get("merge_method")
-    return None if value is None else str(value)
 
 
 def _lane_repo_root(workspace_root: Path, owner_unit: str, lane_name: str, repo_name: str) -> Path:
@@ -274,6 +251,41 @@ def _repo_slug_from_url(url: str, fallback_name: str) -> str:
         slug = cleaned.split("https://github.com/", 1)[1]
         return slug.removesuffix(".git")
     return fallback_name
+
+
+def _merge_verification_targets(
+    workspace_root: Path,
+) -> dict[str, MergeVerificationTarget]:
+    """Bind host slugs to explicit local DAGs and source URLs before merging."""
+
+    workspace_spec = lane_proto.load_workspace_spec(workspace_root)
+    targets: dict[str, MergeVerificationTarget] = {}
+    for repo_spec_value in workspace_spec.get("repos", []):
+        repo_spec = dict(repo_spec_value)
+        repo_name = str(repo_spec.get("name", ""))
+        remote = str(repo_spec.get("url", "")).strip()
+        if not remote:
+            raise SystemExit(f"repo has no source URL for merge verification: {repo_name}")
+        host_repo = _repo_slug_from_url(remote, repo_name)
+        if host_repo in targets:
+            raise SystemExit(f"duplicate host repo in merge verification targets: {host_repo}")
+        repo_root = (workspace_root / str(repo_spec.get("path", ""))).resolve()
+        if not repo_root.is_dir() or not is_git_repo(repo_root):
+            raise SystemExit(f"local merge-verification DAG is unavailable: {repo_root}")
+        targets[host_repo] = MergeVerificationTarget(repo_root=repo_root, remote=remote)
+    return targets
+
+
+def _configured_merge_method(workspace_root: Path) -> str | None:
+    settings = lane_proto.load_workspace_spec(workspace_root).get("settings", {})
+    if not isinstance(settings, dict):
+        raise SystemExit("workspace spec [settings] must be a table")
+    value = settings.get("merge_method")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise SystemExit("workspace setting merge_method must be a string")
+    return value
 
 
 def _write_workspace_spec(workspace_root: Path, repos: list[dict[str, str]], default_unit: str) -> Path:
@@ -1185,7 +1197,7 @@ def pr_merge(
         None,
         "--method",
         "-m",
-        help="merge/squash/rebase. Defaults to a merge commit. An unpermitted method is refused, never substituted.",
+        help="merge/squash/rebase. Defaults to a merge commit.",
     ),
 ) -> None:
     """Merge grouped PRs for a lane."""
@@ -1223,18 +1235,13 @@ def pr_merge(
                 explicit=method,
                 configured=_configured_merge_method(workspace_root),
             ),
+            verification_targets=_merge_verification_targets(
+                workspace_root,
+            ),
+            report=lambda message: typer.echo(message, err=True),
         )
-        # What the merge loop actually completed, not what the group DECLARED.
-        # Re-deriving from `prs` names repos the loop may never have reached.
-        #
-        # BOTH fields come from this ONE source, deliberately. On the success path
-        # `completed` and `prs` hold the same repos in the same order -- the token and
-        # the truth coincide whenever nothing fails -- so a membership list cannot
-        # distinguish them and every error-path test leaves this path free to re-derive.
-        # `merged_receipts` carries the ADAPTER-AUTHORED fields, which the group file
-        # cannot reproduce. Membership coincides on success; provenance does not.
-        completed = result.get("completed", [])
-        merged = [str(c["repo"]) for c in completed]
+        completed = list(result.get("completed", []))
+        merged = [str(item["repo"]) for item in completed]
         payload = {
             "pr_group_id": group["pr_group_id"],
             "owner_unit": owner_unit,
@@ -1244,26 +1251,40 @@ def pr_merge(
             "state_path": str(group_path),
         }
     except pr_ops.PRMergeError as exc:
-        # DECLARED-MINUS-FAILED IS WRONG, and wrong in the dangerous direction.
-        # With prs = [app, api, web] and api failing, it yields [app, web] --
-        # recording web as merged when the loop stopped before ever calling it.
-        # A retry then skips a PR that is still open, and the operator reads a
-        # merge that never happened.
-        #
-        # `exc.completed` is the list the merge loop actually built, carried on
-        # the exception precisely so this layer never has to reconstruct it.
-        merged = [str(c["repo"]) for c in exc.completed]
-        group["group_state"] = "partially_merged" if merged else "merge_failed"
+        completed = [item.as_dict() for item in exc.completed]
+        merged = [str(item["repo"]) for item in completed]
+        if exc.outcome_unknown:
+            group["group_state"] = "merge_outcome_unknown"
+        elif exc.operation_acknowledged:
+            group["group_state"] = "merge_postcondition_failed"
+        else:
+            group["group_state"] = "partially_merged" if merged else "merge_failed"
         group["merged"] = merged
+        group["completed"] = completed
         group_path.write_text(json.dumps(group, indent=2) + "\n")
         payload = {
-            "status": "partial_failure" if merged else "failed",
+            "status": (
+                "outcome_unknown"
+                if exc.outcome_unknown
+                else (
+                    "postcondition_failed"
+                    if exc.operation_acknowledged
+                    else ("partial_failure" if merged else "failed")
+                )
+            ),
             "pr_group_id": group["pr_group_id"],
             "owner_unit": owner_unit,
             "lane_name": resolved_lane,
             "merged": merged,
-            "merged_receipts": exc.completed,
-            "failed": [{"repo": exc.repo, "number": exc.pr_number, "reason": exc.reason}],
+            "merged_receipts": completed,
+            "failed": [
+                {
+                    "repo": exc.repo,
+                    "number": exc.pr_number,
+                    "reason": exc.reason,
+                    "operation_acknowledged": exc.operation_acknowledged,
+                }
+            ],
             "state_path": str(group_path),
         }
         if json_output:

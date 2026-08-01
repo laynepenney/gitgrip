@@ -1,39 +1,14 @@
 from __future__ import annotations
 
-import enum
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
-
-
-class MergeMethod(enum.Enum):
-    """The git strategy a merge uses. Decided by the workspace, never by the host.
-
-    gr1 asked the host which methods it permitted and took the first of
-    `squash > merge > rebase` -- delegating a workspace-policy decision to a party with no
-    knowledge of the workspace. gr2's version of the same class is quieter and harder to
-    see: it passed no strategy flag at all, so gh and the host decided by default. There
-    was no wrong line to point at, only an absent one.
-
-    `MERGE` is the default deliberately. It is the only method that preserves both
-    parents, and losing shared ancestry is not a formatting preference -- it is how two
-    branches become unrelated histories that no later merge can reconcile.
-
-    Lives here rather than in `pr.py` because the flag mapping is a platform concern, and
-    because `pr.py` imports this module: the enum has to sit on the lower side of that
-    edge. `pr.py` re-exports it, so the operational contract reads from either.
-    """
-
-    MERGE = "merge"
-    SQUASH = "squash"
-    REBASE = "rebase"
-
-    @property
-    def gh_flag(self) -> str:
-        return f"--{self.value}"
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -47,6 +22,43 @@ class PRRef:
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+class MergeMethod(StrEnum):
+    MERGE = "merge"
+    SQUASH = "squash"
+    REBASE = "rebase"
+
+    @property
+    def gh_flag(self) -> str:
+        return f"--{self.value}"
+
+
+@dataclass(frozen=True)
+class MergeReceipt:
+    """Host-observed evidence for one completed merge operation.
+
+    `requested` is caller intent. `observed` and `commit_sha` come from the
+    hosting platform's structured PR record after the merge command returns.
+    Keeping both identities prevents a response for a different PR from being
+    accepted merely because the command exited successfully.
+
+    `commit_sha=None` has one meaning: the host explicitly returned no merge
+    commit identity. It never means parent verification succeeded.
+    """
+
+    requested: PRRef
+    observed: PRRef
+    commit_sha: str | None
+    requested_method: MergeMethod
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "requested": self.requested.as_dict(),
+            "observed": self.observed.as_dict(),
+            "commit_sha": self.commit_sha,
+            "requested_method": self.requested_method.value,
+        }
 
 
 @dataclass(frozen=True)
@@ -96,7 +108,13 @@ class PlatformAdapter(Protocol):
 
     def create_pr(self, request: CreatePRRequest) -> PRRef: ...
 
-    def merge_pr(self, repo: str, number: int, *, method: MergeMethod) -> PRRef: ...
+    def merge_pr(
+        self,
+        repo: str,
+        number: int,
+        *,
+        method: MergeMethod,
+    ) -> MergeReceipt: ...
 
     def pr_status(self, repo: str, number: int) -> PRStatus: ...
 
@@ -109,16 +127,47 @@ class AdapterError(RuntimeError):
     pass
 
 
+class MergeEvidenceError(AdapterError):
+    """The host acknowledged a merge, but its immutable receipt is unavailable.
+
+    This is deliberately distinct from a failed merge command. Retrying after
+    this error could merge or report the same operation twice.
+    """
+
+    operation_acknowledged = True
+
+    def __init__(
+        self,
+        *,
+        requested: PRRef,
+        requested_method: MergeMethod,
+        reason: str,
+    ) -> None:
+        self.requested = requested
+        self.requested_method = requested_method
+        self.reason = reason
+        super().__init__(
+            f"merge command succeeded for {requested.repo}#{requested.number}, "
+            f"but its immutable receipt is unavailable: {reason}"
+        )
+
+
 def _run_json(command: list[str], *, cwd: Path | None = None) -> object:
-    proc = subprocess.run(
-        command,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise AdapterError(
+            f"could not launch command for structured host evidence: {command[0]!r}: {exc}"
+        ) from exc
     if proc.returncode != 0:
-        raise AdapterError(proc.stderr.strip() or proc.stdout.strip() or f"command failed: {' '.join(command)}")
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        raise AdapterError(detail or f"command failed: {' '.join(command)}")
     try:
         return json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
@@ -163,24 +212,58 @@ class GitHubAdapter:
             title=request.title,
         )
 
-    def merge_pr(self, repo: str, number: int, *, method: MergeMethod) -> PRRef:
-        """Merge, naming the strategy explicitly.
-
-        `method` is REQUIRED and has no default on purpose. A default would be a promise
-        that every future call site remembers to think about it; a required argument is a
-        refusal. The absent flag is precisely the defect being closed here -- with no
-        strategy named, gh and the host choose, and a squash reports success identically
-        to a merge commit.
-        """
+    def merge_pr(
+        self,
+        repo: str,
+        number: int,
+        *,
+        method: MergeMethod,
+    ) -> MergeReceipt:
         proc = subprocess.run(
-            [self.gh_binary, "pr", "merge", str(number), "--repo", repo, method.gh_flag],
+            [
+                self.gh_binary,
+                "pr",
+                "merge",
+                str(number),
+                "--repo",
+                repo,
+                method.gh_flag,
+            ],
             capture_output=True,
             text=True,
             check=False,
         )
         if proc.returncode != 0:
             raise AdapterError(proc.stderr.strip() or proc.stdout.strip() or "gh pr merge failed")
-        return PRRef(repo=repo, number=number)
+
+        # `gh pr merge` is silent on successful non-interactive merges. Read
+        # the immutable PR record rather than reconstructing a receipt from
+        # the command inputs or asking what commit the base points at now.
+        requested = PRRef(repo=repo, number=number)
+        try:
+            payload = _run_json(
+                [
+                    self.gh_binary,
+                    "pr",
+                    "view",
+                    str(number),
+                    "--repo",
+                    repo,
+                    "--json",
+                    "number,url,state,mergeCommit",
+                ]
+            )
+            return _parse_merge_receipt(
+                payload,
+                requested=requested,
+                requested_method=method,
+            )
+        except AdapterError as exc:
+            raise MergeEvidenceError(
+                requested=requested,
+                requested_method=method,
+                reason=str(exc),
+            ) from exc
 
     def pr_status(self, repo: str, number: int) -> PRStatus:
         payload = _run_json(
@@ -208,7 +291,11 @@ class GitHubAdapter:
         return PRStatus(
             ref=ref,
             state=str(payload.get("state", "UNKNOWN")),
-            mergeable=str(payload.get("mergeable")) if payload.get("mergeable") is not None else None,
+            mergeable=(
+                str(payload.get("mergeable"))
+                if payload.get("mergeable") is not None
+                else None
+            ),
             checks=checks,
         )
 
@@ -256,7 +343,11 @@ class GitHubAdapter:
                 PRCheck(
                     name=str(row.get("name", "unknown")),
                     status=str(row.get("status", "UNKNOWN")),
-                    conclusion=(str(row["conclusion"]) if row.get("conclusion") is not None else None),
+                    conclusion=(
+                        str(row["conclusion"])
+                        if row.get("conclusion") is not None
+                        else None
+                    ),
                     details_url=row.get("detailsUrl"),
                 )
             )
@@ -268,3 +359,83 @@ def get_platform_adapter(name: str) -> PlatformAdapter:
     if normalized in {"github", "gh"}:
         return GitHubAdapter()
     raise AdapterError(f"unknown platform adapter: {name}")
+
+
+_GIT_OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+
+
+def _parse_merge_receipt(
+    payload: object,
+    *,
+    requested: PRRef,
+    requested_method: MergeMethod,
+) -> MergeReceipt:
+    if not isinstance(payload, dict):
+        raise AdapterError("gh pr view did not return an object")
+    if payload.get("state") != "MERGED":
+        raise AdapterError(
+            "gh pr merge returned success but the structured PR record is not MERGED"
+        )
+
+    number = payload.get("number")
+    if isinstance(number, bool) or not isinstance(number, int):
+        raise AdapterError("merged PR record has no integer number")
+    url = payload.get("url")
+    if not isinstance(url, str) or not url:
+        raise AdapterError("merged PR record has no URL")
+
+    observed_repo, url_number = _repo_and_number_from_pr_url(url)
+    observed = PRRef(repo=observed_repo, number=number, url=url)
+    if number != requested.number or url_number != requested.number:
+        raise AdapterError(
+            f"merged PR record identifies #{number} at URL #{url_number}, "
+            f"expected #{requested.number}"
+        )
+    if observed.repo != requested.repo:
+        raise AdapterError(
+            f"merged PR record identifies repo {observed.repo!r}, "
+            f"expected {requested.repo!r}"
+        )
+
+    if "mergeCommit" not in payload:
+        raise AdapterError("merged PR record omitted mergeCommit")
+    merge_commit = payload["mergeCommit"]
+    commit_sha: str | None
+    if merge_commit is None:
+        commit_sha = None
+    elif isinstance(merge_commit, dict):
+        oid = merge_commit.get("oid")
+        if not isinstance(oid, str) or _GIT_OBJECT_ID.fullmatch(oid) is None:
+            raise AdapterError("merged PR record contains an invalid mergeCommit.oid")
+        commit_sha = oid
+    else:
+        raise AdapterError("merged PR record contains a malformed mergeCommit")
+
+    return MergeReceipt(
+        requested=requested,
+        observed=observed,
+        commit_sha=commit_sha,
+        requested_method=requested_method,
+    )
+
+
+def _repo_and_number_from_pr_url(url: str) -> tuple[str, int]:
+    try:
+        parsed = urlsplit(url)
+    except ValueError as exc:
+        raise AdapterError(f"merged PR record contains an invalid PR URL: {url!r}") from exc
+    path = [part for part in parsed.path.split("/") if part]
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc.lower() != "github.com"
+        or bool(parsed.query)
+        or bool(parsed.fragment)
+        or len(path) != 4
+        or path[2] != "pull"
+    ):
+        raise AdapterError(f"merged PR record contains an invalid PR URL: {url!r}")
+    try:
+        number = int(path[3])
+    except ValueError as exc:
+        raise AdapterError(f"merged PR record contains an invalid PR URL: {url!r}") from exc
+    return f"{path[0]}/{path[1]}", number
