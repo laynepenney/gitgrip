@@ -366,7 +366,10 @@ class TestTheSUCCESSPathCarriesProvenanceToo:
     to be on a field only the adapter can author, exactly as inside `merge_pr_group`.
     """
 
-    def _run(self, tmp_path, monkeypatch, repos):
+    def _run(self, tmp_path, monkeypatch, repos, completed_repos=None):
+        """`completed_repos` defaults to `repos` -- pass a SUBSET to make the two
+        provenances produce different MEMBERSHIPS, which is the only way `merged` itself
+        becomes observable (see the class docstring)."""
         from typer.testing import CliRunner
 
         from python_cli import app as app_mod
@@ -377,6 +380,7 @@ class TestTheSUCCESSPathCarriesProvenanceToo:
             "lane_name": "lane",
             "prs": [{"repo": r, "pr_number": i + 1} for i, r in enumerate(repos)],
         }
+        done = repos if completed_repos is None else completed_repos
         gpath = tmp_path / "group.json"
         gpath.write_text(json.dumps(group))
 
@@ -390,7 +394,7 @@ class TestTheSUCCESSPathCarriesProvenanceToo:
                 **group,
                 "completed": [
                     {"repo": r, "pr_number": i + 1, "url": f"observed://{r}/{i + 1}"}
-                    for i, r in enumerate(repos)
+                    for i, r in enumerate(done)
                 ],
             },
         )
@@ -408,6 +412,37 @@ class TestTheSUCCESSPathCarriesProvenanceToo:
             f"`group['prs']` cannot produce these. Asserting membership here proves "
             f"nothing: on success, completed and declared are the same list."
         )
+
+    def test_merged_ITSELF_comes_from_completed_when_the_memberships_DIFFER(
+        self, tmp_path, monkeypatch
+    ):
+        """The fifth degree of freedom, and the one my earlier witness could not see.
+
+        Pinning `merged_receipts` by provenance does NOT pin `merged`. In a fixture where
+        completed and declared hold the same repos, `merged` derived from either is the
+        same list -- so substituting `group["prs"]` for `result["completed"]` in the
+        `merged` line alone is invisible, while the receipts assertion beside it stays
+        green and looks like coverage.
+
+        THE FIXTURE LAW: a field is pinned only if the fixture makes its correct value
+        DIFFER from its reconstructed value, **per field**. Receipts-distinguishable does
+        not make merged-distinguishable. Every field needs its own divergence.
+
+        So: declared is a superset. `merged` must follow completed, not the group.
+        """
+        payload = self._run(
+            tmp_path,
+            monkeypatch,
+            ["app", "api", "web"],
+            completed_repos=["app"],
+        )
+
+        assert payload["merged"] == ["app"], (
+            f'got {payload["merged"]}. Rebuilt from the group file this reads '
+            f'["app", "api", "web"] -- the CLI must report what the merge loop returned, '
+            f"not what the group declared."
+        )
+        assert [r.get("url") for r in payload["merged_receipts"]] == ["observed://app/1"]
 
     def test_membership_alone_would_NOT_have_caught_it(self, tmp_path, monkeypatch):
         """Documents why the assertion above is on `url` and not on repo names.
