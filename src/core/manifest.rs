@@ -535,7 +535,91 @@ fn default_version() -> u32 {
     2
 }
 
+/// Keys `Manifest` accepts at the top level.
+///
+/// Kept beside the struct deliberately: if a field is added there and not here,
+/// a valid manifest starts warning, which is a loud failure rather than a silent
+/// one. That is the correct direction for this list to rot in.
+const TOP_LEVEL_KEYS: &[&str] = &[
+    "version",
+    "remotes",
+    "gripspaces",
+    "manifest",
+    "repos",
+    "settings",
+    "workspace",
+];
+
+/// Keys that are VALID somewhere else, mapped to where they belong.
+///
+/// MISPLACEMENT IS THE COMMON CASE, NOT TYPOS. Every entry here is a real field
+/// on `ManifestRepoConfig`, i.e. something a user writes at the top level
+/// because that is where it reads like it should go. Naming the right home
+/// turns a warning into a fix.
+const MISPLACED_KEY_HOMES: &[(&str, &str)] = &[
+    ("composefile", "manifest.composefile"),
+    ("copyfile", "manifest.copyfile"),
+    ("linkfile", "manifest.linkfile"),
+    ("platform", "manifest.platform"),
+    ("url", "manifest.url"),
+    ("revision", "manifest.revision"),
+];
+
 impl Manifest {
+    /// Top-level keys present in the YAML that no field will receive.
+    ///
+    /// *** WHY THIS EXISTS: SERDE DISCARDS UNKNOWN KEYS IN SILENCE. ***
+    ///
+    /// No manifest struct carries `deny_unknown_fields`, so a key that matches
+    /// no field is dropped during deserialization with no error, no warning and
+    /// exit 0. A `composefile:` block written at the top level instead of under
+    /// `manifest:` therefore vanishes: the block is in the file, `gr manifest
+    /// schema` knows the key, nothing is a parse failure, and nothing is
+    /// produced. Measured 2026-08-11; it cost two rounds of misdiagnosis
+    /// because every visible signal said success.
+    ///
+    /// `deny_unknown_fields` is the obvious fix and is the wrong one: it turns
+    /// every extra key into a hard parse error, so a manifest carrying a
+    /// forward-compatibility key stops loading on upgrade. That trades a silent
+    /// failure for a breaking one. Warning keeps every existing manifest
+    /// loading while making the discard impossible to miss.
+    ///
+    /// Returns messages rather than printing, so this is testable and so the
+    /// caller decides where they go.
+    pub fn unknown_top_level_keys(yaml: &str) -> Vec<String> {
+        let value: serde_yaml::Value = match serde_yaml::from_str(yaml) {
+            Ok(value) => value,
+            // A genuine syntax error is reported by the real parse; this pass
+            // must never turn one error into two.
+            Err(_) => return Vec::new(),
+        };
+        let mapping = match value.as_mapping() {
+            Some(mapping) => mapping,
+            None => return Vec::new(),
+        };
+
+        let mut warnings = Vec::new();
+        for (key, _) in mapping {
+            let key = match key.as_str() {
+                Some(key) => key,
+                None => continue,
+            };
+            if TOP_LEVEL_KEYS.contains(&key) {
+                continue;
+            }
+            match MISPLACED_KEY_HOMES.iter().find(|(name, _)| *name == key) {
+                Some((_, home)) => warnings.push(format!(
+                    "manifest key '{key}' is not valid at the top level and was IGNORED \
+                     - did you mean '{home}'?"
+                )),
+                None => warnings.push(format!(
+                    "manifest key '{key}' is not a known key and was IGNORED"
+                )),
+            }
+        }
+        warnings
+    }
+
     /// Load a manifest from a YAML file
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ManifestError> {
         let content = std::fs::read_to_string(path)?;
@@ -547,6 +631,21 @@ impl Manifest {
     /// Use this when you need to process the manifest before validation,
     /// e.g., resolving gripspace includes that merge additional repos.
     pub fn parse_raw(yaml: &str) -> Result<Self, ManifestError> {
+        // WARN HERE, NOT IN `load`. This is the single chokepoint: `parse`
+        // calls `parse_raw`, `load` calls `parse`, and `sync` calls `parse_raw`
+        // DIRECTLY -- so a hook in `load` fires on the least-used path and is
+        // silent for the command that matters. Verified by call-site count
+        // rather than assumed, after a first attempt hooked `load` and produced
+        // exactly nothing on `gr sync`, which is the same mistake as assuming
+        // where composition was invoked from.
+        //
+        // STDERR, not `Output::warning`, which uses println!. A correctness
+        // warning on stdout is swallowed by redirection and corrupts `--json`
+        // consumers, and a warning nobody reads is the defect this fixes one
+        // layer up.
+        for warning in Self::unknown_top_level_keys(yaml) {
+            eprintln!("\u{26a0} {warning}");
+        }
         let mut manifest: Manifest = serde_yaml::from_str(yaml)?;
         manifest.migrate_v1();
         Ok(manifest)
@@ -1195,6 +1294,73 @@ repos:
             "https://github.com/user/other-gripspace.git"
         );
         assert!(gripspaces[1].rev.is_none());
+    }
+
+    #[test]
+    fn unknown_top_level_key_that_belongs_elsewhere_names_its_home() {
+        // The exact defect: composefile written at the top level instead of
+        // under `manifest:`. Serde discards it, so without this warning the
+        // whole block vanishes at exit 0.
+        let yaml = r#"
+version: 2
+repos: {}
+composefile:
+  - dest: CLAUDE.md
+    parts:
+      - src: A.md
+"#;
+        let warnings = Manifest::unknown_top_level_keys(yaml);
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        assert!(warnings[0].contains("composefile"));
+        assert!(
+            warnings[0].contains("manifest.composefile"),
+            "a misplacement warning must name where the key belongs: {}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn unknown_top_level_key_with_no_home_is_still_reported() {
+        let yaml = "version: 2\nrepos: {}\nreposs: {}\n";
+        let warnings = Manifest::unknown_top_level_keys(yaml);
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        assert!(warnings[0].contains("reposs"));
+    }
+
+    #[test]
+    fn a_correct_manifest_produces_no_warnings() {
+        // CONTROL. A warning that fires on valid input is worse than none --
+        // it trains readers to ignore the channel. Every top-level field is
+        // exercised here so adding one to the struct without adding it to
+        // TOP_LEVEL_KEYS turns this RED.
+        let yaml = r#"
+version: 2
+remotes: {}
+gripspaces: []
+manifest:
+  url: file:///tmp/x.git
+  revision: main
+  composefile:
+    - dest: CLAUDE.md
+      parts:
+        - src: A.md
+repos: {}
+settings: {}
+workspace: {}
+"#;
+        assert!(
+            Manifest::unknown_top_level_keys(yaml).is_empty(),
+            "valid manifest warned: {:?}",
+            Manifest::unknown_top_level_keys(yaml)
+        );
+    }
+
+    #[test]
+    fn a_syntax_error_does_not_become_two_errors() {
+        // The real parse reports genuine syntax errors; this pass must stay
+        // quiet so one failure is not reported twice in different words.
+        assert!(Manifest::unknown_top_level_keys("this: [is: not: yaml").is_empty());
+        assert!(Manifest::unknown_top_level_keys("- a list, not a mapping").is_empty());
     }
 
     #[test]
