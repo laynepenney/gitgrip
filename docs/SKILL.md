@@ -17,8 +17,8 @@ Choose one installation route:
 
 ```bash
 # Homebrew on macOS or Linux
-brew tap laynepenney/tap
-brew install gitgrip
+brew tap synapt-dev/tap
+brew install synapt-dev/tap/gitgrip
 
 # Rust toolchain
 cargo install gitgrip

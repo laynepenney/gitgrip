@@ -193,7 +193,7 @@ workspace:
         - Cargo.toml
       changelog: CHANGELOG.md
       homebrew:
-        repo: laynepenney/homebrew-tap
+        repo: synapt-dev/homebrew-tap
         formula: Formula/gitgrip.rb
 ```
 
@@ -212,7 +212,7 @@ workspace:
 ```yaml
 repos:
   gitgrip:
-    url: https://github.com/laynepenney/gitgrip.git
+    url: https://github.com/synapt-dev/grip.git
     path: ./gitgrip
     default_branch: main
     agent:
@@ -224,7 +224,7 @@ repos:
       language: rust
 
   codi:
-    url: https://github.com/laynepenney/codi.git
+    url: https://github.com/synapt-dev/codi.git
     path: ./codi
     default_branch: main
     agent:
