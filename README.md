@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://crates.io/crates/gitgrip"><img src="https://img.shields.io/crates/v/gitgrip.svg?style=flat-square&color=9A3412" alt="crates.io version"></a>
-  <a href="https://github.com/laynepenney/grip/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/gitgrip.svg?style=flat-square&color=7C2D12" alt="license"></a>
+  <a href="https://github.com/synapt-dev/grip/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/gitgrip.svg?style=flat-square&color=7C2D12" alt="license"></a>
   <a href="https://crates.io/crates/gitgrip"><img src="https://img.shields.io/crates/d/gitgrip.svg?style=flat-square&color=431407" alt="downloads"></a>
 </p>
 
@@ -46,9 +46,13 @@ Inspired by Android's [repo tool](https://source.android.com/docs/setup/create/r
 ### Homebrew (macOS/Linux)
 
 ```bash
-brew tap laynepenney/tap
-brew install gitgrip
+brew tap synapt-dev/tap
+brew install synapt-dev/tap/gitgrip
 ```
+
+If you installed from the earlier tap, run `brew untap laynepenney/tap` as
+well. That tap is archived, and leaving both tapped makes the bare formula
+name ambiguous.
 
 ### From crates.io
 
@@ -58,13 +62,13 @@ cargo install gitgrip
 
 ### From GitHub Releases
 
-Pre-built binaries for Linux, macOS (Intel & Apple Silicon), and Windows are available on the [releases page](https://github.com/laynepenney/grip/releases).
+Pre-built binaries for Linux, macOS (Intel & Apple Silicon), and Windows are available on the [releases page](https://github.com/synapt-dev/grip/releases).
 
 ### From Source
 
 ```bash
-git clone https://github.com/laynepenney/grip.git
-cd gitgrip
+git clone https://github.com/synapt-dev/grip.git
+cd grip
 cargo build --release
 
 # Binary is at target/release/gr (or gr.exe on Windows)
