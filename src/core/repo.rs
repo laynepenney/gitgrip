@@ -275,18 +275,67 @@ pub fn filter_repos(
     group_filter: Option<&[String]>,
     include_reference: bool,
 ) -> Vec<RepoInfo> {
-    manifest
+    // *** A DECLARED REPO MUST NEVER DISAPPEAR IN SILENCE. ***
+    //
+    // `from_config` returns Option and drops a repo for TWO reasons -- no
+    // usable url, or a url `parse_git_url` cannot read -- and `filter_map`
+    // discarded both without a word. Every downstream view then printed a
+    // smaller count, or zero, styled as success. `gr init` clones from that
+    // same url perfectly well, so a bare filesystem path gave a workspace that
+    // materialised correctly and afterwards read as empty: two code paths
+    // disagreeing about what a url is, with only one of them saying so.
+    //
+    // The reason it matters more than a missing warning: it cost a
+    // misdiagnosis. A defect report was filed against repo registration on the
+    // strength of this silence, and the registration was never broken.
+    //
+    // Collect-and-surface rather than drop-quietly, which is the same fix the
+    // unknown-manifest-key warning applies at parse time. Same defect class,
+    // one layer apart.
+    let mut dropped: Vec<String> = Vec::new();
+    let resolved: Vec<RepoInfo> = manifest
         .repos
         .iter()
         .filter_map(|(name, config)| {
-            RepoInfo::from_config(
+            let info = RepoInfo::from_config(
                 name,
                 config,
                 workspace_root,
                 &manifest.settings,
                 manifest.remotes.as_ref(),
-            )
+            );
+            if info.is_none() {
+                // Distinguish the two causes, because they need different
+                // fixes: one is a missing field, the other a malformed value.
+                let reason = match config.url.as_deref().filter(|u| !u.is_empty()) {
+                    None => "no url, and none could be derived from its remote".to_string(),
+                    Some(url) => format!("url could not be parsed: '{url}'"),
+                };
+                dropped.push(format!("{name} ({reason})"));
+            }
+            info
         })
+        .collect();
+
+    if !dropped.is_empty() {
+        // STDERR: survives stdout redirection and does not corrupt `--json`.
+        eprintln!(
+            "\u{26a0} {} declared repositor{} could not be resolved and {} EXCLUDED from this command:",
+            dropped.len(),
+            if dropped.len() == 1 { "y" } else { "ies" },
+            if dropped.len() == 1 { "was" } else { "were" },
+        );
+        for entry in &dropped {
+            eprintln!("    {entry}");
+        }
+        eprintln!(
+            "    A count of zero below does not mean the manifest declared none. \
+             Filesystem paths need a file:// prefix."
+        );
+    }
+
+    resolved
+        .into_iter()
         .filter(|r| include_reference || !r.reference)
         .filter(|r| {
             repos_filter
