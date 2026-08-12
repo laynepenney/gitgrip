@@ -732,10 +732,12 @@ pub fn apply_links(workspace_root: &Path, manifest: &Manifest, quiet: bool) -> a
             // Apply composefiles
             if let Some(ref composefiles) = manifest_config.composefile {
                 if !composefiles.is_empty() {
+                    let repo_paths = crate::files::repo_checkout_paths(manifest);
                     match process_composefiles(
                         workspace_root,
                         &manifests_dir,
                         &spaces_dir,
+                        &repo_paths,
                         composefiles,
                     ) {
                         Ok(()) => {
