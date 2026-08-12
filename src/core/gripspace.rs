@@ -82,12 +82,31 @@ fn validate_space_name(name: &str) -> Result<(), ManifestError> {
 
 /// Resolve the directory name for a gripspace within `.gitgrip/spaces/`.
 ///
-/// Handles reserved name conflicts (`main`, `local`) and duplicate names by
-/// auto-suffixing with `-1`, `-2`, etc. If the directory already exists and
-/// has the same git remote, it is reused.
-pub fn resolve_space_name(url: &str, spaces_dir: &Path) -> Result<String, ManifestError> {
+/// A gripspace's identity is `url#rev` (see [`gripspace_identity`]), and the
+/// directory allocation follows the identity, not the URL alone: one repo may
+/// host several gripspaces as different revisions (orphan-branch roots), and
+/// each must materialize as its own space.
+///
+/// Allocation order:
+/// 1. The first gripspace of a URL keeps the pretty basename (`frag`).
+/// 2. A second rev of the same URL gets the deterministic `<base>-<rev>`
+///    (`frag-extras`) — deterministic so a manifest author can reference it
+///    in composefile bindings without discovering an invented name.
+/// 3. Residual collisions fall through to numeric suffixing, as before.
+///
+/// A directory is only ever REUSED for the same `url#rev` identity. Reusing a
+/// same-remote clone across revs is how one rev's space silently vanished
+/// (and how the survivor's checkout got flipped between revs on sync).
+pub fn resolve_space_name(
+    url: &str,
+    rev: Option<&str>,
+    spaces_dir: &Path,
+) -> Result<String, ManifestError> {
     let base = gripspace_name(url);
     validate_space_name(&base)?;
+    if let Some(rev) = rev {
+        validate_rev(rev)?;
+    }
 
     // If the base name is reserved, start from suffix -1
     let candidate = if manifest_paths::RESERVED_SPACE_NAMES.contains(&base.as_str()) {
@@ -101,9 +120,28 @@ pub fn resolve_space_name(url: &str, spaces_dir: &Path) -> Result<String, Manife
         return Ok(candidate);
     }
 
-    // Directory exists — reuse if it's the same remote
-    if is_same_remote(&candidate_path, url) {
+    // Directory exists — reuse only for the same identity (remote AND rev).
+    if is_same_remote_and_rev(&candidate_path, url, rev) {
         return Ok(candidate);
+    }
+
+    // Same remote at a different rev: allocate the deterministic
+    // `<base>-<rev>` name so the author can predict and reference it.
+    if let Some(rev) = rev {
+        if is_same_remote(&candidate_path, url) {
+            let rev_name = format!("{}-{}", base, sanitize_rev_for_name(rev));
+            validate_space_name(&rev_name)?;
+            let rev_path = spaces_dir.join(&rev_name);
+            if !rev_path.exists() || is_same_remote_and_rev(&rev_path, url, Some(rev)) {
+                if !rev_path.exists() {
+                    eprintln!(
+                        "Warning: gripspace '{}' at rev '{}' uses space name '{}' ('{}' is held by a different revision of the same repository)",
+                        url, rev, rev_name, candidate
+                    );
+                }
+                return Ok(rev_name);
+            }
+        }
     }
 
     // Warn when an unrecognized directory occupies the expected name
@@ -118,7 +156,7 @@ pub fn resolve_space_name(url: &str, spaces_dir: &Path) -> Result<String, Manife
     for i in 2..100 {
         let suffixed = format!("{}-{}", base, i);
         let path = spaces_dir.join(&suffixed);
-        if !path.exists() || is_same_remote(&path, url) {
+        if !path.exists() || is_same_remote_and_rev(&path, url, rev) {
             return Ok(suffixed);
         }
     }
@@ -127,6 +165,68 @@ pub fn resolve_space_name(url: &str, spaces_dir: &Path) -> Result<String, Manife
         "Could not allocate a space name for '{}' (too many collisions)",
         url
     )))
+}
+
+/// Make a revision safe for use as a space-name segment.
+///
+/// Revisions may carry `/` (e.g. `feature/x`) or other characters outside the
+/// space-name allowlist; map anything disallowed to `-`.
+fn sanitize_rev_for_name(rev: &str) -> String {
+    rev.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// Check whether an existing directory should be reused for `url` at `rev`.
+///
+/// Same remote is necessary but not sufficient: the clone must also sit at the
+/// requested revision. `rev == None` preserves the historical remote-only
+/// check (a rev-less gripspace tracks the clone's current branch).
+fn is_same_remote_and_rev(dir: &Path, url: &str, rev: Option<&str>) -> bool {
+    if !is_same_remote(dir, url) {
+        return false;
+    }
+    let Some(rev) = rev else {
+        return true;
+    };
+
+    // Branch checkouts (the common case): current branch name matches.
+    let branch = Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(dir)
+        .output();
+    if let Ok(out) = &branch {
+        if out.status.success() {
+            let current = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !current.is_empty() && current == rev {
+                return true;
+            }
+        }
+    }
+
+    // Tags / SHAs / detached checkouts: compare resolved commits. Failure to
+    // resolve means "cannot confirm same", which must read as different — the
+    // conservative direction costs an extra clone, never a wrong reuse.
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output();
+    let want = Command::new("git")
+        .args(["rev-parse", &format!("{}^{{commit}}", rev)])
+        .current_dir(dir)
+        .output();
+    match (head, want) {
+        (Ok(h), Ok(w)) if h.status.success() && w.status.success() => {
+            String::from_utf8_lossy(&h.stdout).trim() == String::from_utf8_lossy(&w.stdout).trim()
+        }
+        _ => false,
+    }
 }
 
 /// Check whether an existing directory should be reused for the given URL.
@@ -203,7 +303,7 @@ pub fn ensure_gripspace(
     spaces_dir: &Path,
     config: &GripspaceConfig,
 ) -> Result<PathBuf, ManifestError> {
-    let dir_name = resolve_space_name(&config.url, spaces_dir)?;
+    let dir_name = resolve_space_name(&config.url, config.rev.as_deref(), spaces_dir)?;
     let gripspace_path = spaces_dir.join(&dir_name);
 
     if gripspace_path.exists() {
@@ -290,15 +390,24 @@ pub fn update_gripspace(
     Ok(())
 }
 
-/// Checkout a specific revision (branch, tag, or SHA) in a gripspace.
-fn checkout_rev(path: &Path, rev: &str) -> Result<(), ManifestError> {
-    // Reject revs that look like flags or contain whitespace
+/// Reject revs that look like flags, are empty, or contain whitespace.
+///
+/// A rev is untrusted manifest input; validate it at FIRST use. Space-name
+/// derivation consumes the rev before any checkout, so allocation must refuse
+/// an invalid rev rather than sanitize it into a directory name.
+fn validate_rev(rev: &str) -> Result<(), ManifestError> {
     if rev.starts_with('-') || rev.chars().any(|c| c.is_whitespace()) || rev.is_empty() {
         return Err(ManifestError::GripspaceError(format!(
             "Invalid rev '{}': must not be empty, start with '-', or contain whitespace",
             rev
         )));
     }
+    Ok(())
+}
+
+/// Checkout a specific revision (branch, tag, or SHA) in a gripspace.
+fn checkout_rev(path: &Path, rev: &str) -> Result<(), ManifestError> {
+    validate_rev(rev)?;
 
     // If `rev` names a fetched remote branch, advance the local branch to it.
     // A plain `git checkout rev` leaves an existing local branch stale after
@@ -679,8 +788,9 @@ fn resolve_gripspace_recursive(
     }
 
     let gripspace_path = ensure_gripspace(spaces_dir, config)?;
-    // Resolve the actual directory name (may differ from `name` due to reserved name suffixing)
-    let dir_name = resolve_space_name(&config.url, spaces_dir)?;
+    // Resolve the actual directory name (may differ from `name` due to reserved
+    // name suffixing or multi-rev disambiguation)
+    let dir_name = resolve_space_name(&config.url, config.rev.as_deref(), spaces_dir)?;
 
     // Load the gripspace's manifest
     let Some(manifest_path) = manifest_paths::resolve_manifest_file_in_dir(&gripspace_path) else {
@@ -1897,7 +2007,8 @@ repos:
     fn test_resolve_space_name_normal() {
         let temp = tempfile::tempdir().unwrap();
         let spaces = temp.path();
-        let name = resolve_space_name("https://github.com/user/my-gripspace.git", spaces).unwrap();
+        let name =
+            resolve_space_name("https://github.com/user/my-gripspace.git", None, spaces).unwrap();
         assert_eq!(name, "my-gripspace");
     }
 
@@ -1905,7 +2016,7 @@ repos:
     fn test_resolve_space_name_rejects_dotdot() {
         let temp = tempfile::tempdir().unwrap();
         let spaces = temp.path();
-        let err = resolve_space_name("https://github.com/user/..", spaces).unwrap_err();
+        let err = resolve_space_name("https://github.com/user/..", None, spaces).unwrap_err();
         assert!(err.to_string().contains("Invalid gripspace name"));
     }
 
@@ -1913,8 +2024,8 @@ repos:
     fn test_resolve_space_name_rejects_invalid_characters() {
         let temp = tempfile::tempdir().unwrap();
         let spaces = temp.path();
-        let err =
-            resolve_space_name("https://github.com/user/my gripspace.git", spaces).unwrap_err();
+        let err = resolve_space_name("https://github.com/user/my gripspace.git", None, spaces)
+            .unwrap_err();
         assert!(err.to_string().contains("Invalid gripspace name"));
     }
 
@@ -1923,7 +2034,7 @@ repos:
         let temp = tempfile::tempdir().unwrap();
         let spaces = temp.path();
         // "main" is reserved — should auto-suffix to "main-1"
-        let name = resolve_space_name("https://github.com/user/main.git", spaces).unwrap();
+        let name = resolve_space_name("https://github.com/user/main.git", None, spaces).unwrap();
         assert_eq!(name, "main-1");
     }
 
@@ -1931,7 +2042,7 @@ repos:
     fn test_resolve_space_name_reserved_local() {
         let temp = tempfile::tempdir().unwrap();
         let spaces = temp.path();
-        let name = resolve_space_name("https://github.com/user/local.git", spaces).unwrap();
+        let name = resolve_space_name("https://github.com/user/local.git", None, spaces).unwrap();
         assert_eq!(name, "local-1");
     }
 
@@ -1960,7 +2071,7 @@ repos:
             .unwrap();
 
         // A different URL producing the same name should auto-increment
-        let name = resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        let name = resolve_space_name("https://github.com/user/my-repo.git", None, spaces).unwrap();
         assert_eq!(name, "my-repo-2");
     }
 
@@ -1989,7 +2100,7 @@ repos:
             .unwrap();
 
         // Same URL should reuse the existing directory name
-        let name = resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        let name = resolve_space_name("https://github.com/user/my-repo.git", None, spaces).unwrap();
         assert_eq!(name, "my-repo");
     }
 
@@ -2003,7 +2114,7 @@ repos:
         std::fs::create_dir_all(&existing).unwrap();
         std::fs::write(existing.join("README.md"), "local").unwrap();
 
-        let name = resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        let name = resolve_space_name("https://github.com/user/my-repo.git", None, spaces).unwrap();
         assert_eq!(name, "my-repo-2");
     }
 
@@ -2020,7 +2131,7 @@ repos:
             .output()
             .unwrap();
 
-        let name = resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        let name = resolve_space_name("https://github.com/user/my-repo.git", None, spaces).unwrap();
         assert_eq!(name, "my-repo-2");
     }
 
@@ -2033,7 +2144,7 @@ repos:
         std::fs::create_dir_all(&existing).unwrap();
         init_git_with_origin(&existing, "git@github.com:user/my-repo.git");
 
-        let name = resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        let name = resolve_space_name("https://github.com/user/my-repo.git", None, spaces).unwrap();
         assert_eq!(name, "my-repo");
     }
 
