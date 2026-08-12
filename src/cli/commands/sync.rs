@@ -406,9 +406,13 @@ fn sync_gripspaces(
 
     for gs_config in gripspaces {
         let name = gripspace_name(&gs_config.url);
-        // Use resolve_space_name to find the actual directory (handles reserved names)
-        let dir_name = match crate::core::gripspace::resolve_space_name(&gs_config.url, &spaces_dir)
-        {
+        // Use resolve_space_name to find the actual directory (handles reserved
+        // names and multi-rev disambiguation)
+        let dir_name = match crate::core::gripspace::resolve_space_name(
+            &gs_config.url,
+            gs_config.rev.as_deref(),
+            &spaces_dir,
+        ) {
             Ok(dir_name) => dir_name,
             Err(e) => {
                 Output::warning(&format!(
