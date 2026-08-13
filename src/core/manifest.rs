@@ -93,11 +93,23 @@ pub struct GripspaceConfig {
 /// A part of a composed file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComposeFilePart {
-    /// Source path relative to the gripspace or manifest repo
+    /// Source path, relative to whichever source kind this part names
     pub src: String,
-    /// Name of the gripspace to source from (if omitted, sources from local manifest)
+    /// Name of the gripspace to source from
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gripspace: Option<String>,
+    /// Name of a repo from `repos:` to source from, resolved against that
+    /// repo's checkout path.
+    ///
+    /// The third source kind, and the one that lets a gripspace compose from
+    /// the repos it actually manages. Without it a part could only read from a
+    /// gripspace or from the manifest repo, so a plain repo had to become a
+    /// gripspace before it could contribute to a composed file.
+    ///
+    /// Mutually exclusive with `gripspace`: a part naming both is ambiguous
+    /// and is refused rather than silently resolved to one of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 /// Composed file configuration
