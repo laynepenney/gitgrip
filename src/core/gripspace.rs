@@ -82,12 +82,31 @@ fn validate_space_name(name: &str) -> Result<(), ManifestError> {
 
 /// Resolve the directory name for a gripspace within `.gitgrip/spaces/`.
 ///
-/// Handles reserved name conflicts (`main`, `local`) and duplicate names by
-/// auto-suffixing with `-1`, `-2`, etc. If the directory already exists and
-/// has the same git remote, it is reused.
-pub fn resolve_space_name(url: &str, spaces_dir: &Path) -> Result<String, ManifestError> {
+/// A gripspace's identity is `url#rev` (see [`gripspace_identity`]), and the
+/// directory allocation follows the identity, not the URL alone: one repo may
+/// host several gripspaces as different revisions (orphan-branch roots), and
+/// each must materialize as its own space.
+///
+/// Allocation order:
+/// 1. The first gripspace of a URL keeps the pretty basename (`frag`).
+/// 2. A second rev of the same URL gets the deterministic `<base>-<rev>`
+///    (`frag-extras`) — deterministic so a manifest author can reference it
+///    in composefile bindings without discovering an invented name.
+/// 3. Residual collisions fall through to numeric suffixing, as before.
+///
+/// A directory is only ever REUSED for the same `url#rev` identity. Reusing a
+/// same-remote clone across revs is how one rev's space silently vanished
+/// (and how the survivor's checkout got flipped between revs on sync).
+pub fn resolve_space_name(
+    url: &str,
+    rev: Option<&str>,
+    spaces_dir: &Path,
+) -> Result<String, ManifestError> {
     let base = gripspace_name(url);
     validate_space_name(&base)?;
+    if let Some(rev) = rev {
+        validate_rev(rev)?;
+    }
 
     // If the base name is reserved, start from suffix -1
     let candidate = if manifest_paths::RESERVED_SPACE_NAMES.contains(&base.as_str()) {
@@ -101,9 +120,28 @@ pub fn resolve_space_name(url: &str, spaces_dir: &Path) -> Result<String, Manife
         return Ok(candidate);
     }
 
-    // Directory exists — reuse if it's the same remote
-    if is_same_remote(&candidate_path, url) {
+    // Directory exists — reuse only for the same identity (remote AND rev).
+    if is_same_remote_and_rev(&candidate_path, url, rev) {
         return Ok(candidate);
+    }
+
+    // Same remote at a different rev: allocate the deterministic
+    // `<base>-<rev>` name so the author can predict and reference it.
+    if let Some(rev) = rev {
+        if is_same_remote(&candidate_path, url) {
+            let rev_name = format!("{}-{}", base, sanitize_rev_for_name(rev));
+            validate_space_name(&rev_name)?;
+            let rev_path = spaces_dir.join(&rev_name);
+            if !rev_path.exists() || is_same_remote_and_rev(&rev_path, url, Some(rev)) {
+                if !rev_path.exists() {
+                    eprintln!(
+                        "Warning: gripspace '{}' at rev '{}' uses space name '{}' ('{}' is held by a different revision of the same repository)",
+                        url, rev, rev_name, candidate
+                    );
+                }
+                return Ok(rev_name);
+            }
+        }
     }
 
     // Warn when an unrecognized directory occupies the expected name
@@ -118,7 +156,7 @@ pub fn resolve_space_name(url: &str, spaces_dir: &Path) -> Result<String, Manife
     for i in 2..100 {
         let suffixed = format!("{}-{}", base, i);
         let path = spaces_dir.join(&suffixed);
-        if !path.exists() || is_same_remote(&path, url) {
+        if !path.exists() || is_same_remote_and_rev(&path, url, rev) {
             return Ok(suffixed);
         }
     }
@@ -127,6 +165,68 @@ pub fn resolve_space_name(url: &str, spaces_dir: &Path) -> Result<String, Manife
         "Could not allocate a space name for '{}' (too many collisions)",
         url
     )))
+}
+
+/// Make a revision safe for use as a space-name segment.
+///
+/// Revisions may carry `/` (e.g. `feature/x`) or other characters outside the
+/// space-name allowlist; map anything disallowed to `-`.
+fn sanitize_rev_for_name(rev: &str) -> String {
+    rev.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// Check whether an existing directory should be reused for `url` at `rev`.
+///
+/// Same remote is necessary but not sufficient: the clone must also sit at the
+/// requested revision. `rev == None` preserves the historical remote-only
+/// check (a rev-less gripspace tracks the clone's current branch).
+fn is_same_remote_and_rev(dir: &Path, url: &str, rev: Option<&str>) -> bool {
+    if !is_same_remote(dir, url) {
+        return false;
+    }
+    let Some(rev) = rev else {
+        return true;
+    };
+
+    // Branch checkouts (the common case): current branch name matches.
+    let branch = Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(dir)
+        .output();
+    if let Ok(out) = &branch {
+        if out.status.success() {
+            let current = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !current.is_empty() && current == rev {
+                return true;
+            }
+        }
+    }
+
+    // Tags / SHAs / detached checkouts: compare resolved commits. Failure to
+    // resolve means "cannot confirm same", which must read as different — the
+    // conservative direction costs an extra clone, never a wrong reuse.
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output();
+    let want = Command::new("git")
+        .args(["rev-parse", &format!("{}^{{commit}}", rev)])
+        .current_dir(dir)
+        .output();
+    match (head, want) {
+        (Ok(h), Ok(w)) if h.status.success() && w.status.success() => {
+            String::from_utf8_lossy(&h.stdout).trim() == String::from_utf8_lossy(&w.stdout).trim()
+        }
+        _ => false,
+    }
 }
 
 /// Check whether an existing directory should be reused for the given URL.
@@ -203,7 +303,7 @@ pub fn ensure_gripspace(
     spaces_dir: &Path,
     config: &GripspaceConfig,
 ) -> Result<PathBuf, ManifestError> {
-    let dir_name = resolve_space_name(&config.url, spaces_dir)?;
+    let dir_name = resolve_space_name(&config.url, config.rev.as_deref(), spaces_dir)?;
     let gripspace_path = spaces_dir.join(&dir_name);
 
     if gripspace_path.exists() {
@@ -290,15 +390,24 @@ pub fn update_gripspace(
     Ok(())
 }
 
-/// Checkout a specific revision (branch, tag, or SHA) in a gripspace.
-fn checkout_rev(path: &Path, rev: &str) -> Result<(), ManifestError> {
-    // Reject revs that look like flags or contain whitespace
+/// Reject revs that look like flags, are empty, or contain whitespace.
+///
+/// A rev is untrusted manifest input; validate it at FIRST use. Space-name
+/// derivation consumes the rev before any checkout, so allocation must refuse
+/// an invalid rev rather than sanitize it into a directory name.
+fn validate_rev(rev: &str) -> Result<(), ManifestError> {
     if rev.starts_with('-') || rev.chars().any(|c| c.is_whitespace()) || rev.is_empty() {
         return Err(ManifestError::GripspaceError(format!(
             "Invalid rev '{}': must not be empty, start with '-', or contain whitespace",
             rev
         )));
     }
+    Ok(())
+}
+
+/// Checkout a specific revision (branch, tag, or SHA) in a gripspace.
+fn checkout_rev(path: &Path, rev: &str) -> Result<(), ManifestError> {
+    validate_rev(rev)?;
 
     // If `rev` names a fetched remote branch, advance the local branch to it.
     // A plain `git checkout rev` leaves an existing local branch stale after
@@ -480,6 +589,7 @@ pub fn resolve_all_gripspaces(
     let mut merged_hooks_post_checkout: Vec<HookCommand> = Vec::new();
     let mut merged_linkfiles = Vec::new();
     let mut merged_copyfiles = Vec::new();
+    let mut merged_composefiles: Vec<crate::core::manifest::ComposeFileConfig> = Vec::new();
     let mut merged_agent: Option<WorkspaceAgentConfig> = None;
 
     // Process each gripspace
@@ -497,6 +607,7 @@ pub fn resolve_all_gripspaces(
             &mut merged_hooks_post_checkout,
             &mut merged_linkfiles,
             &mut merged_copyfiles,
+            &mut merged_composefiles,
             &mut merged_agent,
         )?;
     }
@@ -588,7 +699,10 @@ pub fn resolve_all_gripspaces(
     // Linkfiles from gripspaces are tracked separately — they'll be applied by the link command
     // We store them as manifest-level linkfiles, with local ones overriding by dest
     // Create the manifest config if it doesn't exist and there are gripspace files to merge
-    if manifest.manifest.is_none() && (!merged_linkfiles.is_empty() || !merged_copyfiles.is_empty())
+    if manifest.manifest.is_none()
+        && (!merged_linkfiles.is_empty()
+            || !merged_copyfiles.is_empty()
+            || !merged_composefiles.is_empty())
     {
         manifest.manifest = Some(crate::core::manifest::ManifestRepoConfig {
             url: String::new(),
@@ -600,6 +714,13 @@ pub fn resolve_all_gripspaces(
         });
     }
     if let Some(ref mut manifest_config) = manifest.manifest {
+        if !merged_composefiles.is_empty() {
+            let local = manifest_config.composefile.take();
+            manifest_config.composefile = Some(merge_composefiles_in_layer_order(
+                merged_composefiles,
+                local,
+            ));
+        }
         if !merged_linkfiles.is_empty() {
             let local_linkfiles = manifest_config.linkfile.take().unwrap_or_default();
             let local_dests: HashSet<String> =
@@ -636,6 +757,55 @@ pub fn resolve_all_gripspaces(
     Ok(())
 }
 
+/// Merge composefiles from included gripspaces with the local ones.
+///
+/// *** LAYER ORDER: ANCESTORS FIRST, LOCAL LAST. ***
+///
+/// `included` arrives in resolution order, which is depth-first — the deepest
+/// include (the furthest ancestor) first. Parts targeting the same `dest`
+/// concatenate in that order, so a layer's contribution appends after every
+/// layer it extends and the file reads base-to-tip.
+///
+/// This is what makes inclusion COMPOSITIONAL. Before it, an included
+/// gripspace's composefile was dropped entirely and only the gripspace you
+/// happened to clone composed anything — so every layer had to re-enumerate
+/// the whole chain.
+///
+/// A `dest` the local manifest never mentions is still produced: an ancestor
+/// declaring a composed file must not need the tip to redeclare it, or the
+/// re-enumeration is back.
+pub fn merge_composefiles_in_layer_order(
+    included: Vec<crate::core::manifest::ComposeFileConfig>,
+    local: Option<Vec<crate::core::manifest::ComposeFileConfig>>,
+) -> Vec<crate::core::manifest::ComposeFileConfig> {
+    let mut order: Vec<String> = Vec::new();
+    let mut by_dest: HashMap<String, crate::core::manifest::ComposeFileConfig> = HashMap::new();
+
+    for cf in included.into_iter().chain(local.unwrap_or_default()) {
+        match by_dest.entry(cf.dest.clone()) {
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                let existing = e.get_mut();
+                existing.parts.extend(cf.parts);
+                // A later layer may set the separator; the earliest one that
+                // states a preference keeps it, so a tip cannot silently
+                // restyle an ancestor's file.
+                if existing.separator.is_none() {
+                    existing.separator = cf.separator;
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+                order.push(cf.dest.clone());
+                e.insert(cf);
+            }
+        }
+    }
+
+    order
+        .into_iter()
+        .filter_map(|d| by_dest.remove(&d))
+        .collect()
+}
+
 /// Recursively resolve a single gripspace and its nested gripspaces.
 #[allow(clippy::too_many_arguments)]
 fn resolve_gripspace_recursive(
@@ -651,6 +821,7 @@ fn resolve_gripspace_recursive(
     merged_hooks_post_checkout: &mut Vec<HookCommand>,
     merged_linkfiles: &mut Vec<crate::core::manifest::LinkFileConfig>,
     merged_copyfiles: &mut Vec<crate::core::manifest::CopyFileConfig>,
+    merged_composefiles: &mut Vec<crate::core::manifest::ComposeFileConfig>,
     merged_agent: &mut Option<WorkspaceAgentConfig>,
 ) -> Result<(), ManifestError> {
     if depth >= MAX_GRIPSPACE_DEPTH {
@@ -679,8 +850,9 @@ fn resolve_gripspace_recursive(
     }
 
     let gripspace_path = ensure_gripspace(spaces_dir, config)?;
-    // Resolve the actual directory name (may differ from `name` due to reserved name suffixing)
-    let dir_name = resolve_space_name(&config.url, spaces_dir)?;
+    // Resolve the actual directory name (may differ from `name` due to reserved
+    // name suffixing or multi-rev disambiguation)
+    let dir_name = resolve_space_name(&config.url, config.rev.as_deref(), spaces_dir)?;
 
     // Load the gripspace's manifest
     let Some(manifest_path) = manifest_paths::resolve_manifest_file_in_dir(&gripspace_path) else {
@@ -724,6 +896,7 @@ fn resolve_gripspace_recursive(
                 merged_hooks_post_checkout,
                 merged_linkfiles,
                 merged_copyfiles,
+                merged_composefiles,
                 merged_agent,
             )?;
         }
@@ -802,6 +975,41 @@ fn resolve_gripspace_recursive(
                 });
             }
         }
+        // COMPOSEFILES, with their bare parts REBASED onto this gripspace.
+        //
+        // A part with no source kind is manifest-relative — and "the manifest"
+        // means the gripspace that WROTE it, not the root that included it.
+        // Carrying it through unrebased would resolve it against the root's
+        // manifest dir and read the wrong file, or silently read nothing. So a
+        // bare `src:` becomes `gripspace: <dir_name>`, exactly as linkfiles are
+        // rewritten just above.
+        //
+        // `gripspace:` and `repo:` parts pass through: both name something in
+        // the shared, already-merged namespace, so they mean the same thing
+        // from either side of the include.
+        if let Some(ref composefiles) = manifest_config.composefile {
+            for cf in composefiles {
+                merged_composefiles.push(crate::core::manifest::ComposeFileConfig {
+                    dest: cf.dest.clone(),
+                    separator: cf.separator.clone(),
+                    parts: cf
+                        .parts
+                        .iter()
+                        .map(|p| {
+                            if p.gripspace.is_none() && p.repo.is_none() {
+                                crate::core::manifest::ComposeFilePart {
+                                    src: p.src.clone(),
+                                    gripspace: Some(dir_name.to_string()),
+                                    repo: None,
+                                }
+                            } else {
+                                p.clone()
+                            }
+                        })
+                        .collect(),
+                });
+            }
+        }
     }
 
     active_stack.remove(&identity_key);
@@ -838,6 +1046,94 @@ pub fn get_gripspace_rev(gripspace_path: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    // ── GAP 2: included gripspaces' composefiles ────────────────────────────
+
+    fn cf(
+        dest: &str,
+        parts: Vec<crate::core::manifest::ComposeFilePart>,
+    ) -> crate::core::manifest::ComposeFileConfig {
+        crate::core::manifest::ComposeFileConfig {
+            dest: dest.to_string(),
+            parts,
+            separator: None,
+        }
+    }
+    fn bare(src: &str) -> crate::core::manifest::ComposeFilePart {
+        crate::core::manifest::ComposeFilePart {
+            src: src.to_string(),
+            gripspace: None,
+            repo: None,
+        }
+    }
+    fn from_gs(gs: &str, src: &str) -> crate::core::manifest::ComposeFilePart {
+        crate::core::manifest::ComposeFilePart {
+            src: src.to_string(),
+            gripspace: Some(gs.to_string()),
+            repo: None,
+        }
+    }
+
+    #[test]
+    fn test_composefiles_merge_same_dest_ancestors_first() {
+        // THE ORDERING IS THE FEATURE. `included` arrives depth-first, so the
+        // furthest ancestor is first and the file reads base-to-tip. A merge
+        // that only unioned parts would pass a "both present" assertion and
+        // still produce a scrambled file.
+        let included = vec![
+            cf("CLAUDE.md", vec![from_gs("base", "BASE.md")]),
+            cf("CLAUDE.md", vec![from_gs("standards", "STD.md")]),
+        ];
+        let local = Some(vec![cf("CLAUDE.md", vec![bare("LOCAL.md")])]);
+
+        let merged = merge_composefiles_in_layer_order(included, local);
+
+        assert_eq!(
+            merged.len(),
+            1,
+            "same dest must collapse to one composefile"
+        );
+        let srcs: Vec<&str> = merged[0].parts.iter().map(|p| p.src.as_str()).collect();
+        assert_eq!(srcs, vec!["BASE.md", "STD.md", "LOCAL.md"]);
+    }
+
+    #[test]
+    fn test_composefile_dest_only_an_ancestor_declares_is_still_produced() {
+        // If a dest had to be redeclared by the tip, every layer would still
+        // be re-enumerating the chain — which is the thing GAP 2 exists to end.
+        let included = vec![cf("AGENTS.md", vec![from_gs("base", "A.md")])];
+        let merged = merge_composefiles_in_layer_order(included, None);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].dest, "AGENTS.md");
+    }
+
+    #[test]
+    fn test_composefile_local_only_dest_survives_the_merge() {
+        let included = vec![cf("CLAUDE.md", vec![from_gs("base", "B.md")])];
+        let local = Some(vec![cf("OWN.md", vec![bare("O.md")])]);
+        let merged = merge_composefiles_in_layer_order(included, local);
+        let dests: Vec<&str> = merged.iter().map(|c| c.dest.as_str()).collect();
+        assert_eq!(dests, vec!["CLAUDE.md", "OWN.md"]);
+    }
+
+    #[test]
+    fn test_composefile_earliest_separator_wins_so_a_tip_cannot_restyle() {
+        let mut anc = cf("X.md", vec![from_gs("base", "B.md")]);
+        anc.separator = Some("---".to_string());
+        let mut tip = cf("X.md", vec![bare("L.md")]);
+        tip.separator = Some("###".to_string());
+        let merged = merge_composefiles_in_layer_order(vec![anc], Some(vec![tip]));
+        assert_eq!(merged[0].separator.as_deref(), Some("---"));
+    }
+
+    #[test]
+    fn test_composefile_separator_is_adopted_when_the_ancestor_stated_none() {
+        let anc = cf("X.md", vec![from_gs("base", "B.md")]);
+        let mut tip = cf("X.md", vec![bare("L.md")]);
+        tip.separator = Some("###".to_string());
+        let merged = merge_composefiles_in_layer_order(vec![anc], Some(vec![tip]));
+        assert_eq!(merged[0].separator.as_deref(), Some("###"));
+    }
+
     use super::*;
     use std::path::Path;
 
@@ -1897,7 +2193,8 @@ repos:
     fn test_resolve_space_name_normal() {
         let temp = tempfile::tempdir().unwrap();
         let spaces = temp.path();
-        let name = resolve_space_name("https://github.com/user/my-gripspace.git", spaces).unwrap();
+        let name =
+            resolve_space_name("https://github.com/user/my-gripspace.git", None, spaces).unwrap();
         assert_eq!(name, "my-gripspace");
     }
 
@@ -1905,7 +2202,7 @@ repos:
     fn test_resolve_space_name_rejects_dotdot() {
         let temp = tempfile::tempdir().unwrap();
         let spaces = temp.path();
-        let err = resolve_space_name("https://github.com/user/..", spaces).unwrap_err();
+        let err = resolve_space_name("https://github.com/user/..", None, spaces).unwrap_err();
         assert!(err.to_string().contains("Invalid gripspace name"));
     }
 
@@ -1913,8 +2210,8 @@ repos:
     fn test_resolve_space_name_rejects_invalid_characters() {
         let temp = tempfile::tempdir().unwrap();
         let spaces = temp.path();
-        let err =
-            resolve_space_name("https://github.com/user/my gripspace.git", spaces).unwrap_err();
+        let err = resolve_space_name("https://github.com/user/my gripspace.git", None, spaces)
+            .unwrap_err();
         assert!(err.to_string().contains("Invalid gripspace name"));
     }
 
@@ -1923,7 +2220,7 @@ repos:
         let temp = tempfile::tempdir().unwrap();
         let spaces = temp.path();
         // "main" is reserved — should auto-suffix to "main-1"
-        let name = resolve_space_name("https://github.com/user/main.git", spaces).unwrap();
+        let name = resolve_space_name("https://github.com/user/main.git", None, spaces).unwrap();
         assert_eq!(name, "main-1");
     }
 
@@ -1931,7 +2228,7 @@ repos:
     fn test_resolve_space_name_reserved_local() {
         let temp = tempfile::tempdir().unwrap();
         let spaces = temp.path();
-        let name = resolve_space_name("https://github.com/user/local.git", spaces).unwrap();
+        let name = resolve_space_name("https://github.com/user/local.git", None, spaces).unwrap();
         assert_eq!(name, "local-1");
     }
 
@@ -1960,7 +2257,7 @@ repos:
             .unwrap();
 
         // A different URL producing the same name should auto-increment
-        let name = resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        let name = resolve_space_name("https://github.com/user/my-repo.git", None, spaces).unwrap();
         assert_eq!(name, "my-repo-2");
     }
 
@@ -1989,7 +2286,7 @@ repos:
             .unwrap();
 
         // Same URL should reuse the existing directory name
-        let name = resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        let name = resolve_space_name("https://github.com/user/my-repo.git", None, spaces).unwrap();
         assert_eq!(name, "my-repo");
     }
 
@@ -2003,7 +2300,7 @@ repos:
         std::fs::create_dir_all(&existing).unwrap();
         std::fs::write(existing.join("README.md"), "local").unwrap();
 
-        let name = resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        let name = resolve_space_name("https://github.com/user/my-repo.git", None, spaces).unwrap();
         assert_eq!(name, "my-repo-2");
     }
 
@@ -2020,7 +2317,7 @@ repos:
             .output()
             .unwrap();
 
-        let name = resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        let name = resolve_space_name("https://github.com/user/my-repo.git", None, spaces).unwrap();
         assert_eq!(name, "my-repo-2");
     }
 
@@ -2033,7 +2330,7 @@ repos:
         std::fs::create_dir_all(&existing).unwrap();
         init_git_with_origin(&existing, "git@github.com:user/my-repo.git");
 
-        let name = resolve_space_name("https://github.com/user/my-repo.git", spaces).unwrap();
+        let name = resolve_space_name("https://github.com/user/my-repo.git", None, spaces).unwrap();
         assert_eq!(name, "my-repo");
     }
 

@@ -305,10 +305,12 @@ pub async fn run_sync(
                 let manifests_dir = manifest_paths::resolve_manifest_content_dir(workspace_root);
                 let spaces_dir = manifest_paths::spaces_dir(workspace_root);
 
+                let repo_paths = crate::files::repo_checkout_paths(manifest);
                 match process_composefiles(
                     workspace_root,
                     &manifests_dir,
                     &spaces_dir,
+                    &repo_paths,
                     composefiles,
                 ) {
                     Ok(()) => {
@@ -406,9 +408,13 @@ fn sync_gripspaces(
 
     for gs_config in gripspaces {
         let name = gripspace_name(&gs_config.url);
-        // Use resolve_space_name to find the actual directory (handles reserved names)
-        let dir_name = match crate::core::gripspace::resolve_space_name(&gs_config.url, &spaces_dir)
-        {
+        // Use resolve_space_name to find the actual directory (handles reserved
+        // names and multi-rev disambiguation)
+        let dir_name = match crate::core::gripspace::resolve_space_name(
+            &gs_config.url,
+            gs_config.rev.as_deref(),
+            &spaces_dir,
+        ) {
             Ok(dir_name) => dir_name,
             Err(e) => {
                 Output::warning(&format!(
