@@ -226,3 +226,68 @@ def test_cli_exposes_force_with_lease_but_never_raw_force(tmp_path: Path) -> Non
     assert safe.exit_code == 0, safe.output
     assert unsafe.exit_code != 0
     assert "No such option: --force" in unsafe.output
+    assert _git(repo, "config", "--get", "branch.main.remote").stdout.strip() == "upstream"
+
+
+def test_push_cli_honors_explicit_repo_path_and_remote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gr2.python_cli.app import app
+
+    repo = _init_repo(tmp_path / "repo")
+    one = _bare(tmp_path / "one.git")
+    two = _bare(tmp_path / "two.git")
+    _git(repo, "remote", "add", "one", str(one))
+    _git(repo, "remote", "add", "two", str(two))
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        app,
+        ["push", "--repo-path", str(repo), "--remote", "two"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _git(two, "rev-parse", "refs/heads/main").stdout.strip() == _git(
+        repo, "rev-parse", "HEAD"
+    ).stdout.strip()
+    assert _git(one, "show-ref", "--verify", "refs/heads/main", check=False).returncode != 0
+
+
+def test_push_cli_threads_force_with_lease_when_remote_has_advanced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gr2.python_cli.app import app
+    from gr2.python_cli.push import push_current_branch
+
+    repo = _init_repo(tmp_path / "repo")
+    remote = _bare(tmp_path / "remote.git")
+    _git(repo, "remote", "add", "upstream", str(remote))
+    push_current_branch(repo, set_upstream=True)
+
+    local_sha = _commit(repo, "local divergence")
+    other = tmp_path / "other"
+    subprocess.run(
+        ["git", "clone", str(remote), str(other)], check=True, capture_output=True, text=True
+    )
+    _git(other, "config", "user.name", "Other")
+    _git(other, "config", "user.email", "other@example.com")
+    remote_advanced = _commit(other, "remote advance")
+    _git(other, "push", "origin", "main")
+    _git(repo, "fetch", "upstream", "main")
+    assert _git(repo, "rev-parse", "upstream/main").stdout.strip() == remote_advanced
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "push",
+            "--repo-path",
+            str(repo),
+            "--remote",
+            "upstream",
+            "--force-with-lease",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _git(remote, "rev-parse", "refs/heads/main").stdout.strip() == local_sha

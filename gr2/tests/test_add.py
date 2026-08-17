@@ -106,3 +106,24 @@ def test_add_cli_defaults_to_the_cwd_repository_only(
     assert result.exit_code == 0, result.output
     assert _cached_names(repo_a) == ["new.txt"]
     assert _cached_names(repo_b) == []
+
+
+def test_add_cli_honors_explicit_repo_path_over_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gr2.python_cli.app import app
+
+    cwd_repo = _init_repo(tmp_path / "cwd")
+    requested_repo = _init_repo(tmp_path / "requested")
+    (cwd_repo / "new.txt").write_text("cwd\n")
+    (requested_repo / "new.txt").write_text("requested\n")
+    monkeypatch.chdir(cwd_repo)
+
+    result = CliRunner().invoke(
+        app,
+        ["add", "--repo-path", str(requested_repo), "new.txt"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _cached_names(cwd_repo) == []
+    assert _cached_names(requested_repo) == ["new.txt"]

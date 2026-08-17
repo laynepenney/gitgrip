@@ -135,3 +135,49 @@ def test_commit_cli_defaults_to_the_cwd_repository_only(
     assert result.exit_code == 0, result.output
     assert _git(repo_a, "show", "-s", "--format=%s", "HEAD").stdout.strip() == "cwd only"
     assert _git(repo_b, "rev-parse", "HEAD").stdout.strip() == before_b
+
+
+def test_commit_cli_honors_explicit_repo_path_over_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gr2.python_cli.app import app
+
+    cwd_repo = _init_repo(tmp_path / "cwd")
+    requested_repo = _init_repo(tmp_path / "requested")
+    for repo in (cwd_repo, requested_repo):
+        (repo / "tracked.txt").write_text("changed\n")
+        _git(repo, "add", "tracked.txt")
+    cwd_head = _git(cwd_repo, "rev-parse", "HEAD").stdout.strip()
+    monkeypatch.chdir(cwd_repo)
+
+    result = CliRunner().invoke(
+        app,
+        ["commit", "--repo-path", str(requested_repo), "-m", "requested only"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _git(cwd_repo, "rev-parse", "HEAD").stdout.strip() == cwd_head
+    assert (
+        _git(requested_repo, "show", "-s", "--format=%s", "HEAD").stdout.strip()
+        == "requested only"
+    )
+
+
+def test_commit_cli_threads_amend_without_new_staged_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gr2.python_cli.app import app
+
+    repo = _init_repo(tmp_path / "repo")
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        app,
+        ["commit", "--repo-path", str(repo), "--amend", "-m", "amended through cli"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (
+        _git(repo, "show", "-s", "--format=%s", "HEAD").stdout.strip()
+        == "amended through cli"
+    )
