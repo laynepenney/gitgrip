@@ -12,9 +12,12 @@ import typer
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
+from . import add as add_ops
 from . import branch as branch_ops
+from . import commit as commit_ops
 from . import execops, failures, migration, spec_apply, syncops
 from . import pr as pr_ops
+from . import push as push_ops
 from .events import EventType, emit_after_outcome
 from .gitops import (
     branch_exists,
@@ -572,6 +575,82 @@ def branch_cmd(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Switched to branch '{name}'")
+
+
+@app.command("add")
+def add_cmd(
+    paths: list[str] = typer.Argument(..., help="Paths or pathspecs to stage"),
+    repo_path: Path | None = typer.Option(
+        None,
+        "--repo-path",
+        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo)",
+    ),
+) -> None:
+    """Stage paths in one repository, including tracked deletions."""
+    target = (repo_path or Path.cwd()).resolve()
+    try:
+        result = add_ops.stage_files(target, paths)
+    except add_ops.AddError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if result.staged_files:
+        typer.echo(f"Staged {len(result.staged_files)} path(s): {', '.join(result.staged_files)}")
+    else:
+        typer.echo("No changes staged for the requested paths")
+
+
+@app.command("commit")
+def commit_cmd(
+    message: str = typer.Option(..., "--message", "-m", help="Commit message"),
+    amend: bool = typer.Option(False, "--amend", help="Amend the current commit"),
+    repo_path: Path | None = typer.Option(
+        None,
+        "--repo-path",
+        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo)",
+    ),
+) -> None:
+    """Create or amend one commit from the staged index."""
+    target = (repo_path or Path.cwd()).resolve()
+    try:
+        receipt = commit_ops.create_commit(target, message, amend=amend)
+    except commit_ops.CommitError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    action = "Amended" if receipt.amended else "Committed"
+    typer.echo(f"{action} {receipt.commit_sha}")
+
+
+@app.command("push")
+def push_cmd(
+    remote: str | None = typer.Option(None, "--remote", help="Configured remote to push"),
+    set_upstream: bool = typer.Option(False, "--set-upstream", "-u"),
+    force_with_lease: bool = typer.Option(
+        False,
+        "--force-with-lease",
+        help="Replace the remote ref only if its observed value still matches",
+    ),
+    repo_path: Path | None = typer.Option(
+        None,
+        "--repo-path",
+        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo)",
+    ),
+) -> None:
+    """Push one branch and verify its immutable remote commit."""
+    target = (repo_path or Path.cwd()).resolve()
+    try:
+        receipt = push_ops.push_current_branch(
+            target,
+            remote=remote,
+            set_upstream=set_upstream,
+            force_with_lease=force_with_lease,
+        )
+    except push_ops.PushError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"Pushed {receipt.branch} to {receipt.remote} at {receipt.remote_sha} "
+        "(remote ref verified)"
+    )
 
 
 @exec_app.command("status")
