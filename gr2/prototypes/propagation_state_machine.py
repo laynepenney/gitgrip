@@ -60,7 +60,18 @@ sink fetches into, so destinations are read but never written before apply).
 Fault injection for tests: ``kill_after`` raises :class:`SinkKilled` right after
 the named state is journaled (or right after the apply verb ran, before the read
 back, with ``KILL_AFTER_APPLY_VERB``); ``after_apply_verb`` runs a callable
-between the verb and the read back so a destination can be made unreadable.
+between the verb and the read back so a destination can be made unreadable;
+``before_apply_verb`` runs a callable after the apply step's own head check and
+before the verb, so a destination can be moved inside that window.
+
+Prototype 2 (the contribution protocol) adds ONE destination kind and no new
+state: :attr:`DestinationKind.CANONICAL` is a bare remote that OWNS the branch, and
+an operation with ``direction=up`` lands on it by a fast-forward push guarded by
+``--force-with-lease`` on the expected base. The receiving repository enforces the
+compare-and-swap; the plan's fast-forward gate guarantees the lease never forces;
+a rejected lease is a REFUSAL carrying the revision the owner holds, not an error.
+Replanning a refused contribution is the author's act — the machine never rebases,
+merges, or forces on anyone's behalf.
 """
 
 from __future__ import annotations
@@ -84,6 +95,10 @@ _GATE_IDS = (
     "destination.fast-forward",
 )
 _POSTCONDITION = "head-is-intended-after-and-tree-matches-digest"
+# A canonical destination is bare: the postcondition is about its BRANCH ref, and
+# "clean" is not part of it because there is no worktree to be clean.
+_POSTCONDITION_CANONICAL = "branch-is-intended-after-and-tree-matches-digest"
+_GATE_NOT_RUN = "not-run"
 
 # The prototype runs git without the user's global or system configuration so
 # that signing, hook paths, and identity settings on the host cannot reach the
@@ -134,6 +149,11 @@ class Operation(StrEnum):
 class DestinationKind(StrEnum):
     REPLICA = "replica"
     AUTHORING = "authoring"
+    # Prototype 2 (the contribution protocol): a bare remote that OWNS the branch and
+    # accepts a contribution by a fast-forward push guarded by ``--force-with-lease`` on the
+    # expected base — compare-and-swap enforced by the receiving repository, not by
+    # this process. It has no worktree, so cleanliness is not a property it has.
+    CANONICAL = "canonical"
 
 
 class State(StrEnum):
@@ -545,6 +565,7 @@ class Propagator:
         *,
         kill_after: State | str | None = None,
         after_apply_verb: Callable[[], None] | None = None,
+        before_apply_verb: Callable[[], None] | None = None,
         git_env: dict[str, str] | None = None,
     ) -> None:
         self.source_remote = source_remote
@@ -553,6 +574,10 @@ class Propagator:
         self.policy = policy
         self.kill_after = kill_after
         self.after_apply_verb = after_apply_verb
+        # Prototype 2 test seam: runs AFTER the apply step's own head check and BEFORE
+        # the verb, so a test can move a canonical destination inside the window the
+        # process-side check cannot see. The lease is what must catch that move.
+        self.before_apply_verb = before_apply_verb
         # None means "the default, isolated from the host"; an explicit {} means "inherit the
         # host environment" and must not collapse into the default because it is falsy
         self.git_env = _ISOLATED_GIT_ENV if git_env is None else git_env
@@ -584,13 +609,25 @@ class Propagator:
     # -- destination reads (never writes before apply)
 
     def read_head(self, destination: Destination) -> str:
+        # A canonical destination is read at its BRANCH ref, never HEAD: a bare
+        # repository's HEAD is a symref that may point anywhere, and the thing a
+        # contribution lands on is the branch the owner declared.
+        ref = (
+            f"refs/heads/{self.branch}" if destination.kind is DestinationKind.CANONICAL else "HEAD"
+        )
         try:
-            return _git(destination.path, "rev-parse", "HEAD", env=self.git_env)
+            return _git(destination.path, "rev-parse", "--verify", ref, env=self.git_env)
         except (subprocess.CalledProcessError, OSError) as exc:
             raise DestinationUnreadable(f"{destination.destination_id}: {exc}") from exc
 
     def _porcelain(self, destination: Destination) -> str:
         return _git(destination.path, "status", "--porcelain", env=self.git_env)
+
+    def _observed_ref_source(self, destination: Destination) -> str:
+        """The ref the mirror fetches for ahead/behind: the branch for a canonical, else HEAD."""
+        if destination.kind is DestinationKind.CANONICAL:
+            return f"refs/heads/{self.branch}"
+        return "HEAD"
 
     # -- driver
 
@@ -879,6 +916,19 @@ class Propagator:
             result_hash=_sha256_json({"gate": gate_id, "result": result, "detail": detail}),
         )
 
+    def _gate_not_run(self, gate_id: str, detail: str) -> GateResult:
+        """A gate judged inapplicable to this destination kind, recorded as such.
+
+        ``not-run`` is neither pass nor fail: it does not refuse, and it does not let a
+        reader mistake "the list was empty" for "every gate passed".
+        """
+        return GateResult(
+            gate_id=gate_id,
+            result=_GATE_NOT_RUN,
+            detail=detail,
+            result_hash=_sha256_json({"gate": gate_id, "result": _GATE_NOT_RUN, "detail": detail}),
+        )
+
     def _plan(self, op: _Op) -> bool:
         assert op.expected_base is not None and op.digest is not None
         gates: list[GateResult] = []
@@ -902,19 +952,32 @@ class Propagator:
             )
         )
 
-        porcelain = self._porcelain(op.destination)
-        gates.append(
-            self._gate(
-                "destination.clean",
-                porcelain == "",
-                "worktree and index clean"
-                if porcelain == ""
-                else f"dirty: {len(porcelain.splitlines())} path(s)",
+        if op.destination.kind is DestinationKind.CANONICAL:
+            # a bare repository has no worktree; the gate is recorded as NOT RUN rather
+            # than omitted, so a receipt with an empty gate list and one where this
+            # gate was judged inapplicable remain distinguishable (a gate list must say
+            # which gates ran, individually; an aggregate cannot)
+            gates.append(
+                self._gate_not_run(
+                    "destination.clean",
+                    "bare canonical destination: cleanliness is not a property it has",
+                )
             )
-        )
+        else:
+            porcelain = self._porcelain(op.destination)
+            gates.append(
+                self._gate(
+                    "destination.clean",
+                    porcelain == "",
+                    "worktree and index clean"
+                    if porcelain == ""
+                    else f"dirty: {len(porcelain.splitlines())} path(s)",
+                )
+            )
 
-        # the destination's HEAD is fetched INTO the mirror (a read of the destination),
-        # so ahead/behind is computed in the sink's own store
+        # the destination's branch (canonical) or HEAD (clone) is fetched INTO the
+        # mirror (a read of the destination), so ahead/behind is computed in the
+        # sink's own store
         observed_tag = hashlib.sha256(op.destination.destination_id.encode()).hexdigest()[:16]
         observed_ref = f"refs/observed/{observed_tag}"
         _git(
@@ -922,7 +985,7 @@ class Propagator:
             "fetch",
             "-q",
             str(op.destination.path),
-            f"+HEAD:{observed_ref}",
+            f"+{self._observed_ref_source(op.destination)}:{observed_ref}",
             env=self.git_env,
         )
         counts = _git(
@@ -1028,15 +1091,90 @@ class Propagator:
         self._note(
             op, "apply-verb-started", {"expected_base": head, "intended_after": op.intended_after}
         )
-        _git(
-            op.destination.path,
-            "fetch",
-            "-q",
-            str(self.mirror),
-            f"refs/remotes/source/{self.branch}",
-            env=self.git_env,
-        )
-        _git(op.destination.path, "merge", "-q", "--ff-only", op.intended_after, env=self.git_env)
+        if self.before_apply_verb is not None:
+            self.before_apply_verb()
+        if op.destination.kind is DestinationKind.CANONICAL:
+            # Prototype 2 (the contribution protocol): the contribution lands by a push FROM
+            # the mirror (which holds the fetched source objects) TO the owner's bare remote, as a
+            # fast-forward of ``expected_base`` guarded by ``--force-with-lease`` on
+            # that same base. The receiving repository enforces the compare-and-swap:
+            # if its branch is no longer at ``expected_base`` when the push arrives —
+            # including a move inside the window after this process's own head check —
+            # the push is rejected and nothing lands. That rejection is a REFUSAL with
+            # the observed base, not an exception: it is the protocol doing its job.
+            # Why ``--force-with-lease`` can never FORCE here: the plan's
+            # ``destination.fast-forward`` gate already established that ``intended_after``
+            # descends from ``expected_base`` (ahead == 0), so when the lease holds the
+            # update is a genuine fast-forward, and when the owner moved the lease rejects
+            # it before any update. Mutation-checked: forcing the gate to pass lets a stale
+            # contribution overwrite the owner (W2b goes red); dropping the lease for a bare
+            # ``--force`` lets a move inside the check→push window be overwritten (W2d goes
+            # red). The two halves are one mechanism and neither is sufficient alone.
+            lease = f"--force-with-lease=refs/heads/{self.branch}:{op.expected_base}"
+            push = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.mirror),
+                    "push",
+                    "-q",
+                    lease,
+                    str(op.destination.path),
+                    f"{op.intended_after}:refs/heads/{self.branch}",
+                ],
+                capture_output=True,
+                text=True,
+                env={**os.environ, **self.git_env},
+            )
+            if push.returncode != 0:
+                try:
+                    moved_to = self.read_head(op.destination)
+                except DestinationUnreadable as exc:
+                    self._record(
+                        op,
+                        State.UNVERIFIABLE,
+                        {
+                            "detail": (
+                                "the lease push returned non-zero and the destination could "
+                                f"not be read back: {exc}"
+                            ),
+                            "observed_base": None,
+                        },
+                    )
+                    return False
+                if moved_to != op.expected_base:
+                    self._record(
+                        op,
+                        State.REFUSED,
+                        {
+                            "refusal_reason": (
+                                f"destination.lease-refused: the owner's branch moved to "
+                                f"{moved_to} after the base check; expected {op.expected_base}"
+                            ),
+                            "observed_base": moved_to,
+                            "established_by": (
+                                "the receiving repository rejected the lease; read back names "
+                                "the revision it holds"
+                            ),
+                        },
+                    )
+                    return False
+                raise RuntimeError(
+                    "lease push failed although the owner's branch is still at the expected "
+                    f"base: {push.stderr.strip()}"
+                )
+        else:
+            _git(
+                op.destination.path,
+                "fetch",
+                "-q",
+                str(self.mirror),
+                f"refs/remotes/source/{self.branch}",
+                env=self.git_env,
+            )
+            _git(
+                op.destination.path, "merge", "-q", "--ff-only", op.intended_after, env=self.git_env
+            )
         if self.after_apply_verb is not None:
             self.after_apply_verb()
         if self.kill_after == KILL_AFTER_APPLY_VERB:
@@ -1088,19 +1226,25 @@ class Propagator:
         assert op.intended_after is not None and op.digest is not None
         head = self.read_head(op.destination)
         tree = tree_digest(op.destination.path, head, env=self.git_env)
-        porcelain = self._porcelain(op.destination)
-        holds = head == op.intended_after and tree == op.digest and porcelain == ""
-        detail = f"head={head} tree={tree} clean={porcelain == ''}"
+        if op.destination.kind is DestinationKind.CANONICAL:
+            postcondition = _POSTCONDITION_CANONICAL
+            holds = head == op.intended_after and tree == op.digest
+            detail = f"branch={head} tree={tree}"
+        else:
+            postcondition = _POSTCONDITION
+            porcelain = self._porcelain(op.destination)
+            holds = head == op.intended_after and tree == op.digest and porcelain == ""
+            detail = f"head={head} tree={tree} clean={porcelain == ''}"
         if not holds:
             self._note(
-                op, "postcondition-failed", {"postcondition": _POSTCONDITION, "detail": detail}
+                op, "postcondition-failed", {"postcondition": postcondition, "detail": detail}
             )
             return False
         self._record(
             op,
             State.VERIFIED,
             {
-                "postcondition_checked": _POSTCONDITION,
+                "postcondition_checked": postcondition,
                 "holds": True,
                 "detail": detail,
                 "established_by": "the named postcondition re-read from the destination",
