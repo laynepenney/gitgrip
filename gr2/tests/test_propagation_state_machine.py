@@ -588,6 +588,55 @@ def test_mixed_destinations_are_partial_with_both_sides_enumerated(synthetic: Sy
     assert (dirty.path / "canon.md").read_text() == "uncommitted\n"
 
 
+def test_replaying_a_partial_outcome_keeps_the_reached_target_and_stays_partial(
+    synthetic: Synthetic,
+) -> None:
+    # Found in review: the first cut's run_all dropped a declared target whose cursor
+    # was already at the source revision (run() returns None for "nothing new"), so a
+    # replayed partial reclassified itself as REFUSED with reached=() -- the
+    # aggregate could not tell "already reached" from "not part of this invocation".
+    clean = replica(synthetic, "replica")
+    dirty = authoring(synthetic, "dirty-authoring")
+    (dirty.path / "canon.md").write_text("uncommitted\n")
+    new = synthetic.push_change("canon v2\n")
+    targets = [(coordinate(d.destination_id), d) for d in (clean, dirty)]
+
+    first = propagator(synthetic).run_all(targets)
+    assert first is not None and first.state is State.PARTIAL
+    assert first.reached == ("replica",)
+    assert [d for d, _ in first.not_reached] == ["dirty-authoring"]
+    assert head_moves(clean.path) == 1
+
+    # Replay with nothing changed: the SAME classification, the reached target is
+    # still enumerated (as a replayed terminal receipt), and it is not applied again.
+    second = propagator(synthetic).run_all(targets)
+    assert second is not None and second.state is State.PARTIAL, second
+    assert second.reached == ("replica",)
+    assert [d for d, _ in second.not_reached] == ["dirty-authoring"]
+    by_dest = {r.coordinate.destination: r for r in second.receipts}
+    assert by_dest["replica"].replayed is True
+    assert by_dest["replica"].state is State.ACKNOWLEDGED
+    assert by_dest["replica"].after == new
+    assert by_dest["dirty-authoring"].replayed is False  # a refusal starts a new attempt
+    assert by_dest["dirty-authoring"].attempt == 2
+    assert head_moves(clean.path) == 1, "the reached target must not be applied twice"
+
+    # The author cleans up: the refused target is reached on a fresh attempt and the
+    # aggregate becomes ACKNOWLEDGED with BOTH targets enumerated as reached.
+    git(dirty.path, "checkout", "--", "canon.md")
+    third = propagator(synthetic).run_all(targets)
+    assert third is not None and third.state is State.ACKNOWLEDGED, third
+    assert set(third.reached) == {"replica", "dirty-authoring"}
+    assert third.not_reached == ()
+    assert git(dirty.path, "rev-parse", "HEAD") == new
+    assert head_moves(clean.path) == 1
+
+
+def test_run_all_with_no_declared_targets_is_none(synthetic: Synthetic) -> None:
+    synthetic.push_change("canon v2\n")
+    assert propagator(synthetic).run_all([]) is None
+
+
 def test_all_destinations_verifying_is_acknowledged_not_partial(synthetic: Synthetic) -> None:
     a = replica(synthetic, "replica-a")
     b = replica(synthetic, "replica-b")
@@ -715,13 +764,49 @@ def test_distinct_coordinates_never_share_cursor_or_journal_rows(tmp_path: Path)
 # ---------------------------------------------------- born-red outbox witness
 
 
+class EventLost(AssertionError):
+    """Raised ONLY by the survival check below; the xfail is constrained to it.
+
+    ``xfail(strict=True)`` alone accepts ANY failure in the marked test, so a
+    premise that broke -- no event emitted, nothing offered on the first read --
+    would satisfy the marker forever while its reason text kept claiming cursor
+    loss (found in review: replacing the first read's result with ``[]`` still
+    reported the same expected xfail). With ``raises=EventLost`` a premise
+    failure is a plain AssertionError, which is NOT the expected type, so it is
+    reported as a real failure; only the final survival check can satisfy the
+    marker, and only by raising this class explicitly.
+    """
+
+
+def _offered_types(workspace: Path) -> list[str]:
+    return [e["type"] for e in read_events(workspace, "propagation-consumer")]
+
+
+def test_outbox_offers_an_emitted_event_to_a_fresh_consumer(tmp_path: Path) -> None:
+    # The PREMISE of the born-red witness, as its own ordinary test: an emitted
+    # event is offered on the first read. If this goes red the outbox regressed
+    # upstream of the cursor question and the witness below is not about that.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    emit(
+        EventType.SYNC_COMPLETED,
+        workspace,
+        actor="sink",
+        owner_unit="unit-0",
+        payload={"detail": "one"},
+    )
+    assert _offered_types(workspace) == ["sync.completed"]
+
+
 @pytest.mark.xfail(
     strict=True,
+    raises=EventLost,
     reason=(
         "outbox consumers lose events: read_events() advances the cursor before the "
         "caller performs its effect, so a consumer that fails after reading never sees "
         "the event again. This witness turns green only when acknowledgment moves "
-        "after the effect; strict=True forces the marker off at that moment."
+        "after the effect; strict=True forces the marker off at that moment, and "
+        "raises=EventLost keeps every premise failure outside the expected envelope."
     ),
 )
 def test_outbox_event_survives_a_consumer_that_fails_after_reading(tmp_path: Path) -> None:
@@ -735,11 +820,14 @@ def test_outbox_event_survives_a_consumer_that_fails_after_reading(tmp_path: Pat
         payload={"detail": "one"},
     )
 
+    # PREMISE (plain asserts: a failure here is a FAILURE, not the expected xfail)
     with pytest.raises(RuntimeError):
-        offered = read_events(workspace, "propagation-consumer")
-        assert [e["type"] for e in offered] == ["sync.completed"]
+        offered = _offered_types(workspace)
+        assert offered == ["sync.completed"], f"premise: nothing offered, got {offered!r}"
         raise RuntimeError("effect failed after the read")
 
-    # the contract a propagation consumer needs: an event whose effect did not happen
-    # is offered again
-    assert [e["type"] for e in read_events(workspace, "propagation-consumer")] == ["sync.completed"]
+    # SURVIVAL CHECK, the only statement allowed to satisfy the marker: an event
+    # whose effect did not happen is offered again
+    again = _offered_types(workspace)
+    if again != ["sync.completed"]:
+        raise EventLost(f"offered once, then lost: second read returned {again!r}")

@@ -573,10 +573,23 @@ class Propagator:
     # -- driver
 
     def run(self, coordinate: Coordinate, destination: Destination) -> Receipt | None:
+        """Drive one coordinate. ``None`` means no new source revision: not an operation."""
+        return self._run(coordinate, destination, report_current=False)
+
+    def _run(
+        self, coordinate: Coordinate, destination: Destination, *, report_current: bool
+    ) -> Receipt | None:
         key = coordinate.key()
         observation = self.observe_source(coordinate)
         if not observation.is_new:
-            return None
+            if not report_current:
+                return None
+            # The cursor is AT the source revision, which only happens after an
+            # acknowledgement at that revision. For an aggregate the target was
+            # declared and already reached; report the terminal outcome rather
+            # than dropping the target, because a dropped target is
+            # indistinguishable from one that was never part of the invocation.
+            return self._terminal_receipt(coordinate, observation.source_rev)
         source_rev = observation.source_rev
 
         attempts = self.journal.find(key, source_rev)
@@ -620,10 +633,32 @@ class Propagator:
         self._drive(op)
         return self._receipt(coordinate, source_rev, op.attempt, replayed=False)
 
+    def _terminal_receipt(self, coordinate: Coordinate, source_rev: str) -> Receipt:
+        """The original outcome for a coordinate whose cursor is already at ``source_rev``."""
+        attempts = self.journal.find(coordinate.key(), source_rev)
+        if not attempts or attempts[-1][-1].state is not State.ACKNOWLEDGED:
+            # A cursor at a revision the journal never acknowledged is a corrupted
+            # sink state, and the prototype says so rather than guessing an outcome.
+            raise RuntimeError(
+                f"cursor for {coordinate.destination} is at {source_rev} but the journal "
+                "carries no acknowledged attempt at that revision"
+            )
+        return self._receipt(coordinate, source_rev, len(attempts), replayed=True)
+
     def run_all(self, targets: Iterable[tuple[Coordinate, Destination]]) -> PlanOutcome | None:
+        """Drive every declared target and classify the aggregate.
+
+        A declared target whose cursor is already at the source revision was reached
+        by an earlier invocation; it is reported as reached with its terminal receipt
+        (``replayed=True``), never dropped. Dropping it would reclassify a replayed
+        ``partial`` as ``refused``, which is what the first cut did (found in review):
+        the aggregate must distinguish "already reached" from "not part of this
+        invocation", and the only way to do that is to keep reporting it.
+        ``None`` only when no targets were declared.
+        """
         receipts: list[Receipt] = []
         for coordinate, destination in targets:
-            receipt = self.run(coordinate, destination)
+            receipt = self._run(coordinate, destination, report_current=True)
             if receipt is not None:
                 receipts.append(receipt)
         if not receipts:
