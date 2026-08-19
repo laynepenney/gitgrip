@@ -225,6 +225,19 @@ fn is_commit_id_like(rev: &str) -> bool {
     rev.len() >= 4 && rev.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// Resolve a hexadecimal object-id prefix without interpreting it as a ref name.
+///
+/// `revparse_single` gives refs precedence, so an all-hex tag deleted from
+/// origin could otherwise resolve through the stale local tag and be mistaken
+/// for an immutable commit pin. The object database answers the narrower
+/// question this branch asks and rejects ambiguous prefixes itself.
+fn commit_from_id_prefix(repo: &git2::Repository, rev: &str) -> anyhow::Result<git2::Oid> {
+    let prefix = git2::Oid::from_str(rev)?;
+    let oid = repo.odb()?.exists_prefix(prefix, rev.len())?;
+    repo.find_commit(oid)?;
+    Ok(oid)
+}
+
 /// Refuse a manual apply when a gripspace is not at its configured revision.
 ///
 /// A successful local composition proves that the files are internally
@@ -281,14 +294,11 @@ fn ensure_gripspace_sources_current(
             let pinned_oid = if let Some(tag_oid) = remote_tag_commit(&repo, &rev)? {
                 tag_oid
             } else if is_commit_id_like(&rev) {
-                repo.revparse_single(&rev)
-                    .and_then(|object| object.peel_to_commit())
-                    .map(|commit| commit.id())
-                    .map_err(|error| {
-                        CliOutcomeError::refusal(format!(
-                            "Cannot verify gripspace source '{name}' at configured commit '{rev}': {error}"
-                        ))
-                    })?
+                commit_from_id_prefix(&repo, &rev).map_err(|error| {
+                    CliOutcomeError::refusal(format!(
+                        "Cannot verify gripspace source '{name}' at configured commit id '{rev}': {error}. Use a longer commit id if the prefix is ambiguous, or correct the configured revision."
+                    ))
+                })?
             } else {
                 return Err(CliOutcomeError::refusal(format!(
                     "Cannot verify gripspace source '{name}' at configured revision '{rev}' against origin. Run `gr sync` before `gr link --apply`."

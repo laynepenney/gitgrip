@@ -51,6 +51,13 @@ struct Fx {
 
 /// Build a workspace whose gripspace source is materialized at `rev`.
 fn setup(rev: &str) -> Fx {
+    setup_with_source(rev, |_| {})
+}
+
+fn setup_with_source<F>(rev: &str, prepare_source: F) -> Fx
+where
+    F: FnOnce(&Path),
+{
     let t = TempDir::new().unwrap();
     let root = t.path().to_path_buf();
     let source = repo(
@@ -61,6 +68,7 @@ fn setup(rev: &str) -> Fx {
             ("gripspace.yml", "version: 2\nrepos: {}\n"),
         ],
     );
+    prepare_source(&source);
     let dummy = repo(&root, "dummy-repo", &[("README.md", "d\n")]);
     let manifest = repo(
         &root,
@@ -295,6 +303,27 @@ fn link_apply_refuses_a_detached_source_with_an_unresolvable_named_revision() {
     );
 }
 
+#[test]
+fn an_unresolvable_all_hex_commit_prefix_names_an_operator_remedy() {
+    let fx = setup("main");
+    git(
+        &fx.space,
+        &[
+            "config",
+            "gitgrip.requestedGripspaceRev",
+            "0000000000000000000000000000000000000000",
+        ],
+    );
+    git(&fx.space, &["checkout", "--detach", "HEAD"]);
+    let (code, diag) = apply(&fx.workspace);
+    assert_eq!(code, Some(2), "unresolvable commit prefix must refuse");
+    assert!(
+        diag.contains("Use a longer commit id if the prefix is ambiguous")
+            && diag.contains("correct the configured revision"),
+        "diagnostic must name remedies that can change the result: {diag}"
+    );
+}
+
 fn assert_explicit_sha_pin_is_accepted(pin_len: usize) {
     // Build with rev = the source's initial commit SHA.
     let t = TempDir::new().unwrap();
@@ -398,79 +427,12 @@ fn explicit_short_sha_pin_is_accepted() {
 
 #[test]
 fn moved_tag_is_refused_until_sync_updates_the_managed_clone() {
-    let t = TempDir::new().unwrap();
-    let root = t.path().to_path_buf();
-    let source = repo(
-        &root,
-        "source-space",
-        &[
-            ("SECTION.md", "v1\n"),
-            ("gripspace.yml", "version: 2\nrepos: {}\n"),
-        ],
-    );
-    git(&source, &["tag", "release"]);
-    let dummy = repo(&root, "dummy-repo", &[("README.md", "d\n")]);
-    let manifest = repo(
-        &root,
-        "workspace-manifest",
-        &[(
-            "gripspace.yml",
-            &format!(
-                r#"version: 2
-gripspaces:
-  - url: "{}"
-    rev: release
-manifest:
-  url: "{}"
-  revision: main
-  composefile:
-    - dest: OUT.md
-      parts:
-        - gripspace: source-space
-          src: SECTION.md
-repos:
-  dummy-repo:
-    url: "{}"
-    path: ./dummy-repo
-    revision: main
-"#,
-                source.display(),
-                root.join("workspace-manifest").display(),
-                dummy.display()
-            ),
-        )],
-    );
-    let workspace = root.join("workspace");
-    let init = Command::cargo_bin("gr")
-        .unwrap()
-        .args([
-            "init",
-            manifest.to_str().unwrap(),
-            "--path",
-            workspace.to_str().unwrap(),
-            "--no-interactive",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        init.status.success(),
-        "init: {}{}",
-        String::from_utf8_lossy(&init.stdout),
-        String::from_utf8_lossy(&init.stderr)
-    );
-    let sync = Command::cargo_bin("gr")
-        .unwrap()
-        .arg("sync")
-        .current_dir(&workspace)
-        .output()
-        .unwrap();
-    assert!(
-        sync.status.success(),
-        "sync: {}{}",
-        String::from_utf8_lossy(&sync.stdout),
-        String::from_utf8_lossy(&sync.stderr)
-    );
-    let space = workspace.join(".gitgrip/spaces/source-space");
+    let fx = setup_with_source("release", |source| {
+        git(source, &["tag", "release"]);
+    });
+    let source = &fx.source;
+    let workspace = &fx.workspace;
+    let space = &fx.space;
     eprintln!("[A4] recorded: {}", recorded(&space));
     let before = git(&space, &["rev-parse", "HEAD"]);
     // Upstream moves the tag to new content.
@@ -520,5 +482,36 @@ repos:
         std::fs::read_to_string(workspace.join("OUT.md")).unwrap(),
         "v2-MOVED-TAG\n",
         "recovered apply must compose the upstream tag content"
+    );
+}
+
+#[test]
+fn an_all_hex_tag_deleted_from_origin_is_not_reinterpreted_as_a_commit_prefix() {
+    let fx = setup_with_source("cafe", |source| {
+        git(source, &["tag", "cafe"]);
+    });
+    let before = git(&fx.space, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        git(&fx.space, &["rev-parse", "cafe"]),
+        before,
+        "fixture: the managed clone must retain its local tag"
+    );
+
+    git(&fx.source, &["tag", "-d", "cafe"]);
+    let (code, diag) = apply(&fx.workspace);
+    assert_eq!(
+        code,
+        Some(2),
+        "a tag absent from origin must not certify through its stale local ref: {diag}"
+    );
+    assert_eq!(
+        git(&fx.space, &["rev-parse", "HEAD"]),
+        before,
+        "refusal must not move the managed clone"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fx.workspace.join("OUT.md")).unwrap(),
+        "v1\n",
+        "refusal must not compose again from the stale local tag"
     );
 }
