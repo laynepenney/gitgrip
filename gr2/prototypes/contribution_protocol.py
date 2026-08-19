@@ -283,6 +283,23 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
+def state_latencies(receipt: Receipt) -> list[tuple[str, float]]:
+    """Per-state latency from the receipt's OWN timestamps, in seconds.
+
+    Each row is ``(state, seconds since the previous transition)``; the first row is
+    ``(state, 0.0)``. A measurement, not a witness: the receipts already carry the
+    timestamps, so the number comes from the artifact and not from a stopwatch around
+    it. Printed so a daemon's ``up`` budget can start from data.
+    """
+    rows: list[tuple[str, float]] = []
+    previous: datetime | None = None
+    for t in receipt.transitions:
+        at = datetime.fromisoformat(t.timestamp)
+        rows.append((str(t.state), 0.0 if previous is None else (at - previous).total_seconds()))
+        previous = at
+    return rows
+
+
 class ContributionSet:
     """Several contributions that must land together: prepare all, land in order, report."""
 
@@ -526,4 +543,5 @@ __all__ = [
     "SetReceipt",
     "Subspace",
     "WriteMode",
+    "state_latencies",
 ]

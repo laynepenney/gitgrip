@@ -42,6 +42,7 @@ from gr2.prototypes.contribution_protocol import (
     SetMember,
     Subspace,
     WriteMode,
+    state_latencies,
 )
 from gr2.prototypes.propagation_state_machine import (
     Coordinate,
@@ -464,3 +465,57 @@ def test_w6_concurrent_writers_produce_one_gapless_sequence(tmp_path: Path) -> N
     for i in range(writers):
         mine = [r.payload["n"] for r in records if r.writer == f"w{i}"]
         assert mine == list(range(each))  # each writer's own order is preserved
+
+
+# --------------------------------------------------------------------------- measurement
+
+
+def test_per_state_latency_is_read_from_the_receipts_own_timestamps_and_printed(
+    parent: Parent, tmp_path: Path
+) -> None:
+    """Not a witness: the measurement the prototype must print (per-state seconds, from
+    the receipt's timestamps, for one landing and for a two-member set). Run with ``-s``
+    or read the captured table; the assertions only pin that the timestamps are ordered
+    and that every state of the landing path has a row. For SET members the ``applied``
+    row spans prepare -> land by construction (the planned transition is written at
+    prepare time), so it reads as the time the prepared base sat, not the push alone."""
+    child_a = parent.child("child-a")
+    author(child_a, "canon v2 (a)\n")
+    single = contributor(parent, child_a, "a").run(contribution("child-a"), canonical(parent))
+    assert single is not None and single.state is State.ACKNOWLEDGED
+
+    owner2 = make_owner(tmp_path, "owner2")
+    b1, b2 = parent.child("b1"), owner2.child("b2")
+    author(b1, "canon v3 (set)\n")
+    author(b2, "owner2 canon v2 (set)\n")
+    contribution_set = ContributionSet(
+        "timed", [member(parent, b1, "m1"), member(owner2, b2, "m2")]
+    )
+    assert contribution_set.prepare().phase == "prepared"
+    landed = contribution_set.land()
+    assert landed.phase == "landed"
+
+    lines = ["per-state latency (seconds since previous transition), from receipt timestamps"]
+    for label, receipt in [("single", single)] + [
+        (o.member_id, o.receipt) for o in landed.outcomes if o.receipt is not None
+    ]:
+        rows = state_latencies(receipt)
+        assert [state for state, _ in rows] == [
+            str(State.OBSERVED),
+            str(State.FETCHED),
+            str(State.PLANNED),
+            str(State.APPLIED),
+            str(State.VERIFIED),
+            str(State.ACKNOWLEDGED),
+        ]
+        assert all(seconds >= 0.0 for _, seconds in rows)
+        total = sum(seconds for _, seconds in rows)
+        lines.append(
+            f"  {label:>6}: "
+            + "  ".join(f"{s}={sec:.3f}" for s, sec in rows)
+            + f"  total={total:.3f}"
+        )
+    report = tmp_path / "latency.txt"
+    report.write_text("\n".join(lines) + "\n")
+    print("\n" + report.read_text(), end="")  # visible with -s; the file is the artifact
+    assert report.read_text().count("total=") == 3
