@@ -25,6 +25,53 @@ use std::process::Command;
 /// Maximum depth for recursive gripspace includes
 const MAX_GRIPSPACE_DEPTH: usize = 5;
 
+/// Local git-config key recording the revision contract used to materialize a
+/// gripspace clone. An empty value means the manifest omitted `rev` and the
+/// clone is expected to remain branch-backed.
+const REQUESTED_REV_CONFIG_KEY: &str = "gitgrip.requestedGripspaceRev";
+
+fn record_requested_revision(
+    gripspace_path: &Path,
+    rev: Option<&str>,
+) -> Result<(), ManifestError> {
+    let repo = git2::Repository::open(gripspace_path).map_err(|error| {
+        ManifestError::GripspaceError(format!(
+            "Failed to open gripspace revision metadata: {error}"
+        ))
+    })?;
+    repo.config()
+        .and_then(|mut config| config.set_str(REQUESTED_REV_CONFIG_KEY, rev.unwrap_or("")))
+        .map_err(|error| {
+            ManifestError::GripspaceError(format!(
+                "Failed to record gripspace revision metadata: {error}"
+            ))
+        })
+}
+
+/// Revision contract recorded when this gripspace was resolved.
+///
+/// `Ok(None)` is a recorded rev-less, branch-backed source. A missing key is
+/// an error rather than an implicit pin because absence cannot prove why a
+/// detached checkout exists.
+pub fn requested_gripspace_revision(
+    gripspace_path: &Path,
+) -> Result<Option<String>, ManifestError> {
+    let repo = git2::Repository::open(gripspace_path).map_err(|error| {
+        ManifestError::GripspaceError(format!(
+            "Failed to open gripspace revision metadata: {error}"
+        ))
+    })?;
+    let value = repo
+        .config()
+        .and_then(|config| config.get_string(REQUESTED_REV_CONFIG_KEY))
+        .map_err(|error| {
+            ManifestError::GripspaceError(format!(
+                "Gripspace revision provenance is unavailable: {error}. Run `gr sync` before applying links."
+            ))
+        })?;
+    Ok((!value.is_empty()).then_some(value))
+}
+
 /// Extract a gripspace name from its URL.
 ///
 /// Takes the last path component without `.git` suffix.
@@ -311,6 +358,7 @@ pub fn ensure_gripspace(
         if let Some(ref rev) = config.rev {
             checkout_rev(&gripspace_path, rev)?;
         }
+        record_requested_revision(&gripspace_path, config.rev.as_deref())?;
         return Ok(gripspace_path);
     }
 
@@ -332,6 +380,8 @@ pub fn ensure_gripspace(
     if let Some(ref rev) = config.rev {
         checkout_rev(&gripspace_path, rev)?;
     }
+
+    record_requested_revision(&gripspace_path, config.rev.as_deref())?;
 
     Ok(gripspace_path)
 }
@@ -386,6 +436,8 @@ pub fn update_gripspace(
             )));
         }
     }
+
+    record_requested_revision(gripspace_path, config.rev.as_deref())?;
 
     Ok(())
 }
