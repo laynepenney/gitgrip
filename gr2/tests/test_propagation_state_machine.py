@@ -627,6 +627,91 @@ def test_operation_id_binds_coordinate_source_base_and_digest(synthetic: Synthet
     assert ra.operation_id == expected
 
 
+# ------------------------------------------------ coordinate key is injective
+
+
+def _coord(**overrides: object) -> Coordinate:
+    base: dict[str, object] = {
+        "source": "source",
+        "destination": "target",
+        "layer": "layer",
+        "direction": Direction.DOWN,
+        "operation": Operation.APPLY,
+        "artifact_class": "class",
+    }
+    return Coordinate(**{**base, **overrides})  # type: ignore[arg-type]
+
+
+def _joined_with_pipes(c: Coordinate) -> str:
+    """The scheme the first cut used, kept here ONLY as the control."""
+    return "|".join(
+        (c.source, c.destination, c.layer, str(c.direction), str(c.operation), c.artifact_class)
+    )
+
+
+# Every pair below is two DISTINCT coordinates whose fields, joined with "|",
+# produced ONE key on the first cut. The first pair is the reviewer's exact
+# discriminator; the second shifts the byte across the source/destination/layer
+# boundaries in one move; the third shows the enum fields are not a fence either,
+# because an opaque field may itself contain the enum words.
+_COLLIDING_ON_THE_OLD_SCHEME = [
+    (_coord(source="source|dest"), _coord(destination="dest|target")),
+    (_coord(layer="layer|down"), _coord(source="source|target", destination="layer", layer="down")),
+    (
+        _coord(artifact_class="class|down|apply|z"),
+        _coord(layer="layer|down|apply|class", artifact_class="z"),
+    ),
+]
+
+# Bytes JSON itself uses for structure, in the opaque fields: these never collided
+# under the old scheme, so they carry no control; they exist to show the new
+# encoding escapes them and round-trips regardless.
+_JSON_STRUCTURE_BYTES = [
+    _coord(source='a","destination":"b'),
+    _coord(source="a\\"),
+    _coord(source="a\\\\"),
+    _coord(destination='{"source":"x"}'),
+    _coord(layer="|", artifact_class="|"),
+]
+
+
+@pytest.mark.parametrize("left,right", _COLLIDING_ON_THE_OLD_SCHEME)
+def test_distinct_coordinates_never_share_a_key(left: Coordinate, right: Coordinate) -> None:
+    assert left != right, "the pair must be two different coordinates or it proves nothing"
+    # Control first: the pair MUST collide under the old scheme, or the witness is
+    # not discriminating and a green here would say nothing about the fix.
+    assert _joined_with_pipes(left) == _joined_with_pipes(right)
+    assert left.key() != right.key()
+
+
+@pytest.mark.parametrize(
+    "coord",
+    [c for pair in _COLLIDING_ON_THE_OLD_SCHEME for c in pair] + _JSON_STRUCTURE_BYTES,
+)
+def test_coordinate_key_round_trips_so_injectivity_is_structural(coord: Coordinate) -> None:
+    # Injectivity is asserted as a ROUND TRIP, not as "this pair differs": if every
+    # key decodes back to the coordinate that produced it, no two coordinates can
+    # share one, whatever bytes the opaque fields carry.
+    assert Coordinate.from_key(coord.key()) == coord
+    assert json.loads(coord.key()) == coord.as_dict()
+
+
+def test_distinct_coordinates_never_share_cursor_or_journal_rows(tmp_path: Path) -> None:
+    # The consequence the review named: the key names the cursor file and the journal
+    # rows, so a shared key is shared replay state. Advance one; the other is untouched.
+    left, right = _COLLIDING_ON_THE_OLD_SCHEME[0]
+    journal = Journal(tmp_path / "state")
+    assert journal.cursor_path(left.key()) != journal.cursor_path(right.key())
+    journal.advance_cursor(left.key(), "a" * 40, pending_id="p")
+    assert journal.cursor(left.key()) == "a" * 40
+    assert journal.cursor(right.key()) is None
+    journal.note(
+        pending_id="p", attempt=1, coordinate_key=left.key(), source_rev="a" * 40, note="only-left"
+    )
+    assert journal.notes(left.key(), "a" * 40, "only-left") == 1
+    assert journal.notes(right.key(), "a" * 40, "only-left") == 0
+
+
 # ---------------------------------------------------- born-red outbox witness
 
 

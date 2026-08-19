@@ -151,15 +151,30 @@ class Coordinate:
     artifact_class: str
 
     def key(self) -> str:
-        return "|".join(
-            (
-                self.source,
-                self.destination,
-                self.layer,
-                str(self.direction),
-                str(self.operation),
-                self.artifact_class,
-            )
+        """Canonical, injective key: the JSON of ``as_dict()`` with sorted keys.
+
+        The fields are OPAQUE identifiers, so no delimiter can be assumed absent
+        from them. A ``"|".join`` made ``("source|dest", "target", ...)`` and
+        ``("source", "dest|target", ...)`` the same key, and the key names the
+        journal rows and the cursor file, so two coordinates would have shared
+        replay state (found in review of the first cut). JSON string encoding
+        escapes every byte that could be mistaken for structure, so the key
+        round-trips: ``json.loads(key) == as_dict()``. Distinct coordinates
+        therefore cannot collide, and the witness asserts the round-trip rather
+        than any particular pair.
+        """
+        return json.dumps(self.as_dict(), sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def from_key(cls, key: str) -> Coordinate:
+        data = json.loads(key)
+        return cls(
+            source=str(data["source"]),
+            destination=str(data["destination"]),
+            layer=str(data["layer"]),
+            direction=Direction(str(data["direction"])),
+            operation=Operation(str(data["operation"])),
+            artifact_class=str(data["artifact_class"]),
         )
 
     def as_dict(self) -> dict[str, str]:
