@@ -596,7 +596,11 @@ pub async fn dispatch_command(
             .await?;
         }
         Some(Commands::Link { status, apply }) => {
-            let ctx = load_workspace_context(quiet, verbose, json)?;
+            // Manual apply is a verification path, not a materialization path.
+            // Resolve included manifests from the clones exactly as they sit so
+            // a detached source cannot be silently reattached before link's
+            // freshness guard observes it. Status retains the historical loader.
+            let ctx = load_workspace_context_with_materialization(quiet, verbose, json, !apply)?;
             crate::cli::commands::link::run_link(
                 &ctx.workspace_root,
                 &ctx.manifest,
@@ -1038,7 +1042,9 @@ pub async fn dispatch_command(
 /// `.griptree` many levels up eclipse a `.gitgrip` or checkout one level
 /// down, because the griptree pass never stopped climbing to give the nearer
 /// marker a chance).
-fn load_gripspace() -> anyhow::Result<(std::path::PathBuf, crate::core::manifest::Manifest)> {
+fn load_gripspace(
+    materialize_gripspaces: bool,
+) -> anyhow::Result<(std::path::PathBuf, crate::core::manifest::Manifest)> {
     let current = std::env::current_dir()?;
     let mut search_path = current;
     loop {
@@ -1047,7 +1053,7 @@ fn load_gripspace() -> anyhow::Result<(std::path::PathBuf, crate::core::manifest
             if let Ok(pointer) =
                 crate::core::griptree::GriptreePointer::load(&griptree_pointer_path)
             {
-                return load_from_griptree(&search_path, &pointer);
+                return load_from_griptree(&search_path, &pointer, materialize_gripspaces);
             }
         }
 
@@ -1079,7 +1085,7 @@ fn load_gripspace() -> anyhow::Result<(std::path::PathBuf, crate::core::manifest
             {
                 let content = std::fs::read_to_string(&manifest_path)?;
                 let mut manifest = crate::core::manifest::Manifest::parse(&content)?;
-                resolve_gripspace_includes(&mut manifest, &search_path);
+                resolve_gripspace_includes(&mut manifest, &search_path, materialize_gripspaces)?;
                 return Ok((search_path, manifest));
             }
         }
@@ -1089,7 +1095,7 @@ fn load_gripspace() -> anyhow::Result<(std::path::PathBuf, crate::core::manifest
         {
             let content = std::fs::read_to_string(repo_yaml)?;
             let mut manifest = crate::core::manifest::Manifest::parse(&content)?;
-            resolve_gripspace_includes(&mut manifest, &search_path);
+            resolve_gripspace_includes(&mut manifest, &search_path, materialize_gripspaces)?;
             return Ok((search_path, manifest));
         }
 
@@ -1117,7 +1123,16 @@ fn load_workspace_context(
     verbose: bool,
     json: bool,
 ) -> anyhow::Result<WorkspaceContext> {
-    let (workspace_root, manifest) = load_gripspace()?;
+    load_workspace_context_with_materialization(quiet, verbose, json, true)
+}
+
+fn load_workspace_context_with_materialization(
+    quiet: bool,
+    verbose: bool,
+    json: bool,
+    materialize_gripspaces: bool,
+) -> anyhow::Result<WorkspaceContext> {
+    let (workspace_root, manifest) = load_gripspace(materialize_gripspaces)?;
     Ok(WorkspaceContext::new(
         workspace_root,
         manifest,
@@ -1131,6 +1146,7 @@ fn load_workspace_context(
 fn load_from_griptree(
     griptree_path: &std::path::Path,
     pointer: &crate::core::griptree::GriptreePointer,
+    materialize_gripspaces: bool,
 ) -> anyhow::Result<(std::path::PathBuf, crate::core::manifest::Manifest)> {
     let griptree_manifest_path =
         crate::core::manifest_paths::resolve_gripspace_manifest_path(griptree_path);
@@ -1152,7 +1168,7 @@ fn load_from_griptree(
     };
 
     let mut manifest = crate::core::manifest::Manifest::parse(&content)?;
-    resolve_gripspace_includes(&mut manifest, griptree_path);
+    resolve_gripspace_includes(&mut manifest, griptree_path, materialize_gripspaces)?;
     Ok((griptree_path.to_path_buf(), manifest))
 }
 
@@ -1160,9 +1176,15 @@ fn load_from_griptree(
 fn resolve_gripspace_includes(
     manifest: &mut crate::core::manifest::Manifest,
     workspace_root: &std::path::Path,
-) {
+    materialize_gripspaces: bool,
+) -> anyhow::Result<()> {
     let spaces_dir = crate::core::manifest_paths::spaces_dir(workspace_root);
     if spaces_dir.exists() {
-        let _ = crate::core::gripspace::resolve_all_gripspaces(manifest, &spaces_dir);
+        if materialize_gripspaces {
+            let _ = crate::core::gripspace::resolve_all_gripspaces(manifest, &spaces_dir);
+        } else {
+            crate::core::gripspace::resolve_existing_gripspaces(manifest, &spaces_dir)?;
+        }
     }
+    Ok(())
 }

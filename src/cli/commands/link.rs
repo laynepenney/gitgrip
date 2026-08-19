@@ -12,6 +12,7 @@ use crate::files::{process_composefiles, resolve_file_source};
 use crate::git::{fetch_remote, path_exists};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Check if a source path contains glob characters (`*`, `?`, `[`).
 fn is_glob_pattern(src: &str) -> bool {
@@ -176,13 +177,62 @@ fn referenced_gripspaces(manifest: &Manifest) -> BTreeSet<String> {
     names
 }
 
-/// Refuse a manual apply when a branch-backed gripspace is behind upstream.
+/// Resolve a named tag from the remote itself, without trusting the local tag.
+///
+/// A normal fetch deliberately refuses to move an existing local tag. Using
+/// `revparse_single(rev)` after that fetch therefore compares HEAD with the
+/// same stale local ref and can certify old content as current. `ls-remote`
+/// observes the upstream ref directly and handles both lightweight and
+/// annotated tags; the peeled commit wins when both rows are present.
+fn remote_tag_commit(repo: &git2::Repository, rev: &str) -> anyhow::Result<Option<git2::Oid>> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| anyhow::anyhow!("Gripspace source has no working directory"))?;
+    let tag_ref = format!("refs/tags/{rev}");
+    let peeled_ref = format!("{tag_ref}^{{}}");
+    let output = Command::new("git")
+        .args(["ls-remote", "--tags", "origin", &tag_ref, &peeled_ref])
+        .current_dir(workdir)
+        .output()
+        .map_err(|error| anyhow::anyhow!("Cannot inspect origin tag '{rev}': {error}"))?;
+    if !output.status.success() {
+        return Err(anyhow::anyhow!(
+            "Cannot inspect origin tag '{}': {}",
+            rev,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let mut direct = None;
+    let mut peeled = None;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Some((oid, reference)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        let parsed = git2::Oid::from_str(oid.trim()).map_err(|error| {
+            anyhow::anyhow!("Origin returned an invalid object id for tag '{rev}': {error}")
+        })?;
+        match reference.trim() {
+            value if value == peeled_ref => peeled = Some(parsed),
+            value if value == tag_ref => direct = Some(parsed),
+            _ => {}
+        }
+    }
+    Ok(peeled.or(direct))
+}
+
+fn is_full_commit_id(rev: &str) -> bool {
+    rev.len() == 40 && rev.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Refuse a manual apply when a gripspace is not at its configured revision.
 ///
 /// A successful local composition proves that the files are internally
 /// usable. It does not prove that the source clone is current. Fetch first,
-/// then compare graph position. A detached HEAD is accepted only when the
-/// materializer recorded an explicit tag or commit revision and HEAD still
-/// resolves to that pin. Detachment by itself is not evidence of a pin.
+/// then compare both branch identity and graph position. An attached HEAD must
+/// still be on the configured branch. A detached HEAD is accepted only when
+/// the materializer recorded an explicit tag or commit revision and HEAD still
+/// resolves to that pin. Neither attachment nor detachment proves provenance.
 fn ensure_gripspace_sources_current(
     workspace_root: &Path,
     manifest: &Manifest,
@@ -228,15 +278,23 @@ fn ensure_gripspace_sources_current(
                 .into());
             }
 
-            let pinned_oid = repo
-                .revparse_single(&rev)
-                .and_then(|object| object.peel_to_commit())
-                .map(|commit| commit.id())
-                .map_err(|error| {
-                    CliOutcomeError::refusal(format!(
-                        "Cannot verify gripspace source '{name}' at configured revision '{rev}': {error}"
-                    ))
-                })?;
+            let pinned_oid = if let Some(tag_oid) = remote_tag_commit(&repo, &rev)? {
+                tag_oid
+            } else if is_full_commit_id(&rev) {
+                repo.revparse_single(&rev)
+                    .and_then(|object| object.peel_to_commit())
+                    .map(|commit| commit.id())
+                    .map_err(|error| {
+                        CliOutcomeError::refusal(format!(
+                            "Cannot verify gripspace source '{name}' at configured commit '{rev}': {error}"
+                        ))
+                    })?
+            } else {
+                return Err(CliOutcomeError::refusal(format!(
+                    "Cannot verify gripspace source '{name}' at configured revision '{rev}' against origin. Run `gr sync` before `gr link --apply`."
+                ))
+                .into());
+            };
             if pinned_oid != local_oid {
                 return Err(CliOutcomeError::refusal(format!(
                     "Gripspace source '{name}' does not match configured revision '{rev}'. Run `gr sync` before `gr link --apply`."
@@ -250,6 +308,20 @@ fn ensure_gripspace_sources_current(
             .shorthand()
             .ok_or_else(|| anyhow::anyhow!("Cannot identify branch for gripspace source '{name}'"))?
             .to_string();
+
+        let requested_rev = requested_gripspace_revision(&path).map_err(|error| {
+            CliOutcomeError::refusal(format!(
+                "Cannot verify gripspace source '{name}' on branch '{branch}': {error}"
+            ))
+        })?;
+        if let Some(rev) = requested_rev {
+            if rev != branch {
+                return Err(CliOutcomeError::refusal(format!(
+                    "Gripspace source '{name}' is on branch '{branch}', configured revision '{rev}'. Run `gr sync` before `gr link --apply`."
+                ))
+                .into());
+            }
+        }
 
         let remote_ref = format!("refs/remotes/origin/{branch}");
         let remote_oid = repo
