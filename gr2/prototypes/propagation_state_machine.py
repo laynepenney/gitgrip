@@ -636,6 +636,8 @@ class Propagator:
         coordinate: Coordinate,
         destination: Destination,
         observation: Observation | None = None,
+        *,
+        stop_after: State | None = None,
     ) -> Receipt | None:
         """Drive one coordinate. ``None`` means no new source revision: not an operation.
 
@@ -644,8 +646,19 @@ class Propagator:
         its ``observation`` so the source is not asked twice; the cursor check runs on it
         all the same, because "nothing new" is exactly the answer that would hide a
         corrupted sink state, whoever observed.
+
+        ``stop_after=State.PLANNED`` drives the operation through its gates and stops
+        BEFORE the apply verb, journaled at ``planned``; a later ``run`` resumes it from
+        there. This is how a contribution SET prepares every member against its owner's
+        current base before landing any of them (Prototype 2).
         """
-        return self._run(coordinate, destination, report_current=False, observation=observation)
+        return self._run(
+            coordinate,
+            destination,
+            report_current=False,
+            observation=observation,
+            stop_after=stop_after,
+        )
 
     def _run(
         self,
@@ -654,6 +667,7 @@ class Propagator:
         *,
         report_current: bool,
         observation: Observation | None = None,
+        stop_after: State | None = None,
     ) -> Receipt | None:
         key = coordinate.key()
         if observation is None:
@@ -709,7 +723,7 @@ class Propagator:
         else:
             op = self._fresh(coordinate, destination, source_rev, observation.cursor, attempt=1)
 
-        self._drive(op)
+        self._drive(op, stop_after=stop_after)
         return self._receipt(coordinate, source_rev, op.attempt, replayed=False)
 
     def _terminal_receipt(self, coordinate: Coordinate, source_rev: str) -> Receipt:
@@ -809,7 +823,7 @@ class Propagator:
 
     # -- the state machine
 
-    def _drive(self, op: _Op) -> None:
+    def _drive(self, op: _Op, *, stop_after: State | None = None) -> None:
         last = op.transitions[-1].state if op.transitions else None
         if last is None:
             self._observe(op)
@@ -821,6 +835,8 @@ class Propagator:
             if not self._plan(op):
                 return  # refused at plan; journaled
             last = State.PLANNED
+        if stop_after is State.PLANNED and last is State.PLANNED:
+            return  # prepared: gates evaluated and journaled, no verb has run
         if last in (State.PLANNED, State.UNVERIFIABLE):
             if not self._apply(op):
                 return  # refused or unverifiable; journaled
