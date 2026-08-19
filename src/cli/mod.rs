@@ -6,6 +6,7 @@ pub mod args;
 pub mod commands;
 pub mod context;
 pub mod dispatch;
+pub mod outcome;
 pub mod output;
 pub mod output_sink;
 pub mod repo_iter;

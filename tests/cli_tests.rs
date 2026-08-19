@@ -252,6 +252,45 @@ fn test_checkout_add_errors_when_filters_match_no_repos() {
 }
 
 #[test]
+fn test_pr_merge_unknown_repo_is_a_process_level_refusal() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut cmd = Command::cargo_bin("gr").unwrap();
+    cmd.current_dir(&ws.workspace_root)
+        .arg("pr")
+        .arg("merge")
+        .arg("--repo")
+        .arg("missing")
+        .arg("--method")
+        .arg("merge")
+        .arg("--yes")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "repo filter 'missing' not found in local manifest",
+        ));
+}
+
+#[test]
+fn test_pr_merge_known_repo_with_no_open_pr_is_still_success() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut cmd = Command::cargo_bin("gr").unwrap();
+    cmd.current_dir(&ws.workspace_root)
+        .arg("pr")
+        .arg("merge")
+        .arg("--repo")
+        .arg("app")
+        .arg("--method")
+        .arg("merge")
+        .arg("--yes")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No open PRs found"))
+        .stdout(predicate::str::contains("Repositories checked: 1"));
+}
+
+#[test]
 fn test_checkout_add_rejects_create_and_base_flags() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
