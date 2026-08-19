@@ -295,8 +295,7 @@ fn link_apply_refuses_a_detached_source_with_an_unresolvable_named_revision() {
     );
 }
 
-#[test]
-fn control_explicit_full_sha_pin_is_accepted() {
+fn assert_explicit_sha_pin_is_accepted(pin_len: usize) {
     // Build with rev = the source's initial commit SHA.
     let t = TempDir::new().unwrap();
     let root = t.path().to_path_buf();
@@ -308,7 +307,8 @@ fn control_explicit_full_sha_pin_is_accepted() {
             ("gripspace.yml", "version: 2\nrepos: {}\n"),
         ],
     );
-    let pin = git(&source, &["rev-parse", "HEAD"]);
+    let full_pin = git(&source, &["rev-parse", "HEAD"]);
+    let pin = &full_pin[..pin_len];
     let dummy = repo(&root, "dummy-repo", &[("README.md", "d\n")]);
     let manifest = repo(
         &root,
@@ -372,7 +372,7 @@ repos:
         String::from_utf8_lossy(&sync.stderr)
     );
     let space = workspace.join(".gitgrip/spaces/source-space");
-    eprintln!("[A3] recorded: {}", recorded(&space));
+    eprintln!("[A3/{pin_len}] recorded: {}", recorded(&space));
     assert!(
         git(&space, &["branch", "--show-current"]).is_empty(),
         "SHA pin must be detached"
@@ -382,8 +382,18 @@ repos:
     git(&source, &["add", "-A"]);
     git(&source, &["commit", "-qm", "advance"]);
     let (code, diag) = apply(&workspace);
-    eprintln!("[A3] exit={:?}\n{}", code, diag);
+    eprintln!("[A3/{pin_len}] exit={:?}\n{}", code, diag);
     assert_eq!(code, Some(0), "A3 control must be ACCEPTED: {diag}");
+}
+
+#[test]
+fn control_explicit_full_sha_pin_is_accepted() {
+    assert_explicit_sha_pin_is_accepted(40);
+}
+
+#[test]
+fn explicit_short_sha_pin_is_accepted() {
+    assert_explicit_sha_pin_is_accepted(8);
 }
 
 #[test]

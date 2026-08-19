@@ -221,8 +221,8 @@ fn remote_tag_commit(repo: &git2::Repository, rev: &str) -> anyhow::Result<Optio
     Ok(peeled.or(direct))
 }
 
-fn is_full_commit_id(rev: &str) -> bool {
-    rev.len() == 40 && rev.bytes().all(|byte| byte.is_ascii_hexdigit())
+fn is_commit_id_like(rev: &str) -> bool {
+    rev.len() >= 4 && rev.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Refuse a manual apply when a gripspace is not at its configured revision.
@@ -280,7 +280,7 @@ fn ensure_gripspace_sources_current(
 
             let pinned_oid = if let Some(tag_oid) = remote_tag_commit(&repo, &rev)? {
                 tag_oid
-            } else if is_full_commit_id(&rev) {
+            } else if is_commit_id_like(&rev) {
                 repo.revparse_single(&rev)
                     .and_then(|object| object.peel_to_commit())
                     .map(|commit| commit.id())
