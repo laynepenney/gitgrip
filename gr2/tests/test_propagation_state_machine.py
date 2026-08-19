@@ -43,6 +43,7 @@ from gr2.prototypes.propagation_state_machine import (
     DestinationKind,
     Direction,
     Journal,
+    JournalInconsistent,
     Operation,
     Policy,
     Propagator,
@@ -646,9 +647,9 @@ def test_a_cursor_the_journal_never_acknowledged_is_a_corrupted_sink_state_and_r
     Journal(synthetic.state_dir).advance_cursor(coord.key(), new, pending_id="forged")
     before = snapshot(dest.path)
 
-    with pytest.raises(RuntimeError, match="no acknowledged attempt"):
+    with pytest.raises(JournalInconsistent, match="no acknowledged attempt"):
         propagator(synthetic).run_all([(coord, dest)])
-    with pytest.raises(RuntimeError, match="no acknowledged attempt"):
+    with pytest.raises(JournalInconsistent, match="no acknowledged attempt"):
         propagator(synthetic).run(coord, dest)
     assert snapshot(dest.path) == before, "a refusal to guess must not touch the destination"
 

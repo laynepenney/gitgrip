@@ -20,6 +20,9 @@ What the tests prove, each as its own witness:
   transition timestamps
 * ``run_loop`` ticks once under ``once``, stops when told, sleeps the declared interval,
   and prints exactly one line per tick
+* a tick that fails on the environment (the source moved away, the destination checkout
+  removed mid-loop) is printed as ``tick-failed`` and counted, the loop goes on, and the
+  next loop over a restored environment completes the operation
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -674,6 +678,49 @@ def test_a_tick_whose_git_call_fails_is_printed_counted_and_the_loop_goes_on(
     assert recovered.failures == 0
     assert recovered.operations == 1
     assert recovered.by_state == {"acknowledged": 1}
+
+
+def test_a_tick_whose_destination_vanished_is_printed_counted_and_the_loop_goes_on(
+    synthetic: Synthetic, declaration: Declaration
+) -> None:
+    # the replica exists and ensure_replica has accepted it when the loop starts; the
+    # checkout goes away AFTER the first tick (a removed directory, an unmounted volume),
+    # and a new source revision makes every later tick an operation that must read it
+    out = io.StringIO()
+    slept: list[float] = []
+    calls = {"n": 0}
+
+    def stop() -> bool:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            shutil.rmtree(declaration.destination_path)
+            synthetic.push_change("canon v2\n")
+            return False
+        return calls["n"] >= 3
+
+    stats = run_loop(declaration, stop=stop, sleep=slept.append, out=out)
+    assert stats.ticks == 3
+    assert stats.operations == 1  # the first tick, acknowledged before the checkout vanished
+    assert stats.failures == 2
+    assert stats.by_state == {"acknowledged": 1}
+    assert slept == [7.5, 7.5]
+    lines = out.getvalue().splitlines()
+    assert len(lines) == 3
+    assert "propagation acknowledged: config-main-replica" in lines[0]
+    for line in lines[1:]:
+        assert "propagation tick-failed: config-main-replica destination unreadable:" in line
+        assert "config-main-replica:" in line  # the machine names the destination it could not read
+    assert len(receipt_files(declaration)) == 1
+    assert len(outbox_events(declaration.outbox_root)) == 1
+    # recovery: a fresh loop re-ensures the replica (absent path -> clone at the source
+    # revision) and the pending operation completes as an ordinary acknowledgement
+    recovered = run_loop(declaration, once=True, sleep=slept.append, out=io.StringIO())
+    assert recovered.failures == 0
+    assert recovered.operations == 1
+    assert recovered.by_state == {"acknowledged": 1}
+    assert git(declaration.destination_path, "rev-parse", "HEAD") == git(
+        synthetic.author, "rev-parse", "HEAD"
+    )
 
 
 def test_run_loop_stops_when_told_and_sleeps_the_declared_interval_between_ticks(

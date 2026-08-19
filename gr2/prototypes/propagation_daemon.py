@@ -61,6 +61,7 @@ from gr2.prototypes.propagation_state_machine import (
     Coordinate,
     Destination,
     DestinationKind,
+    DestinationUnreadable,
     Direction,
     Operation,
     Policy,
@@ -429,12 +430,24 @@ class LoopStats:
     last: TickResult | None = None
 
 
-_TICK_FAILURES = (SourceUnobservable, subprocess.CalledProcessError, OSError)
+# Every way a tick can fail on the environment rather than on this module, derived from
+# the machine's raise sites: the source cannot be observed (before any state is touched),
+# the destination cannot be read (at observe, plan, or verify, each a point the machine
+# replays from), or a git call failed / could not be spawned. DestinationUnreadable WRAPS
+# the last two, so catching them without it would let the wrapped form escape.
+_TICK_FAILURES = (
+    SourceUnobservable,
+    DestinationUnreadable,
+    subprocess.CalledProcessError,
+    OSError,
+)
 
 
 def _git_failure_line(exc: BaseException) -> str:
     if isinstance(exc, SourceUnobservable):
         return str(exc)
+    if isinstance(exc, DestinationUnreadable):
+        return f"destination unreadable: {exc}"
     if isinstance(exc, subprocess.CalledProcessError):
         argv = (
             " ".join(str(part) for part in exc.cmd)
@@ -457,13 +470,18 @@ def run_loop(
 ) -> LoopStats:
     """Tick until ``stop()`` says so (or once). Every tick prints exactly one line.
 
-    A tick whose git call fails (the source unobservable, a credential refused, the mirror
-    fetch interrupted) is printed and counted and the loop goes on: nothing about the
-    declaration changed, and whatever the machine left pending is replayed on the next
-    tick, which is the machine's own kill-and-replay contract. The machine names the first
-    of those ``SourceUnobservable``, raised before any state is touched; the others arrive
-    as ``CalledProcessError`` / ``OSError`` from its git calls. Any other exception is a
-    defect in this module and propagates.
+    A tick that fails on the environment (the source unobservable, the destination
+    unreadable because the checkout went away or a volume unmounted, a credential refused,
+    the mirror fetch interrupted) is printed and counted and the loop goes on: nothing
+    about the declaration changed, and whatever the machine left pending is replayed on
+    the next tick, which is the machine's own kill-and-replay contract. The machine names
+    the first two ``SourceUnobservable`` (raised before any state is touched) and
+    ``DestinationUnreadable`` (raised at observe, plan, or verify, each a replay point);
+    the rest arrive as ``CalledProcessError`` / ``OSError`` from its git calls. What
+    propagates, by design: ``JournalInconsistent`` and ``LookupError`` from the machine (a
+    journal that cannot account for its own cursor is corrupted sink state, and guessing
+    would hide it), ``DeclarationMismatch`` from ``ensure_replica`` at startup, and any
+    defect in this module.
 
     ``out`` defaults to the stdout in force at CALL time, not at import time, so a caller
     that redirects stdout (a test, a wrapper, a supervisor) gets the lines.

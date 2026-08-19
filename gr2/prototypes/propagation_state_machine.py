@@ -102,6 +102,14 @@ class DestinationUnreadable(RuntimeError):
     """A read against the destination returned an error instead of an answer."""
 
 
+class JournalInconsistent(RuntimeError):
+    """The cursor names a revision the journal cannot account for.
+
+    A corrupted sink state: the prototype says so and stops rather than guessing an
+    outcome. Raised deliberately and left to propagate by every caller, by name.
+    """
+
+
 class SourceUnobservable(RuntimeError):
     """``git ls-remote`` against the source failed or advertised no such branch.
 
@@ -658,7 +666,7 @@ class Propagator:
         if not attempts or attempts[-1][-1].state is not State.ACKNOWLEDGED:
             # A cursor at a revision the journal never acknowledged is a corrupted
             # sink state, and the prototype says so rather than guessing an outcome.
-            raise RuntimeError(
+            raise JournalInconsistent(
                 f"cursor for {coordinate.destination} is at {source_rev} but the journal "
                 "carries no acknowledged attempt at that revision"
             )
@@ -1192,6 +1200,7 @@ __all__ = [
     "Destination",
     "DestinationKind",
     "DestinationUnreadable",
+    "JournalInconsistent",
     "Direction",
     "GateResult",
     "Journal",
