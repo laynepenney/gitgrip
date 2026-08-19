@@ -406,3 +406,43 @@ This keeps the cache discussion grounded in evidence:
 - cache remains the optimization
 - the prototype should tell us whether the optimization is material enough to
   justify building it into `apply`
+
+## Propagation State Machine (Prototype 0)
+
+Before any daemon is allowed to move changes between workspaces, the state
+contract for one propagation is proven on synthetic repositories:
+
+```bash
+python3 -m pytest gr2/tests/test_propagation_state_machine.py -q
+```
+
+`gr2/prototypes/propagation_state_machine.py` drives one change through
+`observed -> fetched -> planned -> applied -> verified -> acknowledged`, with
+`refused`, `partial`, and `unverifiable` reachable from any of them. Every
+transition names the observation that established it, and every receipt names
+the exact source and destination revisions. Everything it carries is an opaque
+identifier; it holds no notion of agent or workspace identity and no policy
+content (the allowed directions are a required input with no default).
+
+The tests build a bare source remote and three destinations (a clean replica, a
+dirty authoring clone, an authoring clone that is ahead of the source) and
+prove, each as its own witness:
+
+- killing the sink between each pair of states and replaying applies the change
+  exactly once (measured from the destination's own reflog and the journal)
+- the cursor advances only on `acknowledged`
+- a moved expected base refuses with the observed base in the receipt; nothing
+  is merged, forced, or retried against the new base
+- a dirty or diverged authoring clone is refused and left byte-for-byte
+  untouched (refs, HEAD, index, worktree, reflog)
+- a destination that cannot be read back after the apply verb is recorded as
+  `unverifiable`, never collapsed into `refused` or `applied`, and resolves on
+  replay
+- an acknowledged operation replays as a no-op returning the original outcome;
+  a refused one starts a new attempt, because a refusal describes a moment
+
+It is also the home of a born-red witness for the existing event outbox:
+`read_events()` advances the consumer cursor before the caller performs its
+effect, so a consumer that fails after reading loses the event. The test is
+marked `xfail(strict=True)` and turns the marker into a failure the moment
+acknowledgment moves after the effect.
