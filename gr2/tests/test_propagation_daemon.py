@@ -198,8 +198,12 @@ def test_declaration_builds_a_downward_apply_coordinate_for_one_managed_replica(
     assert decl.git_env_mode == "isolated"
     assert decl.git_env["GIT_CONFIG_GLOBAL"] == os.devnull
     assert decl.git_env["GIT_CONFIG_NOSYSTEM"] == "1"
+    # a daemon never answers a prompt, in either mode
+    assert decl.git_env["GIT_TERMINAL_PROMPT"] == "0"
     inherit = declaration_from_dict(declaration_dict(synthetic, git_env="inherit"))
-    assert inherit.git_env == {}
+    # inherit carries ONLY the prompt override: the host's config and credential helper
+    # stay in force, which is the whole point of declaring it for a private remote
+    assert inherit.git_env == {"GIT_TERMINAL_PROMPT": "0"}
 
 
 def test_declaration_defaults_interval_and_policy_hash_when_absent(synthetic: Synthetic) -> None:
@@ -288,6 +292,12 @@ def test_make_propagator_passes_the_source_url_through_as_the_exact_string(
     assert propagator.state_dir == decl.state_dir
     assert propagator.policy == decl.policy()
     assert propagator.git_env == decl.git_env
+    assert "GIT_CONFIG_GLOBAL" in propagator.git_env  # isolated by default
+    # and the inherit mode reaches the machine as inherit: the host config is NOT masked
+    # (the first dogfood run lost the credential helper here and hung on a username prompt)
+    inherit = make_propagator(declaration_from_dict(declaration_dict(synthetic, git_env="inherit")))
+    assert inherit.git_env == {"GIT_TERMINAL_PROMPT": "0"}
+    assert "GIT_CONFIG_GLOBAL" not in inherit.git_env
 
 
 # ----------------------------------------------------------------------- ensure_replica
@@ -625,6 +635,45 @@ def test_run_loop_once_ensures_the_replica_ticks_once_and_prints_exactly_one_lin
     lines = out.getvalue().splitlines()
     assert len(lines) == 1
     assert lines[0] == f"{stats.last.observed_at} {stats.last.summary}"
+
+
+def test_a_tick_whose_git_call_fails_is_printed_counted_and_the_loop_goes_on(
+    synthetic: Synthetic, declaration: Declaration
+) -> None:
+    ensure_replica(declaration)
+    # take the source away: the replica still names it as origin, so ensure_replica accepts
+    # the path, and the first git call of the tick (ls-remote) fails
+    moved = synthetic.remote.with_name("source.git.moved")
+    synthetic.remote.rename(moved)
+    out = io.StringIO()
+    slept: list[float] = []
+    seen = {"n": 0}
+
+    def stop() -> bool:
+        seen["n"] += 1
+        return seen["n"] >= 2
+
+    stats = run_loop(declaration, stop=stop, sleep=slept.append, out=out)
+    assert stats.ticks == 2
+    assert stats.failures == 2
+    assert stats.operations == 0
+    assert stats.by_state == {}
+    assert stats.last is None
+    assert slept == [7.5]  # it kept going after the first failure
+    lines = out.getvalue().splitlines()
+    assert len(lines) == 2
+    for line in lines:
+        assert "propagation tick-failed: config-main-replica git ls-remote exited" in line
+        assert "ls-remote" in line
+        assert "this tick left no receipt" in line
+    assert receipt_files(declaration) == []
+    assert outbox_events(declaration.outbox_root) == []
+    # put the source back: the very next tick is an ordinary operation, nothing to repair
+    moved.rename(synthetic.remote)
+    recovered = run_loop(declaration, once=True, sleep=slept.append, out=io.StringIO())
+    assert recovered.failures == 0
+    assert recovered.operations == 1
+    assert recovered.by_state == {"acknowledged": 1}
 
 
 def test_run_loop_stops_when_told_and_sleeps_the_declared_interval_between_ticks(

@@ -31,7 +31,16 @@ The git environment is a declared choice. Tests run isolated from the host's
 configuration (the Prototype 0 default); a real private remote needs the host's
 credential helper, so a declaration may say ``"git_env": "inherit"``. The daemon never
 creates a commit (fast-forward only), so inheriting the host configuration does not
-invoke signing.
+invoke signing. In both modes ``GIT_TERMINAL_PROMPT=0`` is set: a daemon never answers
+a prompt, so a missing credential fails the tick instead of hanging the loop on a tty.
+A tick whose git call fails is printed as ``propagation tick-failed`` and counted, and
+the loop continues; the next tick replays whatever the machine left pending.
+
+The first dogfood run found the inherit seam the hard way: the machine collapsed an
+explicit empty environment into its isolated default because ``{}`` is falsy, so the
+clone that ``ensure_replica`` made with the host's credentials was followed by an
+``ls-remote`` that prompted for a username. The machine now distinguishes ``None``
+from ``{}`` and the seam is witnessed at both ends.
 """
 
 from __future__ import annotations
@@ -57,6 +66,7 @@ from gr2.prototypes.propagation_state_machine import (
     Policy,
     Propagator,
     Receipt,
+    SourceUnobservable,
     State,
 )
 from gr2.python_cli.events import EventType, emit
@@ -104,7 +114,11 @@ class Declaration:
 
     @property
     def git_env(self) -> dict[str, str]:
-        return {} if self.git_env_mode == "inherit" else dict(_ISOLATED_GIT_ENV)
+        # A daemon never answers a prompt: in both modes a missing credential must fail
+        # the git call (and the tick) rather than hang the loop on a tty. "inherit" carries
+        # ONLY that override, so the host's credential helper and config are in force.
+        base = {} if self.git_env_mode == "inherit" else dict(_ISOLATED_GIT_ENV)
+        return {**base, "GIT_TERMINAL_PROMPT": "0"}
 
     def destination(self) -> Destination:
         return Destination(
@@ -410,8 +424,27 @@ def tick(declaration: Declaration, propagator: Propagator) -> TickResult:
 class LoopStats:
     ticks: int = 0
     operations: int = 0
+    failures: int = 0
     by_state: dict[str, int] = field(default_factory=dict)
     last: TickResult | None = None
+
+
+_TICK_FAILURES = (SourceUnobservable, subprocess.CalledProcessError, OSError)
+
+
+def _git_failure_line(exc: BaseException) -> str:
+    if isinstance(exc, SourceUnobservable):
+        return str(exc)
+    if isinstance(exc, subprocess.CalledProcessError):
+        argv = (
+            " ".join(str(part) for part in exc.cmd)
+            if isinstance(exc.cmd, list | tuple)
+            else exc.cmd
+        )
+        stderr = (exc.stderr or "").strip().splitlines()
+        tail = stderr[-1] if stderr else ""
+        return f"git exited {exc.returncode} ({argv}): {tail}"
+    return f"{type(exc).__name__}: {exc}"
 
 
 def run_loop(
@@ -424,6 +457,14 @@ def run_loop(
 ) -> LoopStats:
     """Tick until ``stop()`` says so (or once). Every tick prints exactly one line.
 
+    A tick whose git call fails (the source unobservable, a credential refused, the mirror
+    fetch interrupted) is printed and counted and the loop goes on: nothing about the
+    declaration changed, and whatever the machine left pending is replayed on the next
+    tick, which is the machine's own kill-and-replay contract. The machine names the first
+    of those ``SourceUnobservable``, raised before any state is touched; the others arrive
+    as ``CalledProcessError`` / ``OSError`` from its git calls. Any other exception is a
+    defect in this module and propagates.
+
     ``out`` defaults to the stdout in force at CALL time, not at import time, so a caller
     that redirects stdout (a test, a wrapper, a supervisor) gets the lines.
     """
@@ -432,14 +473,27 @@ def run_loop(
     propagator = make_propagator(declaration)
     stats = LoopStats()
     while True:
-        result = tick(declaration, propagator)
-        stats.ticks += 1
-        stats.last = result
-        if result.receipt is not None:
-            stats.operations += 1
-            key = str(result.receipt.state)
-            stats.by_state[key] = stats.by_state.get(key, 0) + 1
-        print(f"{result.observed_at} {result.summary}", file=stream, flush=True)
+        observed_at = datetime.now(UTC).isoformat()
+        try:
+            result = tick(declaration, propagator)
+        except _TICK_FAILURES as exc:
+            stats.ticks += 1
+            stats.failures += 1
+            print(
+                f"{observed_at} propagation tick-failed: {declaration.destination_id} "
+                f"{_git_failure_line(exc)}; this tick left no receipt, the next tick "
+                f"replays whatever the machine left pending",
+                file=stream,
+                flush=True,
+            )
+        else:
+            stats.ticks += 1
+            stats.last = result
+            if result.receipt is not None:
+                stats.operations += 1
+                key = str(result.receipt.state)
+                stats.by_state[key] = stats.by_state.get(key, 0) + 1
+            print(f"{result.observed_at} {result.summary}", file=stream, flush=True)
         if once or (stop is not None and stop()):
             return stats
         sleep(declaration.interval_seconds)
