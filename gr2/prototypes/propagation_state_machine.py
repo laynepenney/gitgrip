@@ -573,7 +573,10 @@ class Propagator:
     # -- driver
 
     def run(self, coordinate: Coordinate, destination: Destination) -> Receipt | None:
-        """Drive one coordinate. ``None`` means no new source revision: not an operation."""
+        """Drive one coordinate. ``None`` means no new source revision: not an operation.
+
+        Raises if the cursor sits at a revision the journal never acknowledged.
+        """
         return self._run(coordinate, destination, report_current=False)
 
     def _run(
@@ -582,14 +585,16 @@ class Propagator:
         key = coordinate.key()
         observation = self.observe_source(coordinate)
         if not observation.is_new:
-            if not report_current:
-                return None
             # The cursor is AT the source revision, which only happens after an
-            # acknowledgement at that revision. For an aggregate the target was
-            # declared and already reached; report the terminal outcome rather
-            # than dropping the target, because a dropped target is
-            # indistinguishable from one that was never part of the invocation.
-            return self._terminal_receipt(coordinate, observation.source_rev)
+            # acknowledgement at that revision; _terminal_receipt RAISES if the
+            # journal carries no such acknowledgement, on both paths, because a
+            # cursor the journal cannot account for is a corrupted sink state and
+            # "nothing new" is exactly the answer that would hide it. For an
+            # aggregate the target was declared and already reached; report the
+            # terminal outcome rather than dropping the target, because a dropped
+            # target is indistinguishable from one never part of the invocation.
+            terminal = self._terminal_receipt(coordinate, observation.source_rev)
+            return terminal if report_current else None
         source_rev = observation.source_rev
 
         attempts = self.journal.find(key, source_rev)

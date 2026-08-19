@@ -632,6 +632,38 @@ def test_replaying_a_partial_outcome_keeps_the_reached_target_and_stays_partial(
     assert head_moves(clean.path) == 1
 
 
+def test_a_cursor_the_journal_never_acknowledged_is_a_corrupted_sink_state_and_raises(
+    synthetic: Synthetic,
+) -> None:
+    # Found in review: the "corrupted sink state" branch was unwitnessed, so a silent
+    # `return None` in its place kept the whole file green while dropping a declared
+    # target from the aggregate -- the same outcome class the previous fix closed.
+    dest = replica(synthetic, "replica")
+    new = synthetic.push_change("canon v2\n")
+    coord = coordinate(dest.destination_id)
+    # Forge the one state the journal can never produce: a cursor AT the source
+    # revision with no acknowledged attempt behind it.
+    Journal(synthetic.state_dir).advance_cursor(coord.key(), new, pending_id="forged")
+    before = snapshot(dest.path)
+
+    with pytest.raises(RuntimeError, match="no acknowledged attempt"):
+        propagator(synthetic).run_all([(coord, dest)])
+    with pytest.raises(RuntimeError, match="no acknowledged attempt"):
+        propagator(synthetic).run(coord, dest)
+    assert snapshot(dest.path) == before, "a refusal to guess must not touch the destination"
+
+    # Control: a cursor the journal DID acknowledge is the ordinary current state --
+    # run() reports nothing new and run_all reports the target as already reached.
+    healthy = replica(synthetic, "healthy")
+    hcoord = coordinate(healthy.destination_id)
+    first = propagator(synthetic).run(hcoord, healthy)
+    assert first is not None and first.state is State.ACKNOWLEDGED
+    assert propagator(synthetic).run(hcoord, healthy) is None
+    again = propagator(synthetic).run_all([(hcoord, healthy)])
+    assert again is not None and again.state is State.ACKNOWLEDGED
+    assert again.reached == ("healthy",) and again.receipts[0].replayed is True
+
+
 def test_run_all_with_no_declared_targets_is_none(synthetic: Synthetic) -> None:
     synthetic.push_change("canon v2\n")
     assert propagator(synthetic).run_all([]) is None
