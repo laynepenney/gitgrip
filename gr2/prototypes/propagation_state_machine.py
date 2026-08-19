@@ -594,18 +594,33 @@ class Propagator:
 
     # -- driver
 
-    def run(self, coordinate: Coordinate, destination: Destination) -> Receipt | None:
+    def run(
+        self,
+        coordinate: Coordinate,
+        destination: Destination,
+        observation: Observation | None = None,
+    ) -> Receipt | None:
         """Drive one coordinate. ``None`` means no new source revision: not an operation.
 
-        Raises if the cursor sits at a revision the journal never acknowledged.
+        Raises ``JournalInconsistent`` if the cursor sits at a revision the journal never
+        acknowledged. A caller that has already observed the source this tick may pass
+        its ``observation`` so the source is not asked twice; the cursor check runs on it
+        all the same, because "nothing new" is exactly the answer that would hide a
+        corrupted sink state, whoever observed.
         """
-        return self._run(coordinate, destination, report_current=False)
+        return self._run(coordinate, destination, report_current=False, observation=observation)
 
     def _run(
-        self, coordinate: Coordinate, destination: Destination, *, report_current: bool
+        self,
+        coordinate: Coordinate,
+        destination: Destination,
+        *,
+        report_current: bool,
+        observation: Observation | None = None,
     ) -> Receipt | None:
         key = coordinate.key()
-        observation = self.observe_source(coordinate)
+        if observation is None:
+            observation = self.observe_source(coordinate)
         if not observation.is_new:
             # The cursor is AT the source revision, which only happens after an
             # acknowledgement at that revision; _terminal_receipt RAISES if the

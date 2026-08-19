@@ -23,6 +23,9 @@ What the tests prove, each as its own witness:
 * a tick that fails on the environment (the source moved away, the destination checkout
   removed mid-loop) is printed as ``tick-failed`` and counted, the loop goes on, and the
   next loop over a restored environment completes the operation
+* what the loop says propagates does propagate: a corrupted cursor (``JournalInconsistent``)
+  leaves the loop by name with no tick line and no receipt, and ``LookupError`` or a bare
+  ``RuntimeError`` from a tick is not swallowed either
 """
 
 from __future__ import annotations
@@ -55,6 +58,8 @@ from gr2.prototypes.propagation_daemon import (
 from gr2.prototypes.propagation_state_machine import (
     DestinationKind,
     Direction,
+    Journal,
+    JournalInconsistent,
     Operation,
     State,
 )
@@ -583,12 +588,12 @@ def test_a_dirty_replica_is_refused_with_a_receipt_left_untouched_then_applies_o
 def test_tick_writes_and_announces_nothing_when_the_machine_returns_none(
     declaration: Declaration, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # the only way to reach this branch is a race (the source moved back to the cursor
-    # between observe and run), so the machine's answer is forced here; the claim under
-    # test is the daemon's: no receipt, no file, no event
+    # the machine's contract allows None ("not new"); since the daemon now hands the
+    # machine its own observation that answer cannot arise on this path, so it is forced
+    # here; the claim under test is the daemon's: no receipt, no file, no event
     ensure_replica(declaration)
     propagator = make_propagator(declaration)
-    monkeypatch.setattr(propagator, "run", lambda coordinate, destination: None)
+    monkeypatch.setattr(propagator, "run", lambda coordinate, destination, observation=None: None)
     result = tick(declaration, propagator)
     assert not result.was_operation
     assert result.receipt_path is None
@@ -721,6 +726,69 @@ def test_a_tick_whose_destination_vanished_is_printed_counted_and_the_loop_goes_
     assert git(declaration.destination_path, "rev-parse", "HEAD") == git(
         synthetic.author, "rev-parse", "HEAD"
     )
+
+
+def test_a_corrupted_cursor_propagates_out_of_the_loop_by_name_instead_of_retrying_forever(
+    synthetic: Synthetic, declaration: Declaration
+) -> None:
+    # The one state the journal can never produce on its own: a cursor AT the source
+    # revision with no acknowledged attempt behind it. The machine names it
+    # JournalInconsistent and the loop must NOT treat it as an environmental failure: a
+    # daemon that swallowed it would print tick-failed forever over corrupted sink state
+    # and nobody would learn. Found unwitnessed in review (widening the catch list to
+    # RuntimeError kept the suite green), so this is the witness.
+    ensure_replica(declaration)
+    propagator = make_propagator(declaration)
+    Journal(declaration.state_dir).advance_cursor(
+        declaration.coordinate.key(), synthetic.base, pending_id="forged"
+    )
+    out = io.StringIO()
+    with pytest.raises(JournalInconsistent, match="no acknowledged attempt"):
+        run_loop(declaration, once=True, sleep=lambda _s: None, out=out)
+    assert out.getvalue() == ""  # no tick line: the loop did not survive it
+    assert receipt_files(declaration) == []
+    assert outbox_events(declaration.outbox_root) == []
+    # and the same with the propagator handed in through tick() directly
+    with pytest.raises(JournalInconsistent):
+        tick(declaration, propagator)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(LookupError("no transitions journaled"), id="LookupError"),
+        pytest.param(RuntimeError("a defect in the daemon"), id="bare-RuntimeError"),
+        pytest.param(ValueError("a defect in the daemon"), id="ValueError"),
+    ],
+)
+def test_the_loop_does_not_swallow_what_it_says_propagates(
+    declaration: Declaration, monkeypatch: pytest.MonkeyPatch, exc: BaseException
+) -> None:
+    # The docstring lists what propagates by design; this pins the list from the other
+    # side. A "hardening" edit that widened _TICK_FAILURES to RuntimeError or LookupError
+    # would turn a corrupted-journal halt into an infinite retry, silently.
+    import gr2.prototypes.propagation_daemon as daemon_module
+
+    calls = {"n": 0}
+
+    def exploding_tick(decl, propagator):  # noqa: ANN001 - signature of daemon.tick
+        calls["n"] += 1
+        raise exc
+
+    monkeypatch.setattr(daemon_module, "tick", exploding_tick)
+    out = io.StringIO()
+    # the stop predicate is BOUNDED so that a loop which wrongly swallows the exception
+    # terminates and fails here, instead of spinning forever and hanging the suite
+    rounds = {"n": 0}
+
+    def stop_after_three() -> bool:
+        rounds["n"] += 1
+        return rounds["n"] >= 3
+
+    with pytest.raises(type(exc)):
+        run_loop(declaration, stop=stop_after_three, sleep=lambda _s: None, out=out)
+    assert calls["n"] == 1  # it did not go round again
+    assert out.getvalue() == ""
 
 
 def test_run_loop_stops_when_told_and_sleeps_the_declared_interval_between_ticks(

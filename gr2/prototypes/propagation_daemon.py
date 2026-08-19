@@ -379,6 +379,12 @@ def tick(declaration: Declaration, propagator: Propagator) -> TickResult:
     coordinate = declaration.coordinate
     observation = propagator.observe_source(coordinate)
     if not observation.is_new:
+        # Not an operation, but not a shortcut past the machine either: it must account
+        # for a cursor that sits at the source revision, and it raises JournalInconsistent
+        # for one the journal never acknowledged. An earlier version of this tick returned
+        # here without asking, and "current; not an operation" would have hidden corrupted
+        # sink state on every tick forever. Found by the witness, not by the dogfood.
+        propagator.run(coordinate, declaration.destination(), observation=observation)
         return TickResult(
             observed_at=observed_at,
             source_rev=observation.source_rev,
@@ -391,9 +397,10 @@ def tick(declaration: Declaration, propagator: Propagator) -> TickResult:
                 f"{_short(observation.source_rev)}; not an operation"
             ),
         )
-    receipt = propagator.run(coordinate, declaration.destination())
+    receipt = propagator.run(coordinate, declaration.destination(), observation=observation)
     if receipt is None:
-        # the source moved between observe and run, back to the cursor; nothing to do
+        # the machine's contract allows None for "not new"; with the observation shared it
+        # cannot answer that here, but a None is still not an operation and writes nothing
         return TickResult(
             observed_at=observed_at,
             source_rev=observation.source_rev,
