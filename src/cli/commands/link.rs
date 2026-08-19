@@ -2,12 +2,15 @@
 //!
 //! Manages copyfile and linkfile entries.
 
+use crate::cli::outcome::CliOutcomeError;
 use crate::cli::output::Output;
+use crate::core::gripspace::requested_gripspace_revision;
 use crate::core::manifest::Manifest;
 use crate::core::manifest_paths;
 use crate::core::repo::RepoInfo;
 use crate::files::{process_composefiles, resolve_file_source};
-use crate::git::path_exists;
+use crate::git::{fetch_remote, path_exists};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 /// Check if a source path contains glob characters (`*`, `?`, `[`).
@@ -118,10 +121,157 @@ pub fn run_link(
     if status {
         show_link_status(workspace_root, manifest, json)?;
     } else if apply {
+        ensure_gripspace_sources_current(workspace_root, manifest)?;
         apply_links(workspace_root, manifest, false)?;
     } else {
         // Default: show status
         show_link_status(workspace_root, manifest, json)?;
+    }
+
+    Ok(())
+}
+
+/// Names of gripspace clones whose bytes can reach a manual link application.
+///
+/// Resolution rewrites inherited composefile parts to their materialized
+/// directory name. Copyfile and linkfile sources retain the explicit
+/// `gripspace:<name>:<path>` spelling. Collect both forms so the freshness
+/// check and the writer cover the same source classes.
+fn referenced_gripspaces(manifest: &Manifest) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let Some(config) = &manifest.manifest else {
+        return names;
+    };
+
+    for source in config
+        .copyfile
+        .iter()
+        .flatten()
+        .map(|entry| entry.src.as_str())
+        .chain(
+            config
+                .linkfile
+                .iter()
+                .flatten()
+                .map(|entry| entry.src.as_str()),
+        )
+    {
+        if let Some(rest) = source.strip_prefix("gripspace:") {
+            if let Some((name, _)) = rest.split_once(':') {
+                names.insert(name.to_string());
+            }
+        }
+    }
+
+    for name in config
+        .composefile
+        .iter()
+        .flatten()
+        .flat_map(|compose| &compose.parts)
+        .filter_map(|part| part.gripspace.as_ref())
+    {
+        names.insert(name.clone());
+    }
+
+    names
+}
+
+/// Refuse a manual apply when a branch-backed gripspace is behind upstream.
+///
+/// A successful local composition proves that the files are internally
+/// usable. It does not prove that the source clone is current. Fetch first,
+/// then compare graph position. A detached HEAD is accepted only when the
+/// materializer recorded an explicit tag or commit revision and HEAD still
+/// resolves to that pin. Detachment by itself is not evidence of a pin.
+fn ensure_gripspace_sources_current(
+    workspace_root: &Path,
+    manifest: &Manifest,
+) -> anyhow::Result<()> {
+    let spaces_dir = manifest_paths::spaces_dir(workspace_root);
+
+    for name in referenced_gripspaces(manifest) {
+        let path = spaces_dir.join(&name);
+        let repo = git2::Repository::open(&path).map_err(|error| {
+            anyhow::anyhow!(
+                "Cannot verify gripspace source '{}' at {}: {}",
+                name,
+                path.display(),
+                error
+            )
+        })?;
+        fetch_remote(&repo, "origin").map_err(|error| {
+            anyhow::anyhow!("Cannot verify gripspace source '{name}' against origin: {error}")
+        })?;
+
+        let head = repo.head()?;
+        let local_oid = head
+            .target()
+            .ok_or_else(|| anyhow::anyhow!("Cannot resolve HEAD for gripspace source '{name}'"))?;
+        if !head.is_branch() {
+            let requested_rev = requested_gripspace_revision(&path).map_err(|error| {
+                CliOutcomeError::refusal(format!(
+                    "Cannot verify detached gripspace source '{name}': {error}"
+                ))
+            })?;
+            let Some(rev) = requested_rev else {
+                return Err(CliOutcomeError::refusal(format!(
+                    "Gripspace source '{name}' is unexpectedly detached without an explicit revision pin. Run `gr sync` before `gr link --apply`."
+                ))
+                .into());
+            };
+
+            let remote_branch = format!("refs/remotes/origin/{rev}");
+            if repo.find_reference(&remote_branch).is_ok() {
+                return Err(CliOutcomeError::refusal(format!(
+                    "Gripspace source '{name}' is detached from configured branch '{rev}'. Run `gr sync` before `gr link --apply`."
+                ))
+                .into());
+            }
+
+            let pinned_oid = repo
+                .revparse_single(&rev)
+                .and_then(|object| object.peel_to_commit())
+                .map(|commit| commit.id())
+                .map_err(|error| {
+                    CliOutcomeError::refusal(format!(
+                        "Cannot verify gripspace source '{name}' at configured revision '{rev}': {error}"
+                    ))
+                })?;
+            if pinned_oid != local_oid {
+                return Err(CliOutcomeError::refusal(format!(
+                    "Gripspace source '{name}' does not match configured revision '{rev}'. Run `gr sync` before `gr link --apply`."
+                ))
+                .into());
+            }
+            continue;
+        }
+
+        let branch = head
+            .shorthand()
+            .ok_or_else(|| anyhow::anyhow!("Cannot identify branch for gripspace source '{name}'"))?
+            .to_string();
+
+        let remote_ref = format!("refs/remotes/origin/{branch}");
+        let remote_oid = repo
+            .find_reference(&remote_ref)
+            .and_then(|reference| {
+                reference
+                    .target()
+                    .ok_or_else(|| git2::Error::from_str(&format!("{remote_ref} has no target")))
+            })
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "Cannot verify gripspace source '{name}' against origin/{branch}: {error}"
+                )
+            })?;
+        let (_, behind) = repo.graph_ahead_behind(local_oid, remote_oid)?;
+
+        if behind > 0 {
+            return Err(CliOutcomeError::refusal(format!(
+                "Gripspace source '{name}' is behind origin/{branch} by {behind} commit(s). Run `gr sync` before `gr link --apply`."
+            ))
+            .into());
+        }
     }
 
     Ok(())
@@ -774,11 +924,44 @@ pub fn apply_links(workspace_root: &Path, manifest: &Manifest, quiet: bool) -> a
 mod tests {
     use super::*;
     use crate::core::manifest::{
-        CloneStrategy, CopyFileConfig, LinkFileConfig, ManifestRepoConfig, ManifestSettings,
-        MergeStrategy, RepoConfig,
+        CloneStrategy, CopyFileConfig, GripspaceConfig, LinkFileConfig, ManifestRepoConfig,
+        ManifestSettings, MergeStrategy, RepoConfig,
     };
     use std::collections::HashMap;
+    use std::process::Command as GitCommand;
     use tempfile::TempDir;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let output = GitCommand::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed in {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn source_repo(path: &Path) -> String {
+        std::fs::create_dir_all(path).unwrap();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.email", "test@example.com"]);
+        git(path, &["config", "user.name", "test"]);
+        std::fs::write(path.join("SOURCE.md"), "version one\n").unwrap();
+        git(path, &["add", "SOURCE.md"]);
+        git(path, &["commit", "-qm", "initial"]);
+        git(path, &["rev-parse", "HEAD"])
+    }
+
+    fn advance_source(path: &Path) {
+        std::fs::write(path.join("SOURCE.md"), "version two\n").unwrap();
+        git(path, &["add", "SOURCE.md"]);
+        git(path, &["commit", "-qm", "advance"]);
+    }
 
     fn create_test_manifest(
         copyfiles: Option<Vec<CopyFileConfig>>,
@@ -823,6 +1006,90 @@ mod tests {
             },
             workspace: None,
         }
+    }
+
+    #[test]
+    fn freshness_sources_cover_every_gripspace_backed_link_shape() {
+        let manifest = Manifest::parse_raw(
+            r#"
+version: 2
+repos: {}
+manifest:
+  url: ""
+  copyfile:
+    - src: gripspace:copy-space:file.txt
+      dest: copy.txt
+    - src: local.txt
+      dest: local-copy.txt
+  linkfile:
+    - src: gripspace:link-space:file.txt
+      dest: link.txt
+  composefile:
+    - dest: composed.txt
+      parts:
+        - gripspace: compose-space
+          src: file.txt
+        - gripspace: copy-space
+          src: another.txt
+        - src: local.txt
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            referenced_gripspaces(&manifest),
+            BTreeSet::from([
+                "compose-space".to_string(),
+                "copy-space".to_string(),
+                "link-space".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn detached_source_requires_recorded_pin_provenance() {
+        let fixture = TempDir::new().unwrap();
+        let workspace = fixture.path().join("workspace");
+        let spaces = manifest_paths::spaces_dir(&workspace);
+        std::fs::create_dir_all(&spaces).unwrap();
+        let origin = fixture.path().join("source-space");
+        let pinned_sha = source_repo(&origin);
+
+        let unpinned = GripspaceConfig {
+            url: origin.display().to_string(),
+            rev: None,
+        };
+        let clone = crate::core::gripspace::ensure_gripspace(&spaces, &unpinned).unwrap();
+        git(&clone, &["checkout", "--detach", "HEAD"]);
+        assert!(git(&clone, &["branch", "--show-current"]).is_empty());
+        advance_source(&origin);
+
+        let manifest = Manifest::parse_raw(
+            r#"
+version: 2
+repos: {}
+manifest:
+  url: ""
+  copyfile:
+    - src: gripspace:source-space:SOURCE.md
+      dest: OUTPUT.md
+"#,
+        )
+        .unwrap();
+        let error = ensure_gripspace_sources_current(&workspace, &manifest).unwrap_err();
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("unexpectedly detached"), "{diagnostic}");
+        assert!(diagnostic.contains("gr sync"), "{diagnostic}");
+
+        // Positive control: the same detached object is accepted when the
+        // materializer records that exact commit as the requested revision.
+        let pinned = GripspaceConfig {
+            url: origin.display().to_string(),
+            rev: Some(pinned_sha),
+        };
+        let pinned_clone = crate::core::gripspace::ensure_gripspace(&spaces, &pinned).unwrap();
+        assert!(git(&pinned_clone, &["branch", "--show-current"]).is_empty());
+        ensure_gripspace_sources_current(&workspace, &manifest).unwrap();
     }
 
     #[test]
