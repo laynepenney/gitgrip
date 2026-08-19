@@ -1,0 +1,660 @@
+"""Prototype 0: the propagation state machine, proven on synthetic git repositories.
+
+Everything here runs against throwaway repositories under ``tmp_path``. No real
+workspace, remote, or authoring clone is touched. The synthetic topology is:
+
+* one bare "source" remote with a config-like file on ``main``
+* three destinations: a clean managed replica, a dirty authoring clone, and an
+  authoring clone that is ahead of (and behind) the source
+
+What the tests prove, each as its own witness:
+
+* one change walks observed -> fetched -> planned -> applied -> verified ->
+  acknowledged, and every receipt names exact source and destination revisions
+* killing the sink between each pair of states and replaying applies the change
+  exactly once, with the cursor advancing only on acknowledged
+* a moved expected base refuses (compare-and-swap) and the receipt carries the
+  observed base; nothing is merged or forced
+* a dirty authoring clone and a diverged authoring clone are refused and left
+  byte-for-byte untouched
+* a destination that cannot be read back after the apply verb is recorded as
+  ``unverifiable`` (never collapsed into refused or applied) and resolves on replay
+* some destinations verifying while others refuse is ``partial``, both sides
+  enumerated
+* the born-red witness for the outbox: a consumer that fails after reading an
+  event loses that event for good, because the cursor advances before the effect
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+from gr2.prototypes.propagation_state_machine import (
+    KILL_AFTER_APPLY_VERB,
+    Coordinate,
+    Destination,
+    DestinationKind,
+    Direction,
+    Journal,
+    Operation,
+    Policy,
+    Propagator,
+    SinkKilled,
+    State,
+    tree_digest,
+)
+from gr2.python_cli.events import EventType, emit, read_events
+
+_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+# Commits in the synthetic repositories must not depend on, or touch, the
+# machine's global git configuration (signing keys, hooks paths, identities).
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "prototype",
+    "GIT_AUTHOR_EMAIL": "prototype@example.invalid",
+    "GIT_COMMITTER_NAME": "prototype",
+    "GIT_COMMITTER_EMAIL": "prototype@example.invalid",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
+
+
+def git(repo: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **_GIT_ENV},
+    )
+    return proc.stdout.strip()
+
+
+def head_moves(repo: Path) -> int:
+    """How many times HEAD has moved since the clone (reflog entries minus the clone)."""
+    lines = git(repo, "reflog", "show", "--format=%gs", "HEAD").splitlines()
+    return len(lines) - 1
+
+
+def snapshot(repo: Path) -> dict[str, str]:
+    """Everything an 'untouched' claim is about: refs, HEAD, index+worktree state, bytes."""
+    return {
+        "refs": git(repo, "for-each-ref"),
+        "head": git(repo, "rev-parse", "HEAD"),
+        "porcelain": git(repo, "status", "--porcelain"),
+        "canon": (repo / "canon.md").read_text(),
+        "reflog": git(repo, "reflog", "show", "--format=%gs", "HEAD"),
+    }
+
+
+@dataclass
+class Synthetic:
+    remote: Path
+    author: Path
+    base: str
+    state_dir: Path
+    root: Path
+
+    def push_change(self, text: str) -> str:
+        (self.author / "canon.md").write_text(text)
+        git(self.author, "add", "canon.md")
+        git(self.author, "commit", "-q", "-m", f"canon: {text.strip()[:40]}")
+        git(self.author, "push", "-q", "origin", "main")
+        return git(self.author, "rev-parse", "HEAD")
+
+    def clone(self, name: str) -> Path:
+        path = self.root / name
+        subprocess.run(
+            ["git", "clone", "-q", str(self.remote), str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+            env={**os.environ, **_GIT_ENV},
+        )
+        return path
+
+
+@pytest.fixture
+def synthetic(tmp_path: Path) -> Synthetic:
+    remote = tmp_path / "source.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "--initial-branch=main", str(remote)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **_GIT_ENV},
+    )
+    author = tmp_path / "author"
+    subprocess.run(
+        ["git", "clone", "-q", str(remote), str(author)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **_GIT_ENV},
+    )
+    git(author, "switch", "-q", "-c", "main")
+    (author / "canon.md").write_text("canon v1\n")
+    git(author, "add", "canon.md")
+    git(author, "commit", "-q", "-m", "canon v1")
+    git(author, "push", "-q", "-u", "origin", "main")
+    base = git(author, "rev-parse", "HEAD")
+    state_dir = tmp_path / "sink-state"
+    return Synthetic(remote=remote, author=author, base=base, state_dir=state_dir, root=tmp_path)
+
+
+POLICY = Policy(policy_hash="policy-prototype-0", allowed_directions=frozenset({Direction.DOWN}))
+
+
+def coordinate(destination_id: str, direction: Direction = Direction.DOWN) -> Coordinate:
+    return Coordinate(
+        source="source-0",
+        destination=destination_id,
+        layer="layer-0",
+        direction=direction,
+        operation=Operation.APPLY,
+        artifact_class="class-0",
+    )
+
+
+def replica(syn: Synthetic, name: str = "replica") -> Destination:
+    return Destination(destination_id=name, path=syn.clone(name), kind=DestinationKind.REPLICA)
+
+
+def authoring(syn: Synthetic, name: str = "authoring") -> Destination:
+    return Destination(destination_id=name, path=syn.clone(name), kind=DestinationKind.AUTHORING)
+
+
+def propagator(syn: Synthetic, **kwargs) -> Propagator:
+    return Propagator(
+        source_remote=syn.remote, branch="main", state_dir=syn.state_dir, policy=POLICY, **kwargs
+    )
+
+
+# --------------------------------------------------------------------------- happy path
+
+
+def test_one_change_reaches_acknowledged_and_names_exact_revisions(synthetic: Synthetic) -> None:
+    dest = replica(synthetic)
+    new = synthetic.push_change("canon v2\n")
+    coord = coordinate(dest.destination_id)
+
+    receipt = propagator(synthetic).run(coord, dest)
+
+    assert receipt is not None
+    assert receipt.state is State.ACKNOWLEDGED
+    assert [t.state for t in receipt.transitions] == [
+        State.OBSERVED,
+        State.FETCHED,
+        State.PLANNED,
+        State.APPLIED,
+        State.VERIFIED,
+        State.ACKNOWLEDGED,
+    ]
+    # exact revisions, never prefixes
+    assert receipt.source_rev == new and _SHA.match(receipt.source_rev)
+    assert receipt.expected_base == synthetic.base
+    assert receipt.observed_base == synthetic.base
+    assert receipt.after == new
+    assert receipt.operation_id is not None and len(receipt.operation_id) == 64
+    assert receipt.digest == git(dest.path, "rev-parse", f"{new}^{{tree}}")
+    # the destination really moved, read back from the destination itself
+    assert git(dest.path, "rev-parse", "HEAD") == new
+    assert (dest.path / "canon.md").read_text() == "canon v2\n"
+    assert head_moves(dest.path) == 1
+    # gate results are individual, each with a hash; the postcondition is named
+    assert {g.gate_id for g in receipt.gate_results} == {
+        "policy.direction",
+        "destination.base-unmoved",
+        "destination.clean",
+        "destination.fast-forward",
+    }
+    assert all(g.result == "pass" and len(g.result_hash) == 64 for g in receipt.gate_results)
+    assert receipt.postcondition_checked == "head-is-intended-after-and-tree-matches-digest"
+    assert receipt.postcondition_holds is True
+    assert receipt.refusal_reason is None
+    # the cursor advanced, and only because acknowledged was reached
+    assert Journal(synthetic.state_dir).cursor(coord.key()) == new
+    # the receipt is a plain, JSON-serialisable record
+    json.dumps(receipt.as_dict())
+
+
+def test_no_new_source_revision_is_not_an_operation(synthetic: Synthetic) -> None:
+    dest = replica(synthetic)
+    synthetic.push_change("canon v2\n")
+    coord = coordinate(dest.destination_id)
+    sink = propagator(synthetic)
+    assert sink.run(coord, dest) is not None
+    journal_lines = Journal(synthetic.state_dir).path.read_text()
+    before = snapshot(dest.path)
+
+    assert sink.run(coord, dest) is None
+
+    assert snapshot(dest.path) == before
+    assert Journal(synthetic.state_dir).path.read_text() == journal_lines
+
+
+def test_observe_control_rereads_at_a_known_revision_and_reports_nothing(
+    synthetic: Synthetic,
+) -> None:
+    new = synthetic.push_change("canon v2\n")
+    sink = propagator(synthetic)
+    fresh = sink.observe_source_at(cursor=None)
+    assert fresh.source_rev == new and fresh.is_new is True
+    # the control: the same read, at a cursor that already names the revision
+    assert sink.observe_source_at(cursor=new).is_new is False
+    # and at a cursor known to predate it, the change IS reported
+    assert sink.observe_source_at(cursor=synthetic.base).is_new is True
+
+
+def test_fetched_digest_control_known_different_object_mismatches(synthetic: Synthetic) -> None:
+    dest = replica(synthetic)
+    new = synthetic.push_change("canon v2\n")
+    receipt = propagator(synthetic).run(coordinate(dest.destination_id), dest)
+    assert receipt is not None and receipt.digest is not None
+    mirror = synthetic.state_dir / "mirror.git"
+    assert tree_digest(mirror, new) == receipt.digest
+    # the discriminating control: a known-different object recomputes to a different digest
+    assert tree_digest(mirror, synthetic.base) != receipt.digest
+
+
+# ------------------------------------------------------------------ kill + replay
+
+
+@pytest.mark.parametrize(
+    "kill_after",
+    [
+        State.OBSERVED,
+        State.FETCHED,
+        State.PLANNED,
+        KILL_AFTER_APPLY_VERB,
+        State.APPLIED,
+        State.VERIFIED,
+    ],
+)
+def test_kill_between_states_then_replay_applies_exactly_once(
+    synthetic: Synthetic, kill_after
+) -> None:
+    dest = replica(synthetic)
+    new = synthetic.push_change("canon v2\n")
+    coord = coordinate(dest.destination_id)
+
+    with pytest.raises(SinkKilled):
+        propagator(synthetic, kill_after=kill_after).run(coord, dest)
+
+    journal = Journal(synthetic.state_dir)
+    attempts = journal.find(coord.key(), new)
+    assert len(attempts) == 1
+    recorded = [t.state for t in attempts[0]]
+    expected_last = State.PLANNED if kill_after == KILL_AFTER_APPLY_VERB else kill_after
+    assert recorded[-1] is expected_last
+    # the cursor never advances before acknowledged, whatever state the sink died in
+    assert journal.cursor(coord.key()) is None
+    verb_ran_before_kill = kill_after in (KILL_AFTER_APPLY_VERB, State.APPLIED, State.VERIFIED)
+    assert git(dest.path, "rev-parse", "HEAD") == (new if verb_ran_before_kill else synthetic.base)
+
+    receipt = propagator(synthetic).run(coord, dest)
+
+    assert receipt is not None and receipt.state is State.ACKNOWLEDGED
+    assert receipt.replayed is False  # it was resumed, not a terminal no-op
+    assert receipt.after == new and git(dest.path, "rev-parse", "HEAD") == new
+    assert journal.cursor(coord.key()) == new
+    # exactly one apply, measured two ways: the destination's own reflog and the journal
+    assert head_moves(dest.path) == 1
+    assert journal.notes(coord.key(), new, "apply-verb-started") == 1
+    # one attempt, states strictly in order, no state skipped
+    (transitions,) = journal.find(coord.key(), new)
+    states = [t.state for t in transitions]
+    assert states == [
+        State.OBSERVED,
+        State.FETCHED,
+        State.PLANNED,
+        State.APPLIED,
+        State.VERIFIED,
+        State.ACKNOWLEDGED,
+    ]
+
+
+def test_replay_of_an_acknowledged_operation_is_a_no_op_returning_the_original_outcome(
+    synthetic: Synthetic,
+) -> None:
+    dest = replica(synthetic)
+    new = synthetic.push_change("canon v2\n")
+    coord = coordinate(dest.destination_id)
+    first = propagator(synthetic).run(coord, dest)
+    assert first is not None and first.state is State.ACKNOWLEDGED
+    # lose the cursor store (the kind of thing that happens); the journal still knows
+    cursor_file = Journal(synthetic.state_dir).cursor_path(coord.key())
+    cursor_file.unlink()
+    before = snapshot(dest.path)
+
+    again = propagator(synthetic).run(coord, dest)
+
+    assert again is not None
+    assert again.replayed is True
+    assert again.state is State.ACKNOWLEDGED
+    assert again.operation_id == first.operation_id
+    assert again.after == first.after == new
+    assert snapshot(dest.path) == before  # no verb ran against the destination
+    assert head_moves(dest.path) == 1
+
+
+def test_kill_after_acknowledged_row_before_cursor_replays_as_terminal_and_repairs_cursor(
+    synthetic: Synthetic,
+) -> None:
+    # the acknowledged row is written before the cursor advances, so the journal is
+    # the source of truth and the cursor is derived from it; a death in between must
+    # not re-run anything and must leave the cursor repaired afterwards
+    dest = replica(synthetic)
+    new = synthetic.push_change("canon v2\n")
+    coord = coordinate(dest.destination_id)
+    with pytest.raises(SinkKilled):
+        propagator(synthetic, kill_after=State.ACKNOWLEDGED).run(coord, dest)
+    journal = Journal(synthetic.state_dir)
+    (transitions,) = journal.find(coord.key(), new)
+    assert transitions[-1].state is State.ACKNOWLEDGED
+    assert journal.cursor(coord.key()) is None
+    before = snapshot(dest.path)
+
+    receipt = propagator(synthetic).run(coord, dest)
+
+    assert receipt is not None and receipt.replayed is True
+    assert receipt.state is State.ACKNOWLEDGED
+    assert journal.cursor(coord.key()) == new
+    assert snapshot(dest.path) == before
+    assert head_moves(dest.path) == 1
+    # and now the source has nothing new for this coordinate
+    assert propagator(synthetic).run(coord, dest) is None
+
+
+# ---------------------------------------------------------------- refusals
+
+
+def test_moved_expected_base_refuses_and_reports_observed_base(synthetic: Synthetic) -> None:
+    dest = replica(synthetic)
+    new = synthetic.push_change("canon v2\n")
+    coord = coordinate(dest.destination_id)
+    with pytest.raises(SinkKilled):
+        propagator(synthetic, kill_after=State.PLANNED).run(coord, dest)
+    # between plan and apply, the destination moves
+    (dest.path / "canon.md").write_text("local edit committed\n")
+    git(dest.path, "commit", "-q", "-am", "local")
+    moved = git(dest.path, "rev-parse", "HEAD")
+    assert moved != synthetic.base
+
+    receipt = propagator(synthetic).run(coord, dest)
+
+    assert receipt is not None
+    assert receipt.state is State.REFUSED
+    assert receipt.expected_base == synthetic.base
+    assert receipt.observed_base == moved
+    assert receipt.refusal_reason is not None and "expected_base" in receipt.refusal_reason
+    assert receipt.after is None
+    # not merged, not forced, not retried against the new base
+    assert git(dest.path, "rev-parse", "HEAD") == moved
+    assert (dest.path / "canon.md").read_text() == "local edit committed\n"
+    assert Journal(synthetic.state_dir).cursor(coord.key()) is None
+    assert Journal(synthetic.state_dir).notes(coord.key(), new, "apply-verb-started") == 0
+
+
+def test_dirty_authoring_clone_is_refused_and_untouched(synthetic: Synthetic) -> None:
+    dest = authoring(synthetic)
+    (dest.path / "canon.md").write_text("uncommitted authoring in progress\n")
+    (dest.path / "scratch.txt").write_text("untracked\n")
+    new = synthetic.push_change("canon v2\n")
+    coord = coordinate(dest.destination_id)
+    before = snapshot(dest.path)
+
+    receipt = propagator(synthetic).run(coord, dest)
+
+    assert receipt is not None and receipt.state is State.REFUSED
+    assert receipt.source_rev == new and receipt.expected_base == synthetic.base
+    failed = {g.gate_id: g for g in receipt.gate_results if g.result == "fail"}
+    assert "destination.clean" in failed
+    assert receipt.refusal_reason is not None and receipt.refusal_reason.startswith(
+        "destination.clean"
+    )
+    # gates are recorded individually, including the ones that passed
+    assert {g.gate_id for g in receipt.gate_results} >= {"policy.direction", "destination.clean"}
+    # untouched means untouched: refs, HEAD, index/worktree, bytes, reflog
+    assert snapshot(dest.path) == before
+    assert (dest.path / "scratch.txt").read_text() == "untracked\n"
+
+
+def test_diverged_authoring_clone_is_refused_with_counts_and_untouched(
+    synthetic: Synthetic,
+) -> None:
+    dest = authoring(synthetic)
+    (dest.path / "canon.md").write_text("local canon branch\n")
+    git(dest.path, "commit", "-q", "-am", "local authoring commit")
+    new = synthetic.push_change("canon v2\n")
+    coord = coordinate(dest.destination_id)
+    before = snapshot(dest.path)
+
+    receipt = propagator(synthetic).run(coord, dest)
+
+    assert receipt is not None and receipt.state is State.REFUSED
+    failed = {g.gate_id: g for g in receipt.gate_results if g.result == "fail"}
+    assert "destination.fast-forward" in failed
+    assert "ahead=1" in failed["destination.fast-forward"].detail
+    assert "behind=1" in failed["destination.fast-forward"].detail
+    assert receipt.source_rev == new
+    assert receipt.observed_base == before["head"]
+    assert snapshot(dest.path) == before
+
+
+def test_direction_outside_policy_is_refused_at_plan_and_destination_untouched(
+    synthetic: Synthetic,
+) -> None:
+    dest = replica(synthetic)
+    synthetic.push_change("canon v2\n")
+    coord = coordinate(dest.destination_id, direction=Direction.UP)
+    before = snapshot(dest.path)
+
+    receipt = propagator(synthetic).run(coord, dest)
+
+    assert receipt is not None and receipt.state is State.REFUSED
+    assert [t.state for t in receipt.transitions][-2:] == [State.PLANNED, State.REFUSED]
+    assert receipt.refusal_reason is not None and receipt.refusal_reason.startswith(
+        "policy.direction"
+    )
+    assert snapshot(dest.path) == before
+
+
+def test_refused_then_cleaned_is_a_new_attempt_not_a_replayed_refusal(synthetic: Synthetic) -> None:
+    dest = authoring(synthetic)
+    (dest.path / "canon.md").write_text("uncommitted\n")
+    new = synthetic.push_change("canon v2\n")
+    coord = coordinate(dest.destination_id)
+    first = propagator(synthetic).run(coord, dest)
+    assert first is not None and first.state is State.REFUSED
+    # the author cleans up; the same source revision at the same base is now applicable
+    git(dest.path, "checkout", "--", "canon.md")
+
+    second = propagator(synthetic).run(coord, dest)
+
+    assert second is not None and second.state is State.ACKNOWLEDGED
+    assert second.replayed is False
+    assert second.after == new
+    attempts = Journal(synthetic.state_dir).find(coord.key(), new)
+    assert len(attempts) == 2
+    assert [t.state for t in attempts[0]][-1] is State.REFUSED
+    assert [t.state for t in attempts[1]][-1] is State.ACKNOWLEDGED
+
+
+# ---------------------------------------------------------- verification + unverifiable
+
+
+def test_verified_postcondition_mutation_fails_the_check_and_blocks_acknowledgement(
+    synthetic: Synthetic,
+) -> None:
+    dest = replica(synthetic)
+    new = synthetic.push_change("canon v2\n")
+    coord = coordinate(dest.destination_id)
+    with pytest.raises(SinkKilled):
+        propagator(synthetic, kill_after=State.APPLIED).run(coord, dest)
+    assert git(dest.path, "rev-parse", "HEAD") == new
+    # mutate the postcondition: the worktree no longer matches the applied tree
+    (dest.path / "canon.md").write_text("mutated after apply\n")
+
+    receipt = propagator(synthetic).run(coord, dest)
+
+    assert receipt is not None
+    assert receipt.state is State.APPLIED  # the highest state actually established
+    assert receipt.postcondition_checked == "head-is-intended-after-and-tree-matches-digest"
+    assert receipt.postcondition_holds is False
+    assert Journal(synthetic.state_dir).cursor(coord.key()) is None
+    assert [t.state for t in receipt.transitions][-1] is State.APPLIED
+    # the control: undo the mutation and the same check verifies
+    (dest.path / "canon.md").write_text("canon v2\n")
+    control = propagator(synthetic).run(coord, dest)
+    assert control is not None and control.state is State.ACKNOWLEDGED
+    assert control.postcondition_holds is True
+
+
+def test_unreadable_destination_after_apply_is_unverifiable_and_resolves_on_replay(
+    synthetic: Synthetic,
+) -> None:
+    dest = replica(synthetic)
+    new = synthetic.push_change("canon v2\n")
+    coord = coordinate(dest.destination_id)
+    hidden = dest.path.with_name("replica-hidden")
+
+    def hide_destination() -> None:
+        dest.path.rename(hidden)
+
+    receipt = propagator(synthetic, after_apply_verb=hide_destination).run(coord, dest)
+
+    assert receipt is not None
+    assert receipt.state is State.UNVERIFIABLE
+    assert receipt.refusal_reason is None  # not refused
+    assert receipt.after is None  # not applied either; nobody read it back
+    assert "read back" in receipt.detail
+    assert Journal(synthetic.state_dir).cursor(coord.key()) is None
+    assert [t.state for t in receipt.transitions][-2:] == [State.PLANNED, State.UNVERIFIABLE]
+
+    hidden.rename(dest.path)
+    resolved = propagator(synthetic).run(coord, dest)
+
+    assert resolved is not None and resolved.state is State.ACKNOWLEDGED
+    assert resolved.after == new
+    assert head_moves(dest.path) == 1
+    assert Journal(synthetic.state_dir).notes(coord.key(), new, "apply-verb-started") == 1
+    assert [t.state for t in resolved.transitions] == [
+        State.OBSERVED,
+        State.FETCHED,
+        State.PLANNED,
+        State.UNVERIFIABLE,
+        State.APPLIED,
+        State.VERIFIED,
+        State.ACKNOWLEDGED,
+    ]
+
+
+# ------------------------------------------------------------------- partial
+
+
+def test_mixed_destinations_are_partial_with_both_sides_enumerated(synthetic: Synthetic) -> None:
+    clean = replica(synthetic, "replica")
+    dirty = authoring(synthetic, "dirty-authoring")
+    (dirty.path / "canon.md").write_text("uncommitted\n")
+    ahead = authoring(synthetic, "ahead-authoring")
+    (ahead.path / "canon.md").write_text("local\n")
+    git(ahead.path, "commit", "-q", "-am", "local")
+    new = synthetic.push_change("canon v2\n")
+    targets = [(coordinate(d.destination_id), d) for d in (clean, dirty, ahead)]
+
+    outcome = propagator(synthetic).run_all(targets)
+
+    assert outcome.state is State.PARTIAL
+    assert outcome.reached == ("replica",)
+    assert {d for d, _reason in outcome.not_reached} == {"dirty-authoring", "ahead-authoring"}
+    reasons = dict(outcome.not_reached)
+    assert reasons["dirty-authoring"].startswith("destination.clean")
+    assert reasons["ahead-authoring"].startswith("destination.fast-forward")
+    # every receipt, reached or not, names exact revisions
+    for receipt in outcome.receipts:
+        assert _SHA.match(receipt.source_rev) and receipt.source_rev == new
+        assert _SHA.match(receipt.expected_base)
+        assert receipt.observed_base is not None and _SHA.match(receipt.observed_base)
+    assert git(clean.path, "rev-parse", "HEAD") == new
+    assert git(dirty.path, "rev-parse", "HEAD") == synthetic.base
+    assert (dirty.path / "canon.md").read_text() == "uncommitted\n"
+
+
+def test_all_destinations_verifying_is_acknowledged_not_partial(synthetic: Synthetic) -> None:
+    a = replica(synthetic, "replica-a")
+    b = replica(synthetic, "replica-b")
+    synthetic.push_change("canon v2\n")
+    outcome = propagator(synthetic).run_all(
+        [(coordinate(a.destination_id), a), (coordinate(b.destination_id), b)]
+    )
+    assert outcome.state is State.ACKNOWLEDGED
+    assert set(outcome.reached) == {"replica-a", "replica-b"}
+    assert outcome.not_reached == ()
+
+
+# ------------------------------------------------- operation identity
+
+
+def test_operation_id_binds_coordinate_source_base_and_digest(synthetic: Synthetic) -> None:
+    a = replica(synthetic, "replica-a")
+    b = replica(synthetic, "replica-b")
+    new = synthetic.push_change("canon v2\n")
+    ra = propagator(synthetic).run(coordinate(a.destination_id), a)
+    rb = propagator(synthetic).run(coordinate(b.destination_id), b)
+    assert ra is not None and rb is not None
+    # same source revision, same base, same digest: the coordinate differs, so the id differs
+    assert ra.operation_id != rb.operation_id
+    expected = hashlib.sha256(
+        json.dumps(
+            {
+                "coordinate": coordinate(a.destination_id).key(),
+                "source_rev": new,
+                "expected_base": synthetic.base,
+                "digest": ra.digest,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    assert ra.operation_id == expected
+
+
+# ---------------------------------------------------- born-red outbox witness
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "outbox consumers lose events: read_events() advances the cursor before the "
+        "caller performs its effect, so a consumer that fails after reading never sees "
+        "the event again. This witness turns green only when acknowledgment moves "
+        "after the effect; strict=True forces the marker off at that moment."
+    ),
+)
+def test_outbox_event_survives_a_consumer_that_fails_after_reading(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    emit(
+        EventType.SYNC_COMPLETED,
+        workspace,
+        actor="sink",
+        owner_unit="unit-0",
+        payload={"detail": "one"},
+    )
+
+    with pytest.raises(RuntimeError):
+        offered = read_events(workspace, "propagation-consumer")
+        assert [e["type"] for e in offered] == ["sync.completed"]
+        raise RuntimeError("effect failed after the read")
+
+    # the contract a propagation consumer needs: an event whose effect did not happen
+    # is offered again
+    assert [e["type"] for e in read_events(workspace, "propagation-consumer")] == ["sync.completed"]
