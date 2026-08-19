@@ -431,10 +431,11 @@ async fn test_pr_merge_repo_filter_excludes_non_target() {
 }
 
 // ── Repo Filter: No Matching Repos ────────────────────────────
-// When --repo names a repo that doesn't exist, all repos are filtered out.
+// An explicit selector names something the caller believes exists. Empty is
+// therefore a refusal, not a successful operation over an empty set.
 
 #[tokio::test]
-async fn test_pr_merge_repo_filter_no_match_finds_no_prs() {
+async fn test_pr_merge_repo_filter_no_match_is_a_usage_refusal() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
     let manifest = ws.load_manifest();
@@ -463,10 +464,11 @@ async fn test_pr_merge_repo_filter_no_match_finds_no_prs() {
     )
     .await;
 
+    let err = result.expect_err("an unknown explicit --repo selector must fail");
+    assert_eq!(gitgrip::cli::outcome::exit_code_for_error(&err), 2);
     assert!(
-        result.is_ok(),
-        "repo filter with no matches should succeed with 'no PRs found': {:?}",
-        result.err()
+        err.to_string().contains("nonexistent"),
+        "the refusal must name the selector that matched nothing: {err}"
     );
 }
 
@@ -825,10 +827,11 @@ async fn test_skip_gate_approval_does_not_also_waive_checks() {
     )
     .await;
 
-    assert!(
-        result.is_ok(),
-        "should report, not error: {:?}",
-        result.err()
+    let err = result.expect_err("a live readiness gate must refuse the merge");
+    assert_eq!(
+        gitgrip::cli::outcome::exit_code_for_error(&err),
+        2,
+        "readiness refusal must be distinguishable from operational failure"
     );
 
     let requests = server.received_requests().await.unwrap();
@@ -838,6 +841,72 @@ async fn test_skip_gate_approval_does_not_also_waive_checks() {
             .any(|r| r.method == Method::PUT && r.url.path().ends_with("/merge")),
         "checks were still running and only `approval` was waived — no merge must be sent. \
          If this fires, --skip-gate is behaving as a blanket --force."
+    );
+}
+
+#[tokio::test]
+async fn test_readiness_refusal_reaches_the_process_exit_status() {
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let mut manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "feature.txt",
+        "feature",
+        "Add feature",
+    );
+
+    point_repo_at_mock(&mut manifest, "app", &server);
+    let manifest_yaml = serde_yaml::to_string(&manifest).unwrap();
+    std::fs::write(
+        ws.workspace_root.join(".gitgrip/spaces/main/gripspace.yml"),
+        manifest_yaml,
+    )
+    .unwrap();
+
+    mock_list_prs(&server, vec![(42, "feat/test")]).await;
+    mock_get_pr(&server, 42, "open", false).await;
+    mock_pr_reviews(&server, 42, vec![("COMMENTED", "alice")]).await;
+    mock_check_runs(&server, "feat/test", vec![("CI", "in_progress", None)]).await;
+    mock_merge_pr(&server, 42, true).await;
+
+    let output = tokio::process::Command::new(assert_cmd::cargo::cargo_bin!("gr"))
+        .current_dir(&ws.workspace_root)
+        .env("GITHUB_TOKEN", "test")
+        .args([
+            "pr",
+            "merge",
+            "--skip-gate",
+            "approval",
+            "--method",
+            "merge",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "readiness refusal must survive dispatch and main; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("Error: merge refused"),
+        "main must not append a generic error after the command rendered the actionable refusal"
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        !requests
+            .iter()
+            .any(|r| r.method == Method::PUT && r.url.path().ends_with("/merge")),
+        "a refusal with exit 2 must still send no merge request"
     );
 }
 

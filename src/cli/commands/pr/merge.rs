@@ -1,9 +1,13 @@
 //! PR merge command implementation
 
 use super::create::has_commits_ahead;
+use crate::cli::outcome::CliOutcomeError;
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::{get_manifest_repo_info, require_explicit_multi_repo_scope, RepoInfo};
+use crate::core::repo::{
+    get_manifest_repo_info, require_explicit_multi_repo_scope, validate_repo_filters_known,
+    RepoInfo,
+};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::traits::{HostingPlatform, PlatformError};
 use crate::platform::{get_platform_adapter, CheckState, MergeMethod, StatusCheckResult};
@@ -240,6 +244,9 @@ pub async fn run_pr_merge(
     manifest: &Manifest,
     opts: &MergeOptions<'_>,
 ) -> anyhow::Result<()> {
+    validate_repo_filters_known(manifest, opts.repo_filter.as_deref())
+        .map_err(|error| CliOutcomeError::refusal(error.to_string()))?;
+
     if !opts.json {
         Output::header("Merging pull requests...");
         println!();
@@ -660,7 +667,7 @@ pub async fn run_pr_merge(
                 .collect::<Vec<_>>()
                 .join("|")
         );
-        return Ok(());
+        return Err(CliOutcomeError::reported_refusal("merge refused by readiness gate").into());
     }
 
     // Auto-merge flow: enable auto-merge and return early

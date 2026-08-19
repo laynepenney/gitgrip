@@ -2,9 +2,11 @@
 
 use clap::Parser;
 use gitgrip::cli::args::Cli;
+use gitgrip::cli::outcome::{error_was_reported, exit_code_for_error, render_unreported_error};
+use std::process::ExitCode;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     // Initialize tracing — `--verbose` enables debug logging for gitgrip
@@ -23,5 +25,13 @@ async fn main() -> anyhow::Result<()> {
     let verbose = cli.verbose;
     let json = cli.json;
 
-    gitgrip::cli::dispatch::dispatch_command(cli.command, quiet, verbose, json).await
+    match gitgrip::cli::dispatch::dispatch_command(cli.command, quiet, verbose, json).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            if !error_was_reported(&error) {
+                eprintln!("{}", render_unreported_error(&error));
+            }
+            ExitCode::from(exit_code_for_error(&error))
+        }
+    }
 }
