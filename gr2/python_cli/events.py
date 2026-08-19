@@ -84,6 +84,10 @@ class EventType(str, Enum):
     WORKSPACE_MATERIALIZED = "workspace.materialized"
     WORKSPACE_FILE_PROJECTED = "workspace.file_projected"
 
+    # one event per propagation receipt: the daemon's notification line, carried on the
+    # outbox so a consumer can relay it without the daemon knowing any channel
+    PROPAGATION_RECEIPT = "propagation.receipt"
+
 
 def _outbox_path(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "events" / "outbox.jsonl"
