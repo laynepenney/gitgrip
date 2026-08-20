@@ -69,6 +69,7 @@ from pathlib import Path
 from gr2.prototypes.propagation_state_machine import (
     Coordinate,
     Destination,
+    MalformedLine,
     Propagator,
     Receipt,
     State,
@@ -482,12 +483,25 @@ class AppendSurface:
     writes ``seq + 1`` with the record, flushes, fsyncs, and releases. Two writers
     interleave in ARRIVAL order and both land; there is no expected base to refuse on
     because appends commute. Nothing here ever rewrites an earlier record.
+
+    A writer killed between ``write`` and its terminator leaves a remnant line. Both
+    scans SKIP such a line and COUNT it (``malformed_lines``, reflecting the most
+    recent full scan): an uncounted drop is silent, and this surface is the one place
+    a caller looks. ``append`` also repairs a missing terminator before writing, so a
+    remnant never GLUES the next record onto itself — without that repair the record
+    that follows a torn write is swallowed into an unparseable line and lost.
     """
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
+        self._malformed: tuple[MalformedLine, ...] = ()
+
+    @property
+    def malformed_lines(self) -> tuple[MalformedLine, ...]:
+        """Lines the most recent full scan could not read. Empty is the healthy case."""
+        return self._malformed
 
     def append(self, writer: str, payload: dict[str, object]) -> AppendRecord:
         with open(self.path, "a+", encoding="utf-8") as handle:
@@ -495,14 +509,26 @@ class AppendSurface:
             try:
                 handle.seek(0)
                 last = 0
-                for line in handle:
-                    line = line.strip()
-                    if line:
-                        last = int(json.loads(line)["seq"])
+                malformed: list[MalformedLine] = []
+                raw_last = ""
+                for index, raw in enumerate(handle):
+                    raw_last = raw
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        last = max(last, int(json.loads(line)["seq"]))
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                        malformed.append(
+                            MalformedLine(index=index, excerpt=line[:120], reason=str(exc))
+                        )
+                self._malformed = tuple(malformed)
                 record = AppendRecord(
                     seq=last + 1, writer=writer, payload=payload, timestamp=_now()
                 )
                 handle.seek(0, os.SEEK_END)
+                if raw_last and not raw_last.endswith("\n"):
+                    handle.write("\n")
                 handle.write(json.dumps(asdict(record), sort_keys=True) + "\n")
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -512,8 +538,12 @@ class AppendSurface:
 
     def records(self) -> list[AppendRecord]:
         out: list[AppendRecord] = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
+        malformed: list[MalformedLine] = []
+        for index, raw in enumerate(self.path.read_text(encoding="utf-8").splitlines()):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
                 data = json.loads(line)
                 out.append(
                     AppendRecord(
@@ -523,6 +553,9 @@ class AppendSurface:
                         timestamp=str(data["timestamp"]),
                     )
                 )
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                malformed.append(MalformedLine(index=index, excerpt=line[:120], reason=str(exc)))
+        self._malformed = tuple(malformed)
         return out
 
 

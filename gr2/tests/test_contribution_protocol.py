@@ -21,10 +21,15 @@ several destinations. What the witnesses prove:
 * W6  a declared append-only surface: two writers both land, in arrival order,
       with no expected base to refuse on; earlier records are never rewritten;
       a second handle on the same file sees the first handle's records
+* W7  a writer killed mid-write leaves a remnant: the append point survives it
+      (unguarded, it raises FOREVER and the surface is dead), the next record is
+      not GLUED onto the remnant and lost, and both scans skip the remnant AND
+      COUNT it, because an uncounted drop is a loss nobody can see
 """
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -465,6 +470,77 @@ def test_w6_concurrent_writers_produce_one_gapless_sequence(tmp_path: Path) -> N
     for i in range(writers):
         mine = [r.payload["n"] for r in records if r.writer == f"w{i}"]
         assert mine == list(range(each))  # each writer's own order is preserved
+
+
+# --------------------------------------------------------------------------- W7
+
+
+def _tear(path: Path, remnant: str) -> None:
+    """A writer killed between its write and its terminator: bytes, no newline."""
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(remnant)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def test_w7_a_torn_remnant_does_not_brick_the_append_point(tmp_path: Path) -> None:
+    """Unguarded, append() raises on the remnant on EVERY later call: the surface is dead."""
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    surface.append("a", {"n": 1})
+    surface.append("a", {"n": 2})
+    _tear(path, '{"seq": 3, "writer": "a", "pay')
+
+    record = surface.append("b", {"n": 3})
+
+    assert record.seq == 3  # the torn write never completed, so its number is free
+    assert [line.index for line in surface.malformed_lines] == [2]
+    # and the NEXT append works too: the remnant is not a once-survivable event
+    assert surface.append("b", {"n": 4}).seq == 4
+
+
+def test_w7_the_next_record_is_not_glued_onto_the_remnant(tmp_path: Path) -> None:
+    """Terminator repair. Without it the record following a torn write is swallowed."""
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    surface.append("a", {"n": 1})
+    _tear(path, '{"seq": 2, "writer": "a", "pay')
+
+    surface.append("b", {"n": 2})
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 3, lines  # remnant and new record are SEPARATE lines
+    assert json.loads(lines[2])["payload"] == {"n": 2}  # the new record survived whole
+    assert [r.payload["n"] for r in surface.records()] == [1, 2]
+
+
+def test_w7_records_skips_the_remnant_and_counts_it(tmp_path: Path) -> None:
+    """Skipping alone is silent; the COUNT is what makes an invisible loss detectable."""
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    surface.append("a", {"n": 1})
+    _tear(path, '{"seq": 2, "writer": "a", "pay')
+    surface.append("b", {"n": 2})
+
+    assert [(r.seq, r.payload["n"]) for r in surface.records()] == [(1, 1), (2, 2)]
+    (bad,) = surface.malformed_lines
+    assert bad.index == 1 and bad.excerpt.startswith('{"seq": 2') and bad.reason
+    # the finding is a property of the FILE, not of one handle
+    fresh = AppendSurface(path)
+    assert len(fresh.records()) == 2 and len(fresh.malformed_lines) == 1
+
+
+def test_w7_a_parseable_line_of_the_wrong_shape_is_counted_not_raised(tmp_path: Path) -> None:
+    """JSON that parses but carries none of the record's fields is malformed HERE."""
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    surface.append("a", {"n": 1})
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('{"unrelated": true}\n')
+
+    assert surface.append("b", {"n": 2}).seq == 2  # the append point survives it
+    assert [r.payload["n"] for r in surface.records()] == [1, 2]
+    assert len(surface.malformed_lines) == 1
 
 
 # --------------------------------------------------------------------------- measurement
