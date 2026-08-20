@@ -43,6 +43,7 @@ from gr2.prototypes.propagation_state_machine import (
     DestinationKind,
     Direction,
     Journal,
+    JournalInconsistent,
     Operation,
     Policy,
     Propagator,
@@ -646,9 +647,9 @@ def test_a_cursor_the_journal_never_acknowledged_is_a_corrupted_sink_state_and_r
     Journal(synthetic.state_dir).advance_cursor(coord.key(), new, pending_id="forged")
     before = snapshot(dest.path)
 
-    with pytest.raises(RuntimeError, match="no acknowledged attempt"):
+    with pytest.raises(JournalInconsistent, match="no acknowledged attempt"):
         propagator(synthetic).run_all([(coord, dest)])
-    with pytest.raises(RuntimeError, match="no acknowledged attempt"):
+    with pytest.raises(JournalInconsistent, match="no acknowledged attempt"):
         propagator(synthetic).run(coord, dest)
     assert snapshot(dest.path) == before, "a refusal to guess must not touch the destination"
 
@@ -667,6 +668,25 @@ def test_a_cursor_the_journal_never_acknowledged_is_a_corrupted_sink_state_and_r
 def test_run_all_with_no_declared_targets_is_none(synthetic: Synthetic) -> None:
     synthetic.push_change("canon v2\n")
     assert propagator(synthetic).run_all([]) is None
+
+
+def test_an_explicit_empty_git_env_is_inherit_and_not_the_isolated_default(
+    synthetic: Synthetic,
+) -> None:
+    # None asks for the default (isolated from the host); {} asks to inherit the host
+    # environment. {} is falsy, so an `or` would silently turn inherit into isolated and a
+    # caller that needs the host's credential helper would lose it without any error.
+    assert "GIT_CONFIG_GLOBAL" in propagator(synthetic).git_env
+    assert propagator(synthetic, git_env=None).git_env == propagator(synthetic).git_env
+    assert propagator(synthetic, git_env={}).git_env == {}
+    explicit = {"GIT_TERMINAL_PROMPT": "0"}
+    assert propagator(synthetic, git_env=explicit).git_env == explicit
+    # and the inherit form still drives the machine: a change is applied under {} as well
+    dest = replica(synthetic, "replica")
+    new = synthetic.push_change("canon v2\n")
+    receipt = propagator(synthetic, git_env={}).run(coordinate(dest.destination_id), dest)
+    assert receipt is not None and receipt.state is State.ACKNOWLEDGED
+    assert git(dest.path, "rev-parse", "HEAD") == new
 
 
 def test_all_destinations_verifying_is_acknowledged_not_partial(synthetic: Synthetic) -> None:

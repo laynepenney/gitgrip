@@ -102,6 +102,23 @@ class DestinationUnreadable(RuntimeError):
     """A read against the destination returned an error instead of an answer."""
 
 
+class JournalInconsistent(RuntimeError):
+    """The cursor names a revision the journal cannot account for.
+
+    A corrupted sink state: the prototype says so and stops rather than guessing an
+    outcome. Raised deliberately and left to propagate by every caller, by name.
+    """
+
+
+class SourceUnobservable(RuntimeError):
+    """``git ls-remote`` against the source failed or advertised no such branch.
+
+    Raised before any cursor, journal, or destination state is touched, so a caller that
+    loops (a daemon) can count it and try again on its next tick with nothing to repair.
+    A ``RuntimeError`` subclass, so a caller that caught the bare class still does.
+    """
+
+
 class Direction(StrEnum):
     DOWN = "down"
     UP = "up"
@@ -536,7 +553,9 @@ class Propagator:
         self.policy = policy
         self.kill_after = kill_after
         self.after_apply_verb = after_apply_verb
-        self.git_env = git_env or _ISOLATED_GIT_ENV
+        # None means "the default, isolated from the host"; an explicit {} means "inherit the
+        # host environment" and must not collapse into the default because it is falsy
+        self.git_env = _ISOLATED_GIT_ENV if git_env is None else git_env
         self.journal = Journal(state_dir)
         self.mirror = state_dir / "mirror.git"
 
@@ -550,8 +569,11 @@ class Propagator:
             env={**os.environ, **self.git_env},
         )
         if out.returncode != 0 or not out.stdout.strip():
-            raise RuntimeError(
-                f"source {self.source_remote} has no branch {self.branch}: {out.stderr.strip()}"
+            stderr = out.stderr.strip().splitlines()
+            tail = stderr[-1] if stderr else "no output"
+            raise SourceUnobservable(
+                f"git ls-remote exited {out.returncode} for {self.source_remote} "
+                f"refs/heads/{self.branch}: {tail}"
             )
         source_rev = out.stdout.split()[0]
         return Observation(source_rev=source_rev, cursor=cursor, is_new=(source_rev != cursor))
@@ -572,18 +594,33 @@ class Propagator:
 
     # -- driver
 
-    def run(self, coordinate: Coordinate, destination: Destination) -> Receipt | None:
+    def run(
+        self,
+        coordinate: Coordinate,
+        destination: Destination,
+        observation: Observation | None = None,
+    ) -> Receipt | None:
         """Drive one coordinate. ``None`` means no new source revision: not an operation.
 
-        Raises if the cursor sits at a revision the journal never acknowledged.
+        Raises ``JournalInconsistent`` if the cursor sits at a revision the journal never
+        acknowledged. A caller that has already observed the source this tick may pass
+        its ``observation`` so the source is not asked twice; the cursor check runs on it
+        all the same, because "nothing new" is exactly the answer that would hide a
+        corrupted sink state, whoever observed.
         """
-        return self._run(coordinate, destination, report_current=False)
+        return self._run(coordinate, destination, report_current=False, observation=observation)
 
     def _run(
-        self, coordinate: Coordinate, destination: Destination, *, report_current: bool
+        self,
+        coordinate: Coordinate,
+        destination: Destination,
+        *,
+        report_current: bool,
+        observation: Observation | None = None,
     ) -> Receipt | None:
         key = coordinate.key()
-        observation = self.observe_source(coordinate)
+        if observation is None:
+            observation = self.observe_source(coordinate)
         if not observation.is_new:
             # The cursor is AT the source revision, which only happens after an
             # acknowledgement at that revision; _terminal_receipt RAISES if the
@@ -644,7 +681,7 @@ class Propagator:
         if not attempts or attempts[-1][-1].state is not State.ACKNOWLEDGED:
             # A cursor at a revision the journal never acknowledged is a corrupted
             # sink state, and the prototype says so rather than guessing an outcome.
-            raise RuntimeError(
+            raise JournalInconsistent(
                 f"cursor for {coordinate.destination} is at {source_rev} but the journal "
                 "carries no acknowledged attempt at that revision"
             )
@@ -1178,6 +1215,7 @@ __all__ = [
     "Destination",
     "DestinationKind",
     "DestinationUnreadable",
+    "JournalInconsistent",
     "Direction",
     "GateResult",
     "Journal",
