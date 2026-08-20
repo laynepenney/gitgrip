@@ -21,10 +21,15 @@ several destinations. What the witnesses prove:
 * W6  a declared append-only surface: two writers both land, in arrival order,
       with no expected base to refuse on; earlier records are never rewritten;
       a second handle on the same file sees the first handle's records
+* W7  a writer killed mid-write leaves a remnant: the append point survives it
+      (unguarded, it raises FOREVER and the surface is dead), the next record is
+      not GLUED onto the remnant and lost, and both scans skip the remnant AND
+      COUNT it, because an uncounted drop is a loss nobody can see
 """
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -465,6 +470,203 @@ def test_w6_concurrent_writers_produce_one_gapless_sequence(tmp_path: Path) -> N
     for i in range(writers):
         mine = [r.payload["n"] for r in records if r.writer == f"w{i}"]
         assert mine == list(range(each))  # each writer's own order is preserved
+
+
+# --------------------------------------------------------------------------- W7
+
+
+def _tear(path: Path, remnant: str) -> None:
+    """A writer killed between its write and its terminator: bytes, no newline."""
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(remnant)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def test_w7_a_torn_remnant_does_not_brick_the_append_point(tmp_path: Path) -> None:
+    """Unguarded, append() raises on the remnant on EVERY later call: the surface is dead."""
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    surface.append("a", {"n": 1})
+    surface.append("a", {"n": 2})
+    _tear(path, '{"seq": 3, "writer": "a", "pay')
+
+    record = surface.append("b", {"n": 3})
+
+    assert record.seq == 3  # the torn write never completed, so its number is free
+    assert [line.index for line in surface.malformed_lines] == [2]
+    # and the NEXT append works too: the remnant is not a once-survivable event
+    assert surface.append("b", {"n": 4}).seq == 4
+
+
+def test_w7_the_next_record_is_not_glued_onto_the_remnant(tmp_path: Path) -> None:
+    """Terminator repair. Without it the record following a torn write is swallowed."""
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    surface.append("a", {"n": 1})
+    _tear(path, '{"seq": 2, "writer": "a", "pay')
+
+    surface.append("b", {"n": 2})
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 3, lines  # remnant and new record are SEPARATE lines
+    assert json.loads(lines[2])["payload"] == {"n": 2}  # the new record survived whole
+    assert [r.payload["n"] for r in surface.records()] == [1, 2]
+
+
+def test_w7_records_skips_the_remnant_and_counts_it(tmp_path: Path) -> None:
+    """Skipping alone is silent; the COUNT is what makes an invisible loss detectable."""
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    surface.append("a", {"n": 1})
+    _tear(path, '{"seq": 2, "writer": "a", "pay')
+    surface.append("b", {"n": 2})
+
+    assert [(r.seq, r.payload["n"]) for r in surface.records()] == [(1, 1), (2, 2)]
+    (bad,) = surface.malformed_lines
+    assert bad.index == 1 and bad.excerpt.startswith('{"seq": 2') and bad.reason
+    # the finding is a property of the FILE, not of one handle
+    fresh = AppendSurface(path)
+    assert len(fresh.records()) == 2 and len(fresh.malformed_lines) == 1
+
+
+def test_w7_a_parseable_line_of_the_wrong_shape_is_counted_not_raised(tmp_path: Path) -> None:
+    """JSON that parses but carries none of the record's fields is malformed HERE."""
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    surface.append("a", {"n": 1})
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('{"unrelated": true}\n')
+
+    assert surface.append("b", {"n": 2}).seq == 2  # the append point survives it
+    assert [r.payload["n"] for r in surface.records()] == [1, 2]
+    assert len(surface.malformed_lines) == 1
+
+
+# A line's CONTENT is untrusted. Each of these is valid JSON (or valid enough to
+# reach a coercion) and each one bricked the surface under a version of this fix
+# that listed exception types instead of validating shapes. The 1e999 case came from
+# review on this PR; the deep-nesting case is its sibling, found by asking what ELSE
+# escapes a denylist rather than patching the one instance the review cited.
+def _hostile(seq: str, writer: str = '"x"', payload: str = "{}", ts: str = '"t"') -> str:
+    return f'{{"seq": {seq}, "writer": {writer}, "payload": {payload}, "timestamp": {ts}}}'
+
+
+HOSTILE_LINES = {
+    "float infinity (1e999 -> inf; int() raises OverflowError)": _hostile("1e999"),
+    "not-a-number (NaN)": _hostile("NaN"),
+    "deeply nested (json.loads raises RecursionError)": _hostile("[" * 100000 + "]" * 100000),
+    "integer literal past the conversion limit": _hostile("9" * 6000),
+    "seq is an object": _hostile('{"a": 1}'),
+    "seq is a bool (bool IS an int in Python)": _hostile("true"),
+    "writer is an object": _hostile("1", writer='{"a": 1}'),
+    "payload is a string": _hostile("1", payload='"not-an-object"'),
+    "timestamp is a number": _hostile("1", ts="5"),
+    "line is an array, not an object": "[1, 2, 3]",
+    "line is a bare string": '"just a string"',
+}
+
+
+@pytest.mark.parametrize("label", sorted(HOSTILE_LINES))
+def test_w7_hostile_line_content_neither_bricks_nor_vanishes(label: str, tmp_path: Path) -> None:
+    """Both scans must survive ANY line content and count what they could not read.
+
+    A class witness, not an instance one. A guard that LISTS exception types is a
+    denylist over untrusted input, and a denylist leaks: it passes the case you
+    thought of and bricks on the next one. Every row here must survive both paths.
+    """
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    surface.append("a", {"n": 1})
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(HOSTILE_LINES[label] + "\n")
+
+    record = surface.append("b", {"n": 2})  # the WRITE path must not brick
+    assert record.seq == 2
+
+    assert [r.payload["n"] for r in surface.records()] == [1, 2]  # READ path survives
+    assert len(surface.malformed_lines) == 1  # the bad line is COUNTED, not dropped
+    assert surface.malformed_lines[0].reason  # with a reason a human can act on
+
+
+def test_w7_a_readable_seq_on_an_unreadable_record_is_still_never_reused(
+    tmp_path: Path,
+) -> None:
+    """Deliberate: a number that APPEARS in the file is not handed out again.
+
+    A line can be unreadable as a RECORD while its sequence number is perfectly
+    readable. Numbering honours it anyway, so no writer is ever issued a number a
+    reader can already see on disk — the safe direction when the two scans disagree
+    about whether a line exists.
+    """
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    surface.append("a", {"n": 1})
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(_hostile("9", payload='"not-an-object"') + "\n")
+
+    assert surface.append("b", {"n": 2}).seq == 10  # 9 is taken, even unreadably
+    assert [r.payload["n"] for r in surface.records()] == [1, 2]
+    assert len(surface.malformed_lines) == 1
+
+
+# A line's BYTES are untrusted too, and the decode happens BEFORE any JSON handling.
+# Reading in text mode raises while the iterator manufactures the line — outside every
+# guard — so one bad byte anywhere killed the whole scan. The 0xff case came from the
+# second review block on this PR; the rest are its class, found by asking what else the
+# bytes-to-text layer can refuse.
+def _hostile_bytes(writer: bytes) -> bytes:
+    return b'{"seq": 1, "writer": "' + writer + b'", "payload": {}, "timestamp": "t"}'
+
+
+HOSTILE_BYTES = {
+    "invalid byte 0xff": _hostile_bytes(b"\xff"),
+    "lone surrogate": _hostile_bytes(b"\xed\xa0\x80"),
+    "truncated multi-byte sequence": _hostile_bytes(b"\xe2\x82"),
+    "overlong encoding": _hostile_bytes(b"\xc0\xaf"),
+    "continuation byte with no lead": _hostile_bytes(b"\x80\x80"),
+    "line is pure binary": b"\x00\x01\xff\xfe\xfd",
+}
+
+
+@pytest.mark.parametrize("label", sorted(HOSTILE_BYTES))
+def test_w7_undecodable_bytes_neither_brick_nor_vanish(label: str, tmp_path: Path) -> None:
+    """The bytes-to-text boundary is content-dependent, so it is guarded like any other."""
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    surface.append("a", {"n": 1})
+    with path.open("ab") as handle:
+        handle.write(HOSTILE_BYTES[label] + b"\n")
+
+    record = surface.append("b", {"n": 2})  # the WRITE path must not brick
+    assert record.seq == 2
+
+    assert [r.payload["n"] for r in surface.records()] == [1, 2]  # READ path survives
+    assert len(surface.malformed_lines) == 1
+    assert surface.malformed_lines[0].reason
+    assert surface.malformed_lines[0].excerpt  # reportable even when it is not text
+
+
+def test_w7_an_undecodable_line_is_confined_to_itself(tmp_path: Path) -> None:
+    """The operational property: one bad byte costs ONE line, not the file.
+
+    Under a whole-file decode a single invalid byte anywhere destroys every record in
+    the surface, including the thousands written correctly before and after it.
+    """
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    for n in range(1, 6):
+        surface.append("a", {"n": n})
+    with path.open("ab") as handle:
+        handle.write(b'{"seq": 99, "writer": "\xff", "payload": {}, "timestamp": "t"}\n')
+    for n in range(6, 11):
+        surface.append("b", {"n": n})
+
+    records = surface.records()
+
+    assert [r.payload["n"] for r in records] == list(range(1, 11))  # every good line kept
+    assert len(surface.malformed_lines) == 1  # exactly the one bad line
+    assert "utf-8" in surface.malformed_lines[0].reason
 
 
 # --------------------------------------------------------------------------- measurement

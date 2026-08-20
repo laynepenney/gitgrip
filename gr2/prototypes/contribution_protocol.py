@@ -69,6 +69,7 @@ from pathlib import Path
 from gr2.prototypes.propagation_state_machine import (
     Coordinate,
     Destination,
+    MalformedLine,
     Propagator,
     Receipt,
     State,
@@ -475,6 +476,81 @@ class AppendRecord:
     timestamp: str
 
 
+def _decode_line(raw: bytes) -> tuple[str | None, str]:
+    """Bytes become text HERE, so the failure that can happen HERE is guarded here.
+
+    A JSONL file is a BYTE format. Read in text mode, the decode happens while the
+    iterator produces the line — outside every ``try`` in this module — so one
+    invalid byte anywhere raises before a guard can see it and the whole scan dies.
+    The exception type was never the problem: ``UnicodeDecodeError`` subclasses
+    ``ValueError``, which was already caught. The OPERATION that raises it simply sat
+    outside the guarded region. A line does not ARRIVE as text, it is MANUFACTURED as
+    text, and manufacturing it can fail on content; decoding per line confines a bad
+    byte to that line.
+    """
+
+    try:
+        return raw.decode("utf-8"), ""
+    except UnicodeDecodeError as exc:
+        return None, str(exc)
+
+
+def _excerpt(raw: bytes) -> str:
+    """A malformed line must be reportable even when it is not valid text."""
+
+    return raw[:120].decode("utf-8", "replace")
+
+
+def _read_json_object(line: str) -> tuple[dict[str, object] | None, str]:
+    """Parse ONE line into a JSON object, or say why it cannot be read.
+
+    ``json.loads`` is the ONLY operation in this file that can raise on file
+    content. It raises ``ValueError`` (``JSONDecodeError`` subclasses it, as does
+    the integer-literal length limit) or ``RecursionError`` (deeply nested input).
+    Everything after it VALIDATES rather than coerces, and that is the whole point:
+    a coercion over untrusted bytes forces the caller to enumerate the exceptions it
+    might raise, which is a denylist, and a denylist leaks. ``int()`` on a value
+    ``json`` can legitimately produce (``1e999`` parses to ``inf``) raises
+    ``OverflowError`` — a type no list written from the parse side would predict.
+    Validating instead removes the raise rather than cataloguing it.
+    """
+
+    try:
+        obj = json.loads(line)
+    except (ValueError, RecursionError) as exc:
+        return None, str(exc)
+    if not isinstance(obj, dict):
+        return None, f"line is a {type(obj).__name__}, not an object"
+    return obj, ""
+
+
+def _read_seq(obj: dict[str, object]) -> tuple[int | None, str]:
+    """A sequence number must be a real integer. ``bool`` is an ``int`` and is not one."""
+
+    seq = obj.get("seq")
+    if isinstance(seq, bool) or not isinstance(seq, int):
+        return None, f"seq is {type(seq).__name__}, not an integer"
+    return seq, ""
+
+
+def _read_record(obj: dict[str, object]) -> tuple[AppendRecord | None, str]:
+    """Every field checked by TYPE, so nothing here can raise on hostile content."""
+
+    seq, reason = _read_seq(obj)
+    if seq is None:
+        return None, reason
+    writer = obj.get("writer")
+    payload = obj.get("payload")
+    timestamp = obj.get("timestamp")
+    if not isinstance(writer, str):
+        return None, f"writer is {type(writer).__name__}, not a string"
+    if not isinstance(payload, dict):
+        return None, f"payload is {type(payload).__name__}, not an object"
+    if not isinstance(timestamp, str):
+        return None, f"timestamp is {type(timestamp).__name__}, not a string"
+    return AppendRecord(seq=seq, writer=writer, payload=payload, timestamp=timestamp), ""
+
+
 class AppendSurface:
     """A declared append-only file with one guarded append point.
 
@@ -482,28 +558,66 @@ class AppendSurface:
     writes ``seq + 1`` with the record, flushes, fsyncs, and releases. Two writers
     interleave in ARRIVAL order and both land; there is no expected base to refuse on
     because appends commute. Nothing here ever rewrites an earlier record.
+
+    A writer killed between ``write`` and its terminator leaves a remnant line. Both
+    scans SKIP such a line and COUNT it (``malformed_lines``, reflecting the most
+    recent full scan): an uncounted drop is silent, and this surface is the one place
+    a caller looks. ``append`` also repairs a missing terminator before writing, so a
+    remnant never GLUES the next record onto itself — without that repair the record
+    that follows a torn write is swallowed into an unparseable line and lost.
+
+    The file is read as BYTES and decoded one line at a time. A JSONL file is a byte
+    format, and in text mode the decode happens while the iterator produces the line,
+    outside every guard here — so a single invalid byte anywhere destroyed the whole
+    scan, including every record written correctly around it. A line passes through
+    four layers: read, decode, parse, and shape-check. The last three are each guarded
+    where they happen. Unbounded line length (a file with no terminator for a very
+    long span) is a resource limit on the first layer and is NOT defended here.
     """
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
+        self._malformed: tuple[MalformedLine, ...] = ()
+
+    @property
+    def malformed_lines(self) -> tuple[MalformedLine, ...]:
+        """Lines the most recent full scan could not read. Empty is the healthy case."""
+        return self._malformed
 
     def append(self, writer: str, payload: dict[str, object]) -> AppendRecord:
-        with open(self.path, "a+", encoding="utf-8") as handle:
+        with open(self.path, "a+b") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
                 handle.seek(0)
                 last = 0
-                for line in handle:
-                    line = line.strip()
-                    if line:
-                        last = int(json.loads(line)["seq"])
+                malformed: list[MalformedLine] = []
+                raw_last = b""
+                for index, raw in enumerate(handle):
+                    raw_last = raw
+                    stripped = raw.strip()
+                    if not stripped:
+                        continue
+                    line, reason = _decode_line(stripped)
+                    if line is not None:
+                        obj, reason = _read_json_object(line)
+                        if obj is not None:
+                            seq, reason = _read_seq(obj)
+                            if seq is not None:
+                                last = max(last, seq)
+                                continue
+                    malformed.append(
+                        MalformedLine(index=index, excerpt=_excerpt(stripped), reason=reason)
+                    )
+                self._malformed = tuple(malformed)
                 record = AppendRecord(
                     seq=last + 1, writer=writer, payload=payload, timestamp=_now()
                 )
                 handle.seek(0, os.SEEK_END)
-                handle.write(json.dumps(asdict(record), sort_keys=True) + "\n")
+                if raw_last and not raw_last.endswith(b"\n"):
+                    handle.write(b"\n")
+                handle.write((json.dumps(asdict(record), sort_keys=True) + "\n").encode("utf-8"))
                 handle.flush()
                 os.fsync(handle.fileno())
                 return record
@@ -512,17 +626,21 @@ class AppendSurface:
 
     def records(self) -> list[AppendRecord]:
         out: list[AppendRecord] = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                data = json.loads(line)
-                out.append(
-                    AppendRecord(
-                        seq=int(data["seq"]),
-                        writer=str(data["writer"]),
-                        payload=dict(data["payload"]),
-                        timestamp=str(data["timestamp"]),
-                    )
-                )
+        malformed: list[MalformedLine] = []
+        for index, raw in enumerate(self.path.read_bytes().split(b"\n")):
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            line, reason = _decode_line(stripped)
+            if line is not None:
+                obj, reason = _read_json_object(line)
+                if obj is not None:
+                    record, reason = _read_record(obj)
+                    if record is not None:
+                        out.append(record)
+                        continue
+            malformed.append(MalformedLine(index=index, excerpt=_excerpt(stripped), reason=reason))
+        self._malformed = tuple(malformed)
         return out
 
 
