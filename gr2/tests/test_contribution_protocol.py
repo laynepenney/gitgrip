@@ -543,6 +543,132 @@ def test_w7_a_parseable_line_of_the_wrong_shape_is_counted_not_raised(tmp_path: 
     assert len(surface.malformed_lines) == 1
 
 
+# A line's CONTENT is untrusted. Each of these is valid JSON (or valid enough to
+# reach a coercion) and each one bricked the surface under a version of this fix
+# that listed exception types instead of validating shapes. The 1e999 case came from
+# review on this PR; the deep-nesting case is its sibling, found by asking what ELSE
+# escapes a denylist rather than patching the one instance the review cited.
+def _hostile(seq: str, writer: str = '"x"', payload: str = "{}", ts: str = '"t"') -> str:
+    return f'{{"seq": {seq}, "writer": {writer}, "payload": {payload}, "timestamp": {ts}}}'
+
+
+HOSTILE_LINES = {
+    "float infinity (1e999 -> inf; int() raises OverflowError)": _hostile("1e999"),
+    "not-a-number (NaN)": _hostile("NaN"),
+    "deeply nested (json.loads raises RecursionError)": _hostile("[" * 100000 + "]" * 100000),
+    "integer literal past the conversion limit": _hostile("9" * 6000),
+    "seq is an object": _hostile('{"a": 1}'),
+    "seq is a bool (bool IS an int in Python)": _hostile("true"),
+    "writer is an object": _hostile("1", writer='{"a": 1}'),
+    "payload is a string": _hostile("1", payload='"not-an-object"'),
+    "timestamp is a number": _hostile("1", ts="5"),
+    "line is an array, not an object": "[1, 2, 3]",
+    "line is a bare string": '"just a string"',
+}
+
+
+@pytest.mark.parametrize("label", sorted(HOSTILE_LINES))
+def test_w7_hostile_line_content_neither_bricks_nor_vanishes(label: str, tmp_path: Path) -> None:
+    """Both scans must survive ANY line content and count what they could not read.
+
+    A class witness, not an instance one. A guard that LISTS exception types is a
+    denylist over untrusted input, and a denylist leaks: it passes the case you
+    thought of and bricks on the next one. Every row here must survive both paths.
+    """
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    surface.append("a", {"n": 1})
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(HOSTILE_LINES[label] + "\n")
+
+    record = surface.append("b", {"n": 2})  # the WRITE path must not brick
+    assert record.seq == 2
+
+    assert [r.payload["n"] for r in surface.records()] == [1, 2]  # READ path survives
+    assert len(surface.malformed_lines) == 1  # the bad line is COUNTED, not dropped
+    assert surface.malformed_lines[0].reason  # with a reason a human can act on
+
+
+def test_w7_a_readable_seq_on_an_unreadable_record_is_still_never_reused(
+    tmp_path: Path,
+) -> None:
+    """Deliberate: a number that APPEARS in the file is not handed out again.
+
+    A line can be unreadable as a RECORD while its sequence number is perfectly
+    readable. Numbering honours it anyway, so no writer is ever issued a number a
+    reader can already see on disk — the safe direction when the two scans disagree
+    about whether a line exists.
+    """
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    surface.append("a", {"n": 1})
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(_hostile("9", payload='"not-an-object"') + "\n")
+
+    assert surface.append("b", {"n": 2}).seq == 10  # 9 is taken, even unreadably
+    assert [r.payload["n"] for r in surface.records()] == [1, 2]
+    assert len(surface.malformed_lines) == 1
+
+
+# A line's BYTES are untrusted too, and the decode happens BEFORE any JSON handling.
+# Reading in text mode raises while the iterator manufactures the line — outside every
+# guard — so one bad byte anywhere killed the whole scan. The 0xff case came from the
+# second review block on this PR; the rest are its class, found by asking what else the
+# bytes-to-text layer can refuse.
+def _hostile_bytes(writer: bytes) -> bytes:
+    return b'{"seq": 1, "writer": "' + writer + b'", "payload": {}, "timestamp": "t"}'
+
+
+HOSTILE_BYTES = {
+    "invalid byte 0xff": _hostile_bytes(b"\xff"),
+    "lone surrogate": _hostile_bytes(b"\xed\xa0\x80"),
+    "truncated multi-byte sequence": _hostile_bytes(b"\xe2\x82"),
+    "overlong encoding": _hostile_bytes(b"\xc0\xaf"),
+    "continuation byte with no lead": _hostile_bytes(b"\x80\x80"),
+    "line is pure binary": b"\x00\x01\xff\xfe\xfd",
+}
+
+
+@pytest.mark.parametrize("label", sorted(HOSTILE_BYTES))
+def test_w7_undecodable_bytes_neither_brick_nor_vanish(label: str, tmp_path: Path) -> None:
+    """The bytes-to-text boundary is content-dependent, so it is guarded like any other."""
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    surface.append("a", {"n": 1})
+    with path.open("ab") as handle:
+        handle.write(HOSTILE_BYTES[label] + b"\n")
+
+    record = surface.append("b", {"n": 2})  # the WRITE path must not brick
+    assert record.seq == 2
+
+    assert [r.payload["n"] for r in surface.records()] == [1, 2]  # READ path survives
+    assert len(surface.malformed_lines) == 1
+    assert surface.malformed_lines[0].reason
+    assert surface.malformed_lines[0].excerpt  # reportable even when it is not text
+
+
+def test_w7_an_undecodable_line_is_confined_to_itself(tmp_path: Path) -> None:
+    """The operational property: one bad byte costs ONE line, not the file.
+
+    Under a whole-file decode a single invalid byte anywhere destroys every record in
+    the surface, including the thousands written correctly before and after it.
+    """
+    path = tmp_path / "ledger" / "events.jsonl"
+    surface = AppendSurface(path)
+    for n in range(1, 6):
+        surface.append("a", {"n": n})
+    with path.open("ab") as handle:
+        handle.write(b'{"seq": 99, "writer": "\xff", "payload": {}, "timestamp": "t"}\n')
+    for n in range(6, 11):
+        surface.append("b", {"n": n})
+
+    records = surface.records()
+
+    assert [r.payload["n"] for r in records] == list(range(1, 11))  # every good line kept
+    assert len(surface.malformed_lines) == 1  # exactly the one bad line
+    assert "utf-8" in surface.malformed_lines[0].reason
+
+
 # --------------------------------------------------------------------------- measurement
 
 
