@@ -10,11 +10,16 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from gr2.prototypes.jsonl_store import (
+    JsonlRead,
+    append_jsonl,
+    read_jsonl,
+    warn_unreadable,
+)
+
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Prototype recall lane history surface"
-    )
+    parser = argparse.ArgumentParser(description="Prototype recall lane history surface")
     sub = parser.add_subparsers(dest="command", required=True)
 
     demo = sub.add_parser("demo-data")
@@ -40,22 +45,10 @@ def lane_events_file(workspace_root: Path) -> Path:
     return events_dir(workspace_root) / "lane_events.jsonl"
 
 
-def append_jsonl(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload) + "\n")
+def load_jsonl(path: Path) -> JsonlRead:
+    """Rows AND the lines that could not be read. See ``jsonl_store.JsonlRead``."""
 
-
-def load_jsonl(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    rows: list[dict] = []
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        rows.append(json.loads(line))
-    return rows
+    return read_jsonl(path)
 
 
 def parse_ts(raw: str) -> datetime:
@@ -133,11 +126,7 @@ def repo_activity(index: dict[str, Any], repo: str) -> dict[str, Any]:
 def time_range(index: dict[str, Any], start: str, end: str) -> dict[str, Any]:
     start_dt = parse_ts(start)
     end_dt = parse_ts(end)
-    rows = [
-        event
-        for event in index["all"]
-        if start_dt <= parse_ts(event["timestamp"]) <= end_dt
-    ]
+    rows = [event for event in index["all"] if start_dt <= parse_ts(event["timestamp"]) <= end_dt]
     return {
         "query": {"start": start, "end": end},
         "count": len(rows),
@@ -263,8 +252,9 @@ def main() -> int:
         print(json.dumps(result, indent=2))
         return 0
 
-    events = load_jsonl(lane_events_file(args.workspace_root.resolve()))
-    index = build_index(events)
+    read = load_jsonl(lane_events_file(args.workspace_root.resolve()))
+    warn_unreadable(read, "the lane event log")
+    index = build_index(read.rows)
 
     if args.command == "query":
         if args.lane:
