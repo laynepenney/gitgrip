@@ -102,6 +102,19 @@ class DestinationUnreadable(RuntimeError):
     """A read against the destination returned an error instead of an answer."""
 
 
+@dataclass(frozen=True)
+class MalformedLine:
+    """A journal line that could not be parsed, kept so a drop is never silent.
+
+    ``index`` counts lines in the file, blank ones included, so it names the line a
+    reader would count to by hand.
+    """
+
+    index: int
+    excerpt: str
+    reason: str
+
+
 class JournalInconsistent(RuntimeError):
     """The cursor names a revision the journal cannot account for.
 
@@ -371,23 +384,93 @@ class Journal:
         self.state_dir = state_dir
         self.path = state_dir / "journal.jsonl"
         self.cursors_dir = state_dir / "cursors"
+        # Rows are cached against the file's (size, mtime_ns) because Prototype 1 asks
+        # the machine to account for an observation on EVERY tick, including idle ones,
+        # which moved this parse from once-per-change to once-per-tick. The Propagator
+        # is built once per loop and holds one Journal, so the cache spans ticks.
+        #
+        # LIMITATION, stated rather than assumed away: an in-place mutation that changes
+        # neither size nor mtime_ns is not detected. The append-only writer never
+        # produces that state, and the next real append invalidates the entry — but a
+        # cache sitting on a corruption-detection path should name what it cannot see.
+        self._cache_key: tuple[int, int] | None = None
+        self._cached_rows: list[dict[str, object]] = []
+        self._malformed: tuple[MalformedLine, ...] = ()
+
+    @property
+    def malformed_lines(self) -> tuple[MalformedLine, ...]:
+        """Lines the last read could not parse. Empty is the ordinary answer."""
+        return self._malformed
 
     # -- rows
 
     def _rows(self) -> list[dict[str, object]]:
-        if not self.path.exists():
+        """Every readable row, oldest first. Unreadable lines are dropped and counted.
+
+        A kill between ``_write``'s write and its fsync leaves a partial line, so an
+        unparseable line is an ordinary consequence of the writer being killed — not
+        evidence of corruption, and not a reason to refuse. Raising here would exit the
+        daemon on its first tick and on every restart after it, because the loop lets
+        anything outside its named failure list propagate.
+
+        Position does NOT discriminate cause. A tear is trailing only until the daemon
+        restarts and appends again, after which the same orphan sits mid-file with intact
+        rows on both sides. The question that does discriminate is whether the CURSOR can
+        still be accounted for, and ``replay`` already asks it and already raises
+        ``JournalInconsistent`` by name. Dropping a line here lets that check be the one
+        that decides, instead of a bare ``ValueError`` from this parse pre-empting it.
+
+        Returned rows are shared with the cache and must be treated as read-only; every
+        consumer in this module filters or copies rather than mutating.
+        """
+        try:
+            stat = self.path.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            self._cache_key, self._cached_rows, self._malformed = None, [], ()
             return []
+
+        key = (stat.st_size, stat.st_mtime_ns)
+        if key == self._cache_key:
+            return self._cached_rows
+
         rows: list[dict[str, object]] = []
-        for line in self.path.read_text().splitlines():
-            line = line.strip()
+        malformed: list[MalformedLine] = []
+        for index, raw in enumerate(self.path.read_text().splitlines()):
+            line = raw.strip()
             if not line:
                 continue
-            rows.append(json.loads(line))
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                malformed.append(
+                    MalformedLine(index=index, excerpt=line[:120], reason=str(exc))
+                )
+        self._cache_key, self._cached_rows, self._malformed = key, rows, tuple(malformed)
         return rows
 
     def _write(self, row: dict[str, object]) -> None:
+        """Append one row, terminating a torn remnant first.
+
+        Without the repair, appending onto a partial line GLUES this row to it, and the
+        tear costs two rows instead of one: the interrupted write, and the next write,
+        which was itself correct and fsynced. Terminating first confines the damage to
+        the line that was actually interrupted.
+
+        Two writers racing can at worst both terminate, leaving a blank line, which
+        ``_rows`` already skips.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        unterminated = False
+        try:
+            with self.path.open("rb") as probe:
+                if probe.seek(0, os.SEEK_END):
+                    probe.seek(-1, os.SEEK_END)
+                    unterminated = probe.read(1) != b"\n"
+        except FileNotFoundError:
+            pass
         with self.path.open("a") as handle:
+            if unterminated:
+                handle.write("\n")
             handle.write(json.dumps(row, separators=(",", ":")) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -1216,6 +1299,7 @@ __all__ = [
     "DestinationKind",
     "DestinationUnreadable",
     "JournalInconsistent",
+    "MalformedLine",
     "Direction",
     "GateResult",
     "Journal",

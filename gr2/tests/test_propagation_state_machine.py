@@ -883,3 +883,108 @@ def test_outbox_event_survives_a_consumer_that_fails_after_reading(tmp_path: Pat
     again = _offered_types(workspace)
     if again != ["sync.completed"]:
         raise EventLost(f"offered once, then lost: second read returned {again!r}")
+
+
+# -- grip#893: a torn journal line must not be fatal, and must not eat its neighbour
+#
+# The writer appends and fsyncs, so a kill between the write and the fsync leaves
+# a partial trailing line. Three witnesses, each for a distinct failure:
+#
+#   W1  the tear must not destroy the NEXT row (measured on the filed issue: with
+#       no newline repair the following append glues onto the remnant, so a row
+#       that was written correctly and fsynced becomes unreadable)
+#   W2  reading a torn journal must not raise; the intact prefix still answers
+#   W3  an idle tick must not re-parse a journal that has not changed
+#
+# W1 is the one the issue does not contain and is the reason the position rule in
+# it does not hold: after a restart append the malformed line is no longer last.
+
+
+def _tear(journal: Journal, partial: str = '{"kind": "not-final') -> None:
+    """Leave a partial trailing line, exactly as a kill between write and fsync does."""
+    with journal.path.open("a") as handle:
+        handle.write(partial)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def test_a_torn_line_does_not_swallow_the_row_written_after_it(tmp_path: Path) -> None:
+    """W1. The append after a tear must not glue onto the remnant.
+
+    Without a newline repair the file becomes ``…{"n": 3, "no{"n": 4}`` — row 4 was
+    written correctly and fsynced, and is unreadable because row 3 died mid-line.
+    A tear may cost the interrupted write; it must never cost the next one.
+    """
+    journal = Journal(tmp_path / "state")
+    journal._write({"n": 1})
+    journal._write({"n": 2})
+    _tear(journal)
+
+    journal._write({"n": 4})
+
+    rows = journal._rows()
+    assert {r.get("n") for r in rows} == {1, 2, 4}, (
+        "the row written after the tear must survive it; "
+        f"file was {journal.path.read_text()!r}"
+    )
+
+
+def test_a_torn_trailing_line_is_skipped_and_reported_not_raised(tmp_path: Path) -> None:
+    """W2. Reading a torn journal answers from the intact prefix and says what it dropped.
+
+    The daemon lets anything outside its named failure list propagate, so a bare
+    ``JSONDecodeError`` out of the parse exits the loop on the first tick and on
+    every restart after it. The intact prefix is still a truthful answer.
+    """
+    journal = Journal(tmp_path / "state")
+    journal._write({"n": 1})
+    journal._write({"n": 2})
+    _tear(journal)
+
+    rows = journal._rows()
+
+    assert [r.get("n") for r in rows] == [1, 2]
+    assert len(journal.malformed_lines) == 1, "the drop must be counted, not silent"
+    assert journal.malformed_lines[0].index == 2
+
+
+def test_an_unchanged_journal_is_not_reparsed_on_the_next_tick(tmp_path: Path) -> None:
+    """W3. Prototype 1 consults the machine on every tick, including idle ones.
+
+    That is correct — a corrupted sink behind an unchanged source must not read as
+    healthy — but it moved the whole-file parse from once-per-change to once-per-
+    tick. An unchanged file must cost nothing to re-read; a changed one must not
+    be served from a stale cache.
+    """
+    journal = Journal(tmp_path / "state")
+    journal._write({"n": 1})
+    journal._write({"n": 2})
+
+    parsed: list[str] = []
+    real_loads = json.loads
+
+    def counting_loads(payload, *args, **kwargs):  # type: ignore[no-untyped-def]
+        parsed.append(payload)
+        return real_loads(payload, *args, **kwargs)
+
+    import gr2.prototypes.propagation_state_machine as module
+
+    original = module.json.loads
+    module.json.loads = counting_loads
+    try:
+        first = journal._rows()
+        after_first = len(parsed)
+        second = journal._rows()
+        after_second = len(parsed)
+
+        journal._write({"n": 3})
+        third = journal._rows()
+        after_third = len(parsed)
+    finally:
+        module.json.loads = original
+
+    assert after_first == 2, "the first read parses the file"
+    assert after_second == after_first, "an unchanged journal must not be re-parsed"
+    assert first == second
+    assert after_third > after_second, "a changed journal must not be served stale"
+    assert [r.get("n") for r in third] == [1, 2, 3]
