@@ -635,3 +635,67 @@ fn test_absolute_repo_path_in_metadata_cannot_escape_the_checkout() {
         "a rejected reconstruction should explain why, not fail silently"
     );
 }
+
+// ── Every repo fails to open ────────────────────────────────────
+// Witness for the error arms, which previously reported each failure to the
+// terminal and incremented no counter, so the command printed "Switched 0/N"
+// and exited 0. Each .git is replaced by an empty directory: the repo still
+// counts as cloned under either cloned-check, so this exercises the error arm
+// rather than the not-cloned skip arm.
+
+#[test]
+fn test_checkout_all_repos_failing_is_not_success() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo("frontend")
+        .add_repo("backend")
+        .build();
+
+    let manifest = ws.load_manifest();
+
+    for name in ["frontend", "backend"] {
+        let git_dir = ws.repo_path(name).join(".git");
+        std::fs::remove_dir_all(&git_dir).unwrap();
+        std::fs::create_dir(&git_dir).unwrap();
+        assert!(
+            git_dir.exists(),
+            "{name}: .git must still exist for this witness"
+        );
+    }
+
+    let result = gitgrip::cli::commands::checkout::run_checkout(
+        &ws.workspace_root,
+        &manifest,
+        "main",
+        false,
+        None,
+        None,
+    );
+
+    assert!(
+        result.is_err(),
+        "every repo failed to open; checkout must not report success"
+    );
+}
+
+// The companion that keeps the fix from over-correcting: a branch that is
+// simply absent is a skip, not a failure, and must still exit zero.
+#[test]
+fn test_checkout_absent_branch_is_still_success() {
+    let ws = WorkspaceBuilder::new().add_repo("frontend").build();
+    let manifest = ws.load_manifest();
+
+    let result = gitgrip::cli::commands::checkout::run_checkout(
+        &ws.workspace_root,
+        &manifest,
+        "no-such-branch",
+        false,
+        None,
+        None,
+    );
+
+    assert!(
+        result.is_ok(),
+        "an absent branch is a skip, not a failure: {:?}",
+        result.err()
+    );
+}

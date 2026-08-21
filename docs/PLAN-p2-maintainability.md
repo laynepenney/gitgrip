@@ -24,7 +24,9 @@ No conflicts expected — P0/P1 didn't touch `main.rs` or `cli/mod.rs`.
 ```
 cargo build && cargo test && cargo clippy && cargo fmt --check
 ```
-Watch for clippy warnings on unused `repo_iter` imports. If flagged, the `pub` visibility from `cli/mod.rs` → `lib.rs` should suppress it.
+~~Watch for clippy warnings on unused `repo_iter` imports. If flagged, the `pub` visibility from `cli/mod.rs` → `lib.rs` should suppress it.~~
+
+**Struck.** This prescribed silencing the one instrument that would have reported the problem. `pub` does not resolve a dead-code warning, it disables the analysis — an unused private item warns, an unused `pub` item does not — so following this step left `repo_iter` with zero callers and nothing anywhere going red for as long as it existed. A warning is a detector; suppressing it to reach a clean build is not a fix, and writing the suppression down as a step made it the default for whoever came next. If an item has no consumer, give it one or delete it.
 
 ### 3. Commit the refactor
 Stage all 4 files and commit:
@@ -59,7 +61,7 @@ gr pr create -t "refactor: P2 maintainability — WorkspaceContext and load_grip
 | Command signature migration to `&WorkspaceContext` | Would touch every command file + every test; current ctx field extraction in dispatch works fine |
 | Compact dispatch function (Phase 7) | 612-line match for 30 commands is standard; only one dispatch site |
 | sync.rs / release.rs decomposition (Phase 8) | Already have helpers (`sync_single_repo`, `execute_post_sync_hooks`, etc.) |
-| Wiring `for_each_repo()` into commands | Most commands accumulate custom state that doesn't fit the simple Success/Skipped/Error enum |
+| Wiring `for_each_repo()` into commands | Largely accurate, and now measured rather than assumed. Of the 9 command files that hand-roll these counters, `sync`/`pull` do not iterate repos at all, `pr/merge` iterates PRs and awaits, and `push`/`commit`/`forall` propagate `?` out of the loop — which the closure's return type cannot express. `checkout` was the one clean fit and has adopted it. |
 
 ## Files touched
 
