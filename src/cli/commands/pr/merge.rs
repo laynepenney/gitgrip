@@ -333,6 +333,11 @@ pub async fn run_pr_merge(
 
     let mut prs_to_merge: Vec<PRToMerge> = Vec::new();
     let mut json_skipped: Vec<String> = Vec::new();
+    // A repo whose PR lookup failed belongs in neither of the two collections
+    // above: it is not a merge candidate and it was not skipped. Without a
+    // third one, "we looked and found nothing" and "we could not look" arrive
+    // at the summary as the same state.
+    let mut lookup_failures: Vec<String> = Vec::new();
 
     for repo in &all_repos {
         if !path_exists(&repo.absolute_path) {
@@ -426,11 +431,24 @@ pub async fn run_pr_merge(
                 if !opts.json {
                     Output::error(&format!("{}: {}", repo.name, e));
                 }
+                lookup_failures.push(repo.name.clone());
             }
         }
     }
 
     if prs_to_merge.is_empty() {
+        // An empty candidate list has two causes that read identically here.
+        // Only one of them is an absence of PRs; the other is an absence of
+        // knowledge, and reporting it as the first is a false statement the
+        // exit code then endorses.
+        if !lookup_failures.is_empty() {
+            anyhow::bail!(
+                "could not determine PR state for {} of {} repositories: {}",
+                lookup_failures.len(),
+                all_repos.len(),
+                lookup_failures.join(", ")
+            );
+        }
         println!("No open PRs found for any repository.");
         println!("Repositories checked: {}", all_repos.len());
         return Ok(());
@@ -728,6 +746,18 @@ pub async fn run_pr_merge(
                 "{} auto-merge enabled, {} failed",
                 success_count, error_count
             ));
+        }
+
+        // Case 3: any per-repo failure makes the run a failure, including a
+        // mixed run. The warning above is read by a human; the exit code is
+        // the only part a script sees, and it reported this as done.
+        if error_count > 0 || !lookup_failures.is_empty() {
+            anyhow::bail!(
+                "{} of {} auto-merge attempts failed{}",
+                error_count,
+                success_count + error_count,
+                describe_lookup_failures(&lookup_failures)
+            );
         }
 
         return Ok(());
@@ -1112,7 +1142,33 @@ pub async fn run_pr_merge(
         }
     }
 
+    // Case 3, on the path that matters most: a run that failed to merge some
+    // of the PRs it selected has already emitted its JSON document and its
+    // human summary by this point. Both are truthful. The exit code was not.
+    if error_count > 0 || !lookup_failures.is_empty() {
+        anyhow::bail!(
+            "{} of {} PR merges failed{}",
+            error_count,
+            success_count + error_count,
+            describe_lookup_failures(&lookup_failures)
+        );
+    }
+
     Ok(())
+}
+
+/// Render the lookup-failure tail of a summary, or nothing when every repo
+/// was successfully inspected. Kept separate so the three case-3 exits phrase
+/// the same fact identically.
+fn describe_lookup_failures(failures: &[String]) -> String {
+    if failures.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; PR state could not be determined for {}",
+            failures.join(", ")
+        )
+    }
 }
 
 /// Check if a repo has changes ahead of its default branch
