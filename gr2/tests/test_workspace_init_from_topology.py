@@ -113,6 +113,41 @@ default_ref = "main"
     assert not (workspace_root / ".grip" / "workspace_spec.toml").exists()
 
 
+def test_workspace_init_from_topology_refuses_an_encoding_error_before_creating_grip_directory(
+    tmp_path: Path,
+) -> None:
+    """A writer encoding refusal must leave neither the spec nor its directory.
+
+    TOML itself rejects a surrogate escape in ``workspace.toml`` before the
+    command reaches the writer, so this uses the CLI-owned default-unit value,
+    one of the writer's seven string positions, to exercise the serializer.
+
+    Mutation: move ``spec_path.parent.mkdir`` above ``lines`` construction.
+    The command still refuses, but this witness reaches its directory assertion
+    and fails while the three pre-existing witnesses remain green.
+    """
+    workspace_root = tmp_path / "encoding-refusal-team"
+    workspace_root.mkdir()
+    _write_topology(workspace_root)
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "init-from-topology",
+            str(workspace_root),
+            "--default-unit",
+            "team-\ud800",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ValueError)
+    assert "surrogate" in str(result.exception)
+    assert not (workspace_root / ".grip" / "workspace_spec.toml").exists()
+    assert not (workspace_root / ".grip").exists()
+
+
 def test_workspace_init_from_topology_serializes_every_writer_value(
     tmp_path: Path,
 ) -> None:
