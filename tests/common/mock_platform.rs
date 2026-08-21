@@ -4,8 +4,10 @@
 //! testing of platform adapter methods.
 
 use serde_json::{json, Map, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use wiremock::matchers::{header, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 /// Start a wiremock server and configure GITHUB_TOKEN env var.
 /// Returns the server and a GitHubAdapter pointed at it.
@@ -376,6 +378,76 @@ pub async fn mock_merge_pr(server: &MockServer, number: u64, merged: bool) {
         .await;
 }
 
+/// GitHub API: a PR whose GET response reflects whether its merge PUT has fired.
+///
+/// `mock_get_pr` mounts one invariant response, so a GET issued *after* a
+/// successful merge PUT still reports `merged: false`. That is a state the real
+/// API cannot produce, and any command that verifies its own merge by reading
+/// the PR back sees a contradiction that belongs to the fixture rather than to
+/// the code under test. This helper couples the two endpoints through shared
+/// state so the sequence GET -> PUT -> GET behaves as the live API does.
+///
+/// Returns the merged flag so a test can assert the PUT actually fired. That
+/// matters: without it, a command that never attempted the merge and a command
+/// that merged successfully both leave the fixture reporting `merged: false`
+/// for different reasons.
+pub async fn mock_pr_lifecycle(server: &MockServer, number: u64) -> Arc<AtomicBool> {
+    let merged = Arc::new(AtomicBool::new(false));
+
+    struct ReadPr {
+        merged: Arc<AtomicBool>,
+        number: u64,
+    }
+
+    impl Respond for ReadPr {
+        fn respond(&self, _request: &Request) -> ResponseTemplate {
+            let is_merged = self.merged.load(Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_json(github_pr_json(
+                self.number,
+                if is_merged { "closed" } else { "open" },
+                "feat/test",
+                "main",
+                is_merged,
+                "PR description\n<!-- gitgrip-linked-prs\nfrontend:42\n-->",
+            ))
+        }
+    }
+
+    struct MergePr {
+        merged: Arc<AtomicBool>,
+    }
+
+    impl Respond for MergePr {
+        fn respond(&self, _request: &Request) -> ResponseTemplate {
+            self.merged.store(true, Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_json(json!({
+                "sha": "merge123",
+                "merged": true,
+                "message": "Pull Request successfully merged"
+            }))
+        }
+    }
+
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/pulls/{}", number)))
+        .respond_with(ReadPr {
+            merged: Arc::clone(&merged),
+            number,
+        })
+        .mount(server)
+        .await;
+
+    Mock::given(method("PUT"))
+        .and(path(format!("/repos/owner/repo/pulls/{}/merge", number)))
+        .respond_with(MergePr {
+            merged: Arc::clone(&merged),
+        })
+        .mount(server)
+        .await;
+
+    merged
+}
+
 /// GitHub API: merge PR returns 405 with "branch behind" message.
 pub async fn mock_merge_pr_behind(server: &MockServer, number: u64) {
     let body = json!({
@@ -666,6 +738,32 @@ pub fn point_repo_at_mock(
 }
 
 /// Mock a GitHub repo info response (GET /repos/:owner/:repo).
+/// GitHub API: repo info with explicit merge-method permissions.
+///
+/// `mock_repo_info` always reports every method as allowed, so no test could
+/// reach the branch where a command refuses a method the repository forbids.
+pub async fn mock_repo_info_with_methods(
+    server: &MockServer,
+    owner: &str,
+    repo: &str,
+    allow_squash: bool,
+    allow_merge_commit: bool,
+    allow_rebase: bool,
+) {
+    let mut body = github_repo_json(owner, repo);
+    if let Value::Object(ref mut m) = body {
+        m.insert("allow_squash_merge".into(), json!(allow_squash));
+        m.insert("allow_merge_commit".into(), json!(allow_merge_commit));
+        m.insert("allow_rebase_merge".into(), json!(allow_rebase));
+    }
+
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/{}/{}", owner, repo)))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
 pub async fn mock_repo_info(server: &MockServer, owner: &str, repo: &str) {
     let body = github_repo_json(owner, repo);
 
