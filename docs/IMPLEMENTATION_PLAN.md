@@ -59,7 +59,7 @@ Pass `--hostname` to `gh` CLI in `src/platform/github.rs` `enable_auto_merge()` 
 
 ### Phase 3: Repo iteration helper
 - [x] New `src/cli/repo_iter.rs`: `RepoVisitResult`, `RepoOpSummary`, `for_each_repo()`, `for_each_repo_path()`
-- [ ] Wire into commands — Deferred: most commands accumulate custom state that doesn't fit the simple Success/Skipped/Error enum
+- [ ] Wire into commands — Partially done: `checkout` adopted it (2026-08-21). The remaining commands are blocked on `?` propagation out of the loop, three disagreeing skip taxonomies, and per-arm payload types — not on the enum alone
 
 ### Phase 4-6: Migrate all commands to WorkspaceContext
 - [x] 28/30 commands in main.rs use `load_workspace_context()` (Init, Completions, Bench don't need workspace)

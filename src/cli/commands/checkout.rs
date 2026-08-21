@@ -1,15 +1,13 @@
 //! Checkout command implementation
 
 use crate::cli::output::Output;
+use crate::cli::repo_iter::{for_each_repo, RepoVisitResult};
 use crate::core::manifest::Manifest;
 use crate::core::repo::{
     filter_repos, get_manifest_repo_info, validate_repo_filters_known, RepoInfo,
 };
 use crate::core::workspace_checkout;
-use crate::git::{
-    branch::{branch_exists, checkout_branch, create_and_checkout_branch},
-    open_repo,
-};
+use crate::git::branch::{branch_exists, checkout_branch, create_and_checkout_branch};
 use std::path::Path;
 
 /// Run the checkout command
@@ -51,70 +49,61 @@ pub fn run_checkout(
     ));
     println!();
 
-    let mut success_count = 0;
-    let mut _skip_count = 0;
+    // Iterating through for_each_repo rather than by hand is what gives this
+    // command an error count at all. The previous loop reported every failure
+    // to the terminal and incremented nothing, so the summary below counted
+    // successes against a total and stayed silent about the difference.
+    let summary = for_each_repo(&repos, false, |repo, git_repo| {
+        let exists = branch_exists(git_repo, branch_name);
 
-    for repo in &repos {
-        if !repo.exists() {
-            Output::warning(&format!("{}: not cloned", repo.name));
-            _skip_count += 1;
-            continue;
-        }
-
-        match open_repo(&repo.absolute_path) {
-            Ok(git_repo) => {
-                let exists = branch_exists(&git_repo, branch_name);
-
-                if create {
-                    // -b flag: create if doesn't exist, checkout if it does
-                    if exists {
-                        match checkout_branch(&git_repo, branch_name) {
-                            Ok(()) => {
-                                Output::success(&format!(
-                                    "{}: checked out (already exists)",
-                                    repo.name
-                                ));
-                                success_count += 1;
-                            }
-                            Err(e) => Output::error(&format!("{}: {}", repo.name, e)),
-                        }
-                    } else {
-                        match create_and_checkout_branch(&git_repo, branch_name) {
-                            Ok(()) => {
-                                Output::success(&format!("{}: created and checked out", repo.name));
-                                success_count += 1;
-                            }
-                            Err(e) => Output::error(&format!("{}: {}", repo.name, e)),
-                        }
+        if create {
+            // -b flag: create if doesn't exist, checkout if it does
+            if exists {
+                match checkout_branch(git_repo, branch_name) {
+                    Ok(()) => RepoVisitResult::Success(format!(
+                        "{}: checked out (already exists)",
+                        repo.name
+                    )),
+                    Err(e) => RepoVisitResult::Error(format!("{}: {}", repo.name, e)),
+                }
+            } else {
+                match create_and_checkout_branch(git_repo, branch_name) {
+                    Ok(()) => {
+                        RepoVisitResult::Success(format!("{}: created and checked out", repo.name))
                     }
-                } else {
-                    // Normal checkout: skip if branch doesn't exist
-                    if !exists {
-                        Output::info(&format!("{}: branch doesn't exist, skipping", repo.name));
-                        _skip_count += 1;
-                        continue;
-                    }
-
-                    match checkout_branch(&git_repo, branch_name) {
-                        Ok(()) => {
-                            Output::success(&repo.name);
-                            success_count += 1;
-                        }
-                        Err(e) => Output::error(&format!("{}: {}", repo.name, e)),
-                    }
+                    Err(e) => RepoVisitResult::Error(format!("{}: {}", repo.name, e)),
                 }
             }
-            Err(e) => Output::error(&format!("{}: {}", repo.name, e)),
+        } else if !exists {
+            // Normal checkout: a missing branch is a skip, not a failure.
+            RepoVisitResult::Skipped(format!("{}: branch doesn't exist, skipping", repo.name))
+        } else {
+            match checkout_branch(git_repo, branch_name) {
+                Ok(()) => RepoVisitResult::Success(repo.name.clone()),
+                Err(e) => RepoVisitResult::Error(format!("{}: {}", repo.name, e)),
+            }
         }
-    }
+    });
 
     println!();
     println!(
         "Switched {}/{} repos to {}",
-        success_count,
+        summary.success_count,
         repos.len(),
         Output::branch_name(branch_name)
     );
+
+    // The count above is a ratio a caller has to read and interpret. The exit
+    // code is the only failure signal a script sees, so it has to disjoin the
+    // per-repo failures rather than report the batch as done.
+    if summary.error_count > 0 {
+        anyhow::bail!(
+            "{} of {} repos failed to switch to {}",
+            summary.error_count,
+            repos.len(),
+            branch_name
+        );
+    }
 
     Ok(())
 }
