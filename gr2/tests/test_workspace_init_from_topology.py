@@ -10,11 +10,18 @@ from typer.testing import CliRunner
 runner = CliRunner()
 
 
-def _write_topology(workspace_root: Path) -> None:
+def _write_topology(
+    workspace_root: Path,
+    *,
+    workspace_name: str | None = "declarative-team",
+) -> None:
+    declared_workspace_name = (
+        f'workspace_name = "{workspace_name}"\n' if workspace_name is not None else ""
+    )
     (workspace_root / "workspace.toml").write_text(
-        """\
+        f"""\
 schema_version = 2
-workspace_name = "declarative-team"
+{declared_workspace_name}
 
 [[repos]]
 key = "product"
@@ -75,6 +82,7 @@ def test_workspace_init_from_topology_writes_declared_repos_in_an_empty_director
 
     with (workspace_root / ".grip" / "workspace_spec.toml").open("rb") as spec_file:
         spec = tomllib.load(spec_file)
+    assert spec["workspace_name"] == "declarative-team"
     assert spec["repos"] == payload["repos"]
     assert spec["units"] == [
         {
@@ -90,6 +98,22 @@ def test_workspace_init_from_topology_writes_declared_repos_in_an_empty_director
     )
     assert text_result.exit_code == 0, text_result.output
     assert "source = workspace.toml" in text_result.output
+
+
+def test_workspace_init_from_topology_falls_back_to_root_name_when_name_is_absent(
+    tmp_path: Path,
+) -> None:
+    """The pre-existing scan-style fallback remains explicit when topology omits a name."""
+    workspace_root = tmp_path / "fallback-team"
+    workspace_root.mkdir()
+    _write_topology(workspace_root, workspace_name=None)
+
+    result = runner.invoke(app, ["workspace", "init-from-topology", str(workspace_root)])
+
+    assert result.exit_code == 0, result.output
+    with (workspace_root / ".grip" / "workspace_spec.toml").open("rb") as spec_file:
+        spec = tomllib.load(spec_file)
+    assert spec["workspace_name"] == "fallback-team"
 
 
 def test_workspace_init_from_topology_refuses_an_incomplete_declared_repo_before_writing(
@@ -161,6 +185,8 @@ def test_workspace_init_from_topology_serializes_every_writer_value(
     workspace_root.mkdir()
     (workspace_root / "workspace.toml").write_text(
         r'''
+workspace_name = 'declared"\\workspace'
+
 [[repos]]
 key = 'product"\\name'
 url = 'https://example.invalid/a"\\b.git'
@@ -183,7 +209,7 @@ path = 'repos/product"\\path'
     assert result.exit_code == 0, result.output
     with (workspace_root / ".grip" / "workspace_spec.toml").open("rb") as spec_file:
         spec = tomllib.load(spec_file)
-    assert spec["workspace_name"] == workspace_root.name
+    assert spec["workspace_name"] == r'declared"\\workspace'
     assert spec["repos"] == [
         {
             "name": r'product"\\name',

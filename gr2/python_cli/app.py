@@ -327,10 +327,17 @@ def _toml_basic_string(value: str) -> str:
     return "".join(rendered)
 
 
-def _write_workspace_spec(workspace_root: Path, repos: list[dict[str, str]], default_unit: str) -> Path:
+def _write_workspace_spec(
+    workspace_root: Path,
+    repos: list[dict[str, str]],
+    default_unit: str,
+    *,
+    workspace_name: str | None = None,
+) -> Path:
     spec_path = _workspace_spec_path(workspace_root)
+    emitted_workspace_name = workspace_root.name if workspace_name is None else workspace_name
     lines = [
-        f"workspace_name = {_toml_basic_string(workspace_root.name)}",
+        f"workspace_name = {_toml_basic_string(emitted_workspace_name)}",
         "",
     ]
     for repo in repos:
@@ -379,7 +386,9 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, str]]:
     return repos
 
 
-def _declared_repos_from_workspace_topology(workspace_root: Path) -> list[dict[str, str]]:
+def _declared_workspace_topology(
+    workspace_root: Path,
+) -> tuple[str | None, list[dict[str, str]]]:
     """Lower neutral ``workspace.toml`` repository declarations for gr2.
 
     This deliberately reads only the fields the existing WorkspaceSpec writer
@@ -394,6 +403,10 @@ def _declared_repos_from_workspace_topology(workspace_root: Path) -> list[dict[s
             document = tomllib.load(topology_file)
     except tomllib.TOMLDecodeError as exc:
         raise SystemExit(f"workspace.toml at {topology_path} is not valid TOML: {exc}") from exc
+
+    workspace_name = document.get("workspace_name")
+    if workspace_name is not None and not isinstance(workspace_name, str):
+        raise SystemExit("workspace.toml workspace_name must be a string when declared")
 
     raw_repos = document.get("repos", [])
     if not isinstance(raw_repos, list):
@@ -423,7 +436,7 @@ def _declared_repos_from_workspace_topology(workspace_root: Path) -> list[dict[s
                 "url": str(raw_repo["url"]),
             }
         )
-    return repos
+    return workspace_name, repos
 
 
 def _exit(code: int) -> None:
@@ -505,8 +518,13 @@ def workspace_init_from_topology(
 ) -> None:
     """Create WorkspaceSpec from neutral ``workspace.toml`` repo declarations."""
     workspace_root = workspace_root.resolve()
-    repos = _declared_repos_from_workspace_topology(workspace_root)
-    spec_path = _write_workspace_spec(workspace_root, repos, default_unit)
+    workspace_name, repos = _declared_workspace_topology(workspace_root)
+    spec_path = _write_workspace_spec(
+        workspace_root,
+        repos,
+        default_unit,
+        workspace_name=workspace_name,
+    )
     payload = {
         "workspace_root": str(workspace_root),
         "spec_path": str(spec_path),
