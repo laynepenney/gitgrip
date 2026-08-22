@@ -475,3 +475,104 @@ fn test_checkout_remove_rejects_extra_positional_args() {
             "unexpected extra arguments after checkout name",
         ));
 }
+
+// --- #196: repo-filter validation on the staging/commit/push verbs -------------
+//
+// `validate_repo_filters_known` already existed and already produced the right
+// message, including a basename suggestion for the common mistake that surfaced
+// this: a manifest entry named `<prefix>-<name>` checked out at `./<name>`, where
+// the operator naturally types `--repo <name>`. These three verbs did not call
+// the validator, so an unknown `--repo` name matched zero repos and the command
+// reported success.
+//
+// The failure direction is what makes it worth a test: another agent reads
+// "pushed" or "staged" and acts on it.
+
+#[test]
+fn test_add_unknown_repo_filter_is_refused_not_silently_empty() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut cmd = Command::cargo_bin("gr").unwrap();
+    cmd.current_dir(&ws.workspace_root)
+        .arg("add")
+        .arg(".")
+        .arg("--repo")
+        .arg("missing")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "repo filter 'missing' not found in local manifest",
+        ));
+}
+
+#[test]
+fn test_commit_unknown_repo_filter_is_refused_not_silently_empty() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut cmd = Command::cargo_bin("gr").unwrap();
+    cmd.current_dir(&ws.workspace_root)
+        .arg("commit")
+        .arg("-m")
+        .arg("msg")
+        .arg("--repo")
+        .arg("missing")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "repo filter 'missing' not found in local manifest",
+        ));
+}
+
+#[test]
+fn test_push_unknown_repo_filter_is_refused_not_silently_empty() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut cmd = Command::cargo_bin("gr").unwrap();
+    cmd.current_dir(&ws.workspace_root)
+        .arg("push")
+        .arg("--repo")
+        .arg("missing")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "repo filter 'missing' not found in local manifest",
+        ));
+}
+
+/// Control for the three tests above: a KNOWN repo name must still REACH THE
+/// WORK, so the rejections cannot be passing merely because `gr add` fails for
+/// some unrelated reason in this fixture.
+///
+/// The control asserts the DESTINATION, not the absence of a message. An
+/// earlier version of this test wrote no file and checked only that one
+/// substring was missing from stderr — which passes identically whether `add`
+/// stages the file or does nothing at all, and those are exactly the two
+/// outcomes a control has to separate. The fixture commits its files before
+/// cloning, so the worktree starts clean and the test must dirty it itself.
+#[test]
+fn test_add_known_repo_filter_reaches_the_work_and_stages() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let repo = ws.repo_path("app");
+    std::fs::write(repo.join("control.txt"), "dirty\n").unwrap();
+
+    let mut cmd = Command::cargo_bin("gr").unwrap();
+    cmd.current_dir(&ws.workspace_root)
+        .arg("add")
+        .arg(".")
+        .arg("--repo")
+        .arg("app")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("not found in local manifest").not());
+
+    let staged = std::process::Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let staged = String::from_utf8_lossy(&staged.stdout);
+    assert!(
+        staged.contains("control.txt"),
+        "known --repo name must reach the work: expected control.txt in the index, got {staged:?}"
+    );
+}
