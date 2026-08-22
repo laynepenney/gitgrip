@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -12,9 +13,12 @@ import typer
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
+from . import add as add_ops
 from . import branch as branch_ops
+from . import commit as commit_ops
 from . import execops, failures, migration, spec_apply, syncops
 from . import pr as pr_ops
+from . import push as push_ops
 from .events import EventType, emit_after_outcome
 from .gitops import (
     branch_exists,
@@ -288,32 +292,74 @@ def _configured_merge_method(workspace_root: Path) -> str | None:
     return value
 
 
-def _write_workspace_spec(workspace_root: Path, repos: list[dict[str, str]], default_unit: str) -> Path:
+def _toml_basic_string(value: str) -> str:
+    """Render one string through the TOML basic-string grammar.
+
+    WorkspaceSpec values are operator-controlled at several call sites. Keeping
+    the escaping here makes every value written by ``_write_workspace_spec``
+    parseable, rather than relying on each caller to reject a partial set of
+    characters.
+    """
+    if not isinstance(value, str):
+        raise TypeError(f"TOML basic string requires str, got {type(value).__name__}")
+
+    escapes = {
+        '"': '\\"',
+        "\\": "\\\\",
+        "\b": "\\b",
+        "\t": "\\t",
+        "\n": "\\n",
+        "\f": "\\f",
+        "\r": "\\r",
+    }
+    rendered: list[str] = ['"']
+    for character in value:
+        code_point = ord(character)
+        if character in escapes:
+            rendered.append(escapes[character])
+        elif code_point < 0x20 or code_point == 0x7F:
+            rendered.append(f"\\u{code_point:04X}")
+        elif 0xD800 <= code_point <= 0xDFFF:
+            raise ValueError("TOML basic strings cannot contain surrogate code points")
+        else:
+            rendered.append(character)
+    rendered.append('"')
+    return "".join(rendered)
+
+
+def _write_workspace_spec(
+    workspace_root: Path,
+    repos: list[dict[str, str]],
+    default_unit: str,
+    *,
+    workspace_name: str | None = None,
+) -> Path:
     spec_path = _workspace_spec_path(workspace_root)
-    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    emitted_workspace_name = workspace_root.name if workspace_name is None else workspace_name
     lines = [
-        f'workspace_name = "{workspace_root.name}"',
+        f"workspace_name = {_toml_basic_string(emitted_workspace_name)}",
         "",
     ]
     for repo in repos:
         lines.extend(
             [
                 "[[repos]]",
-                f'name = "{repo["name"]}"',
-                f'path = "{repo["path"]}"',
-                f'url = "{repo["url"]}"',
+                f"name = {_toml_basic_string(repo['name'])}",
+                f"path = {_toml_basic_string(repo['path'])}",
+                f"url = {_toml_basic_string(repo['url'])}",
                 "",
             ]
         )
     lines.extend(
         [
             "[[units]]",
-            f'name = "{default_unit}"',
-            f'path = "agents/{default_unit}/home"',
-            "repos = [" + ", ".join(f'"{repo["name"]}"' for repo in repos) + "]",
+            f"name = {_toml_basic_string(default_unit)}",
+            f"path = {_toml_basic_string(f'agents/{default_unit}/home')}",
+            "repos = [" + ", ".join(_toml_basic_string(repo["name"]) for repo in repos) + "]",
             "",
         ]
     )
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text("\n".join(lines))
     return spec_path
 
@@ -338,6 +384,59 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, str]]:
             }
         )
     return repos
+
+
+def _declared_workspace_topology(
+    workspace_root: Path,
+) -> tuple[str | None, list[dict[str, str]]]:
+    """Lower neutral ``workspace.toml`` repository declarations for gr2.
+
+    This deliberately reads only the fields the existing WorkspaceSpec writer
+    accepts. Declarations can carry fields such as ``default_ref`` as well,
+    but those do not belong in the WorkspaceSpec emission path.
+    """
+    topology_path = workspace_root / "workspace.toml"
+    if not topology_path.is_file():
+        raise SystemExit(f"workspace topology not found: {topology_path}")
+    try:
+        with topology_path.open("rb") as topology_file:
+            document = tomllib.load(topology_file)
+    except tomllib.TOMLDecodeError as exc:
+        raise SystemExit(f"workspace.toml at {topology_path} is not valid TOML: {exc}") from exc
+
+    workspace_name = document.get("workspace_name")
+    if workspace_name is not None and not isinstance(workspace_name, str):
+        raise SystemExit("workspace.toml workspace_name must be a string when declared")
+
+    raw_repos = document.get("repos", [])
+    if not isinstance(raw_repos, list):
+        raise SystemExit("workspace.toml repos must be an array of tables")
+    if not raw_repos:
+        raise SystemExit("workspace.toml declares no [[repos]] entries")
+
+    repos: list[dict[str, str]] = []
+    for index, raw_repo in enumerate(raw_repos):
+        if not isinstance(raw_repo, dict):
+            raise SystemExit(f"workspace.toml repos[{index}] must be a table")
+        key = str(raw_repo.get("key", "<missing key>"))
+        for field in ("key", "path", "url"):
+            value = raw_repo.get(field)
+            if not value:
+                raise SystemExit(
+                    f"workspace.toml repos[{index}] ({key!r}) is missing {field!r}"
+                )
+            if not isinstance(value, str):
+                raise SystemExit(
+                    f"workspace.toml repos[{index}] ({key!r}) must declare {field!r} as a string"
+                )
+        repos.append(
+            {
+                "name": str(raw_repo["key"]),
+                "path": str(raw_repo["path"]),
+                "url": str(raw_repo["url"]),
+            }
+        )
+    return workspace_name, repos
 
 
 def _exit(code: int) -> None:
@@ -408,6 +507,45 @@ def workspace_init(
             "REPOS",
         ]
         lines.extend(f"- {repo['name']}\t{repo['path']}\t{repo['url'] or '-'}" for repo in repos)
+        typer.echo("\n".join(lines))
+
+
+@workspace_app.command("init-from-topology")
+def workspace_init_from_topology(
+    workspace_root: Path,
+    default_unit: str = typer.Option("default", help="Default owner unit for declared repos"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Create WorkspaceSpec from neutral ``workspace.toml`` repo declarations."""
+    workspace_root = workspace_root.resolve()
+    workspace_name, repos = _declared_workspace_topology(workspace_root)
+    spec_path = _write_workspace_spec(
+        workspace_root,
+        repos,
+        default_unit,
+        workspace_name=workspace_name,
+    )
+    payload = {
+        "workspace_root": str(workspace_root),
+        "spec_path": str(spec_path),
+        "repo_count": len(repos),
+        "repos": repos,
+        "default_unit": default_unit,
+        "source": "workspace.toml",
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        lines = [
+            "WorkspaceInitFromTopology",
+            f"workspace_root = {workspace_root}",
+            f"spec_path = {spec_path}",
+            f"default_unit = {default_unit}",
+            f"repo_count = {len(repos)}",
+            "source = workspace.toml",
+            "REPOS",
+        ]
+        lines.extend(f"- {repo['name']}\t{repo['path']}\t{repo['url']}" for repo in repos)
         typer.echo("\n".join(lines))
 
 
@@ -572,6 +710,82 @@ def branch_cmd(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Switched to branch '{name}'")
+
+
+@app.command("add")
+def add_cmd(
+    paths: list[str] = typer.Argument(..., help="Paths or pathspecs to stage"),
+    repo_path: Path | None = typer.Option(
+        None,
+        "--repo-path",
+        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo)",
+    ),
+) -> None:
+    """Stage paths in one repository, including tracked deletions."""
+    target = (repo_path or Path.cwd()).resolve()
+    try:
+        result = add_ops.stage_files(target, paths)
+    except add_ops.AddError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if result.staged_files:
+        typer.echo(f"Staged {len(result.staged_files)} path(s): {', '.join(result.staged_files)}")
+    else:
+        typer.echo("No changes staged for the requested paths")
+
+
+@app.command("commit")
+def commit_cmd(
+    message: str = typer.Option(..., "--message", "-m", help="Commit message"),
+    amend: bool = typer.Option(False, "--amend", help="Amend the current commit"),
+    repo_path: Path | None = typer.Option(
+        None,
+        "--repo-path",
+        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo)",
+    ),
+) -> None:
+    """Create or amend one commit from the staged index."""
+    target = (repo_path or Path.cwd()).resolve()
+    try:
+        receipt = commit_ops.create_commit(target, message, amend=amend)
+    except commit_ops.CommitError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    action = "Amended" if receipt.amended else "Committed"
+    typer.echo(f"{action} {receipt.commit_sha}")
+
+
+@app.command("push")
+def push_cmd(
+    remote: str | None = typer.Option(None, "--remote", help="Configured remote to push"),
+    set_upstream: bool = typer.Option(False, "--set-upstream", "-u"),
+    force_with_lease: bool = typer.Option(
+        False,
+        "--force-with-lease",
+        help="Replace the remote ref only if its observed value still matches",
+    ),
+    repo_path: Path | None = typer.Option(
+        None,
+        "--repo-path",
+        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo)",
+    ),
+) -> None:
+    """Push one branch and verify its immutable remote commit."""
+    target = (repo_path or Path.cwd()).resolve()
+    try:
+        receipt = push_ops.push_current_branch(
+            target,
+            remote=remote,
+            set_upstream=set_upstream,
+            force_with_lease=force_with_lease,
+        )
+    except push_ops.PushError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"Pushed {receipt.branch} to {receipt.remote} at {receipt.remote_sha} "
+        "(remote ref verified)"
+    )
 
 
 @exec_app.command("status")

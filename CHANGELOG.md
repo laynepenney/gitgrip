@@ -5,7 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-08-21
+
+**Scope, stated first because the range and the artifact are not the same thing.**
+
+The work promoted in this release is the range **`v1.1.0..6192e8c5`** — from the 1.1.0 tag to the
+`dev` tip at freeze — which is **42 commits / 14 first-parent units**. The release-prep commit
+that carries this entry sits one beyond that and is deliberately excluded; counting it makes the
+range 43 / 15. Both numbers are true of different ranges, so the range is named rather than left
+to inference.
+
+Units are classified by diffing each against its **first parent**. A merge commit has no
+canonical diff, and `git show <merge> --name-only` returns nothing for these, so the method is
+part of the claim.
+
+**Five of those 14 units are in the published `gitgrip` crate; nine are not.** gr2 is a separate
+Python surface at version `0.1.0` that is not distributed, so its nine units — the propagation
+prototypes, the append/torn-line work, the native daily verbs, and workspace-spec-from-topology —
+are present in this repository and absent from anything `cargo install gitgrip` gives you. The
+entries below cover the five gr1 units only. Read the git range if you want the gr2 work.
+
+### Fixed
+- **`gr pr merge` and `gr checkout` exit nonzero when part of a batch fails** — a multi-repo
+  operation that failed in some repos and succeeded in others previously exited 0, so a caller
+  or CI step reading the exit code saw success over a partial failure.
+
+  **This does not close the exit-code-honesty class, and should not be read as doing so.**
+  The class is tracked in `grip#886`, which records 9+ known instances; two are fixed here.
+  **`gr push` — the most consequential instance, the one that can silently lose work — is
+  untouched by this release.**
+- **`gr link --apply` reports a stale source instead of composing it silently** and
+  **gripspace pins are checked for freshness**.
+
+  **Two measured holes in this remain open** (`grip#891`), and this feature ships with **no
+  user-facing documentation** — `README.md` has no `gr link` section, only a one-line table
+  mention. Link freshness is **not** guaranteed by this release; what changed is that one class
+  of stale composition now reports rather than proceeding quietly.
+
+### Known gaps at this release
+- The new exit-code semantics (`EXIT_REFUSED=2`, operational failure `1`, success `0`) are not
+  documented in `README.md` for either `gr checkout` or `gr pr merge`.
+- `CONTRIBUTING.md` does not mention gr2 anywhere, despite **9 of the 14 first-parent units in
+  `v1.1.0..6192e8c5` touching only `gr2/`** — the same first-parent classification used
+  throughout this entry. A contributor following that document has no path to discovering gr2
+  exists or how to set up its separate Python environment.
+
+  **Two earlier drafts of this line carried a commit-level statistic; both are withdrawn, and
+  the second is the more instructive.** The first said gr2 was "roughly a third of this
+  repository's active commit volume" — no range, no metric, nothing to reproduce. The second
+  replaced it with "22 of 42 commits (52%), measured by first-parent diff," which named a range
+  and a method and was **still wrong, because the number did not come from the method it
+  named**: 22 is `git rev-list --count -- gr2/`, whose path-history simplification silently drops
+  eight merge commits that *do* touch `gr2/` against their first parent. Under the stated method
+  the figure is 30 of 42 (71%). A sourced number can be more misleading than an unsourced one,
+  because citing a method invites trust the number has not earned. The unit measure above needs
+  no footnote, so it is the only one kept.
+
+## [1.1.0] - 2026-08-13
+
+These entries sat under an `[Unreleased]` heading until 2026-08-21. **That heading was false:**
+this work shipped in `v1.1.0`, tagged 2026-08-13 and published to crates.io. Verified by
+checking the feature's own symbols into the `v1.1.0` tree rather than by commit archaeology,
+with a negative control. A reader trusting the old heading would have believed a shipped
+feature was still pending.
 
 ### Fixed
 - **`gr pr merge` no longer defaults to squash** (#829) — with no `--method`, the command queried the host for its allowed methods and took the first of squash > merge > rebase, so on any repo permitting squash the tool actively chose it. A workspace whose policy is merge-commit-only got squashes from its own tooling, and on a private repo — where hosting rulesets are unavailable on most plans — nothing downstream could reject the result. The default is now a real merge commit, configurable via `settings.merge_method` in the manifest. Choosing is the workspace's job; the host is asked only whether the choice is permitted.

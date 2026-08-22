@@ -25,6 +25,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import tomli_w
+from gr2.prototypes.jsonl_store import (
+    JsonlRead,
+    append_jsonl,
+    read_jsonl,
+    warn_unreadable,
+)
 
 LANE_SCHEMA_VERSION = 1
 SCRATCHPAD_SCHEMA_VERSION = 1
@@ -140,9 +146,7 @@ class SharedScratchpad:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Prototype gr2 lanes + shared scratchpads"
-    )
+    parser = argparse.ArgumentParser(description="Prototype gr2 lanes + shared scratchpads")
     sub = parser.add_subparsers(dest="command", required=True)
 
     create = sub.add_parser("create-lane")
@@ -221,7 +225,9 @@ def parse_args() -> argparse.Namespace:
     enter.add_argument("workspace_root", type=Path)
     enter.add_argument("owner_unit")
     enter.add_argument("lane_name")
-    enter.add_argument("--actor", required=True, help="actor label, e.g. human:layne or agent:atlas")
+    enter.add_argument(
+        "--actor", required=True, help="actor label, e.g. human:layne or agent:atlas"
+    )
     enter.add_argument("--notify-channel", action="store_true")
     enter.add_argument("--recall", action="store_true")
 
@@ -355,12 +361,7 @@ def workspace_edit_leases_lock_file(workspace_root: Path) -> Path:
 
 def shared_lane_access_file(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
     return (
-        workspace_root
-        / ".grip"
-        / "state"
-        / "shared_lane_access"
-        / owner_unit
-        / f"{lane_name}.json"
+        workspace_root / ".grip" / "state" / "shared_lane_access" / owner_unit / f"{lane_name}.json"
     )
 
 
@@ -410,12 +411,6 @@ def load_current_lane_doc(workspace_root: Path, owner_unit: str) -> dict:
     return json.loads(path.read_text())
 
 
-def append_jsonl(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload) + "\n")
-
-
 def emit_lane_event(workspace_root: Path, payload: dict) -> None:
     append_jsonl(lane_events_file(workspace_root), payload)
 
@@ -424,17 +419,10 @@ def emit_recall_lane_event(workspace_root: Path, payload: dict) -> None:
     append_jsonl(recall_lane_events_file(workspace_root), payload)
 
 
-def iter_lane_events(workspace_root: Path) -> list[dict]:
-    path = lane_events_file(workspace_root)
-    if not path.exists():
-        return []
-    items: list[dict] = []
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        items.append(json.loads(line))
-    return items
+def iter_lane_events(workspace_root: Path) -> JsonlRead:
+    """Rows AND the lines that could not be read. See ``jsonl_store.JsonlRead``."""
+
+    return read_jsonl(lane_events_file(workspace_root))
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -654,7 +642,9 @@ def lease_conflicts(existing_mode: str, requested_mode: str) -> bool:
     return requested_mode in matrix.get(existing_mode, set())
 
 
-def conflicting_leases(leases: list[dict], actor: str, requested_mode: str) -> tuple[list[dict], list[dict]]:
+def conflicting_leases(
+    leases: list[dict], actor: str, requested_mode: str
+) -> tuple[list[dict], list[dict]]:
     active: list[dict] = []
     stale: list[dict] = []
     for lease in leases:
@@ -801,8 +791,8 @@ def enter_lane(args: argparse.Namespace) -> int:
     emit_lane_event(workspace_root, event)
     if args.notify_channel:
         event["channel_message"] = (
-            f'{args.actor} entered {args.owner_unit}/{args.lane_name} '
-            f'[{lane_doc["lane_type"]}] repos={",".join(lane_doc.get("repos", []))}'
+            f"{args.actor} entered {args.owner_unit}/{args.lane_name} "
+            f"[{lane_doc['lane_type']}] repos={','.join(lane_doc.get('repos', []))}"
         )
     if args.recall:
         emit_recall_lane_event(
@@ -842,8 +832,8 @@ def exit_lane(args: argparse.Namespace) -> int:
     emit_lane_event(workspace_root, event)
     if args.notify_channel:
         event["channel_message"] = (
-            f'{args.actor} exited {args.owner_unit}/{current_doc["lane_name"]} '
-            f'[{current_doc["lane_type"]}]'
+            f"{args.actor} exited {args.owner_unit}/{current_doc['lane_name']} "
+            f"[{current_doc['lane_type']}]"
         )
     if args.recall:
         emit_recall_lane_event(
@@ -867,7 +857,9 @@ def exit_lane(args: argparse.Namespace) -> int:
         "current": next_current,
         "recent": recent[1:] if next_current else [],
     }
-    current_lane_file(workspace_root, args.owner_unit).write_text(json.dumps(updated, indent=2) + "\n")
+    current_lane_file(workspace_root, args.owner_unit).write_text(
+        json.dumps(updated, indent=2) + "\n"
+    )
     print(current_lane_file(workspace_root, args.owner_unit))
     return 0
 
@@ -879,28 +871,29 @@ def current_lane(args: argparse.Namespace) -> int:
         return 0
     current_doc = doc["current"]
     print("gr2 prototype current-lane")
-    print(f'owner={current_doc["owner_unit"]} lane={current_doc["lane_name"]} type={current_doc["lane_type"]} actor={current_doc["actor"]}')
-    print(f'entered_at={current_doc["entered_at"]}')
+    print(
+        f"owner={current_doc['owner_unit']} lane={current_doc['lane_name']} type={current_doc['lane_type']} actor={current_doc['actor']}"
+    )
+    print(f"entered_at={current_doc['entered_at']}")
     recent = doc.get("recent", [])
     if recent:
         print("recent:")
         for item in recent:
-            print(f'  - {item["owner_unit"]}/{item["lane_name"]} ({item["lane_type"]})')
+            print(f"  - {item['owner_unit']}/{item['lane_name']} ({item['lane_type']})")
     return 0
 
 
 def lane_history(args: argparse.Namespace) -> int:
-    rows = [
-        event for event in iter_lane_events(args.workspace_root.resolve())
-        if event.get("owner_unit") == args.owner_unit
-    ]
+    read = iter_lane_events(args.workspace_root.resolve())
+    warn_unreadable(read, "the lane event log")
+    rows = [event for event in read.rows if event.get("owner_unit") == args.owner_unit]
     if args.json:
         print(json.dumps(rows, indent=2))
         return 0
     print("TIMESTAMP\tTYPE\tACTOR\tAGENT_ID\tLANE\tREPOS")
     for row in rows:
         print(
-            f'{row.get("timestamp","-")}\t{row.get("type","-")}\t{row.get("agent","-")}\t{row.get("agent_id","-")}\t{row.get("lane","-")}\t{",".join(row.get("repos", []))}'
+            f"{row.get('timestamp', '-')}\t{row.get('type', '-')}\t{row.get('agent', '-')}\t{row.get('agent_id', '-')}\t{row.get('lane', '-')}\t{','.join(row.get('repos', []))}"
         )
     return 0
 
@@ -948,6 +941,7 @@ def acquire_lane_lease(args: argparse.Namespace) -> int:
     )
     print(lane_leases_file(workspace_root, args.owner_unit, args.lane_name))
     return 0
+
 
 def _acquire_lane_lease_mutation(leases: list[dict], args: argparse.Namespace) -> dict:
     retained = [lease for lease in leases if lease["actor"] != args.actor]
@@ -1041,7 +1035,7 @@ def show_lane_leases(args: argparse.Namespace) -> int:
     for lease in leases:
         state = "stale" if is_stale_lease(lease) else "active"
         print(
-            f'{lease["actor"]}\t{lease["mode"]}\t{lease.get("ttl_seconds", "-")}\t{lease["acquired_at"]}\t{lease.get("expires_at", "-")}\t{state}'
+            f"{lease['actor']}\t{lease['mode']}\t{lease.get('ttl_seconds', '-')}\t{lease['acquired_at']}\t{lease.get('expires_at', '-')}\t{state}"
         )
     return 0
 
@@ -1088,9 +1082,7 @@ def check_review_requirements(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     ref = f"{args.repo}#{args.pr_number}"
     required = int(
-        workspace_constraints(workspace_root)
-        .get("required_reviewers", {})
-        .get(args.repo, 0)
+        workspace_constraints(workspace_root).get("required_reviewers", {}).get(args.repo, 0)
     )
     matching: list[dict] = []
     for path in iter_lane_files(workspace_root):
@@ -1190,21 +1182,33 @@ def plan_handoff(args: argparse.Namespace) -> int:
     source = load_lane_doc(workspace_root, args.source_owner_unit, args.source_lane_name)
     find_unit_spec(workspace_root, args.target_unit)
     if args.mode == "shared":
-        access_path = shared_lane_access_file(workspace_root, args.source_owner_unit, args.source_lane_name)
+        access_path = shared_lane_access_file(
+            workspace_root, args.source_owner_unit, args.source_lane_name
+        )
         access = json.loads(access_path.read_text()) if access_path.exists() else None
         payload = {
             "mode": "shared",
             "source_owner_unit": args.source_owner_unit,
             "source_lane_name": args.source_lane_name,
             "target_unit": args.target_unit,
-            "shared_access_present": bool(access and args.target_unit in access.get("shared_with", [])),
+            "shared_access_present": bool(
+                access and args.target_unit in access.get("shared_with", [])
+            ),
             "exec_rows": [
                 {
                     "acting_unit": args.target_unit,
                     "owner_unit": args.source_owner_unit,
                     "lane_name": args.source_lane_name,
                     "repo": repo,
-                    "cwd": str(workspace_root / "agents" / args.source_owner_unit / "lanes" / args.source_lane_name / "repos" / repo),
+                    "cwd": str(
+                        workspace_root
+                        / "agents"
+                        / args.source_owner_unit
+                        / "lanes"
+                        / args.source_lane_name
+                        / "repos"
+                        / repo
+                    ),
                     "lease_scope": f"{args.source_owner_unit}/{args.source_lane_name}",
                 }
                 for repo in source.get("repos", [])
@@ -1228,7 +1232,15 @@ def plan_handoff(args: argparse.Namespace) -> int:
                     "owner_unit": args.target_unit,
                     "lane_name": target_lane_name,
                     "repo": repo,
-                    "cwd": str(workspace_root / "agents" / args.target_unit / "lanes" / target_lane_name / "repos" / repo),
+                    "cwd": str(
+                        workspace_root
+                        / "agents"
+                        / args.target_unit
+                        / "lanes"
+                        / target_lane_name
+                        / "repos"
+                        / repo
+                    ),
                     "lease_scope": f"{args.target_unit}/{target_lane_name}",
                 }
                 for repo in source.get("repos", [])
@@ -1293,7 +1305,7 @@ def list_lanes(args: argparse.Namespace) -> int:
         doc = tomllib.loads(path.read_text())
         refs = ",".join(item["ref"] for item in doc.get("pr_associations", [])) or "-"
         print(
-            f'{doc["owner_unit"]}\t{doc["lane_name"]}\t{doc["lane_type"]}\t{len(doc.get("repos", []))}\t{refs}'
+            f"{doc['owner_unit']}\t{doc['lane_name']}\t{doc['lane_type']}\t{len(doc.get('repos', []))}\t{refs}"
         )
     return 0
 
@@ -1315,7 +1327,7 @@ def list_shared_scratchpads(args: argparse.Namespace) -> int:
         doc = tomllib.loads(path.read_text())
         participants = ",".join(doc.get("participants", [])) or "-"
         print(
-            f'{doc["name"]}\t{doc["kind"]}\t{doc["lifecycle"]}\t{age_days(path)}\t{participants}\t{doc["purpose"]}'
+            f"{doc['name']}\t{doc['kind']}\t{doc['lifecycle']}\t{age_days(path)}\t{participants}\t{doc['purpose']}"
         )
     return 0
 
@@ -1348,7 +1360,7 @@ def audit_shared_scratchpads(args: argparse.Namespace) -> int:
             issues.append("empty-docs")
 
         status = "ok" if not issues else "needs-attention"
-        print(f'{doc["name"]}\t{status}\t{days}\t{",".join(issues) or "-"}')
+        print(f"{doc['name']}\t{status}\t{days}\t{','.join(issues) or '-'}")
     return 0
 
 
@@ -1357,24 +1369,24 @@ def plan_promote_scratchpad(args: argparse.Namespace) -> int:
     doc = load_shared_scratchpad_doc(workspace_root, args.name)
     lane_name = args.lane or f"promote-{args.name}"
     print("gr2 prototype scratchpad-promotion plan")
-    print(f'scratchpad: {doc["name"]}')
-    print(f'kind: {doc["kind"]}')
-    print(f'lifecycle: {doc["lifecycle"]}')
-    print(f'target repo: {args.target_repo}')
-    print(f'target path: {args.target_path}')
-    print(f'owner unit: {args.owner_unit}')
-    print(f'suggested lane: {lane_name}')
+    print(f"scratchpad: {doc['name']}")
+    print(f"kind: {doc['kind']}")
+    print(f"lifecycle: {doc['lifecycle']}")
+    print(f"target repo: {args.target_repo}")
+    print(f"target path: {args.target_path}")
+    print(f"owner unit: {args.owner_unit}")
+    print(f"suggested lane: {lane_name}")
     print("recommended:")
-    print(
-        f"  1. create or reuse a feature lane for {args.target_repo} under {args.owner_unit}"
-    )
+    print(f"  1. create or reuse a feature lane for {args.target_repo} under {args.owner_unit}")
     print(
         f"  2. copy content from shared/scratchpads/{doc['name']}/docs into {args.target_repo}:{args.target_path}"
     )
     print(f"  3. branch and commit in lane {lane_name}")
     print("  4. open a PR once the artifact is ready for formal review")
     if not doc.get("linked_refs"):
-        print("warning: scratchpad has no linked refs; traceability should be added before promotion")
+        print(
+            "warning: scratchpad has no linked refs; traceability should be added before promotion"
+        )
     return 0
 
 
@@ -1415,9 +1427,9 @@ def next_step(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     lane_doc = load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
     print("gr2 prototype next-step")
-    print(f'lane: {args.owner_unit}/{lane_doc["lane_name"]}')
-    print(f'type: {lane_doc["lane_type"]}')
-    print(f'repos: {", ".join(lane_doc["repos"])}')
+    print(f"lane: {args.owner_unit}/{lane_doc['lane_name']}")
+    print(f"type: {lane_doc['lane_type']}")
+    print(f"repos: {', '.join(lane_doc['repos'])}")
     if lane_doc.get("pr_associations"):
         print("mode: review")
         print("recommended:")
@@ -1463,7 +1475,9 @@ def plan_exec(args: argparse.Namespace) -> int:
             print("gr2 lane-exec prototype")
             print("status=blocked reason=conflicting-active-lease")
             for lease in active_conflicts:
-                print(f'conflict: actor={lease["actor"]} mode={lease["mode"]} acquired_at={lease["acquired_at"]}')
+                print(
+                    f"conflict: actor={lease['actor']} mode={lease['mode']} acquired_at={lease['acquired_at']}"
+                )
         return 0
     if stale_conflicts:
         payload = {
@@ -1481,7 +1495,9 @@ def plan_exec(args: argparse.Namespace) -> int:
             print("gr2 lane-exec prototype")
             print("status=blocked reason=stale-conflicting-lease")
             for lease in stale_conflicts:
-                print(f'stale-conflict: actor={lease["actor"]} mode={lease["mode"]} expires_at={lease.get("expires_at", "-")}')
+                print(
+                    f"stale-conflict: actor={lease['actor']} mode={lease['mode']} expires_at={lease.get('expires_at', '-')}"
+                )
         return 0
 
     selected_repos = lane_doc["repos"]
@@ -1519,12 +1535,12 @@ def plan_exec(args: argparse.Namespace) -> int:
     else:
         print("gr2 lane-exec prototype")
         print(
-            f'owner={lane_doc["owner_unit"]} lane={lane_doc["lane_name"]} type={lane_doc["lane_type"]} fail_fast={lane_doc["exec_defaults"]["fail_fast"]}'
+            f"owner={lane_doc['owner_unit']} lane={lane_doc['lane_name']} type={lane_doc['lane_type']} fail_fast={lane_doc['exec_defaults']['fail_fast']}"
         )
         print("LANE\tREPO\tBRANCH\tCWD\tCOMMAND")
         for row in rows:
             print(
-                f'{row["lane"]}\t{row["repo"]}\t{row["branch"]}\t{row["cwd"]}\t{" ".join(row["command"])}'
+                f"{row['lane']}\t{row['repo']}\t{row['branch']}\t{row['cwd']}\t{' '.join(row['command'])}"
             )
     return 0
 

@@ -25,6 +25,53 @@ use std::process::Command;
 /// Maximum depth for recursive gripspace includes
 const MAX_GRIPSPACE_DEPTH: usize = 5;
 
+/// Local git-config key recording the revision contract used to materialize a
+/// gripspace clone. An empty value means the manifest omitted `rev` and the
+/// clone is expected to remain branch-backed.
+const REQUESTED_REV_CONFIG_KEY: &str = "gitgrip.requestedGripspaceRev";
+
+fn record_requested_revision(
+    gripspace_path: &Path,
+    rev: Option<&str>,
+) -> Result<(), ManifestError> {
+    let repo = git2::Repository::open(gripspace_path).map_err(|error| {
+        ManifestError::GripspaceError(format!(
+            "Failed to open gripspace revision metadata: {error}"
+        ))
+    })?;
+    repo.config()
+        .and_then(|mut config| config.set_str(REQUESTED_REV_CONFIG_KEY, rev.unwrap_or("")))
+        .map_err(|error| {
+            ManifestError::GripspaceError(format!(
+                "Failed to record gripspace revision metadata: {error}"
+            ))
+        })
+}
+
+/// Revision contract recorded when this gripspace was resolved.
+///
+/// `Ok(None)` is a recorded rev-less, branch-backed source. A missing key is
+/// an error rather than an implicit pin because absence cannot prove why a
+/// detached checkout exists.
+pub fn requested_gripspace_revision(
+    gripspace_path: &Path,
+) -> Result<Option<String>, ManifestError> {
+    let repo = git2::Repository::open(gripspace_path).map_err(|error| {
+        ManifestError::GripspaceError(format!(
+            "Failed to open gripspace revision metadata: {error}"
+        ))
+    })?;
+    let value = repo
+        .config()
+        .and_then(|config| config.get_string(REQUESTED_REV_CONFIG_KEY))
+        .map_err(|error| {
+            ManifestError::GripspaceError(format!(
+                "Gripspace revision provenance is unavailable: {error}. Run `gr sync` before applying links."
+            ))
+        })?;
+    Ok((!value.is_empty()).then_some(value))
+}
+
 /// Extract a gripspace name from its URL.
 ///
 /// Takes the last path component without `.git` suffix.
@@ -311,6 +358,7 @@ pub fn ensure_gripspace(
         if let Some(ref rev) = config.rev {
             checkout_rev(&gripspace_path, rev)?;
         }
+        record_requested_revision(&gripspace_path, config.rev.as_deref())?;
         return Ok(gripspace_path);
     }
 
@@ -333,7 +381,58 @@ pub fn ensure_gripspace(
         checkout_rev(&gripspace_path, rev)?;
     }
 
+    record_requested_revision(&gripspace_path, config.rev.as_deref())?;
+
     Ok(gripspace_path)
+}
+
+/// Locate an already-materialized gripspace without changing its checkout.
+///
+/// Manual link application must inspect the source state the operator actually
+/// has. Calling [`ensure_gripspace`] while loading that command can run
+/// `checkout -B` and erase a detached-HEAD premise before the freshness guard
+/// sees it. Prefer the recorded URL + revision identity. If provenance is
+/// missing, a unique same-remote clone is still returned so the guard can
+/// refuse it explicitly rather than resolution hiding the source altogether.
+fn existing_gripspace(
+    spaces_dir: &Path,
+    config: &GripspaceConfig,
+) -> Result<PathBuf, ManifestError> {
+    let entries = std::fs::read_dir(spaces_dir).map_err(|error| {
+        ManifestError::GripspaceError(format!(
+            "Cannot inspect materialized gripspaces at '{}': {error}. Run `gr sync` before applying links.",
+            spaces_dir.display()
+        ))
+    })?;
+
+    let mut same_remote = Vec::new();
+    let mut exact = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|error| ManifestError::GripspaceError(error.to_string()))?
+            .path();
+        if !path.is_dir() || !is_same_remote(&path, &config.url) {
+            continue;
+        }
+        let recorded_matches = match (requested_gripspace_revision(&path), config.rev.as_deref()) {
+            (Ok(Some(recorded)), Some(requested)) => recorded == requested,
+            (Ok(None), None) => true,
+            _ => false,
+        };
+        if recorded_matches {
+            exact.push(path.clone());
+        }
+        same_remote.push(path);
+    }
+
+    match (exact.as_slice(), same_remote.as_slice()) {
+        ([path], _) => Ok(path.clone()),
+        ([], [path]) => Ok(path.clone()),
+        _ => Err(ManifestError::GripspaceError(format!(
+            "Cannot identify one existing gripspace for '{}'. Run `gr sync` before applying links.",
+            config.url
+        ))),
+    }
 }
 
 /// Update a gripspace by fetching and pulling latest.
@@ -350,7 +449,11 @@ pub fn update_gripspace(
 
     // Fetch from origin
     let output = Command::new("git")
-        .args(["fetch", "origin"])
+        // Managed gripspace clones treat the manifest's named tag as upstream
+        // authority. A plain fetch leaves a moved local tag untouched, so the
+        // subsequent checkout resolves the stale tag and `gr sync` cannot
+        // satisfy the recovery path named by the link freshness refusal.
+        .args(["fetch", "--force", "--tags", "origin"])
         .current_dir(gripspace_path)
         .output()
         .map_err(|e| ManifestError::GripspaceError(format!("Failed to fetch gripspace: {}", e)))?;
@@ -386,6 +489,8 @@ pub fn update_gripspace(
             )));
         }
     }
+
+    record_requested_revision(gripspace_path, config.rev.as_deref())?;
 
     Ok(())
 }
@@ -575,6 +680,26 @@ pub fn resolve_all_gripspaces(
     manifest: &mut Manifest,
     spaces_dir: &Path,
 ) -> Result<(), ManifestError> {
+    resolve_all_gripspaces_with_materialization(manifest, spaces_dir, true)
+}
+
+/// Resolve included manifests from existing clones without changing HEAD.
+///
+/// This is the manual-link preflight form. It deliberately refuses a missing
+/// or ambiguous clone instead of cloning, fetching, checking out, or recording
+/// revision metadata while merely deciding whether an apply is safe.
+pub fn resolve_existing_gripspaces(
+    manifest: &mut Manifest,
+    spaces_dir: &Path,
+) -> Result<(), ManifestError> {
+    resolve_all_gripspaces_with_materialization(manifest, spaces_dir, false)
+}
+
+fn resolve_all_gripspaces_with_materialization(
+    manifest: &mut Manifest,
+    spaces_dir: &Path,
+    materialize: bool,
+) -> Result<(), ManifestError> {
     let gripspaces = match manifest.gripspaces.take() {
         Some(gs) if !gs.is_empty() => gs,
         _ => return Ok(()),
@@ -600,6 +725,7 @@ pub fn resolve_all_gripspaces(
             &mut active_stack,
             &mut resolved,
             0,
+            materialize,
             &mut merged_repos,
             &mut merged_scripts,
             &mut merged_env,
@@ -814,6 +940,7 @@ fn resolve_gripspace_recursive(
     active_stack: &mut HashSet<String>,
     resolved: &mut HashSet<String>,
     depth: usize,
+    materialize: bool,
     merged_repos: &mut HashMap<String, crate::core::manifest::RepoConfig>,
     merged_scripts: &mut HashMap<String, crate::core::manifest::WorkspaceScript>,
     merged_env: &mut HashMap<String, String>,
@@ -849,10 +976,24 @@ fn resolve_gripspace_recursive(
         )));
     }
 
-    let gripspace_path = ensure_gripspace(spaces_dir, config)?;
-    // Resolve the actual directory name (may differ from `name` due to reserved
-    // name suffixing or multi-rev disambiguation)
-    let dir_name = resolve_space_name(&config.url, config.rev.as_deref(), spaces_dir)?;
+    let gripspace_path = if materialize {
+        ensure_gripspace(spaces_dir, config)?
+    } else {
+        existing_gripspace(spaces_dir, config)?
+    };
+    // Use the directory we actually opened. In read-only mode a detached source
+    // may no longer satisfy revision-derived allocation heuristics, and asking
+    // those heuristics again would select a different path and erase the premise.
+    let dir_name = gripspace_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            ManifestError::GripspaceError(format!(
+                "Cannot identify gripspace directory for '{}'",
+                gripspace_path.display()
+            ))
+        })?
+        .to_string();
 
     // Load the gripspace's manifest
     let Some(manifest_path) = manifest_paths::resolve_manifest_file_in_dir(&gripspace_path) else {
@@ -881,7 +1022,9 @@ fn resolve_gripspace_recursive(
     if let Some(ref nested_gripspaces) = gs_manifest.gripspaces {
         for nested_config in nested_gripspaces {
             // Clone the nested gripspace if it doesn't exist yet
-            ensure_gripspace(spaces_dir, nested_config)?;
+            if materialize {
+                ensure_gripspace(spaces_dir, nested_config)?;
+            }
 
             resolve_gripspace_recursive(
                 nested_config,
@@ -889,6 +1032,7 @@ fn resolve_gripspace_recursive(
                 active_stack,
                 resolved,
                 depth + 1,
+                materialize,
                 merged_repos,
                 merged_scripts,
                 merged_env,

@@ -2,7 +2,7 @@
 
 Translates outbox events into channel messages per the mapping table in
 HOOK-EVENT-CONTRACT.md section 8. Uses cursor-based consumption from
-events.read_events().
+events.read_events_detailed(), which also reports lines it could not read.
 
 The bridge is a pure function layer: format_event() maps an event dict to
 a message string (or None), and run_bridge() orchestrates cursor reads and
@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from .events import read_events
+from .events import read_events_detailed, warn_unreadable
 
 
 _CONSUMER_NAME = "channel_bridge"
@@ -103,9 +103,27 @@ def run_bridge(
     The post_fn receives formatted message strings; the caller decides how to
     deliver them (recall_channel, print, log, etc.).
     """
-    events = read_events(workspace_root, _CONSUMER_NAME)
+    read = read_events_detailed(workspace_root, _CONSUMER_NAME)
+    # An unreadable outbox line is a message that never reaches a channel, and
+    # the bridge is the only place that says so.
+    #
+    # It is reported on EVERY read, not once: the cursor filter compares seq
+    # against the cursor and only lines that PARSE have a usable seq, so an
+    # unreadable line can never be advanced past, wherever it sits in the file
+    # (witnessed terminal AND mid-file). An UNTERMINATED record never reaches
+    # this report at all: the reader splits on b"\n", so a COMPLETE record whose
+    # only loss was its terminator is the final chunk and parses on the spot --
+    # before any emit, repair or no repair (W11, and its truncated control).
+    # What seam repair protects is the NEXT append, which would otherwise be
+    # glued onto it. So everything reported here is a TRUNCATED record, and for
+    # those the report is permanent: a bridge polling in a loop warns every
+    # cycle until someone repairs the file. That cost is real and is recorded
+    # as a residual.
+    #
+    # stderr keeps stdout parseable for callers that consume the posted count.
+    warn_unreadable(read)
     posted = 0
-    for event in events:
+    for event in read.events:
         msg = format_event(event)
         if msg is not None:
             post_fn(msg)

@@ -81,8 +81,9 @@ class TestEventTypeEnum:
 
     def test_total_count(self):
         from gr2.python_cli.events import EventType
-        # 5 lane + 4 lease + 4 hook + 7 PR + 8 sync + 3 exec + 2 recovery + 2 workspace = 35
-        assert len(EventType) == 35
+        # 5 lane + 4 lease + 4 hook + 7 PR + 8 sync + 3 exec + 2 recovery + 2 workspace
+        # + 1 propagation = 36
+        assert len(EventType) == 36
 
 
 # ---------------------------------------------------------------------------
@@ -486,19 +487,27 @@ class TestEmitErrorHandling:
     def test_emit_fails_closed_when_existing_sequence_cannot_be_read(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """Restoring _current_seq's OSError-to-zero fallback must turn this RED."""
+        """Restoring _current_seq's OSError-to-zero fallback must turn this RED.
+
+        MONKEYPATCH TARGET UPDATED read_text -> read_bytes (torn-line sweep fix 4).
+        The outbox is now read as BYTES so a single invalid byte cannot escape as
+        UnicodeDecodeError from outside every guard. This test's CONTRACT and every
+        assertion below are unchanged; only the read verb it intercepts moved, because
+        patching read_text no longer intercepts anything and the test would have gone
+        green by missing its target rather than by the behavior holding.
+        """
         from gr2.python_cli.events import EventEmitError, EventType, _outbox_path, emit
 
         outbox = _outbox_path(workspace)
         outbox.write_text('{"seq":41}\n')
-        original_read_text = Path.read_text
+        original_read_bytes = Path.read_bytes
 
         def fail_for_outbox(path: Path, *args, **kwargs):
             if path == outbox:
                 raise OSError("forced sequence-read failure")
-            return original_read_text(path, *args, **kwargs)
+            return original_read_bytes(path, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "read_text", fail_for_outbox)
+        monkeypatch.setattr(Path, "read_bytes", fail_for_outbox)
         with pytest.raises(EventEmitError) as exc_info:
             emit(
                 event_type=EventType.LANE_ENTERED,
@@ -509,6 +518,10 @@ class TestEmitErrorHandling:
             )
 
         assert isinstance(exc_info.value.__cause__, OSError)
+        # Undo before the read-back: the patch now targets read_bytes, which is
+        # also how this assertion reads the file. A verification must not travel
+        # the path the test deliberately sabotaged.
+        monkeypatch.undo()
         assert outbox.read_bytes() == b'{"seq":41}\n'
 
     def test_emit_creates_events_dir_if_missing(self, workspace: Path):

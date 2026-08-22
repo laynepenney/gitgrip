@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import Enum
@@ -84,6 +85,10 @@ class EventType(str, Enum):
     WORKSPACE_MATERIALIZED = "workspace.materialized"
     WORKSPACE_FILE_PROJECTED = "workspace.file_projected"
 
+    # one event per propagation receipt: the daemon's notification line, carried on the
+    # outbox so a consumer can relay it without the daemon knowing any channel
+    PROPAGATION_RECEIPT = "propagation.receipt"
+
 
 def _outbox_path(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "events" / "outbox.jsonl"
@@ -116,21 +121,170 @@ def _event_write_lock(outbox: Path):
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
+# DELIBERATELY PLAIN CLASSES, NOT @dataclass, AND THE REASON IS LOAD-BEARING.
+#
+# This module is loaded out-of-tree by spawned workers via
+# importlib.util.spec_from_file_location() + exec_module(), which does NOT
+# register the module in sys.modules. @dataclass resolves field types through
+# sys.modules[cls.__module__].__dict__, so under that loader it raises
+# AttributeError: 'NoneType' object has no attribute '__dict__' AT IMPORT --
+# every worker dies before running a line of its own.
+#
+# Measured: adding @dataclass here killed both writers in the concurrent-emit
+# integrity test before either reached sequence allocation. The failure was
+# visible an hour earlier in an ad-hoc probe and was dismissed as a loader
+# artifact; it was a portability constraint on this file. Anything importable by
+# a spawned worker must import without sys.modules registration.
+# test_events_torn_line.py carries a witness for exactly this.
+
+
+class MalformedLine:
+    """One line the reader could not turn into an event, and why."""
+
+    __slots__ = ("ordinal", "reason", "excerpt")
+
+    def __init__(self, ordinal: int, reason: str, excerpt: str) -> None:
+        self.ordinal = ordinal
+        self.reason = reason
+        self.excerpt = excerpt
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"MalformedLine(ordinal={self.ordinal!r}, reason={self.reason!r})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, MalformedLine):
+            return NotImplemented
+        return (self.ordinal, self.reason, self.excerpt) == (
+            other.ordinal,
+            other.reason,
+            other.excerpt,
+        )
+
+
+class EventRead:
+    """Events read, AND the lines that could not be read.
+
+    Both halves come from the SAME read. A second pass to "check health" would
+    describe a different moment, and the outbox is appended to concurrently.
+    """
+
+    __slots__ = ("events", "malformed")
+
+    def __init__(
+        self,
+        events: list[dict[str, object]],
+        malformed: tuple[MalformedLine, ...],
+    ) -> None:
+        self.events = events
+        self.malformed = malformed
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"EventRead(events={len(self.events)}, malformed={len(self.malformed)})"
+
+
+def _decode_line(raw: bytes) -> tuple[str | None, str]:
+    """Decode one line, or say why it could not be decoded.
+
+    The DECODE is the acquisition, not a transformation of an existing string:
+    reading the outbox in text mode manufactures the line as text outside every
+    guard, so a single invalid byte escapes as UnicodeDecodeError from a place
+    no parse guard can reach. Reading bytes and decoding per line puts the one
+    operation that can fail on file CONTENT inside the funnel.
+    """
+    try:
+        return raw.decode("utf-8"), ""
+    except UnicodeDecodeError as exc:
+        return None, str(exc)
+
+
+def _read_object(line: str) -> tuple[dict[str, object] | None, str]:
+    """Parse one line into a JSON object, or say why it is not one.
+
+    This IS an enumerated tuple -- what changed is how the entries were chosen.
+    The previous guard, (JSONDecodeError, TypeError), was a list of what had been
+    SEEN: it caught syntax errors, and missed RecursionError, which json.loads
+    raises on deeply nested input and which is NOT a ValueError, so deep nesting
+    escaped a reader whose contract is to not raise on file content.
+
+    This tuple is derived from what the OPERATION can raise: ValueError as the
+    base class covering JSONDecodeError and any other value error, plus
+    RecursionError, the one thing json.loads raises that ValueError does not
+    cover. Structure -- is the result an object? -- is then checked separately
+    below, because a valid JSON array parses cleanly and is still not an event.
+    """
+    try:
+        obj = json.loads(line)
+    except (ValueError, RecursionError) as exc:
+        return None, str(exc)
+    if not isinstance(obj, dict):
+        return None, f"line is a {type(obj).__name__}, not an object"
+    return obj, ""
+
+
+def _read_seq(obj: dict[str, object]) -> tuple[int | None, str]:
+    """The event's sequence number, or why it cannot be used as one.
+
+    bool is an int subclass, so `isinstance(True, int)` is True and `max(0, True)`
+    quietly yields 1. A float slips through comparison and arithmetic and then
+    fails at serialization: 1e999 is valid JSON input, becomes inf, and
+    json.dumps writes `Infinity`, which is not valid JSON output. Validate the
+    type here rather than discovering it downstream.
+    """
+    seq = obj.get("seq")
+    if isinstance(seq, bool) or not isinstance(seq, int):
+        return None, f"seq is {type(seq).__name__}, not an integer"
+    return seq, ""
+
+
+def _iter_outbox(outbox: Path) -> Iterator[tuple[dict[str, object] | None, str, bytes]]:
+    """Yield (object, reason, raw) per line, never raising on file CONTENT.
+
+    Splitting bytes on b"\n" rather than iterating text: see _decode_line.
+    """
+    # DELIBERATELY CATCHES NOTHING. An I/O failure is not a malformed line: it
+    # is not knowing what the file contains, and the caller's correct response
+    # differs. _current_seq() is on the WRITE path, where swallowing this
+    # returns 0 and emit() then allocates a sequence number that duplicates
+    # existing ones -- silent event-log corruption, which is why an earlier fix
+    # removed exactly this OSError-to-zero fallback and left a test standing
+    # guard over it. Reintroducing it here was caught by that test and not by
+    # any witness of mine.
+    blob = outbox.read_bytes()
+    for raw in blob.split(b"\n"):
+        if not raw.strip():
+            continue
+        line, reason = _decode_line(raw)
+        if line is None:
+            yield None, reason, raw
+            continue
+        obj, reason = _read_object(line)
+        yield obj, reason, raw
+
+
+def _excerpt(raw: bytes) -> str:
+    return raw[:120].decode("utf-8", "replace")
+
+
 def _current_seq(outbox: Path) -> int:
+    """Highest sequence number in the outbox.
+
+    DELIBERATELY REPORTS NO COUNT, and that is a decision rather than an
+    omission. This runs once per emit, inside the write lock, so a count here
+    would be a per-APPEND number reported to whoever happened to be writing --
+    the wrong altitude and the wrong audience. Unreadable lines are surfaced
+    once, from read_events_detailed(), where the number is per-READ and reaches
+    a consumer that can act on it.
+    """
     if not outbox.exists():
         return 0
-    text = outbox.read_text()
     last_seq = 0
-    for line in text.strip().split("\n"):
-        line = line.strip()
-        if not line:
+    for obj, _reason, _raw in _iter_outbox(outbox):
+        if obj is None:
             continue
-        try:
-            obj = json.loads(line)
-            if isinstance(obj, dict) and "seq" in obj:
-                last_seq = max(last_seq, obj["seq"])
-        except (json.JSONDecodeError, TypeError):
+        seq, _seq_reason = _read_seq(obj)
+        if seq is None:
             continue
+        last_seq = max(last_seq, seq)
     return last_seq
 
 
@@ -185,8 +339,25 @@ def emit(
                 event["agent_id"] = agent_id
             event.update(payload)
 
-            with outbox.open("a") as event_file:
-                event_file.write(json.dumps(event, separators=(",", ":")) + "\n")
+            # TERMINATOR REPAIR. A previous write that died between write() and
+            # fsync() leaves a last line with no "\n". Appending onto that GLUES
+            # two records into one line, and the damage runs FORWARD from the
+            # tear: the torn record and THE NEXT HEALTHY APPEND fuse into one
+            # unparseable line, while the record before the tear is untouched.
+            # So a torn write costs that record and the next one written after
+            # it, permanently, because every later append builds on the glued
+            # line. Probe the last byte and heal the seam before writing.
+            # (Direction measured, not reasoned: see the glue witness in
+            # test_events_torn_line.py. An earlier version of this comment
+            # stated it backwards.)
+            with outbox.open("a+b") as event_file:
+                event_file.seek(0, os.SEEK_END)
+                if event_file.tell() > 0:
+                    event_file.seek(-1, os.SEEK_END)
+                    if event_file.read(1) != b"\n":
+                        event_file.write(b"\n")
+                payload_bytes = json.dumps(event, separators=(",", ":")).encode("utf-8")
+                event_file.write(payload_bytes + b"\n")
                 event_file.flush()
                 os.fsync(event_file.fileno())
     except Exception as exc:
@@ -224,27 +395,52 @@ def emit_after_outcome(
         )
 
 
-def read_events(workspace_root: Path, consumer: str) -> list[dict[str, object]]:
+def read_events_detailed(workspace_root: Path, consumer: str) -> EventRead:
+    """New events for `consumer`, AND the lines that could not be read.
+
+    This is the primitive; read_events() is the list-shaped wrapper kept for the
+    eleven existing call sites, all of them tests. The count is a RETURN VALUE rather than
+    hidden state: these are module-level functions with no instance to hang
+    health on, and a module-level accumulator would be wrong under concurrent
+    readers, which the outbox explicitly has.
+
+    An unreadable line here is a LOST EVENT -- for the channel bridge it is a
+    message that never reaches a channel -- so silence is the failure, not the
+    safe default.
+    """
     outbox = _outbox_path(workspace_root)
     if not outbox.exists():
-        return []
+        return EventRead([], ())
 
     cursor = _load_cursor(workspace_root, consumer)
     last_seq = cursor.get("last_seq", 0)
+    if isinstance(last_seq, bool) or not isinstance(last_seq, int):
+        # A hand-edited or truncated cursor must not brick every future read.
+        last_seq = 0
 
     events: list[dict[str, object]] = []
-    text = outbox.read_text()
-    for line in text.strip().split("\n"):
-        line = line.strip()
-        if not line:
+    malformed: list[MalformedLine] = []
+    try:
+        lines = list(_iter_outbox(outbox))
+    except FileNotFoundError:
+        # ONLY this one, and only on the read path: _maybe_rotate() renames the
+        # outbox, so a reader can legitimately lose the file between exists()
+        # and the read. The events are not gone, they are in an archive. Any
+        # OTHER OSError is a real failure and propagates -- a reader that
+        # swallows EIO reports "no new events" forever.
+        return EventRead([], ())
+    for ordinal, (obj, reason, raw) in enumerate(lines, start=1):
+        if obj is None:
+            malformed.append(MalformedLine(ordinal, reason, _excerpt(raw)))
             continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
+        seq, seq_reason = _read_seq(obj)
+        if seq is None:
+            # An event whose seq is unusable cannot be ordered against the
+            # cursor. Comparing it anyway is how "x" <= 0 raises TypeError from
+            # inside a reader whose job is to not raise on file content.
+            malformed.append(MalformedLine(ordinal, seq_reason, _excerpt(raw)))
             continue
-        if not isinstance(obj, dict):
-            continue
-        if obj.get("seq", 0) <= last_seq:
+        if seq <= last_seq:
             continue
         events.append(obj)
 
@@ -261,7 +457,57 @@ def read_events(workspace_root: Path, consumer: str) -> list[dict[str, object]]:
             },
         )
 
-    return events
+    return EventRead(events, tuple(malformed))
+
+
+def read_events(workspace_root: Path, consumer: str) -> list[dict[str, object]]:
+    """New events for `consumer`, DISCARDING the unreadable-line report.
+
+    Kept list-shaped because eleven call sites index and len() the result, all
+    of them tests -- no production caller remains once the bridge moves to
+    read_events_detailed(), so this is a test-compatibility surface.
+    It discards information, which is exactly the silence this sweep exists to
+    remove -- so if you are writing a NEW consumer, call read_events_detailed()
+    and say something about `malformed`. The one production consumer, the
+    channel bridge, does.
+    """
+    return read_events_detailed(workspace_root, consumer).events
+
+
+def warn_unreadable(read: EventRead, stream=None, *, show_content: bool = False) -> bool:
+    """Report unreadable outbox lines on stderr. True when any were reported.
+
+    stderr, never stdout: a --json consumer's stdout must stay parseable, and a
+    warning written there turns a health report into a parse failure.
+
+    THE EXCERPT IS NOT PRINTED BY DEFAULT, and that is a deliberate call rather
+    than lost fidelity. `ordinal` and `reason` are STRUCTURAL -- a line number
+    and a parser complaint -- and carry no payload. The excerpt is CONTENT, and
+    printing it moves bytes out of a file the operator already owns into places
+    that get copied: CI logs, terminal scrollback, transcripts pasted into a
+    chat. Measured: a malformed line containing an API-key-shaped string echoed
+    that string verbatim.
+
+    Redacting it instead was rejected. Matching "secret-looking" patterns in
+    arbitrary bytes is a denylist over untrusted input, which leaks by
+    construction -- the same defect shape this module's parse guard exists to
+    avoid. So the excerpt stays on MalformedLine, where a caller that needs it
+    can ask, and stays out of the default report. Pass show_content=True to
+    include it when you are debugging a specific file and know what is in it.
+    """
+    if not read.malformed:
+        return False
+    out = stream if stream is not None else sys.stderr
+    count = len(read.malformed)
+    plural = "" if count == 1 else "s"
+    print(
+        f"warning: skipped {count} unreadable line{plural} in the event outbox",
+        file=out,
+    )
+    for bad in read.malformed:
+        detail = f": {bad.excerpt}" if show_content else ""
+        print(f"  line {bad.ordinal}: {bad.reason}{detail}", file=out)
+    return True
 
 
 def _load_cursor(workspace_root: Path, consumer: str) -> dict[str, object]:

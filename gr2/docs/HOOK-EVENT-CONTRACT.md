@@ -197,6 +197,20 @@ and `lease.force_broken` (which fires when a live lease is broken with
 | `workspace.materialized` | `gr2 workspace materialize` or `gr2 apply` | `{repos: [{repo, first_materialize: bool}]}` |
 | `workspace.file_projected` | File link/copy applied | `{repo, kind, src, dest}` |
 
+#### Propagation
+
+| Type | Trigger | Payload |
+|------|---------|---------|
+| `propagation.receipt` | The propagation daemon (`gr2/prototypes/propagation_daemon.py`) completed one operation against its declared managed replica, in any terminal state (acknowledged, refused, partial, unverifiable) | `{summary, state, pending_id, operation_id, source_rev, expected_base, after, replayed, receipt_path}` |
+
+`propagation.receipt` is emitted once per operation; a tick that finds the cursor
+already at the source revision is not an operation and emits nothing. `summary` is
+the one-line notification a channel consumer relays verbatim. `receipt_path` is the
+full path of the receipt file the daemon wrote, an explicit exception to the
+relative-path rule in 3.3: the receipt store lives under the daemon's declared
+`state_dir`, which is not a workspace file and may sit outside `workspace_root`.
+`after` is `null` when the operation did not reach `applied`.
+
 ### 3.3 Payload Conventions
 
 - All paths in payloads are relative to `workspace_root`, never absolute.
@@ -471,6 +485,9 @@ class EventType(str, Enum):
     # Workspace operations
     WORKSPACE_MATERIALIZED = "workspace.materialized"
     WORKSPACE_FILE_PROJECTED = "workspace.file_projected"
+
+    # Propagation (one event per receipt from the propagation daemon)
+    PROPAGATION_RECEIPT = "propagation.receipt"
 ```
 
 ### 7.3 Implementation Location

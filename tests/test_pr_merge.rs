@@ -10,7 +10,8 @@ use common::fixtures::WorkspaceBuilder;
 use common::git_helpers;
 use common::mock_platform::{
     mock_check_runs, mock_get_pr, mock_legacy_combined_status, mock_list_prs, mock_merge_pr,
-    mock_merge_pr_behind, mock_pr_reviews, point_repo_at_mock, setup_github_mock,
+    mock_merge_pr_behind, mock_pr_lifecycle, mock_pr_reviews, mock_repo_info_with_methods,
+    mock_server_error, mock_server_error_put, point_repo_at_mock, setup_github_mock,
 };
 use gitgrip::core::manifest::{PlatformConfig, PlatformType};
 use wiremock::http::Method;
@@ -235,10 +236,9 @@ async fn test_pr_merge_force_bypasses_checks() {
     });
 
     mock_list_prs(&server, vec![(42, "feat/test")]).await;
-    mock_get_pr(&server, 42, "open", false).await;
+    mock_pr_lifecycle(&server, 42).await;
     mock_pr_reviews(&server, 42, vec![("COMMENTED", "alice")]).await;
     mock_check_runs(&server, "feat/test", vec![("CI", "in_progress", None)]).await;
-    mock_merge_pr(&server, 42, true).await;
 
     let result = gitgrip::cli::commands::pr::run_pr_merge(
         &ws.workspace_root,
@@ -331,10 +331,16 @@ async fn test_pr_merge_branch_behind_suggests_update() {
     )
     .await;
 
+    // This assertion used to require `is_ok()` while its own message said
+    // "handled without crashing" -- two different claims. The merge genuinely
+    // did not happen, so graceful handling means a useful error, not a success.
+    // Reporting a batch as done when every merge in it failed is the exact
+    // false-success this change removes.
+    let error = result.expect_err("a branch-behind merge did not merge, so the run failed");
     assert!(
-        result.is_ok(),
-        "branch-behind merge should be handled without crashing: {:?}",
-        result.err()
+        error.to_string().contains("1 of 1"),
+        "the error should name how many merges failed, got: {}",
+        error
     );
 
     let requests = server.received_requests().await.unwrap();
@@ -380,7 +386,12 @@ async fn test_pr_merge_repo_filter_excludes_non_target() {
 
     // Only mock PR for frontend (PR #10). Backend should never be queried.
     mock_list_prs(&server, vec![(10, "feat/shared")]).await;
-    mock_get_pr(&server, 10, "open", true).await;
+    // The fixture here used to be `mock_get_pr(&server, 10, "open", true)` -- a PR
+    // reported as state "open" AND already merged, which the real API cannot
+    // produce. It made the command's own post-merge verification vacuous: the
+    // read-back said "merged" whether or not the merge had done anything, so
+    // this test was green for a reason unrelated to what it claims to check.
+    let merged_flag = mock_pr_lifecycle(&server, 10).await;
     mock_pr_reviews(&server, 10, vec![("APPROVED", "alice")]).await;
     mock_check_runs(
         &server,
@@ -388,7 +399,6 @@ async fn test_pr_merge_repo_filter_excludes_non_target() {
         vec![("CI", "completed", Some("success"))],
     )
     .await;
-    mock_merge_pr(&server, 10, true).await;
 
     // Filter to frontend only, force to bypass readiness checks
     let result = gitgrip::cli::commands::pr::run_pr_merge(
@@ -428,13 +438,22 @@ async fn test_pr_merge_repo_filter_excludes_non_target() {
         1,
         "exactly one merge request should be sent (frontend only, not backend)"
     );
+
+    // The request count proves the filter. This proves the merge actually
+    // happened -- the claim the old fixture asserted by construction rather
+    // than by observing anything.
+    assert!(
+        merged_flag.load(std::sync::atomic::Ordering::SeqCst),
+        "the filtered repo's PR should have been merged, not merely attempted"
+    );
 }
 
 // ── Repo Filter: No Matching Repos ────────────────────────────
-// When --repo names a repo that doesn't exist, all repos are filtered out.
+// An explicit selector names something the caller believes exists. Empty is
+// therefore a refusal, not a successful operation over an empty set.
 
 #[tokio::test]
-async fn test_pr_merge_repo_filter_no_match_finds_no_prs() {
+async fn test_pr_merge_repo_filter_no_match_is_a_usage_refusal() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
     let manifest = ws.load_manifest();
@@ -463,10 +482,11 @@ async fn test_pr_merge_repo_filter_no_match_finds_no_prs() {
     )
     .await;
 
+    let err = result.expect_err("an unknown explicit --repo selector must fail");
+    assert_eq!(gitgrip::cli::outcome::exit_code_for_error(&err), 2);
     assert!(
-        result.is_ok(),
-        "repo filter with no matches should succeed with 'no PRs found': {:?}",
-        result.err()
+        err.to_string().contains("nonexistent"),
+        "the refusal must name the selector that matched nothing: {err}"
     );
 }
 
@@ -496,10 +516,9 @@ async fn test_pr_merge_force_yes_merges_without_prompt() {
     });
 
     mock_list_prs(&server, vec![(42, "feat/test")]).await;
-    mock_get_pr(&server, 42, "open", false).await;
+    mock_pr_lifecycle(&server, 42).await;
     mock_pr_reviews(&server, 42, vec![]).await;
     mock_check_runs(&server, "feat/test", vec![("CI", "in_progress", None)]).await;
-    mock_merge_pr(&server, 42, true).await;
 
     // --force --yes should merge without stdin prompt
     let result = gitgrip::cli::commands::pr::run_pr_merge(
@@ -630,7 +649,7 @@ async fn test_pr_merge_all_flag_proceeds_and_merges_every_match() {
     }
 
     mock_list_prs(&server, vec![(1, "feat/shared-name")]).await;
-    mock_get_pr(&server, 1, "open", false).await;
+    mock_pr_lifecycle(&server, 1).await;
     mock_pr_reviews(&server, 1, vec![("APPROVED", "alice")]).await;
     mock_check_runs(
         &server,
@@ -638,7 +657,6 @@ async fn test_pr_merge_all_flag_proceeds_and_merges_every_match() {
         vec![("CI", "completed", Some("success"))],
     )
     .await;
-    mock_merge_pr(&server, 1, true).await;
 
     let result = gitgrip::cli::commands::pr::run_pr_merge(
         &ws.workspace_root,
@@ -710,13 +728,12 @@ async fn test_pr_merge_wait_does_not_block_when_no_checks_are_configured() {
     });
 
     mock_list_prs(&server, vec![(42, "feat/no-ci")]).await;
-    mock_get_pr(&server, 42, "open", false).await;
+    mock_pr_lifecycle(&server, 42).await;
     mock_pr_reviews(&server, 42, vec![("APPROVED", "alice")]).await;
     // Exact GitHub shape for a ref with no CI configured: check-runs reports
     // zero runs, and the legacy fallback reports "pending" with zero statuses.
     mock_check_runs(&server, "feat/no-ci", vec![]).await;
     mock_legacy_combined_status(&server, "feat/no-ci", "pending", vec![]).await;
-    mock_merge_pr(&server, 42, true).await;
 
     let start = std::time::Instant::now();
     let result = gitgrip::cli::commands::pr::run_pr_merge(
@@ -825,10 +842,11 @@ async fn test_skip_gate_approval_does_not_also_waive_checks() {
     )
     .await;
 
-    assert!(
-        result.is_ok(),
-        "should report, not error: {:?}",
-        result.err()
+    let err = result.expect_err("a live readiness gate must refuse the merge");
+    assert_eq!(
+        gitgrip::cli::outcome::exit_code_for_error(&err),
+        2,
+        "readiness refusal must be distinguishable from operational failure"
     );
 
     let requests = server.received_requests().await.unwrap();
@@ -838,6 +856,72 @@ async fn test_skip_gate_approval_does_not_also_waive_checks() {
             .any(|r| r.method == Method::PUT && r.url.path().ends_with("/merge")),
         "checks were still running and only `approval` was waived — no merge must be sent. \
          If this fires, --skip-gate is behaving as a blanket --force."
+    );
+}
+
+#[tokio::test]
+async fn test_readiness_refusal_reaches_the_process_exit_status() {
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let mut manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "feature.txt",
+        "feature",
+        "Add feature",
+    );
+
+    point_repo_at_mock(&mut manifest, "app", &server);
+    let manifest_yaml = serde_yaml::to_string(&manifest).unwrap();
+    std::fs::write(
+        ws.workspace_root.join(".gitgrip/spaces/main/gripspace.yml"),
+        manifest_yaml,
+    )
+    .unwrap();
+
+    mock_list_prs(&server, vec![(42, "feat/test")]).await;
+    mock_get_pr(&server, 42, "open", false).await;
+    mock_pr_reviews(&server, 42, vec![("COMMENTED", "alice")]).await;
+    mock_check_runs(&server, "feat/test", vec![("CI", "in_progress", None)]).await;
+    mock_merge_pr(&server, 42, true).await;
+
+    let output = tokio::process::Command::new(assert_cmd::cargo::cargo_bin!("gr"))
+        .current_dir(&ws.workspace_root)
+        .env("GITHUB_TOKEN", "test")
+        .args([
+            "pr",
+            "merge",
+            "--skip-gate",
+            "approval",
+            "--method",
+            "merge",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "readiness refusal must survive dispatch and main; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("Error: merge refused"),
+        "main must not append a generic error after the command rendered the actionable refusal"
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        !requests
+            .iter()
+            .any(|r| r.method == Method::PUT && r.url.path().ends_with("/merge")),
+        "a refusal with exit 2 must still send no merge request"
     );
 }
 
@@ -873,7 +957,7 @@ async fn test_skip_gate_approval_allows_a_comment_ratified_merge() {
     // PR that is open and mergeable. Passing `true` here made it UNmergeable and
     // the merge was correctly blocked by the `mergeable` gate, which looked like
     // the waiver failing. The scenario was wrong, not the waiver.
-    mock_get_pr(&server, 42, "open", false).await;
+    mock_pr_lifecycle(&server, 42).await;
     mock_pr_reviews(&server, 42, vec![("COMMENTED", "alice")]).await;
     mock_check_runs(
         &server,
@@ -881,7 +965,6 @@ async fn test_skip_gate_approval_allows_a_comment_ratified_merge() {
         vec![("CI", "completed", Some("success"))],
     )
     .await;
-    mock_merge_pr(&server, 42, true).await;
 
     let result = gitgrip::cli::commands::pr::run_pr_merge(
         &ws.workspace_root,
@@ -911,5 +994,218 @@ async fn test_skip_gate_approval_allows_a_comment_ratified_merge() {
             .iter()
             .any(|r| r.method == Method::PUT && r.url.path().ends_with("/merge")),
         "approval was the only failing gate and it was waived by name — the merge must proceed"
+    );
+}
+
+#[tokio::test]
+async fn test_pr_merge_all_lookups_failing_is_not_success() {
+    let (server, _adapter) = setup_github_mock().await;
+    mock_server_error(&server, "/repos/owner/repo/pulls").await;
+
+    let ws = WorkspaceBuilder::new()
+        .add_repo("frontend")
+        .add_repo("backend")
+        .build();
+
+    let mut manifest = ws.load_manifest();
+    point_repo_at_mock(&mut manifest, "frontend", &server);
+    point_repo_at_mock(&mut manifest, "backend", &server);
+
+    // Both off the default branch, or they are skipped before any lookup runs
+    // and the witness would pass for the wrong reason.
+    for name in ["frontend", "backend"] {
+        git_helpers::create_branch(&ws.repo_path(name), "feat/witness");
+        git_helpers::commit_file(&ws.repo_path(name), "w.txt", "w", "witness commit");
+    }
+
+    let result = gitgrip::cli::commands::pr::run_pr_merge(
+        &ws.workspace_root,
+        &manifest,
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: false,
+            skip_gates: Vec::new(),
+            update: false,
+            auto: false,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+            repo_filter: None,
+            yes: true,
+            allow_all: false,
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "every PR lookup failed; the command must not report success"
+    );
+}
+
+#[tokio::test]
+async fn test_pr_merge_all_lookups_failing_exits_nonzero() {
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let mut manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "feature.txt",
+        "feature",
+        "Add feature",
+    );
+
+    point_repo_at_mock(&mut manifest, "app", &server);
+    let manifest_yaml = serde_yaml::to_string(&manifest).unwrap();
+    std::fs::write(
+        ws.workspace_root.join(".gitgrip/spaces/main/gripspace.yml"),
+        manifest_yaml,
+    )
+    .unwrap();
+
+    // Every PR lookup fails, so the candidate list is empty for a reason that
+    // is not "there are no PRs".
+    mock_server_error(&server, "/repos/owner/repo/pulls").await;
+
+    let output = tokio::process::Command::new(assert_cmd::cargo::cargo_bin!("gr"))
+        .current_dir(&ws.workspace_root)
+        .env("GITHUB_TOKEN", "test")
+        .args(["pr", "merge", "--method", "merge", "--yes"])
+        .output()
+        .await
+        .unwrap();
+
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "a run that could not determine PR state must not exit 0; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn test_pr_merge_failed_merge_exits_nonzero() {
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let mut manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "feature.txt",
+        "feature",
+        "Add feature",
+    );
+
+    point_repo_at_mock(&mut manifest, "app", &server);
+    let manifest_yaml = serde_yaml::to_string(&manifest).unwrap();
+    std::fs::write(
+        ws.workspace_root.join(".gitgrip/spaces/main/gripspace.yml"),
+        manifest_yaml,
+    )
+    .unwrap();
+
+    mock_list_prs(&server, vec![(42, "feat/test")]).await;
+    mock_get_pr(&server, 42, "open", false).await;
+    mock_pr_reviews(&server, 42, vec![("APPROVED", "alice")]).await;
+    mock_check_runs(
+        &server,
+        "feat/test",
+        vec![("CI", "completed", Some("success"))],
+    )
+    .await;
+    // The lookup succeeds and the merge itself fails: a genuine per-repo error
+    // on the path that matters most.
+    mock_server_error_put(&server, "/repos/owner/repo/pulls/42/merge").await;
+
+    let output = tokio::process::Command::new(assert_cmd::cargo::cargo_bin!("gr"))
+        .current_dir(&ws.workspace_root)
+        .env("GITHUB_TOKEN", "test")
+        .args(["pr", "merge", "--force", "--method", "merge", "--yes"])
+        .output()
+        .await
+        .unwrap();
+
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "a failed merge must not exit 0; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// The `--auto` path had no test of any kind, so its exit code was unverified
+/// in both directions. A PR whose requested merge method the repository forbids
+/// is counted as an error inside the auto loop; before this change the run
+/// still returned Ok, so a script enabling auto-merge across a workspace could
+/// be told every PR was queued when none of them were.
+#[tokio::test]
+async fn test_pr_merge_auto_enable_failure_exits_nonzero() {
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let mut manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "feature.txt",
+        "feature",
+        "Add feature",
+    );
+
+    let repo_config = manifest.repos.get_mut("app").unwrap();
+    repo_config.url = Some("https://github.com/owner/repo.git".to_string());
+    repo_config.platform = Some(PlatformConfig {
+        platform_type: PlatformType::GitHub,
+        base_url: Some(server.uri()),
+    });
+
+    mock_list_prs(&server, vec![(42, "feat/test")]).await;
+    mock_pr_lifecycle(&server, 42).await;
+    mock_pr_reviews(&server, 42, vec![("APPROVED", "alice")]).await;
+    mock_check_runs(
+        &server,
+        "feat/test",
+        vec![("CI", "completed", Some("success"))],
+    )
+    .await;
+    // Readiness passes, so the run reaches the auto loop. The repository then
+    // forbids the requested method, which is the loop's own error branch.
+    mock_repo_info_with_methods(&server, "owner", "repo", true, false, true).await;
+
+    let merge_method = gitgrip::platform::MergeMethod::Merge;
+    let result = gitgrip::cli::commands::pr::run_pr_merge(
+        &ws.workspace_root,
+        &manifest,
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: Some(&merge_method),
+            force: false,
+            skip_gates: Vec::new(),
+            update: false,
+            auto: true,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+            repo_filter: None,
+            yes: true,
+            allow_all: false,
+        },
+    )
+    .await;
+
+    let error = result.expect_err("no auto-merge was enabled, so the run failed");
+    assert!(
+        error.to_string().contains("auto-merge attempts failed"),
+        "the error should say the auto-merge attempts failed, got: {}",
+        error
     );
 }

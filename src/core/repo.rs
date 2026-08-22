@@ -374,9 +374,35 @@ pub fn validate_repo_filters_known(
         .map(|name| format!("'{}'", name))
         .collect::<Vec<_>>()
         .join(", ");
+    let mut suggestions = missing
+        .iter()
+        .flat_map(|filter| {
+            manifest.repos.iter().filter_map(|(manifest_name, config)| {
+                let matches_remote_name = config
+                    .url
+                    .as_deref()
+                    .and_then(parse_git_url)
+                    .is_some_and(|parsed| parsed.repo == filter.as_str());
+                let matches_path_name = std::path::Path::new(&config.path)
+                    .file_name()
+                    .is_some_and(|name| name == std::ffi::OsStr::new(filter.as_str()));
+
+                (matches_remote_name || matches_path_name)
+                    .then(|| format!("'{}' ({})", manifest_name, config.path))
+            })
+        })
+        .collect::<Vec<_>>();
+    suggestions.sort();
+    suggestions.dedup();
+    let suggestion = if suggestions.is_empty() {
+        String::new()
+    } else {
+        format!(" Did you mean {}?", suggestions.join(" or "))
+    };
     anyhow::bail!(
-        "repo filter {} not found in local manifest. If it was added upstream, run `gr sync --repo manifest` or plain `gr sync` first, then retry.",
-        names
+        "repo filter {} not found in local manifest.{} If it was added upstream, run `gr sync --repo manifest` or plain `gr sync` first, then retry.",
+        names,
+        suggestion
     );
 }
 
@@ -1286,6 +1312,55 @@ repos:
         assert!(
             require_explicit_multi_repo_scope(&matched, false, true, "edit", |s| s.to_string())
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn unknown_manifest_name_suggests_the_matching_remote_repo_name() {
+        let manifest = Manifest::parse(
+            r#"
+repos:
+  synapt:
+    url: https://github.com/example/recall.git
+    path: ./synapt
+"#,
+        )
+        .unwrap();
+
+        let err = validate_repo_filters_known(&manifest, Some(&["recall".to_string()]))
+            .expect_err("a remote repository name is not a manifest selector");
+
+        assert!(
+            err.to_string()
+                .contains("Did you mean 'synapt' (./synapt)?"),
+            "the refusal should bridge from the remote name to the manifest selector: {err}"
+        );
+    }
+
+    #[test]
+    fn remote_name_hint_lists_every_matching_manifest_key_deterministically() {
+        let manifest = Manifest::parse(
+            r#"
+repos:
+  grip-next:
+    url: https://github.com/example/grip.git
+    path: ./next
+    revision: next
+  grip-stable:
+    url: https://github.com/example/grip.git
+    path: ./stable
+    revision: stable
+"#,
+        )
+        .unwrap();
+
+        let err = validate_repo_filters_known(&manifest, Some(&["grip".to_string()]))
+            .expect_err("a remote repository name is not a manifest selector");
+
+        assert!(
+            err.to_string()
+                .contains("Did you mean 'grip-next' (./next) or 'grip-stable' (./stable)?"),
+            "every matching manifest key should be listed in stable order: {err}"
         );
     }
 }
