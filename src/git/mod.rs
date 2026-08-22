@@ -198,6 +198,24 @@ pub fn get_current_branch(repo: &Repository) -> Result<String, GitError> {
     }
 }
 
+/// Resolve the remote's default branch from `refs/remotes/<remote>/HEAD`.
+///
+/// Local only: a cleanup verb must not acquire a network failure mode, so this
+/// reads the ref that `clone` writes rather than asking the remote. Returns
+/// `None` when the ref is absent, or present but not symbolic — both are normal
+/// states for a clone that was never given one, and both mean "unknown" rather
+/// than "no default exists". Callers must treat `None` as a reason to protect
+/// more, never as a reason to protect less.
+pub fn get_default_branch(repo: &Repository, remote: &str) -> Option<String> {
+    let reference = repo
+        .find_reference(&format!("refs/remotes/{}/HEAD", remote))
+        .ok()?;
+    let target = reference.symbolic_target()?;
+    target
+        .strip_prefix(&format!("refs/remotes/{}/", remote))
+        .map(|name| name.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

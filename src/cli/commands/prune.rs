@@ -1,14 +1,15 @@
 //! Prune command implementation
 //!
-//! Deletes local branches that have been merged into the default branch.
+//! Deletes local branches that have been merged into the manifest target.
 //! Optionally prunes remote tracking refs.
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::branch::{delete_local_branch, is_branch_merged, list_local_branches};
-use crate::git::{get_current_branch, open_repo, path_exists};
+use crate::git::{get_current_branch, get_default_branch, open_repo, path_exists};
 use crate::util::log_cmd;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
@@ -63,11 +64,37 @@ pub fn run_prune(
             }
         };
 
+        // Branches that must never be pruned. Three members, not two: the branch
+        // checked out, the manifest target, and the remote's DEFAULT branch. The
+        // default is the only one that asserts "permanent" rather than "currently
+        // interesting" -- and until the target moved off main it was protected
+        // only by coincidence, because target and default were the same value.
+        let mut protected: BTreeSet<String> = BTreeSet::new();
+        protected.insert(current_branch.clone());
+        protected.insert(repo.target_branch().to_string());
+        match get_default_branch(&git_repo, &repo.sync_remote) {
+            Some(default_branch) => {
+                protected.insert(default_branch);
+            }
+            None => {
+                // Unknown default: protect MORE, never less. A resolution failure
+                // that silently shrinks this set reproduces the exact defect the
+                // set exists to prevent, one level up, inside its own fix -- and
+                // it would fail with nothing going red. Say so out loud, because
+                // a protected-more that is silent still reads as "resolved fine".
+                protected.insert("main".to_string());
+                protected.insert("dev".to_string());
+                Output::warning(&format!(
+                    "{}: could not determine the default branch (no {}/HEAD); protecting 'main' and 'dev' by name",
+                    repo.name, repo.sync_remote
+                ));
+            }
+        }
+
         let mut merged_branches: Vec<String> = Vec::new();
 
         for branch in &branches {
-            // Skip current branch and default branch
-            if branch == &current_branch || branch == repo.target_branch() {
+            if protected.contains(branch) {
                 continue;
             }
 
