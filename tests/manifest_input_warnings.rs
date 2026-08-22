@@ -281,7 +281,6 @@ fn json_stdout_should_be_parseable_json_and_currently_is_not() {
     let (_ws, out) = init_then_sync(&url, &["--json"]);
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    serde_json::from_str::<serde_json::Value>(stdout.trim()).unwrap_or_else(|e| {
-        panic!("--json stdout is not parseable JSON ({e}).\nstdout: {stdout}")
-    });
+    serde_json::from_str::<serde_json::Value>(stdout.trim())
+        .unwrap_or_else(|e| panic!("--json stdout is not parseable JSON ({e}).\nstdout: {stdout}"));
 }
