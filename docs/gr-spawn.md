@@ -66,7 +66,12 @@ Each agent can have a startup prompt file (Markdown) that defines its role, resp
     reviewer.md
 ```
 
-Prompts are injected via the `--prompt` flag when launching the agent's CLI tool. They should include:
+Startup prompt delivery follows the target runtime's native instruction boundary. For
+Codex, gitgrip passes the file as `developer_instructions`, keeping identity separate
+from the first user turn. Other tools can consume the same file through their configured
+launch arguments, such as Claude Code's `--append-system-prompt-file`.
+
+Prompts should include:
 - Role description
 - Responsibilities
 - Startup checklist (join channel, read journal, check unread, start loop)
@@ -140,7 +145,7 @@ tmux select-window -t myproject:lead
 |-------|---------|-------------|
 | `session_name` | `"synapt"` | tmux session name |
 | `channel` | `"dev"` | Default channel all agents join |
-| `auto_journal` | `true` | Agents read `recall_journal` on startup |
+| `auto_journal` | `true` | Paste recall startup context into Codex as a compatibility fallback. Disable when a runtime SessionStart hook owns continuity. |
 | `mock_launch` | `false` | Use echo/sleep instead of real agent launch |
 
 ### [agents.*] section
@@ -151,7 +156,7 @@ tmux select-window -t myproject:lead
 | `model` | no | `claude-sonnet-4-6` | Model ID |
 | `tool` | no | `claude` | CLI tool (`claude`, `codex`, `cursor`) |
 | `worktree` | no | `main` | Git worktree or `"new"` to auto-create |
-| `startup_prompt` | no | — | Path to .md startup prompt file |
+| `startup_prompt` | no | — | Path to an agent identity prompt. Codex receives it as developer instructions. |
 | `channel` | no | from `[spawn]` | Channel to auto-join |
 | `loop_interval` | no | `5m` | Channel read loop cadence |
 | `heartbeat_interval` | no | `60` | Seconds between heartbeat pings |
@@ -174,4 +179,3 @@ tmux select-window -t myproject:lead
 | `SYNAPT_LOOP_INTERVAL` | `loop_interval` field | `2m` |
 
 Plus any custom vars from the `env` table in `agents.toml`.
-

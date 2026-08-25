@@ -272,7 +272,17 @@ fn write_launch_script(
     let safe_name = agent_name.replace(['/', '\\', ':'], "-");
     let script_path = script_dir.join(format!("{}-launch.sh", safe_name));
     let content = build_launch_script_content(env, worktree_path, launch_cmd);
-    std::fs::write(&script_path, content)?;
+
+    let mut file = tempfile::NamedTempFile::new_in(&script_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(content.as_bytes())?;
+    file.as_file().sync_all()?;
+    file.persist(&script_path).map_err(|e| e.error)?;
     Ok(script_path)
 }
 
@@ -523,6 +533,13 @@ pub fn run_spawn_up(
         launch_env.extend(agent.env.clone());
 
         let worktree_path = resolve_worktree_path(&workspace_root, &agent.worktree);
+        let codex_startup_prompt = if !mock_mode && agent.tool == "codex" {
+            read_agent_startup_prompt(&workspace_root, agent).map_err(|e| {
+                anyhow::anyhow!("failed to load Codex startup prompt for {}: {}", name, e)
+            })?
+        } else {
+            String::new()
+        };
 
         // Build and send launch command
         let (launch_cmd, expected_process) = if mock_mode {
@@ -608,6 +625,7 @@ pub fn run_spawn_up(
             parts.extend(resolved_defaults.iter().cloned());
             parts.extend(model_inject.iter().cloned());
             parts.extend(resolved_args.iter().cloned());
+            parts.extend(codex_developer_instruction_args(&codex_startup_prompt));
 
             (shell_join(&parts), Some(expected_process_name(binary)))
         };
@@ -662,16 +680,6 @@ pub fn run_spawn_up(
         }
 
         if !mock_mode && agent.tool == "codex" {
-            let startup_prompt = match read_agent_startup_prompt(&workspace_root, agent) {
-                Ok(prompt) => prompt,
-                Err(e) => {
-                    Output::warning(&format!(
-                        "Failed to read Codex startup prompt for {}: {}",
-                        name, e
-                    ));
-                    String::new()
-                }
-            };
             let recall_context = if config.spawn.auto_journal {
                 generate_synapt_startup_context(
                     &worktree_path,
@@ -687,8 +695,7 @@ pub fn run_spawn_up(
             } else {
                 String::new()
             };
-            if let Some(prompt) = build_codex_initial_prompt(name, &startup_prompt, &recall_context)
-            {
+            if let Some(prompt) = build_codex_initial_prompt(name, &recall_context) {
                 if let Err(e) = send_codex_initial_prompt(&target, &prompt) {
                     Output::warning(&format!(
                         "Failed to inject Codex startup context for {}: {}",
@@ -765,6 +772,18 @@ fn read_agent_startup_prompt(workspace_root: &Path, agent: &AgentConfig) -> anyh
         .map_err(|e| anyhow::anyhow!("failed to read {}: {}", path.display(), e))
 }
 
+fn codex_developer_instruction_args(startup_prompt: &str) -> Vec<String> {
+    if startup_prompt.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let value = toml::Value::String(startup_prompt.to_string());
+    vec![
+        "--config".to_string(),
+        format!("developer_instructions={value}"),
+    ]
+}
+
 fn generate_synapt_startup_context(
     worktree_path: &Path,
     agent_name: &str,
@@ -802,14 +821,9 @@ fn generate_synapt_startup_context(
     }
 }
 
-fn build_codex_initial_prompt(
-    agent_name: &str,
-    startup_prompt: &str,
-    recall_context: &str,
-) -> Option<String> {
-    let startup_prompt = startup_prompt.trim();
+fn build_codex_initial_prompt(agent_name: &str, recall_context: &str) -> Option<String> {
     let recall_context = recall_context.trim();
-    if startup_prompt.is_empty() && recall_context.is_empty() {
+    if recall_context.is_empty() {
         return None;
     }
 
@@ -817,19 +831,11 @@ fn build_codex_initial_prompt(
         "Load this startup context for agent `{}` before doing any work.",
         agent_name
     )];
-    if !startup_prompt.is_empty() {
-        sections.push(format!(
-            "<agent_startup_prompt>\n{}\n</agent_startup_prompt>",
-            startup_prompt
-        ));
-    }
-    if !recall_context.is_empty() {
-        let recall_context = wrap_long_lines(recall_context, CODEX_STARTUP_MAX_LINE_CHARS);
-        sections.push(format!(
-            "<synapt_recall_startup_context>\n{}\n</synapt_recall_startup_context>",
-            recall_context
-        ));
-    }
+    let recall_context = wrap_long_lines(recall_context, CODEX_STARTUP_MAX_LINE_CHARS);
+    sections.push(format!(
+        "<synapt_recall_startup_context>\n{}\n</synapt_recall_startup_context>",
+        recall_context
+    ));
     sections.push(
         "Use this context to choose the next action. Do not summarize it unless asked.".to_string(),
     );
@@ -863,7 +869,7 @@ fn wrap_long_lines(text: &str, max_chars: usize) -> String {
     wrapped.join("\n")
 }
 
-fn send_codex_initial_prompt(target: &str, prompt: &str) -> anyhow::Result<()> {
+fn tmux_load_buffer(prompt: &str) -> anyhow::Result<()> {
     let mut child = Command::new("tmux")
         .args(["load-buffer", "-"])
         .stdin(Stdio::piped())
@@ -881,29 +887,50 @@ fn send_codex_initial_prompt(target: &str, prompt: &str) -> anyhow::Result<()> {
         anyhow::bail!("tmux load-buffer exited with {}", status);
     }
 
-    let status = Command::new("tmux")
-        .args(["paste-buffer", "-d", "-t", target])
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("tmux paste-buffer exited with {}", status);
-    }
+    Ok(())
+}
 
-    let status = Command::new("tmux")
-        .args(["send-keys", "-t", target, "Enter"])
-        .status()?;
+fn tmux_run(args: &[&str]) -> anyhow::Result<()> {
+    let status = Command::new("tmux").args(args).status()?;
     if !status.success() {
-        anyhow::bail!("tmux send-keys Enter exited with {}", status);
+        anyhow::bail!("tmux {} exited with {}", args.join(" "), status);
     }
+    Ok(())
+}
 
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let status = Command::new("tmux")
-        .args(["send-keys", "-t", target, "Enter"])
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("tmux send-keys confirm Enter exited with {}", status);
-    }
+fn send_codex_initial_prompt_with<L, R, S>(
+    target: &str,
+    prompt: &str,
+    mut load_buffer: L,
+    mut run_tmux: R,
+    mut sleep: S,
+) -> anyhow::Result<()>
+where
+    L: FnMut(&str) -> anyhow::Result<()>,
+    R: FnMut(&[&str]) -> anyhow::Result<()>,
+    S: FnMut(std::time::Duration),
+{
+    load_buffer(prompt)?;
+    run_tmux(&["paste-buffer", "-d", "-t", target])?;
+    run_tmux(&["send-keys", "-t", target, "Enter"])?;
+
+    sleep(std::time::Duration::from_millis(300));
+    run_tmux(&["send-keys", "-t", target, "Enter"])?;
+
+    sleep(std::time::Duration::from_millis(300));
+    run_tmux(&["send-keys", "-t", target, "Enter"])?;
 
     Ok(())
+}
+
+fn send_codex_initial_prompt(target: &str, prompt: &str) -> anyhow::Result<()> {
+    send_codex_initial_prompt_with(
+        target,
+        prompt,
+        tmux_load_buffer,
+        tmux_run,
+        std::thread::sleep,
+    )
 }
 
 /// Resolve a worktree identifier to an absolute path.
@@ -1806,18 +1833,87 @@ mod tests {
         assert!(script.contains("exec 'codex' 'resume'"));
     }
 
+    #[cfg(unix)]
     #[test]
-    fn test_codex_initial_prompt_combines_agent_prompt_and_recall_context() {
-        let prompt = build_codex_initial_prompt(
-            "opus",
-            "You are Opus.",
-            "Last session: shipped recall startup injection.",
+    fn test_launch_script_is_owner_only() {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let script_dir = workspace.path().join(".gitgrip/spawn");
+        std::fs::create_dir_all(&script_dir).unwrap();
+        let existing_script = script_dir.join("sentinel-launch.sh");
+        std::fs::write(&existing_script, "old public content").unwrap();
+        std::fs::set_permissions(&existing_script, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut old_reader = std::fs::File::open(&existing_script).unwrap();
+
+        let script_path = write_launch_script(
+            workspace.path(),
+            "sentinel",
+            &HashMap::new(),
+            Path::new("/tmp/worktree"),
+            "'codex'",
         )
         .unwrap();
 
+        let mode = std::fs::metadata(script_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let mut old_content = String::new();
+        old_reader.read_to_string(&mut old_content).unwrap();
+        assert_eq!(old_content, "old public content");
+        assert!(!std::fs::read_to_string(existing_script)
+            .unwrap()
+            .contains("old public content"));
+    }
+
+    #[test]
+    fn test_codex_developer_instructions_preserve_startup_prompt() {
+        let startup_prompt = concat!(
+            "You are Stromus.\n",
+            "Quotes: \"truth\" and 'care', plus \"\"\" and ''' fences.\n",
+            "Path: C:\\work\\synapt\n",
+            "Shell-like text stays text: $(touch nope) and `touch nope`."
+        );
+        let args = codex_developer_instruction_args(startup_prompt);
+
+        assert_eq!(args[0], "--config");
+        let parsed = args[1].parse::<toml::Table>().unwrap();
+        assert_eq!(
+            parsed
+                .get("developer_instructions")
+                .and_then(|v| v.as_str()),
+            Some(startup_prompt)
+        );
+    }
+
+    #[test]
+    fn test_codex_developer_instructions_preserve_large_prompt() {
+        let startup_prompt = format!("# Stromus\n\n{}", "identity substrate\n".repeat(4_000));
+        let args = codex_developer_instruction_args(&startup_prompt);
+        let parsed = args[1].parse::<toml::Table>().unwrap();
+
+        assert_eq!(
+            parsed
+                .get("developer_instructions")
+                .and_then(|v| v.as_str()),
+            Some(startup_prompt.as_str())
+        );
+    }
+
+    #[test]
+    fn test_codex_developer_instructions_skip_empty_prompt() {
+        assert!(codex_developer_instruction_args("").is_empty());
+        assert!(codex_developer_instruction_args("  \n").is_empty());
+    }
+
+    #[test]
+    fn test_codex_initial_prompt_contains_recall_context_only() {
+        let prompt =
+            build_codex_initial_prompt("opus", "Last session: shipped recall startup injection.")
+                .unwrap();
+
         assert!(prompt.contains("agent `opus`"));
-        assert!(prompt.contains("<agent_startup_prompt>"));
-        assert!(prompt.contains("You are Opus."));
+        assert!(!prompt.contains("<agent_startup_prompt>"));
         assert!(prompt.contains("<synapt_recall_startup_context>"));
         assert!(prompt.contains("Last session: shipped recall startup injection."));
         assert!(prompt.contains("Do not summarize it unless asked."));
@@ -1825,9 +1921,9 @@ mod tests {
 
     #[test]
     fn test_codex_initial_prompt_skips_empty_context() {
-        assert!(build_codex_initial_prompt("opus", "", "").is_none());
+        assert!(build_codex_initial_prompt("opus", "").is_none());
 
-        let prompt = build_codex_initial_prompt("opus", "", "Recall context").unwrap();
+        let prompt = build_codex_initial_prompt("opus", "Recall context").unwrap();
         assert!(!prompt.contains("<agent_startup_prompt>"));
         assert!(prompt.contains("<synapt_recall_startup_context>"));
     }
@@ -1835,8 +1931,71 @@ mod tests {
     #[test]
     fn test_codex_initial_prompt_wraps_long_recall_lines() {
         let recall = "x".repeat(CODEX_STARTUP_MAX_LINE_CHARS + 1);
-        let prompt = build_codex_initial_prompt("opus", "", &recall).unwrap();
+        let prompt = build_codex_initial_prompt("opus", &recall).unwrap();
         assert!(prompt.contains(&format!("{}\nx", "x".repeat(CODEX_STARTUP_MAX_LINE_CHARS))));
+    }
+
+    #[test]
+    fn test_codex_prompt_transport_pastes_then_sends_exactly_three_enters() {
+        let mut loaded = Vec::new();
+        let mut commands = Vec::new();
+        let mut sleeps = Vec::new();
+
+        send_codex_initial_prompt_with(
+            "synapt:atlas",
+            "recall context",
+            |prompt| {
+                loaded.push(prompt.to_string());
+                Ok(())
+            },
+            |args| {
+                commands.push(args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>());
+                Ok(())
+            },
+            |duration| sleeps.push(duration),
+        )
+        .unwrap();
+
+        assert_eq!(loaded, ["recall context"]);
+        assert_eq!(
+            commands,
+            [
+                ["paste-buffer", "-d", "-t", "synapt:atlas"],
+                ["send-keys", "-t", "synapt:atlas", "Enter"],
+                ["send-keys", "-t", "synapt:atlas", "Enter"],
+                ["send-keys", "-t", "synapt:atlas", "Enter"],
+            ]
+        );
+        assert_eq!(
+            sleeps,
+            [
+                std::time::Duration::from_millis(300),
+                std::time::Duration::from_millis(300),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_codex_prompt_transport_stops_after_tmux_failure() {
+        let mut commands = Vec::new();
+        let error = send_codex_initial_prompt_with(
+            "synapt:sentinel",
+            "recall context",
+            |_| Ok(()),
+            |args| {
+                commands.push(args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>());
+                if commands.len() == 3 {
+                    anyhow::bail!("simulated tmux failure");
+                }
+                Ok(())
+            },
+            |_| {},
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "simulated tmux failure");
+        assert_eq!(commands.len(), 3);
+        assert_eq!(commands[2], ["send-keys", "-t", "synapt:sentinel", "Enter"]);
     }
 
     #[test]

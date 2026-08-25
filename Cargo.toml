@@ -99,11 +99,11 @@ urlencoding = "2"
 base64 = "0.22"
 futures = "0.3"
 which = "7"
+tempfile = "3"
 clap_complete = "4.5.65"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 
 [dev-dependencies]
-tempfile = "3"
 tokio-test = "0.4"
 wiremock = "0.6"
 assert_cmd = "2"
