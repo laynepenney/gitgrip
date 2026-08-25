@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-08-25
+
+**Scope.** This release promotes `v1.2.0..c095d5d`: 6 commits and 3 first-parent
+units, measured with `git rev-list --count` and `git rev-list --first-parent --count`
+over that exact range. All three units change the published Rust CLI.
+
+### Added
+- **Codex startup prompts use the native developer boundary.** `gr spawn` loads each
+  configured `startup_prompt` and supplies it as `developer_instructions`, while recall
+  continuity remains a separate optional user payload. Missing configured prompts fail
+  closed. Generated launch scripts are constructed on mode-0600 inodes and atomically
+  replace prior files.
+
+### Fixed
+- **Unknown repository filters are refused** by `gr add`, `gr commit`, and `gr push`
+  instead of matching zero repositories and reporting success.
+- **Pruning protects the remote default branch** in addition to the current and target
+  branches.
+
 ## [1.2.0] - 2026-08-21
 
 **Scope, stated first because the range and the artifact are not the same thing.**
