@@ -2,8 +2,40 @@
 
 mod common;
 
+use assert_cmd::Command as AssertCommand;
+use predicates::prelude::*;
+
 use common::fixtures::WorkspaceBuilder;
 use common::git_helpers;
+
+/// Put a fixture into the shape production actually runs in: manifest target is
+/// `dev`, `dev` is checked out, and `main` exists as the release branch. Before
+/// 2026-08-01 target and default were both `main`, which protected `main` by
+/// coincidence; every prune test still encodes that retired arrangement.
+fn dev_target_workspace(repo: &str) -> common::fixtures::WorkspaceFixture {
+    let ws = WorkspaceBuilder::new().add_repo(repo).build();
+    let manifest_path = ws
+        .workspace_root
+        .join(".gitgrip")
+        .join("spaces")
+        .join("main")
+        .join("gripspace.yml");
+    let yaml = std::fs::read_to_string(&manifest_path).unwrap();
+    assert!(
+        yaml.contains("default_branch: main"),
+        "fixture no longer declares a target this helper knows how to move: {yaml}"
+    );
+    std::fs::write(
+        &manifest_path,
+        yaml.replace("default_branch: main", "default_branch: dev"),
+    )
+    .unwrap();
+
+    let repo_path = ws.repo_path(repo);
+    git_helpers::create_branch(&repo_path, "dev");
+    assert!(git_helpers::branch_exists(&repo_path, "main"));
+    ws
+}
 
 #[test]
 fn test_prune_dry_run_lists_merged_branches() {
@@ -130,4 +162,95 @@ fn test_prune_no_merged_branches() {
 
     // Unmerged branch should still exist
     assert!(git_helpers::branch_exists(&repo_path, "feat/unmerged"));
+}
+
+#[test]
+fn test_prune_protects_main_when_target_is_dev() {
+    // The production shape: target `dev`, standing on `dev`, `main` present.
+    // `main` is neither current nor target here, which is exactly the state the
+    // old two-slot guard left unprotected.
+    let ws = dev_target_workspace("alpha");
+    let repo_path = ws.repo_path("alpha");
+
+    // A genuinely merged branch, so this test also proves prune still WORKS.
+    // Without it, a fix that protected everything would pass just as happily.
+    git_helpers::create_branch(&repo_path, "feat/spent");
+    git_helpers::commit_file(&repo_path, "spent.txt", "x", "spent work");
+    git_helpers::checkout(&repo_path, "dev");
+    std::process::Command::new("git")
+        .args(["merge", "feat/spent", "--no-ff", "-m", "merge spent"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+
+    AssertCommand::cargo_bin("gr")
+        .unwrap()
+        .current_dir(&ws.workspace_root)
+        .args(["prune", "--execute", "--repo", "alpha"])
+        .assert()
+        .success();
+
+    assert!(
+        git_helpers::branch_exists(&repo_path, "main"),
+        "the release branch must survive a prune run from dev"
+    );
+    assert!(git_helpers::branch_exists(&repo_path, "dev"));
+    assert!(
+        !git_helpers::branch_exists(&repo_path, "feat/spent"),
+        "positive control: prune must still delete a merged branch, or this test \
+         would pass against a guard that simply protects everything"
+    );
+}
+
+#[test]
+fn test_prune_protects_more_and_says_so_when_default_is_unresolvable() {
+    // The default is made GENUINELY unresolvable -- origin/HEAD is deleted from a
+    // real clone -- rather than stubbed. A stub would assert the code path against
+    // a fixture instead of against the condition, and the real failure (a clone
+    // that was never given an origin/HEAD) would go unexercised.
+    let ws = dev_target_workspace("alpha");
+    let repo_path = ws.repo_path("alpha");
+
+    let before = std::process::Command::new("git")
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+    assert!(
+        before.status.success(),
+        "control: the clone must HAVE an origin/HEAD before we remove it, or this \
+         test proves nothing about removing it"
+    );
+
+    std::process::Command::new("git")
+        .args(["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+    let after = std::process::Command::new("git")
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+    assert!(
+        !after.status.success(),
+        "the removal must actually make resolution fail"
+    );
+
+    AssertCommand::cargo_bin("gr")
+        .unwrap()
+        .current_dir(&ws.workspace_root)
+        .args(["prune", "--execute", "--repo", "alpha"])
+        .assert()
+        .success()
+        // Protecting more must not be silent. A silent protected-more reads as
+        // "the default resolved fine" to the next person who runs this.
+        // NOTE: Output::warning writes to stdout, not stderr -- asserted against
+        // the stream the binary actually uses, verified by running it.
+        .stdout(predicate::str::contains(
+            "could not determine the default branch",
+        ));
+
+    assert!(git_helpers::branch_exists(&repo_path, "main"));
+    assert!(git_helpers::branch_exists(&repo_path, "dev"));
 }

@@ -1,8 +1,11 @@
 //! Push command implementation
 
+use crate::cli::outcome::CliOutcomeError;
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
+use crate::core::repo::{
+    filter_repos, get_manifest_repo_info, validate_repo_filters_known, RepoInfo,
+};
 use crate::git::remote::{force_push_branch, push_branch};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use git2::Repository;
@@ -27,6 +30,9 @@ pub fn run_push(
     repos_filter: Option<&[String]>,
     group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
+    validate_repo_filters_known(manifest, repos_filter)
+        .map_err(|error| CliOutcomeError::refusal(error.to_string()))?;
+
     if !json {
         if force {
             Output::header("Force pushing changes...");
