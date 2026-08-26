@@ -73,10 +73,26 @@ fn verify_merge_commit_parents(
     // Fetch so the local ref reflects the merge that just happened remotely.
     let _ = crate::git::remote::fetch_remote(&repo, "origin");
 
-    let reference = repo
-        .find_reference(&format!("refs/remotes/origin/{}", base))
-        .ok()?;
-    let commit = reference.peel_to_commit().ok()?;
+    // A readable repository whose base ref we cannot read is NOT the same
+    // state as an unreadable checkout, and must not share its silence. The
+    // caller prints nothing for `None`, so returning `None` here would report
+    // "could not look" in the exact shape of "looked, and it was fine".
+    let ref_name = format!("refs/remotes/origin/{}", base);
+    let commit = match repo
+        .find_reference(&ref_name)
+        .and_then(|reference| reference.peel_to_commit())
+    {
+        Ok(commit) => commit,
+        Err(e) => {
+            return Some(format!(
+                "could not check the merge result: {} is not readable ({}). \
+                 The merge was requested as {:?}, and a merge commit has two \
+                 parents, but this check did not run -- so nothing here says \
+                 the merge looks correct.",
+                ref_name, e, method
+            ));
+        }
+    };
     let parents = commit.parent_count();
 
     if parents >= 2 {
@@ -1587,5 +1603,44 @@ mod parent_assertion_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("not-a-repo");
         assert!(verify_merge_commit_parents(&missing, "main", MergeMethod::Merge).is_none());
+    }
+
+    /// A READABLE repository whose named base ref does not exist.
+    ///
+    /// This is the state our own topology produces. `base` is the PR's base
+    /// branch, and a base branch can be deleted -- or, before the bind above
+    /// it was corrected, `base` could be a stale manifest target naming a
+    /// branch that no longer exists at all. `find_reference` then fails on a
+    /// repository that is perfectly readable, and a bare `?` collapsed that
+    /// onto the same `None` as an unreadable checkout.
+    ///
+    /// Those are two different states and only one of them was reasoned
+    /// about. "I looked and it was fine" and "I could not look" must not be
+    /// the same observation, because the caller prints nothing for `None` --
+    /// so the silent branch reads as clearance in the one direction the
+    /// check cannot fail.
+    #[test]
+    fn an_absent_base_ref_in_a_readable_repository_is_reported() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        repo_with_head_parents(dir.path(), 1);
+
+        // Control: the fixture must be able to produce a finding at all.
+        // Without this, a function that had been broken into always
+        // returning None would pass the assertion below by accident.
+        assert!(
+            verify_merge_commit_parents(dir.path(), "main", MergeMethod::Merge).is_some(),
+            "control: this fixture reports a single-parent head for a ref that EXISTS"
+        );
+
+        let problem = verify_merge_commit_parents(dir.path(), "sprint-39", MergeMethod::Merge);
+        let message = problem.expect("an absent base ref must be reported, not silently cleared");
+        assert!(
+            message.contains("sprint-39"),
+            "the message must name the ref it could not read: {message}"
+        );
+        assert!(
+            message.contains("could not"),
+            "and must say it could not check, never that the merge looked fine: {message}"
+        );
     }
 }
