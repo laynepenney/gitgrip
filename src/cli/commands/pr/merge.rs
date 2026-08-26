@@ -61,6 +61,26 @@ fn resolve_check_status(status: &StatusCheckResult) -> CheckStatus {
 /// already happened. The point is that the operator finds out now, from the
 /// tool, rather than days later from a broken ancestry -- which is how the
 /// original incident was discovered.
+/// The base a PR is actually open against.
+///
+/// This is the hosting platform's answer, not the workspace's stored target.
+/// The two differ whenever the stored target is stale, and a stale stored
+/// target is the ordinary state after a branch is retired -- so binding the
+/// merge's notion of "base" to the manifest meant the post-merge parent
+/// assertion below read a ref that had nothing to do with the merge that just
+/// happened, and read nothing at all once that ref was deleted.
+///
+/// The platform value is already fetched for the mergeable flag; it was being
+/// discarded one line later. The stored target remains the fallback for the
+/// case where that call failed, because a plausible base still lets the
+/// assertion run -- and the assertion now says so when it cannot read it.
+fn pr_base_or_stored_target(platform_base: Option<&str>, stored_target: &str) -> String {
+    match platform_base {
+        Some(base) if !base.trim().is_empty() => base.to_string(),
+        _ => stored_target.to_string(),
+    }
+}
+
 fn verify_merge_commit_parents(
     local_path: &std::path::Path,
     base: &str,
@@ -383,7 +403,7 @@ pub async fn run_pr_merge(
         {
             Ok(Some(pr)) => {
                 // Get PR details
-                let (approved, mergeable) = match platform
+                let (approved, mergeable, platform_base) = match platform
                     .get_pull_request(&repo.owner, &repo.repo, pr.number)
                     .await
                 {
@@ -392,9 +412,13 @@ pub async fn run_pr_merge(
                             .is_pull_request_approved(&repo.owner, &repo.repo, pr.number)
                             .await
                             .unwrap_or(false);
-                        (is_approved, full_pr.mergeable.unwrap_or(false))
+                        (
+                            is_approved,
+                            full_pr.mergeable.unwrap_or(false),
+                            Some(full_pr.base.ref_name.clone()),
+                        )
                     }
-                    Err(_) => (false, false),
+                    Err(_) => (false, false, None),
                 };
 
                 // Get status checks
@@ -428,7 +452,7 @@ pub async fn run_pr_merge(
                     owner: repo.owner.clone(),
                     repo: repo.repo.clone(),
                     branch: branch.clone(),
-                    base: repo.target_branch().to_string(),
+                    base: pr_base_or_stored_target(platform_base.as_deref(), repo.target_branch()),
                     local_path: repo.absolute_path.clone(),
                     pr_number: pr.number,
                     platform,
@@ -1496,6 +1520,39 @@ settings:
             ManifestSettings::default().merge_strategy,
             "changing the git method must not disturb cross-repo coordination"
         );
+    }
+}
+
+#[cfg(test)]
+mod base_binding_tests {
+    use super::pr_base_or_stored_target;
+
+    /// The defect, as a test. A retired sprint branch stays in the manifest
+    /// long after it stops existing; the PR is open against something else.
+    #[test]
+    fn the_platform_base_wins_over_a_stale_stored_target() {
+        assert_eq!(
+            pr_base_or_stored_target(Some("dev"), "sprint-39"),
+            "dev",
+            "the PR is open against what the platform says, not what the workspace stored"
+        );
+    }
+
+    /// The fallback. Without this case, "prefer the platform" and "ignore the
+    /// manifest entirely" are indistinguishable, and a failed API call would
+    /// leave the parent assertion with no ref name at all.
+    #[test]
+    fn an_absent_platform_answer_falls_back_to_the_stored_target() {
+        assert_eq!(pr_base_or_stored_target(None, "main"), "main");
+    }
+
+    /// An adapter answering with an empty string must not produce the ref
+    /// `refs/remotes/origin/`, which would fail to resolve -- and before the
+    /// parent assertion learned to report that, would have gone silent.
+    #[test]
+    fn an_empty_platform_answer_falls_back_rather_than_building_a_bare_ref() {
+        assert_eq!(pr_base_or_stored_target(Some(""), "main"), "main");
+        assert_eq!(pr_base_or_stored_target(Some("   "), "main"), "main");
     }
 }
 
