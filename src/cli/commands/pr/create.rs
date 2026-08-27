@@ -35,8 +35,6 @@ fn branch_to_title(branch: &str) -> String {
     }
 }
 
-/// Run the PR create command
-#[allow(clippy::too_many_arguments)]
 #[derive(serde::Serialize)]
 pub(crate) struct JsonPrCreateResult {
     success: bool,
@@ -98,6 +96,8 @@ pub(crate) fn pr_create_json_payload(
     }
 }
 
+/// Run the PR create command
+#[allow(clippy::too_many_arguments)]
 pub async fn run_pr_create(
     workspace_root: &Path,
     manifest: &Manifest,
