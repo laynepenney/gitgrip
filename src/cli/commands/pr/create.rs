@@ -69,8 +69,17 @@ struct JsonFailedRepo {
 /// scripted caller would then have received process success AND payload
 /// success after the platform rejected the creation — both instruments
 /// agreeing, both wrong. Extracting the construction gives that field a
-/// witness, and `run_pr_create` has no other way to build the payload, so the
-/// witness cannot be routed around.
+/// witness.
+///
+/// That witness is necessary and was never sufficient, which took two more
+/// gate rounds to establish. A unit calling this function pins CONSTRUCTION
+/// and says nothing about whether production emits the bytes it builds, so a
+/// call-site overwrite survived it. And "the only construction site" is a
+/// claim about EVERY production return: `run_pr_create` had a second,
+/// inline one at the empty-`branch_groups` early return that hardcoded
+/// `success: true` for the same zero/zero state this computes `false` from.
+/// Both routes now come through here, and both are witnessed against the
+/// shipped binary's stdout rather than against this function.
 pub(crate) fn pr_create_json_payload(
     created: &[(String, String, u64, String)],
     failed: &[(String, String)],
@@ -186,14 +195,22 @@ pub async fn run_pr_create(
         if !json {
             println!("No repositories have changes to create PRs for.");
         } else {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "success": true,
-                    "prs": [],
-                    "failed": []
-                }))?
-            );
+            // Routed through the same helper as the terminal branch, because
+            // production had TWO serialization sites and they disagreed about
+            // the same inputs: this one hardcoded `success: true` for
+            // zero-created/zero-failed while the terminal branch computed
+            // `success: false` from that identical state. Both were already
+            // shipping. A consumer could not rely on either answer, and which
+            // one it got depended on how far the command happened to get.
+            //
+            // Found by Sentinel and Atlas independently at the v3 gate, after
+            // two earlier rounds on this same PR fixed the same shape one
+            // layer in each time -- a test name, then a construction site, now
+            // an unrouted return. The recurring lesson is that "built in one
+            // function" is a claim about EVERY production return, and the only
+            // way to hold it is to enumerate them rather than to assert it.
+            let result = pr_create_json_payload(&[], &[]);
+            println!("{}", serde_json::to_string_pretty(&result)?);
         }
         return Ok(());
     }

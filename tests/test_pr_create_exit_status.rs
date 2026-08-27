@@ -302,3 +302,101 @@ async fn the_shipped_binary_prints_success_false_after_a_platform_failure() {
         "--json keeps exit 0 and carries pass/fail in the body: {stdout}"
     );
 }
+
+/// THE SECOND WIRE: the empty-`branch_groups` early return.
+///
+/// Sentinel and Atlas found this independently at the v3 gate. `run_pr_create`
+/// had TWO JSON serialization sites, and they disagreed about identical
+/// inputs: the terminal branch computed `success: false` from
+/// zero-created/zero-failed, while this early return hardcoded
+/// `success: true`. Both were already shipping, so which answer a consumer got
+/// depended on how far the command happened to get.
+///
+/// The helper unit for the no-op case could not see it, because it calls
+/// `pr_create_json_payload` directly — the same helper-not-use shape this file
+/// names twice already. Only the shipped binary can tell these two routes
+/// apart, which is why this witness is a subprocess one.
+///
+/// Note what this pins and what it does not: it pins that BOTH routes now come
+/// through one construction site, which is what makes the "built in one
+/// function" claim checkable rather than asserted. It is deliberately not a
+/// ruling on whether a no-op *ought* to read `success: false` — that is the
+/// separate zero-match question, and the point here is that production must
+/// not answer it two different ways at once.
+#[tokio::test]
+async fn the_early_no_op_return_serializes_through_the_same_helper() {
+    use assert_cmd::Command as AssertCommand;
+
+    let ws = WorkspaceBuilder::new().add_repo("frontend").build();
+    // No branch, no commits: nothing is ahead, so `branch_groups` is empty and
+    // production takes the early return rather than the terminal branch.
+
+    let out = AssertCommand::cargo_bin("gr")
+        .unwrap()
+        .current_dir(&ws.workspace_root)
+        .env("GITHUB_TOKEN", "mock-test-token")
+        .args(["pr", "create", "-t", "Nothing to do", "--json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+
+    // HARNESS GUARD BEFORE ANY CONTENT CLAIM. `cargo test --test <name>` does
+    // not reliably rebuild the bin `cargo_bin` invokes, and a stale or
+    // half-written binary yields empty stdout whose failure reads exactly like
+    // a missing feature. Absent and could-not-look must not share a failure.
+    assert!(
+        out.status.success(),
+        "harness: `gr pr create --json` did not exit 0 ({:?}); stderr={}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!(
+            "harness: --json must print parseable JSON on stdout ({e}); got: {stdout} stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+
+    // ROUTE CONTROL, and it has to be a discriminating one. Empty `prs` and
+    // `failed` do NOT identify the early return -- the terminal branch reports
+    // the same arrays for a run that built groups and created nothing. So the
+    // control is the one string only the early return can print: the same
+    // workspace in human mode must say it. Without this the witness could pass
+    // while silently covering the wrong wire, which is the failure this whole
+    // PR keeps rediscovering.
+    let human = AssertCommand::cargo_bin("gr")
+        .unwrap()
+        .current_dir(&ws.workspace_root)
+        .env("GITHUB_TOKEN", "mock-test-token")
+        .args(["pr", "create", "-t", "Nothing to do"])
+        .output()
+        .unwrap();
+    let human_stdout = String::from_utf8_lossy(&human.stdout).to_string();
+    assert!(
+        human_stdout.contains("No repositories have changes to create PRs for"),
+        "control: this witness must exercise the empty-branch_groups early \
+         return, and only that route prints this line. Got: {human_stdout} \
+         stderr={}",
+        String::from_utf8_lossy(&human.stderr)
+    );
+
+    assert_eq!(
+        parsed["prs"].as_array().map(|a| a.len()),
+        Some(0),
+        "the zero-group route reports nothing created: {stdout}"
+    );
+    assert_eq!(
+        parsed["failed"].as_array().map(|a| a.len()),
+        Some(0),
+        "the zero-group route reports nothing failed: {stdout}"
+    );
+
+    assert_eq!(
+        parsed["success"],
+        serde_json::Value::Bool(false),
+        "the early return must serialize through pr_create_json_payload, which \
+         computes success from the inputs, rather than hardcoding a different \
+         answer than the terminal branch gives for the same state: {stdout}"
+    );
+}
