@@ -190,3 +190,110 @@ async fn json_mode_reports_the_failure_in_the_body_and_still_exits_zero() {
         "--json must keep exit 0 and carry pass/fail in the body: {result:?}"
     );
 }
+
+/// THE WIRING WITNESS: the bytes the shipped binary actually prints.
+///
+/// Sentinel blocked v2 on exactly this gap, and proved it rather than argued
+/// it: he left `pr_create_json_payload` correct and set `result.success = true`
+/// inside `run_pr_create` immediately before the production
+/// `to_string_pretty` call. All six existing witnesses stayed green. A
+/// scripted caller would then have received process success AND payload
+/// success after the platform rejected the creation -- both instruments
+/// agreeing, both wrong, which is the whole defect this PR exists to close.
+///
+/// The reason the helper tests could not see it is that they call
+/// `pr_create_json_payload` and `to_string_pretty` themselves. That pins
+/// CONSTRUCTION; it says nothing about whether the production caller emits
+/// those bytes unchanged. This is my own filed lesson -- a witness calling a
+/// helper directly pins the helper, not its use -- committed again one layer
+/// out from where I fixed it in v1.
+///
+/// So this test spawns the REAL `gr` binary, in a real workspace, against the
+/// mock platform, and parses the JSON off its stdout. Nothing between the
+/// construction site and the process's output can hide from it: the assertion
+/// is on the bytes a caller parses, because that is the only surface the
+/// exit-0 convention is defensible on.
+#[tokio::test]
+async fn the_shipped_binary_prints_success_false_after_a_platform_failure() {
+    use assert_cmd::Command as AssertCommand;
+
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new().add_repo("frontend").build();
+    repo_ahead_of(&ws, "frontend", "dev", "feat/thing");
+
+    mock_branch_exists(&server, "owner", "repo", "dev").await;
+    mock_create_pr_validation_error(&server).await;
+
+    // The subprocess reads the manifest from disk, so the mock repoint that
+    // `point_repo_at_mock` does in memory has to be persisted here instead.
+    let manifest_path = ws
+        .workspace_root
+        .join(".gitgrip")
+        .join("spaces")
+        .join("main")
+        .join("gripspace.yml");
+    let mut manifest: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    let repo = manifest
+        .get_mut("repos")
+        .and_then(|r| r.get_mut("frontend"))
+        .expect("fixture must define the frontend repo");
+    repo["url"] = serde_yaml::Value::String("https://github.com/owner/repo.git".into());
+    repo["platform"] = serde_yaml::from_str(&format!(
+        "type: github\nbase_url: {}\n",
+        server.uri()
+    ))
+    .unwrap();
+    manifest["settings"]["target"] = serde_yaml::Value::String("dev".into());
+    std::fs::write(&manifest_path, serde_yaml::to_string(&manifest).unwrap()).unwrap();
+
+    let out = AssertCommand::cargo_bin("gr")
+        .unwrap()
+        .current_dir(&ws.workspace_root)
+        .env("GITHUB_TOKEN", "mock-test-token")
+        .args(["pr", "create", "-t", "Add feature", "--repo", "frontend", "--json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+
+    // Control: the run must have REACHED the platform. Without this, a binary
+    // that failed to load the workspace at all would print no JSON and the
+    // absence assertions below would pass for the wrong reason -- the same
+    // never-ran-but-looks-right shape the helper tests fell into.
+    let posts = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method == Method::POST && r.url.path().ends_with("/pulls"))
+        .count();
+    assert!(
+        posts >= 1,
+        "control: the binary must have attempted the creation. stdout={stdout} stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("--json must print parseable JSON on stdout ({e}); got: {stdout}")
+    });
+
+    assert_eq!(
+        parsed["success"],
+        serde_json::Value::Bool(false),
+        "the shipped binary reported success after the platform refused: {stdout}"
+    );
+    assert!(
+        stdout.contains("frontend"),
+        "the payload must name the repo that failed: {stdout}"
+    );
+
+    // The exit-0 half of the convention, asserted on the same run rather than
+    // inferred from a different one.
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "--json keeps exit 0 and carries pass/fail in the body: {stdout}"
+    );
+}
