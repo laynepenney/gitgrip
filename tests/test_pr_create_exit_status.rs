@@ -138,7 +138,7 @@ async fn a_run_with_no_failures_still_exits_zero() {
 ///
 /// Not an exception carved out for convenience -- it is this repo's shipped
 /// convention, and it is shipped rather than merely planned: `gr verify --json`
-/// returns Ok before its own `exit(1)` (verify.rs:99), and docs/PLAN-verify.md
+/// returns Ok before its own `exit(1)` (verify.rs:101), and docs/PLAN-verify.md
 /// gives the reason. A caller who asked for JSON is parsing the body by
 /// construction, and a non-zero exit makes a `set -e` script die before it can
 /// read the answer it asked for.
