@@ -229,26 +229,30 @@ pub async fn run_pr_create(
 
             let spinner = Output::spinner(&format!("Creating PR for {}...", repo.name));
 
+            // `target` above already resolved --base against the stored
+            // target. Re-deriving it here from the manifest asked about a
+            // branch the operator never named -- and the two only disagree
+            // when --base was passed, which is exactly when the stored
+            // target is stale.
             match platform
-                .check_branch_exists(&repo.owner, &repo.repo, repo.target_branch())
+                .check_branch_exists(&repo.owner, &repo.repo, target)
                 .await
             {
                 Ok(false) => {
                     spinner.finish_with_message(format!(
                         "{}: skipped — base branch '{}' does not exist on remote",
-                        repo.name,
-                        repo.target_branch()
+                        repo.name, target
                     ));
                     all_failed_repos.push((
                         repo.name.clone(),
-                        format!("base branch '{}' not found on remote", repo.target_branch()),
+                        format!("base branch '{}' not found on remote", target),
                     ));
                     continue;
                 }
                 Err(e) => {
                     debug!(
                         repo = repo.name.as_str(),
-                        base = repo.target_branch(),
+                        base = target,
                         error = %e,
                         "Could not verify base branch; proceeding to API call"
                     );

@@ -61,6 +61,26 @@ fn resolve_check_status(status: &StatusCheckResult) -> CheckStatus {
 /// already happened. The point is that the operator finds out now, from the
 /// tool, rather than days later from a broken ancestry -- which is how the
 /// original incident was discovered.
+/// The base a PR is actually open against.
+///
+/// This is the hosting platform's answer, not the workspace's stored target.
+/// The two differ whenever the stored target is stale, and a stale stored
+/// target is the ordinary state after a branch is retired -- so binding the
+/// merge's notion of "base" to the manifest meant the post-merge parent
+/// assertion below read a ref that had nothing to do with the merge that just
+/// happened, and read nothing at all once that ref was deleted.
+///
+/// The platform value is already fetched for the mergeable flag; it was being
+/// discarded one line later. The stored target remains the fallback for the
+/// case where that call failed, because a plausible base still lets the
+/// assertion run -- and the assertion now says so when it cannot read it.
+fn pr_base_or_stored_target(platform_base: Option<&str>, stored_target: &str) -> String {
+    match platform_base {
+        Some(base) if !base.trim().is_empty() => base.to_string(),
+        _ => stored_target.to_string(),
+    }
+}
+
 fn verify_merge_commit_parents(
     local_path: &std::path::Path,
     base: &str,
@@ -73,10 +93,26 @@ fn verify_merge_commit_parents(
     // Fetch so the local ref reflects the merge that just happened remotely.
     let _ = crate::git::remote::fetch_remote(&repo, "origin");
 
-    let reference = repo
-        .find_reference(&format!("refs/remotes/origin/{}", base))
-        .ok()?;
-    let commit = reference.peel_to_commit().ok()?;
+    // A readable repository whose base ref we cannot read is NOT the same
+    // state as an unreadable checkout, and must not share its silence. The
+    // caller prints nothing for `None`, so returning `None` here would report
+    // "could not look" in the exact shape of "looked, and it was fine".
+    let ref_name = format!("refs/remotes/origin/{}", base);
+    let commit = match repo
+        .find_reference(&ref_name)
+        .and_then(|reference| reference.peel_to_commit())
+    {
+        Ok(commit) => commit,
+        Err(e) => {
+            return Some(format!(
+                "could not check the merge result: {} is not readable ({}). \
+                 The merge was requested as {:?}, and a merge commit has two \
+                 parents, but this check did not run -- so nothing here says \
+                 the merge looks correct.",
+                ref_name, e, method
+            ));
+        }
+    };
     let parents = commit.parent_count();
 
     if parents >= 2 {
@@ -367,7 +403,7 @@ pub async fn run_pr_merge(
         {
             Ok(Some(pr)) => {
                 // Get PR details
-                let (approved, mergeable) = match platform
+                let (approved, mergeable, platform_base) = match platform
                     .get_pull_request(&repo.owner, &repo.repo, pr.number)
                     .await
                 {
@@ -376,9 +412,13 @@ pub async fn run_pr_merge(
                             .is_pull_request_approved(&repo.owner, &repo.repo, pr.number)
                             .await
                             .unwrap_or(false);
-                        (is_approved, full_pr.mergeable.unwrap_or(false))
+                        (
+                            is_approved,
+                            full_pr.mergeable.unwrap_or(false),
+                            Some(full_pr.base.ref_name.clone()),
+                        )
                     }
-                    Err(_) => (false, false),
+                    Err(_) => (false, false, None),
                 };
 
                 // Get status checks
@@ -412,7 +452,7 @@ pub async fn run_pr_merge(
                     owner: repo.owner.clone(),
                     repo: repo.repo.clone(),
                     branch: branch.clone(),
-                    base: repo.target_branch().to_string(),
+                    base: pr_base_or_stored_target(platform_base.as_deref(), repo.target_branch()),
                     local_path: repo.absolute_path.clone(),
                     pr_number: pr.number,
                     platform,
@@ -1484,6 +1524,39 @@ settings:
 }
 
 #[cfg(test)]
+mod base_binding_tests {
+    use super::pr_base_or_stored_target;
+
+    /// The defect, as a test. A retired sprint branch stays in the manifest
+    /// long after it stops existing; the PR is open against something else.
+    #[test]
+    fn the_platform_base_wins_over_a_stale_stored_target() {
+        assert_eq!(
+            pr_base_or_stored_target(Some("dev"), "sprint-39"),
+            "dev",
+            "the PR is open against what the platform says, not what the workspace stored"
+        );
+    }
+
+    /// The fallback. Without this case, "prefer the platform" and "ignore the
+    /// manifest entirely" are indistinguishable, and a failed API call would
+    /// leave the parent assertion with no ref name at all.
+    #[test]
+    fn an_absent_platform_answer_falls_back_to_the_stored_target() {
+        assert_eq!(pr_base_or_stored_target(None, "main"), "main");
+    }
+
+    /// An adapter answering with an empty string must not produce the ref
+    /// `refs/remotes/origin/`, which would fail to resolve -- and before the
+    /// parent assertion learned to report that, would have gone silent.
+    #[test]
+    fn an_empty_platform_answer_falls_back_rather_than_building_a_bare_ref() {
+        assert_eq!(pr_base_or_stored_target(Some(""), "main"), "main");
+        assert_eq!(pr_base_or_stored_target(Some("   "), "main"), "main");
+    }
+}
+
+#[cfg(test)]
 mod parent_assertion_tests {
     use super::verify_merge_commit_parents;
     use crate::platform::MergeMethod;
@@ -1587,5 +1660,44 @@ mod parent_assertion_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("not-a-repo");
         assert!(verify_merge_commit_parents(&missing, "main", MergeMethod::Merge).is_none());
+    }
+
+    /// A READABLE repository whose named base ref does not exist.
+    ///
+    /// This is the state our own topology produces. `base` is the PR's base
+    /// branch, and a base branch can be deleted -- or, before the bind above
+    /// it was corrected, `base` could be a stale manifest target naming a
+    /// branch that no longer exists at all. `find_reference` then fails on a
+    /// repository that is perfectly readable, and a bare `?` collapsed that
+    /// onto the same `None` as an unreadable checkout.
+    ///
+    /// Those are two different states and only one of them was reasoned
+    /// about. "I looked and it was fine" and "I could not look" must not be
+    /// the same observation, because the caller prints nothing for `None` --
+    /// so the silent branch reads as clearance in the one direction the
+    /// check cannot fail.
+    #[test]
+    fn an_absent_base_ref_in_a_readable_repository_is_reported() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        repo_with_head_parents(dir.path(), 1);
+
+        // Control: the fixture must be able to produce a finding at all.
+        // Without this, a function that had been broken into always
+        // returning None would pass the assertion below by accident.
+        assert!(
+            verify_merge_commit_parents(dir.path(), "main", MergeMethod::Merge).is_some(),
+            "control: this fixture reports a single-parent head for a ref that EXISTS"
+        );
+
+        let problem = verify_merge_commit_parents(dir.path(), "sprint-39", MergeMethod::Merge);
+        let message = problem.expect("an absent base ref must be reported, not silently cleared");
+        assert!(
+            message.contains("sprint-39"),
+            "the message must name the ref it could not read: {message}"
+        );
+        assert!(
+            message.contains("could not"),
+            "and must say it could not check, never that the merge looked fine: {message}"
+        );
     }
 }
