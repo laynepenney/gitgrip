@@ -457,6 +457,34 @@ pub async fn run_pr_create(
         }
     }
 
+    // The exit status has to agree with what we just printed. Until now this
+    // returned Ok(()) unconditionally, so a run that reported "Failed to
+    // create N PR(s)" on stdout simultaneously told every caller gating on the
+    // exit status that it had succeeded -- a script, CI, or an agent deciding
+    // whether to continue reads the number, not the prose.
+    //
+    // The predicate was never missing: the --json branch a few lines above
+    // already computes `success: !created.is_empty() && failed.is_empty()`.
+    // The truth was computed and then discarded. This binds the return to the
+    // failure half of that same expression, so the two reports cannot disagree.
+    //
+    // Deliberately NOT changed here: a run that creates nothing and fails
+    // nothing still exits 0. That is the zero-match no-op question tracked in
+    // #804/#836/#839, and folding it in would change the status of runs no
+    // witness in this file covers.
+    if !all_failed_repos.is_empty() {
+        let names: Vec<&str> = all_failed_repos
+            .iter()
+            .map(|(repo, _)| repo.as_str())
+            .collect();
+        anyhow::bail!(
+            "failed to create {} of {} pull request(s): {}",
+            all_failed_repos.len(),
+            all_failed_repos.len() + all_created_prs.len(),
+            names.join(", ")
+        );
+    }
+
     Ok(())
 }
 
