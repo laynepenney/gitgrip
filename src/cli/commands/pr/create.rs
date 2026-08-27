@@ -470,7 +470,7 @@ pub async fn run_pr_create(
         println!("{}", serde_json::to_string_pretty(&result)?);
         // JSON mode keeps exit 0 and carries pass/fail in the body. That is
         // this repo's shipped convention, not a guess: `gr verify --json`
-        // returns Ok before its own `exit(1)` (verify.rs:99), and
+        // returns Ok before its own `exit(1)` (verify.rs:101), and
         // docs/PLAN-verify.md states the reason -- a caller who asked for JSON
         // is parsing the body by construction, and a non-zero exit makes a
         // `set -e` script die before it can read the answer it asked for.

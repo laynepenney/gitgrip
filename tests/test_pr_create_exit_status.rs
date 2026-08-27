@@ -263,6 +263,35 @@ async fn the_shipped_binary_prints_success_false_after_a_platform_failure() {
 
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
 
+    // HARNESS GUARD BEFORE ANY CONTENT CLAIM, and it is also the exit-0 half of
+    // the `--json` convention -- one assertion serving both, asserted on this
+    // run rather than inferred from a different one. It has to come FIRST:
+    // `cargo test --test <name>` does not reliably rebuild the bin `cargo_bin`
+    // invokes, and a stale or half-written binary yields empty stdout whose
+    // failure reads exactly like a missing feature. Absent and could-not-look
+    // must not share a failure.
+    //
+    // It sat LAST until the v4 gate, where Atlas caught that this file's body
+    // claimed both subprocess witnesses guarded exit 0 first and only witness
+    // (5) did. Same shape as the three rounds above: a universal asserted over
+    // two things after checking one.
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "harness/contract: `--json` keeps exit 0 and carries pass/fail in the \
+         body ({:?}); stdout={stdout} stderr={}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!(
+            "harness: --json must print parseable JSON on stdout ({e}); got: \
+             {stdout} stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+
     // Control: the run must have REACHED the platform. Without this, a binary
     // that failed to load the workspace at all would print no JSON and the
     // absence assertions below would pass for the wrong reason -- the same
@@ -280,10 +309,6 @@ async fn the_shipped_binary_prints_success_false_after_a_platform_failure() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-        panic!("--json must print parseable JSON on stdout ({e}); got: {stdout}")
-    });
-
     assert_eq!(
         parsed["success"],
         serde_json::Value::Bool(false),
@@ -292,14 +317,6 @@ async fn the_shipped_binary_prints_success_false_after_a_platform_failure() {
     assert!(
         stdout.contains("frontend"),
         "the payload must name the repo that failed: {stdout}"
-    );
-
-    // The exit-0 half of the convention, asserted on the same run rather than
-    // inferred from a different one.
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "--json keeps exit 0 and carries pass/fail in the body: {stdout}"
     );
 }
 
