@@ -427,6 +427,14 @@ pub async fn run_pr_create(
                 .collect(),
         };
         println!("{}", serde_json::to_string_pretty(&result)?);
+        // JSON mode keeps exit 0 and carries pass/fail in the body. That is
+        // this repo's shipped convention, not a guess: `gr verify --json`
+        // returns Ok before its own `exit(1)` (verify.rs:99), and
+        // docs/PLAN-verify.md states the reason -- a caller who asked for JSON
+        // is parsing the body by construction, and a non-zero exit makes a
+        // `set -e` script die before it can read the answer it asked for.
+        // `success` above already carries the truth.
+        return Ok(());
     } else {
         println!();
         if all_created_prs.is_empty() && all_failed_repos.is_empty() {
@@ -471,7 +479,9 @@ pub async fn run_pr_create(
     // Deliberately NOT changed here: a run that creates nothing and fails
     // nothing still exits 0. That is the zero-match no-op question tracked in
     // #804/#836/#839, and folding it in would change the status of runs no
-    // witness in this file covers.
+    // witness in this file covers. `--json` also keeps exit 0 -- see the
+    // return above -- so this guards the human path, where the exit status is
+    // the ONLY machine-readable signal the command emits.
     if !all_failed_repos.is_empty() {
         let names: Vec<&str> = all_failed_repos
             .iter()

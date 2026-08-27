@@ -133,3 +133,60 @@ async fn a_run_with_no_failures_still_exits_zero() {
         "a run in which every PR was created must not report failure: {result:?}"
     );
 }
+
+/// `--json` keeps exit 0 and carries the failure in the body.
+///
+/// Not an exception carved out for convenience -- it is this repo's shipped
+/// convention, and it is shipped rather than merely planned: `gr verify --json`
+/// returns Ok before its own `exit(1)` (verify.rs:99), and docs/PLAN-verify.md
+/// gives the reason. A caller who asked for JSON is parsing the body by
+/// construction, and a non-zero exit makes a `set -e` script die before it can
+/// read the answer it asked for.
+///
+/// Without this case, the fix above would silently change the exit status of
+/// every scripted `--json` caller, which is the sort of thing that gets found
+/// in someone else's CI rather than here.
+#[tokio::test]
+async fn json_mode_reports_the_failure_in_the_body_and_still_exits_zero() {
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new().add_repo("frontend").build();
+    let mut manifest = ws.load_manifest();
+    manifest.settings.target = Some("dev".to_string());
+
+    repo_ahead_of(&ws, "frontend", "dev", "feat/thing");
+    point_repo_at_mock(&mut manifest, "frontend", &server);
+
+    mock_branch_exists(&server, "owner", "repo", "dev").await;
+    mock_create_pr_validation_error(&server).await;
+
+    let filter = vec!["frontend".to_string()];
+    let result = gitgrip::cli::commands::pr::run_pr_create(
+        &ws.workspace_root,
+        &manifest,
+        Some("Add feature"),
+        None,
+        false,
+        false,
+        false,
+        Some(&filter),
+        None,
+        true, // json
+    )
+    .await;
+
+    // Control: the same inputs in human mode DO error. Without this the test
+    // would pass equally well against a build where nothing ever errors, which
+    // is the state this whole PR exists to leave behind.
+    let requests = server.received_requests().await.unwrap();
+    let posts = requests
+        .iter()
+        .filter(|r| r.method == Method::POST && r.url.path().ends_with("/pulls"))
+        .count();
+    assert!(posts >= 1, "control: the creation must have been attempted");
+
+    assert!(
+        result.is_ok(),
+        "--json must keep exit 0 and carry pass/fail in the body: {result:?}"
+    );
+}
