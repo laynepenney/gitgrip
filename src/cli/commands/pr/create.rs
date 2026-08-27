@@ -37,6 +37,67 @@ fn branch_to_title(branch: &str) -> String {
 
 /// Run the PR create command
 #[allow(clippy::too_many_arguments)]
+#[derive(serde::Serialize)]
+pub(crate) struct JsonPrCreateResult {
+    success: bool,
+    prs: Vec<JsonCreatedPr>,
+    failed: Vec<JsonFailedRepo>,
+}
+
+#[derive(serde::Serialize)]
+struct JsonCreatedPr {
+    repo: String,
+    branch: String,
+    number: u64,
+    url: String,
+}
+
+#[derive(serde::Serialize)]
+struct JsonFailedRepo {
+    repo: String,
+    reason: String,
+}
+
+/// The `--json` payload, built in ONE place so it can be witnessed.
+///
+/// `--json` deliberately keeps exit 0 and carries pass/fail in the body — the
+/// shipped convention, `gr verify --json` returns `Ok` before its own
+/// `exit(1)`. That trade is only safe while the payload is TRUE, so `success`
+/// is the load-bearing field of the whole design call, and it was previously
+/// computed inline inside `run_pr_create` where no test could reach it.
+///
+/// Both gate reviewers proved the consequence rather than arguing it: they
+/// mutated `success` to unconditional `true` and every test still passed. A
+/// scripted caller would then have received process success AND payload
+/// success after the platform rejected the creation — both instruments
+/// agreeing, both wrong. Extracting the construction gives that field a
+/// witness, and `run_pr_create` has no other way to build the payload, so the
+/// witness cannot be routed around.
+pub(crate) fn pr_create_json_payload(
+    created: &[(String, String, u64, String)],
+    failed: &[(String, String)],
+) -> JsonPrCreateResult {
+    JsonPrCreateResult {
+        success: !created.is_empty() && failed.is_empty(),
+        prs: created
+            .iter()
+            .map(|(branch, repo, number, url)| JsonCreatedPr {
+                repo: repo.clone(),
+                branch: branch.clone(),
+                number: *number,
+                url: url.clone(),
+            })
+            .collect(),
+        failed: failed
+            .iter()
+            .map(|(repo, reason)| JsonFailedRepo {
+                repo: repo.clone(),
+                reason: reason.clone(),
+            })
+            .collect(),
+    }
+}
+
 pub async fn run_pr_create(
     workspace_root: &Path,
     manifest: &Manifest,
@@ -388,44 +449,7 @@ pub async fn run_pr_create(
     }
 
     if json {
-        #[derive(serde::Serialize)]
-        struct JsonPrCreateResult {
-            success: bool,
-            prs: Vec<JsonCreatedPr>,
-            failed: Vec<JsonFailedRepo>,
-        }
-        #[derive(serde::Serialize)]
-        struct JsonCreatedPr {
-            repo: String,
-            branch: String,
-            number: u64,
-            url: String,
-        }
-        #[derive(serde::Serialize)]
-        struct JsonFailedRepo {
-            repo: String,
-            reason: String,
-        }
-
-        let result = JsonPrCreateResult {
-            success: !all_created_prs.is_empty() && all_failed_repos.is_empty(),
-            prs: all_created_prs
-                .iter()
-                .map(|(branch, repo, number, url)| JsonCreatedPr {
-                    repo: repo.clone(),
-                    branch: branch.clone(),
-                    number: *number,
-                    url: url.clone(),
-                })
-                .collect(),
-            failed: all_failed_repos
-                .iter()
-                .map(|(repo, reason)| JsonFailedRepo {
-                    repo: repo.clone(),
-                    reason: reason.clone(),
-                })
-                .collect(),
-        };
+        let result = pr_create_json_payload(&all_created_prs, &all_failed_repos);
         println!("{}", serde_json::to_string_pretty(&result)?);
         // JSON mode keeps exit 0 and carries pass/fail in the body. That is
         // this repo's shipped convention, not a guess: `gr verify --json`
@@ -861,5 +885,86 @@ mod tests {
 
         let result = rewrite_remote_url(&repo, "origin", "oldorg", "oldrepo", "neworg", "newrepo");
         assert_eq!(result, None);
+    }
+}
+
+#[cfg(test)]
+mod json_payload_tests {
+    use super::pr_create_json_payload;
+
+    /// THE WITNESS BOTH GATE REVIEWERS REQUIRED.
+    ///
+    /// `--json` keeps exit 0 on failure, and that is only defensible because
+    /// the payload tells the truth. Before this, nothing pinned the payload:
+    /// r1 and r2 independently mutated `success` to unconditional `true` and
+    /// all three integration tests still passed. A scripted caller would have
+    /// received process success AND payload success after the platform
+    /// rejected the creation.
+    ///
+    /// Asserted on the SERIALIZED text, through the same
+    /// `serde_json::to_string_pretty` call the command makes, rather than on
+    /// the struct — the bytes on stdout are what a caller parses, and a field
+    /// renamed or skipped in serialization would pass a struct-level check
+    /// while breaking every consumer.
+    #[test]
+    fn a_failed_run_serializes_success_false_and_names_the_repo() {
+        let created: Vec<(String, String, u64, String)> = vec![];
+        let failed = vec![(
+            "frontend".to_string(),
+            "GitHub API 422: Validation Failed".to_string(),
+        )];
+
+        let out = serde_json::to_string_pretty(&pr_create_json_payload(&created, &failed)).unwrap();
+
+        assert!(
+            out.contains("\"success\": false"),
+            "the payload must say the run failed; exit 0 is only safe while it does: {out}"
+        );
+        assert!(
+            out.contains("\"repo\": \"frontend\""),
+            "the failing repo must be named in the payload: {out}"
+        );
+        assert!(
+            out.contains("422"),
+            "the reason must survive into the payload: {out}"
+        );
+    }
+
+    /// THE DISCRIMINATING CONTROL. Without it, `success: false` hardcoded
+    /// would satisfy the witness above, and a caller could never tell a
+    /// successful run from a failed one — the same defect sign-flipped.
+    #[test]
+    fn a_clean_run_serializes_success_true() {
+        let created = vec![(
+            "feat/thing".to_string(),
+            "frontend".to_string(),
+            11u64,
+            "https://example.invalid/pull/11".to_string(),
+        )];
+        let failed: Vec<(String, String)> = vec![];
+
+        let out = serde_json::to_string_pretty(&pr_create_json_payload(&created, &failed)).unwrap();
+
+        assert!(
+            out.contains("\"success\": true"),
+            "a run with no failures must report success: {out}"
+        );
+    }
+
+    /// The third state, and the one the scope note is about: nothing created
+    /// and nothing failed is NOT a success. Pinned so that the deliberate
+    /// choice to keep its EXIT status at 0 cannot be quietly read as a claim
+    /// that the run succeeded.
+    #[test]
+    fn a_no_op_run_is_not_reported_as_success() {
+        let created: Vec<(String, String, u64, String)> = vec![];
+        let failed: Vec<(String, String)> = vec![];
+
+        let out = serde_json::to_string_pretty(&pr_create_json_payload(&created, &failed)).unwrap();
+
+        assert!(
+            out.contains("\"success\": false"),
+            "a run that created nothing has not succeeded, whatever its exit status: {out}"
+        );
     }
 }
