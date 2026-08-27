@@ -240,11 +240,8 @@ async fn the_shipped_binary_prints_success_false_after_a_platform_failure() {
         .and_then(|r| r.get_mut("frontend"))
         .expect("fixture must define the frontend repo");
     repo["url"] = serde_yaml::Value::String("https://github.com/owner/repo.git".into());
-    repo["platform"] = serde_yaml::from_str(&format!(
-        "type: github\nbase_url: {}\n",
-        server.uri()
-    ))
-    .unwrap();
+    repo["platform"] =
+        serde_yaml::from_str(&format!("type: github\nbase_url: {}\n", server.uri())).unwrap();
     manifest["settings"]["target"] = serde_yaml::Value::String("dev".into());
     std::fs::write(&manifest_path, serde_yaml::to_string(&manifest).unwrap()).unwrap();
 
@@ -252,7 +249,15 @@ async fn the_shipped_binary_prints_success_false_after_a_platform_failure() {
         .unwrap()
         .current_dir(&ws.workspace_root)
         .env("GITHUB_TOKEN", "mock-test-token")
-        .args(["pr", "create", "-t", "Add feature", "--repo", "frontend", "--json"])
+        .args([
+            "pr",
+            "create",
+            "-t",
+            "Add feature",
+            "--repo",
+            "frontend",
+            "--json",
+        ])
         .output()
         .unwrap();
 
