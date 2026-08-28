@@ -45,22 +45,6 @@ fn resolve_check_status(status: &StatusCheckResult) -> CheckStatus {
     }
 }
 
-/// After a `Merge`, assert the resulting commit actually has two parents.
-///
-/// Checked against the local repository, not the platform's response. The API
-/// reports that a merge happened; it does not report WHICH strategy produced
-/// the commit, and the incident behind this was a squash that reported success
-/// exactly like a merge. Fetching and counting parents asks the repository what
-/// is actually there.
-///
-/// Only meaningful for `Merge` -- squash and rebase produce single-parent
-/// commits by design, so asserting two parents for them would be wrong rather
-/// than strict.
-///
-/// A failure here is loud and it is NOT recoverable by this command: the merge
-/// already happened. The point is that the operator finds out now, from the
-/// tool, rather than days later from a broken ancestry -- which is how the
-/// original incident was discovered.
 /// The base a PR is actually open against.
 ///
 /// This is the hosting platform's answer, not the workspace's stored target.
@@ -81,6 +65,22 @@ fn pr_base_or_stored_target(platform_base: Option<&str>, stored_target: &str) ->
     }
 }
 
+/// After a `Merge`, assert the resulting commit actually has two parents.
+///
+/// Checked against the local repository, not the platform's response. The API
+/// reports that a merge happened; it does not report WHICH strategy produced
+/// the commit, and the incident behind this was a squash that reported success
+/// exactly like a merge. Fetching and counting parents asks the repository what
+/// is actually there.
+///
+/// Only meaningful for `Merge` -- squash and rebase produce single-parent
+/// commits by design, so asserting two parents for them would be wrong rather
+/// than strict.
+///
+/// A failure here is loud and it is NOT recoverable by this command: the merge
+/// already happened. The point is that the operator finds out now, from the
+/// tool, rather than days later from a broken ancestry -- which is how the
+/// original incident was discovered.
 fn verify_merge_commit_parents(
     local_path: &std::path::Path,
     base: &str,
