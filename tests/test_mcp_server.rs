@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::thread;
@@ -41,47 +41,31 @@ impl ServerHarness {
 
     fn send(&mut self, payload: &Value) {
         let bytes = serde_json::to_vec(payload).expect("serialize payload");
-        write!(self.stdin, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
         self.stdin.write_all(&bytes).expect("write payload");
+        self.stdin.write_all(b"\n").expect("write delimiter");
         self.stdin.flush().expect("flush stdin");
     }
 
-    fn send_raw_json_frame(&mut self, raw_payload: &[u8]) {
-        write!(self.stdin, "Content-Length: {}\r\n\r\n", raw_payload.len()).expect("write header");
+    fn send_raw_json_line(&mut self, raw_payload: &[u8]) {
         self.stdin
             .write_all(raw_payload)
             .expect("write raw payload");
+        self.stdin.write_all(b"\n").expect("write delimiter");
         self.stdin.flush().expect("flush stdin");
     }
 
     fn recv(&mut self) -> Value {
-        let mut content_length: Option<usize> = None;
-
-        loop {
-            let mut line = String::new();
-            let read = self
-                .stdout
-                .read_line(&mut line)
-                .expect("read frame header line");
-            assert!(read > 0, "unexpected EOF while reading frame headers");
-
-            let line = line.trim_end_matches(['\r', '\n']);
-            if line.is_empty() {
-                break;
-            }
-
-            if let Some((name, value)) = line.split_once(':') {
-                if name.trim().eq_ignore_ascii_case("content-length") {
-                    content_length =
-                        Some(value.trim().parse::<usize>().expect("parse Content-Length"));
-                }
-            }
-        }
-
-        let len = content_length.expect("missing Content-Length");
-        let mut body = vec![0u8; len];
-        self.stdout.read_exact(&mut body).expect("read frame body");
-        serde_json::from_slice(&body).expect("parse JSON payload")
+        let mut line = String::new();
+        let read = self
+            .stdout
+            .read_line(&mut line)
+            .expect("read newline-delimited response");
+        assert!(read > 0, "unexpected EOF while reading response");
+        assert!(
+            line.ends_with('\n'),
+            "response must end with a newline delimiter"
+        );
+        serde_json::from_str(line.trim_end_matches(['\r', '\n'])).expect("parse JSON response line")
     }
 
     fn initialize(&mut self) {
@@ -179,6 +163,16 @@ fn test_mcp_server_initialize_list_and_call() {
     let call = server.recv();
     assert_eq!(call["id"], json!(3));
     assert_eq!(call["result"]["isError"], json!(true));
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "unsupported/method",
+        "params": {}
+    }));
+    let unsupported = server.recv();
+    assert_eq!(unsupported["id"], json!(4));
+    assert_eq!(unsupported["error"]["code"], json!(-32601));
 
     server.shutdown();
 }
@@ -282,7 +276,7 @@ fn test_mcp_server_malformed_json_frame_recovery() {
 
     server.initialize();
 
-    server.send_raw_json_frame(br#"{"jsonrpc":"2.0","id":99,"method":"ping""#);
+    server.send_raw_json_line(br#"{"jsonrpc":"2.0","id":99,"method":"ping""#);
     let parse_err = server.recv();
     assert_eq!(parse_err["error"]["code"], json!(-32700));
 
