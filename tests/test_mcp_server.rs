@@ -1,21 +1,85 @@
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::thread;
-use std::time::Duration;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
+
+const RESPONSE_READ_DEADLINE: Duration = Duration::from_secs(10);
+
+type ResponseLine = Result<String, String>;
+
+#[derive(Debug, PartialEq)]
+enum ResponseReadError {
+    Deadline(Duration),
+    IncompleteFrame,
+    Reader(String),
+    Disconnected,
+}
+
+struct ResponseReader {
+    lines: Receiver<ResponseLine>,
+    deadline: Duration,
+}
+
+impl ResponseReader {
+    fn new(lines: Receiver<ResponseLine>, deadline: Duration) -> Self {
+        Self { lines, deadline }
+    }
+
+    fn recv(&self) -> Result<String, ResponseReadError> {
+        match self.lines.recv_timeout(self.deadline) {
+            Ok(Ok(line)) if line.ends_with('\n') => Ok(line),
+            Ok(Ok(_)) => Err(ResponseReadError::IncompleteFrame),
+            Ok(Err(error)) => Err(ResponseReadError::Reader(error)),
+            Err(RecvTimeoutError::Timeout) => Err(ResponseReadError::Deadline(self.deadline)),
+            Err(RecvTimeoutError::Disconnected) => Err(ResponseReadError::Disconnected),
+        }
+    }
+}
+
+fn spawn_response_reader<R>(mut reader: R) -> (Receiver<ResponseLine>, JoinHandle<()>)
+where
+    R: BufRead + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel();
+    let handle = thread::spawn(move || loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => {
+                let _ = sender.send(Ok(line));
+                break;
+            }
+            Ok(_) => {
+                if sender.send(Ok(line)).is_err() {
+                    break;
+                }
+            }
+            Err(error) => {
+                let _ = sender.send(Err(error.to_string()));
+                break;
+            }
+        }
+    });
+    (receiver, handle)
+}
 
 struct ServerHarness {
     child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    stdin: Option<ChildStdin>,
+    responses: ResponseReader,
 }
 
 impl ServerHarness {
     fn spawn(cwd: &Path, envs: &[(&str, &str)]) -> Self {
+        Self::spawn_with_deadline(cwd, envs, RESPONSE_READ_DEADLINE)
+    }
+
+    fn spawn_with_deadline(cwd: &Path, envs: &[(&str, &str)], response_deadline: Duration) -> Self {
         let exe = env!("CARGO_BIN_EXE_gitgrip");
         let mut cmd = Command::new(exe);
         cmd.args(["mcp", "server"]).current_dir(cwd);
@@ -32,39 +96,41 @@ impl ServerHarness {
 
         let stdin = child.stdin.take().expect("take stdin");
         let stdout = child.stdout.take().expect("take stdout");
+        let (responses, _reader) = spawn_response_reader(BufReader::new(stdout));
         Self {
             child,
-            stdin,
-            stdout: BufReader::new(stdout),
+            stdin: Some(stdin),
+            responses: ResponseReader::new(responses, response_deadline),
         }
     }
 
     fn send(&mut self, payload: &Value) {
         let bytes = serde_json::to_vec(payload).expect("serialize payload");
-        self.stdin.write_all(&bytes).expect("write payload");
-        self.stdin.write_all(b"\n").expect("write delimiter");
-        self.stdin.flush().expect("flush stdin");
+        let stdin = self.stdin.as_mut().expect("server stdin available");
+        stdin.write_all(&bytes).expect("write payload");
+        stdin.write_all(b"\n").expect("write delimiter");
+        stdin.flush().expect("flush stdin");
     }
 
     fn send_raw_json_line(&mut self, raw_payload: &[u8]) {
-        self.stdin
-            .write_all(raw_payload)
-            .expect("write raw payload");
-        self.stdin.write_all(b"\n").expect("write delimiter");
-        self.stdin.flush().expect("flush stdin");
+        let stdin = self.stdin.as_mut().expect("server stdin available");
+        stdin.write_all(raw_payload).expect("write raw payload");
+        stdin.write_all(b"\n").expect("write delimiter");
+        stdin.flush().expect("flush stdin");
+    }
+
+    fn send_unterminated(&mut self, raw_payload: &[u8]) {
+        let stdin = self.stdin.as_mut().expect("server stdin available");
+        stdin.write_all(raw_payload).expect("write raw payload");
+        stdin.flush().expect("flush stdin");
     }
 
     fn recv(&mut self) -> Value {
-        let mut line = String::new();
-        let read = self
-            .stdout
-            .read_line(&mut line)
-            .expect("read newline-delimited response");
-        assert!(read > 0, "unexpected EOF while reading response");
-        assert!(
-            line.ends_with('\n'),
-            "response must end with a newline delimiter"
-        );
+        let line = self
+            .responses
+            .recv()
+            .unwrap_or_else(|error| panic!("read newline-delimited response: {error:?}"));
+        assert!(!line.is_empty(), "unexpected EOF while reading response");
         serde_json::from_str(line.trim_end_matches(['\r', '\n'])).expect("parse JSON response line")
     }
 
@@ -81,7 +147,7 @@ impl ServerHarness {
     }
 
     fn shutdown(mut self) {
-        drop(self.stdin);
+        self.stdin.take();
 
         for _ in 0..120 {
             if self.child.try_wait().expect("poll child").is_some() {
@@ -93,6 +159,132 @@ impl ServerHarness {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+impl Drop for ServerHarness {
+    fn drop(&mut self) {
+        self.stdin.take();
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+struct ChannelReader {
+    bytes: Receiver<Vec<u8>>,
+    pending: VecDeque<u8>,
+}
+
+impl Read for ChannelReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        while self.pending.is_empty() {
+            match self.bytes.recv() {
+                Ok(bytes) => self.pending.extend(bytes),
+                Err(_) => return Ok(0),
+            }
+        }
+        let count = buffer.len().min(self.pending.len());
+        for (slot, byte) in buffer.iter_mut().zip(self.pending.drain(..count)) {
+            *slot = byte;
+        }
+        Ok(count)
+    }
+}
+
+#[test]
+fn test_response_reader_times_out_on_incomplete_frame() {
+    let inner_deadline = Duration::from_millis(100);
+    let outer_deadline = Duration::from_secs(5);
+    let (bytes_sender, bytes_receiver) = mpsc::channel();
+    let source = ChannelReader {
+        bytes: bytes_receiver,
+        pending: VecDeque::new(),
+    };
+    let (lines, reader) = spawn_response_reader(BufReader::new(source));
+    let responses = ResponseReader::new(lines, inner_deadline);
+
+    bytes_sender
+        .send(br#"{"jsonrpc":"2.0","id":1}"#.to_vec())
+        .expect("send unterminated response bytes");
+
+    let (outcome_sender, outcome_receiver) = mpsc::channel();
+    let waiter = thread::spawn(move || {
+        let started = Instant::now();
+        let outcome = responses.recv();
+        let _ = outcome_sender.send((outcome, started.elapsed()));
+    });
+
+    let (outcome, elapsed) = outcome_receiver
+        .recv_timeout(outer_deadline)
+        .expect("deadline mechanism itself must not hang the test");
+    assert_eq!(outcome, Err(ResponseReadError::Deadline(inner_deadline)));
+    assert!(elapsed >= inner_deadline);
+    assert!(elapsed < outer_deadline);
+
+    drop(bytes_sender);
+    reader.join().expect("join response reader");
+    waiter.join().expect("join deadline waiter");
+}
+
+#[test]
+fn test_response_reader_rejects_partial_frame_at_eof() {
+    let (bytes_sender, bytes_receiver) = mpsc::channel();
+    let source = ChannelReader {
+        bytes: bytes_receiver,
+        pending: VecDeque::new(),
+    };
+    let (lines, reader) = spawn_response_reader(BufReader::new(source));
+    let responses = ResponseReader::new(lines, Duration::from_secs(1));
+
+    bytes_sender
+        .send(br#"{"jsonrpc":"2.0","id":1}"#.to_vec())
+        .expect("send unterminated response bytes");
+    drop(bytes_sender);
+
+    assert_eq!(responses.recv(), Err(ResponseReadError::IncompleteFrame));
+    reader.join().expect("join response reader");
+}
+
+#[test]
+fn test_server_harness_timeout_unwinds_without_waiting_for_reader() {
+    let inner_deadline = Duration::from_millis(100);
+    let outer_deadline = Duration::from_secs(5);
+    let (outcome_sender, outcome_receiver) = mpsc::channel();
+
+    let waiter = thread::spawn(move || {
+        let outcome = std::panic::catch_unwind(|| {
+            let temp = TempDir::new().expect("create temp dir");
+            let mut server = ServerHarness::spawn_with_deadline(temp.path(), &[], inner_deadline);
+            server.send_unterminated(br#"{"jsonrpc":"2.0","id":1}"#);
+            let _ = server.recv();
+        });
+        let message = match outcome {
+            Ok(()) => String::from("receive unexpectedly returned"),
+            Err(payload) => payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    payload
+                        .downcast_ref::<&str>()
+                        .map(|value| (*value).to_owned())
+                })
+                .unwrap_or_else(|| String::from("non-string panic")),
+        };
+        let _ = outcome_sender.send(message);
+    });
+
+    let message = outcome_receiver
+        .recv_timeout(outer_deadline)
+        .expect("timeout and ServerHarness cleanup must finish without an external watchdog");
+    assert!(
+        message.contains("Deadline(100ms)"),
+        "actual harness path must fail for its response deadline: {message}"
+    );
+    waiter.join().expect("join timeout-path witness");
 }
 
 fn write_workspace_with_build_commands(root: &Path, repos: &[(&str, &str)]) {
