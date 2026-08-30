@@ -411,6 +411,28 @@ def load_current_lane_doc(workspace_root: Path, owner_unit: str) -> dict:
     return json.loads(path.read_text())
 
 
+def require_current_lane(workspace_root: Path, owner_unit: str) -> dict:
+    """The current lane record, refusing when there is not one.
+
+    ``load_current_lane_doc`` raises only when the FILE is absent.  After a
+    ``lane exit`` the file is present and holds ``{"current": null}``, so every
+    caller that went straight to ``doc["current"]["lane_name"]`` raised
+    ``TypeError: 'NoneType' object is not subscriptable`` and put a traceback in
+    front of the user -- for a state gr2 writes itself, by the most ordinary
+    sequence there is: enter, then exit.
+
+    Two absent-shapes, one of them guarded, was the whole defect.  This exists
+    so callers cannot read the field without the check: three separate call
+    sites had each written the unguarded read, and a fourth copy of the guard
+    would only postpone the fifth.
+    """
+    doc = load_current_lane_doc(workspace_root, owner_unit)
+    current = doc.get("current")
+    if not current:
+        raise SystemExit(f"no current lane recorded for unit: {owner_unit}")
+    return current
+
+
 def emit_lane_event(workspace_root: Path, payload: dict) -> None:
     append_jsonl(lane_events_file(workspace_root), payload)
 
@@ -869,7 +891,9 @@ def current_lane(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(doc, indent=2))
         return 0
-    current_doc = doc["current"]
+    current_doc = doc.get("current")
+    if not current_doc:
+        raise SystemExit(f"no current lane recorded for unit: {args.owner_unit}")
     print("gr2 prototype current-lane")
     print(
         f"owner={current_doc['owner_unit']} lane={current_doc['lane_name']} type={current_doc['lane_type']} actor={current_doc['actor']}"

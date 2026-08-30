@@ -160,7 +160,7 @@ def _current_head(workspace: Path, *, strict: bool = False) -> str | None:
 
 def _repo_tree_entries(workspace: Path, name: str, repo_path: Path) -> str:
     """Build a tree for one repo and return an mktree entry line."""
-    from python_cli.gitops import repo_dirty
+    from gr2.python_cli.gitops import repo_dirty
 
     blobs: list[str] = []
 
