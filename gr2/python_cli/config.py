@@ -240,7 +240,7 @@ def overlay_write(
 
 def config_restore(workspace: Path, ref: str, overlay_dir: Path) -> dict:
     """Restore overlay files from a grip commit's config/ subtree."""
-    from python_cli.grip import _grip_git
+    from gr2.python_cli.grip import _grip_git
 
     proc = _grip_git(workspace, "ls-tree", f"{ref}:config")
     if proc.returncode != 0:
@@ -270,7 +270,7 @@ def config_restore(workspace: Path, ref: str, overlay_dir: Path) -> dict:
 
 
 def _restore_prompts(workspace: Path, ref: str, overlay_dir: Path) -> None:
-    from python_cli.grip import _grip_git
+    from gr2.python_cli.grip import _grip_git
 
     prompts_dir = overlay_dir / "prompts"
     prompts_dir.mkdir(parents=True, exist_ok=True)
