@@ -61,6 +61,10 @@ pub fn run_push(
     let mut error_count = 0;
     let mut failed_repos: Vec<(String, String)> = Vec::new(); // (repo_name, error_message)
     let mut json_pushed: Vec<String> = Vec::new();
+    // What the human summary needs and the count alone cannot carry: WHICH repos
+    // were written to a remote. Kept separate from `json_pushed` so the --json
+    // shape stays exactly as consumers already parse it.
+    let mut pushed_detail: Vec<(String, String, Option<String>)> = Vec::new();
     let mut json_skipped: Vec<String> = Vec::new();
     let mut json_failed: Vec<JsonPushError> = Vec::new();
 
@@ -124,6 +128,16 @@ pub fn run_push(
                         }
                         success_count += 1;
                         json_pushed.push(repo.name.clone());
+                        // Read AFTER the push returned Ok, so this is the commit
+                        // the remote now carries. Optional rather than unwrap:
+                        // failing to name a sha must not fail a push that already
+                        // succeeded, and "(sha unavailable)" is an honest cell.
+                        let pushed_sha = git_repo
+                            .head()
+                            .ok()
+                            .and_then(|h| h.peel_to_commit().ok())
+                            .map(|c| c.id().to_string());
+                        pushed_detail.push((repo.name.clone(), branch.clone(), pushed_sha));
                     }
                     Err(e) => {
                         // Check if this is a "nothing to push" situation
@@ -195,16 +209,26 @@ pub fn run_push(
         let action = if force { "Force pushed" } else { "Pushed" };
         if error_count == 0 {
             if success_count > 0 {
-                Output::success(&format!(
-                    "{} {} repo(s){}.",
-                    action,
-                    success_count,
-                    if skip_count > 0 {
-                        format!(", {} had nothing to push", skip_count)
-                    } else {
-                        String::new()
+                Output::success(&format!("{} {} repo(s):", action, success_count));
+                // The count was never the useful part. A workspace can mix public
+                // and private remotes, so an operator publishing one reviewed
+                // branch needs to see everything else the same invocation sent.
+                for (name, branch, sha) in &pushed_detail {
+                    match sha {
+                        Some(sha) => println!(
+                            "    {}  refs/heads/{}  ->  {}",
+                            name,
+                            branch,
+                            &sha[..sha.len().min(12)]
+                        ),
+                        None => {
+                            println!("    {}  refs/heads/{}  ->  (sha unavailable)", name, branch)
+                        }
                     }
-                ));
+                }
+                if skip_count > 0 {
+                    println!("  {} had nothing to push.", skip_count);
+                }
             } else {
                 println!("Nothing to push.");
             }

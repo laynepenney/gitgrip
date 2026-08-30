@@ -907,3 +907,25 @@ pub async fn mock_bb_reviewers(server: &MockServer, id: u64, reviewers: Vec<bool
         .mount(server)
         .await;
 }
+
+/// GitHub API response for a branch that EXISTS (GET /repos/:owner/:repo/branches/:branch).
+///
+/// `mock_not_found` already covers the absent case. Without this, no test
+/// could distinguish "the command asked about the right branch" from "the
+/// command asked about a branch that happened to be missing".
+pub async fn mock_branch_exists(server: &MockServer, owner: &str, repo: &str, branch: &str) {
+    let body = json!({
+        "name": branch,
+        "commit": { "sha": "0123456789abcdef0123456789abcdef01234567" },
+        "protected": false
+    });
+
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/{}/{}/branches/{}",
+            owner, repo, branch
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
