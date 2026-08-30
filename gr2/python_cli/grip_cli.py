@@ -100,19 +100,76 @@ def _write_snapshot_index(workspace: Path, index: list[dict[str, object]]) -> No
     index_path.write_text(json.dumps(index, indent=2) + "\n")
 
 
+class AmbiguousSnapshotId(Exception):
+    """A prefix matching more than one snapshot. Never resolved by guessing."""
+
+    def __init__(self, prefix: str, matches: list[str]) -> None:
+        self.prefix = prefix
+        self.matches = matches
+        super().__init__(prefix)
+
+
 def _find_snapshot_by_id(
     index: list[dict[str, object]],
     snapshot_id: str,
 ) -> dict[str, object] | None:
+    """Resolve a snapshot by full id or by unique prefix.
+
+    The store holds 40-character ids and ``grip log`` prints the first 12, so
+    an exact-match-only lookup made the ONLY id a user can obtain from the CLI
+    the one that does not work: ``grip checkout`` and ``grip diff`` answered
+    ``Snapshot not found`` for an id ``grip log`` had just printed, while the
+    working id existed solely inside ``.grip/snapshots/index.json``.
+
+    Prefix resolution follows git's rule, including the part that matters most:
+    an ambiguous prefix RAISES rather than picking the first match.  Silently
+    resolving to one of several would make ``checkout`` land on an arbitrary
+    snapshot, which is worse than the refusal this replaces.
+    """
+    if not snapshot_id:
+        return None
     for entry in index:
         if entry.get("id") == snapshot_id:
             return entry
-    return None
+    matches = [e for e in index if str(e.get("id", "")).startswith(snapshot_id)]
+    if len(matches) > 1:
+        raise AmbiguousSnapshotId(snapshot_id, [str(e.get("id", "")) for e in matches])
+    return matches[0] if matches else None
 
 
 # ---------------------------------------------------------------------------
 # gr grip
 # ---------------------------------------------------------------------------
+
+
+def _resolve_snapshot_or_exit(
+    index: list[dict[str, object]],
+    snapshot_id: str,
+) -> dict[str, object] | None:
+    """Resolve for a CLI verb, turning ambiguity into a refusal.
+
+    ``_find_snapshot_by_id`` RAISES on an ambiguous prefix, which is right for
+    a library: picking one of several arbitrarily is the thing we are trying
+    not to do.  But every verb called it bare, so the raise reached the user as
+    a traceback -- the exact class this whole range exists to remove,
+    reintroduced by the fix for it.
+
+    The verbs go through here rather than each carrying its own ``except``,
+    for the same reason the current-lane fix added a required accessor: there
+    were three call sites, and a per-site handler makes the fourth one's
+    omission silent.  ``None`` (not found) still returns, because each verb
+    words that message differently.
+    """
+    try:
+        return _find_snapshot_by_id(index, snapshot_id)
+    except AmbiguousSnapshotId as exc:
+        typer.echo(
+            f"Ambiguous snapshot id: {exc.prefix!r} matches {len(exc.matches)} snapshots:"
+        )
+        for match in exc.matches:
+            typer.echo(f"  {match}")
+        typer.echo("Use more characters to disambiguate.")
+        raise typer.Exit(code=1)
 
 
 @grip_app.command("init")
@@ -265,8 +322,8 @@ def grip_diff_cmd(
     _validate_grip_dir(workspace_root)
 
     index = _read_snapshot_index(workspace_root)
-    snap_a = _find_snapshot_by_id(index, ref_a)
-    snap_b = _find_snapshot_by_id(index, ref_b)
+    snap_a = _resolve_snapshot_or_exit(index, ref_a)
+    snap_b = _resolve_snapshot_or_exit(index, ref_b)
 
     if snap_a is None:
         typer.echo(f"Snapshot not found: missing id '{ref_a}'")
@@ -322,7 +379,7 @@ def grip_checkout_cmd(
     _validate_grip_dir(workspace_root)
 
     index = _read_snapshot_index(workspace_root)
-    snapshot = _find_snapshot_by_id(index, ref)
+    snapshot = _resolve_snapshot_or_exit(index, ref)
     if snapshot is None:
         typer.echo(f"Snapshot not found: {ref}")
         raise typer.Exit(code=1)
