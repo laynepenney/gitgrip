@@ -146,6 +146,13 @@ gr pr create --title "Add new feature"
 gr sync
 ```
 
+## Tutorial
+
+Work through the [layered gripspaces codelab](https://synapt.dev/grip/tutorial/)
+with its [runnable fixture](https://github.com/synapt-dev/grip-tutorial).
+The six chapters start from a clean workspace, then build through materialization,
+composition, overrides, and extension.
+
 ## Commands
 
 | Command | Description |
