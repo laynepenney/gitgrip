@@ -73,8 +73,8 @@ def run_exec_parallel(
 def _resolve_lane_name(workspace_root: Path, owner_unit: str, lane_name: str | None) -> str:
     if lane_name:
         return lane_name
-    current = lane_proto.load_current_lane_doc(workspace_root, owner_unit)
-    return str(current["current"]["lane_name"])
+    current = lane_proto.require_current_lane(workspace_root, owner_unit)
+    return str(current["lane_name"])
 
 
 def _selected_repos(lane_doc: dict[str, object], repos: str | None) -> list[str]:

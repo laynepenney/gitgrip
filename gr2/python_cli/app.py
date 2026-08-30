@@ -218,8 +218,8 @@ def _repo_hook_context(workspace_root: Path, repo_root: Path) -> HookContext:
 def _resolve_lane_name(workspace_root: Path, owner_unit: str, lane_name: Optional[str]) -> str:
     if lane_name:
         return lane_name
-    current_doc = lane_proto.load_current_lane_doc(workspace_root, owner_unit)
-    return str(current_doc["current"]["lane_name"])
+    current_doc = lane_proto.require_current_lane(workspace_root, owner_unit)
+    return str(current_doc["lane_name"])
 
 
 def _find_pr_group(workspace_root: Path, owner_unit: str, lane_name: str) -> tuple[Path, dict[str, object]]:
@@ -1095,8 +1095,8 @@ def lane_exit(
 ) -> None:
     """Exit the current lane for a unit."""
     workspace_root = workspace_root.resolve()
-    current_doc = lane_proto.load_current_lane_doc(workspace_root, owner_unit)
-    lane_name = current_doc["current"]["lane_name"]
+    current_doc = lane_proto.require_current_lane(workspace_root, owner_unit)
+    lane_name = current_doc["lane_name"]
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     stashed_repos: list[str] = []
     for repo_name in lane_doc.get("repos", []):
