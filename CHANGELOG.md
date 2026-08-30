@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-08-30
+
+**Scope.** This release promotes `v1.3.0..3a8df911`: **22 commits and 5 first-parent
+units**, measured with `git rev-list --count` and `git rev-list --first-parent --count`
+over that exact range, with the empty range `v1.3.0..v1.3.0` returning 0 as the control.
+The release-prep commit carrying this entry sits one beyond that range and is excluded.
+
+Units are classified by diffing each against its **first parent**, because a merge commit
+has no canonical diff. **Four of the five units change the published Rust CLI**
+(`src/mcp/server.rs`, `src/cli/commands/push.rs`, `src/cli/commands/pr/create.rs`,
+`src/cli/commands/pr/merge.rs`); the fifth touches `tests/` only and changes no shipped
+behaviour. There are no gr2 units in this range.
+
+Every entry below is a correction to a command that previously reported one thing and did
+another. None adds a capability.
+
+### Fixed
+- **`gr pr create` and `gr pr merge` resolve the base from the request and the platform**,
+  not from the manifest's stored target. A stale stored target silently opened and merged
+  PRs against the wrong base; an unreadable base ref is now reported instead of silently
+  clearing the merge.
+- **`gr pr` exit status agrees with the failure it just printed.** The command could print a
+  platform failure and still exit 0, so a caller reading `$?` and a caller reading the
+  output reached opposite conclusions. `--json` now keeps exit 0 by design and carries
+  pass/fail in the payload's `success` field, which is set at the production call site
+  rather than only in the serialization helper.
+- **`gr push` names every repository it actually pushed**, with its ref and commit. The
+  summary previously named only the repositories with nothing to push, so the operator saw
+  the inverse of what happened; a repository with nothing to push is not listed.
+- **The gr1 MCP server speaks newline-delimited stdio**, matching the transport its clients
+  use.
+
+### Internal
+- MCP harness response reads are bounded, so a harness that never receives a reply fails
+  with a timeout instead of hanging. Tests only; no shipped behaviour changes.
+
 ## [1.3.0] - 2026-08-25
 
 **Scope.** This release promotes `v1.2.0..c095d5d`: 6 commits and 3 first-parent
