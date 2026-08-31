@@ -149,32 +149,45 @@ def is_git_dir(path: Path) -> bool:
     return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 
+def _derive_workspace_root(source_repo_root: Path) -> Path:
+    """The nearest ancestor holding a ``.grip`` directory is the workspace root;
+    used to locate the object cache when a caller does not pass it. Falls back to
+    the source's parent so the reference-clone path still runs (with no cache)
+    outside a materialized workspace."""
+    for candidate in (source_repo_root, *source_repo_root.parents):
+        if (candidate / ".grip").is_dir():
+            return candidate
+    return source_repo_root.parent
+
+
 def ensure_lane_checkout(
     *,
     source_repo_root: Path,
     target_repo_root: Path,
     branch: str,
+    workspace_root: Path | None = None,
 ) -> bool:
-    """Ensure a real lane checkout exists.
+    """Ensure a real, state-isolated lane checkout exists (grip#807).
 
-    Returns True if this was first materialization, False if already present.
+    The lane is materialized as an INDEPENDENT reference clone, never a
+    ``git worktree add``: two lanes checking out the same branch must not share
+    refs, HEAD, reflogs, index, locks, config, or working-tree state. The clone
+    contract lives in the single clone_exec seam; this is the thin lane entry to
+    it. Returns True on first materialization, False when a valid lane is reused.
     """
-    if target_repo_root.exists() and is_git_repo(target_repo_root):
-        return False
+    # Lazy import: clone_exec imports gitops, so a module-level import here would
+    # be a cycle.
+    from . import clone_exec
 
-    target_repo_root.parent.mkdir(parents=True, exist_ok=True)
+    if workspace_root is None:
+        workspace_root = _derive_workspace_root(source_repo_root)
 
-    branch_exists = git(source_repo_root, "show-ref", "--verify", f"refs/heads/{branch}").returncode == 0
-    if branch_exists:
-        proc = git(source_repo_root, "worktree", "add", str(target_repo_root), branch)
-    else:
-        proc = git(source_repo_root, "worktree", "add", "-b", branch, str(target_repo_root), "HEAD")
-
-    if proc.returncode != 0:
-        raise SystemExit(
-            f"failed to create lane checkout for {source_repo_root.name} on {branch}:\n{proc.stderr or proc.stdout}"
-        )
-    return True
+    return clone_exec.materialize_lane_clone(
+        source_repo_root=source_repo_root,
+        dest=target_repo_root,
+        branch=branch,
+        workspace_root=workspace_root,
+    )
 
 
 def checkout_branch(repo_root: Path, branch: str) -> None:
