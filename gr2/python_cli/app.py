@@ -25,6 +25,7 @@ from .gitops import (
     checkout_branch,
     ensure_lane_checkout,
     fetch_ref,
+    git,
     is_git_repo,
     refresh_existing_branch,
     remote_origin_url,
@@ -1294,6 +1295,114 @@ def review_checkout_pr(
         typer.echo(json.dumps(payload, indent=2))
     else:
         typer.echo(json.dumps(payload, indent=2))
+
+
+@review_app.command("open")
+def review_open(
+    workspace_root: Path,
+    owner_unit: str,
+    repo: str,
+    pr_number: int,
+    lane_name: Optional[str] = typer.Option(None, "--lane", help="Override the review lane name"),
+    platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
+    run: Optional[str] = typer.Option(None, "--run", help="After opening, dispatch this command inside the lane (cwd-contained)"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Open an isolated review lane at a PR head over the grip#807 clone seam.
+
+    A wrong head REFUSES (never warns); import resolution is printed so the run
+    cannot silently import a machine-wide install; the review is recorded as the
+    (repo, base pin, review head) triple. ``gr2 review close`` drops the lane.
+    """
+    from . import review as review_mod
+
+    workspace_root = workspace_root.resolve()
+    resolved_lane = lane_name or f"review-{pr_number}"
+    # Portable-component validation before any path is composed from these values
+    # (they build the lane directory that `close` later deletes).
+    lane_proto.validate_lane_path_component(owner_unit, "owner_unit")
+    lane_proto.validate_lane_path_component(repo, "repo")
+    lane_proto.validate_lane_path_component(resolved_lane, "lane_name")
+
+    repo_spec = _workspace_repo_spec(workspace_root, repo)
+    source_repo_root = (workspace_root / str(repo_spec["path"])).resolve()
+    if not source_repo_root.exists():
+        raise SystemExit(
+            f"shared repo missing for review open: {source_repo_root}\n"
+            f"run `gr2 apply {workspace_root} --yes` first"
+        )
+
+    # Bind the expected head from the HOST's own advertisement of the PR head,
+    # BEFORE fetching — so the fetch that brings the bytes down is compared
+    # against an independent authority, not against itself.
+    expected_head = review_mod.host_pr_head_oid(source_repo_root, pr_number)
+
+    # Fetch the PR head into the source as pr/<n>; the core compares the fetched
+    # ref against expected_head and refuses a wrong/tampered fetch before the seam.
+    review_branch = _prepare_review_branch(workspace_root, repo, pr_number, None)
+
+    # Base pin = merge-base(head, base-branch tip). The base branch comes from the
+    # PR itself, so the pin is what the PR is actually measured against.
+    repo_slug = _repo_slug_from_url(remote_origin_url(source_repo_root) or "", repo)
+    base_branch = get_platform_adapter(platform).pr_status(repo_slug, pr_number).ref.base_branch or "main"
+    git(source_repo_root, "fetch", "--quiet", "origin", base_branch)
+    base_tip = git(source_repo_root, "rev-parse", "FETCH_HEAD").stdout.strip()
+    merged = git(source_repo_root, "merge-base", expected_head, base_tip)
+    base_sha = merged.stdout.strip() if merged.returncode == 0 else base_tip
+
+    lane_repo_root = _lane_repo_root(workspace_root, owner_unit, resolved_lane, repo)
+
+    record = review_mod.open_review_lane(
+        source_repo_root=source_repo_root,
+        review_branch=review_branch,
+        expected_head_sha=expected_head,
+        base_sha=base_sha,
+        lane_repo_root=lane_repo_root,
+        workspace_root=workspace_root,
+        echo=typer.echo,
+    )
+
+    if run:
+        import shlex
+
+        review_mod.run_in_review_lane(lane_repo_root, shlex.split(run), echo=typer.echo)
+
+    payload = {
+        "workspace_root": str(workspace_root),
+        "owner_unit": owner_unit,
+        "repo": repo,
+        "pr_number": pr_number,
+        "lane_name": resolved_lane,
+        "lane_repo_root": str(lane_repo_root),
+        "review_record": record.to_dict(),
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+
+
+@review_app.command("close")
+def review_close(
+    workspace_root: Path,
+    owner_unit: str,
+    repo: str,
+    pr_number: int,
+    lane_name: Optional[str] = typer.Option(None, "--lane", help="Override the review lane name"),
+) -> None:
+    """Drop a review lane opened by ``gr2 review open``; the base workspace is untouched."""
+    from . import review as review_mod
+
+    workspace_root = workspace_root.resolve()
+    resolved_lane = lane_name or f"review-{pr_number}"
+    lane_proto.validate_lane_path_component(owner_unit, "owner_unit")
+    lane_proto.validate_lane_path_component(repo, "repo")
+    lane_proto.validate_lane_path_component(resolved_lane, "lane_name")
+    review_lane_root = lane_proto.lane_dir(workspace_root, owner_unit, resolved_lane)
+    lane_repo_root = _lane_repo_root(workspace_root, owner_unit, resolved_lane, repo)
+    review_mod.close_review_lane(
+        lane_repo_root=lane_repo_root,
+        review_lane_root=review_lane_root,
+        echo=typer.echo,
+    )
 
 
 @pr_app.command("create")
