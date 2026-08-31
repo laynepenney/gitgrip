@@ -1203,12 +1203,18 @@ def lane_lease_release(
 
 
 @lease_app.command("show")
-def lane_lease_show(workspace_root: Path, owner_unit: str, lane_name: str) -> None:
+def lane_lease_show(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
     """Show active leases for a lane."""
     ns = SimpleNamespace(
         workspace_root=workspace_root,
         owner_unit=owner_unit,
         lane_name=lane_name,
+        json=json_output,
     )
     _exit(lane_proto.show_lane_leases(ns))
 
