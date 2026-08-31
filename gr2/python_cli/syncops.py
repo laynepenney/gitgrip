@@ -632,6 +632,7 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
             source_repo_root=source_repo_root,
             target_repo_root=target_repo_root,
             branch=expected_branch,
+            workspace_root=workspace_root,
         )
         _run_materialize_hooks(workspace_root, target_repo_root, repo_name, first_materialize, manual_hooks=False)
         after_sha = current_head_sha(target_repo_root)

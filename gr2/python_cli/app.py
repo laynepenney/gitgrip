@@ -99,6 +99,7 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             source_repo_root=source_repo_root,
             target_repo_root=target_repo_root,
             branch=branch_map[repo_name],
+            workspace_root=workspace_root,
         )
         hooks = load_repo_hooks(target_repo_root)
         if not hooks:
