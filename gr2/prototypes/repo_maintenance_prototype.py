@@ -131,7 +131,9 @@ def read_workspace_spec(spec_path: Path) -> WorkspaceSpec:
         for item in raw.get("units", [])
     ]
     return WorkspaceSpec(
-        schema_version=raw["schema_version"],
+        # `workspace init` writes no schema_version, and every other reader
+        # uses .get; default to 1 (the only schema shipped) rather than raise.
+        schema_version=raw.get("schema_version", 1),
         workspace_name=raw["workspace_name"],
         repos=repos,
         units=units,
