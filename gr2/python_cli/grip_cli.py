@@ -432,6 +432,9 @@ def config_apply_cmd(
 ) -> None:
     """Materialize TOML base into JSON runtime overlay."""
     base_path = base_path.resolve()
+    if not base_path.is_file():
+        typer.echo(f"base config file not found: {base_path}", err=True)
+        raise typer.Exit(code=1)
     overlay = Path(overlay_dir).resolve() if overlay_dir else base_path.parent / "overlay"
     result = config_mod.config_apply(base_path, overlay)
     if json_output:
@@ -450,6 +453,9 @@ def config_show_cmd(
 ) -> None:
     """Show merged config (overlay-first, base-fallback)."""
     base_path = base_path.resolve()
+    if not base_path.is_file():
+        typer.echo(f"base config file not found: {base_path}", err=True)
+        raise typer.Exit(code=1)
     overlay = Path(overlay_dir).resolve() if overlay_dir else base_path.parent / "overlay"
     try:
         result = config_mod.config_show(
