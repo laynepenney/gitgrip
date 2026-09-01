@@ -40,6 +40,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -100,6 +101,8 @@ _CLONE_LOCAL_GIT_ENTRIES = (
     "logs",
     "packed-refs",
 )
+
+_SHA40 = re.compile(r"\A[0-9a-f]{40}\Z")
 
 
 def _alternates_file(clone_root: Path) -> Path:
@@ -691,6 +694,7 @@ def _publish_lane_atomically(
     repo_url: str,
     reference_base: Path | None,
     expected_branch: str,
+    expected_seed: str | None = None,
 ) -> bool:
     """Publish the staged clone under a per-destination lock (grip#807 step 5).
 
@@ -717,8 +721,9 @@ def _publish_lane_atomically(
                     dest,
                     workspace_root=workspace_root,
                     repo_url=repo_url,
-                    reference_base=reference_base,
-                    expected_branch=expected_branch,
+                reference_base=reference_base,
+                expected_branch=expected_branch,
+                expected_seed=expected_seed,
                 )
                 return False
             if time.monotonic() > deadline:
@@ -740,8 +745,9 @@ def _publish_lane_atomically(
                     dest,
                     workspace_root=workspace_root,
                     repo_url=repo_url,
-                    reference_base=reference_base,
-                    expected_branch=expected_branch,
+                reference_base=reference_base,
+                expected_branch=expected_branch,
+                expected_seed=expected_seed,
                 )
                 return False
             # dest is absent and we hold the lock: no other lane creator can make
@@ -767,6 +773,7 @@ def _reuse_existing_lane(
     repo_url: str,
     reference_base: Path | None,
     expected_branch: str,
+    expected_seed: str | None = None,
 ) -> None:
     """grip#807 step 6: a healthy lane on the expected branch is reused untouched.
 
@@ -789,7 +796,8 @@ def _reuse_existing_lane(
             "damaged. grip#807 blocks a damaged lane rather than repairing it; blocking "
             "changes none of its bytes"
         )
-    if gitops.current_head_sha(dest) is None:
+    actual_head = gitops.current_head_sha(dest)
+    if actual_head is None:
         raise CloneExecutionError(
             f"existing lane at {dest} has no resolvable HEAD -- reuse requires a lane "
             "that can be worked in, not merely one whose status command exits 0"
@@ -802,6 +810,12 @@ def _reuse_existing_lane(
             f"it back with `git -C {dest} checkout {expected_branch}` or remove the lane "
             "to re-materialize (grip#807 step 6)"
         )
+    if expected_seed is not None and actual_head != expected_seed:
+        raise CloneExecutionError(
+            f"existing lane at {dest} is at {actual_head!r}, not the requested immutable "
+            f"seed {expected_seed!r}. Materialization never resets, fetches, or switches a "
+            "reused lane; remove it before reopening at a different review head"
+        )
 
 
 def materialize_lane_clone(
@@ -809,6 +823,7 @@ def materialize_lane_clone(
     source_repo_root: Path,
     dest: Path,
     branch: str,
+    seed_commit: str | None = None,
     workspace_root: Path,
     cache_root: Path | None = None,
 ) -> bool:
@@ -835,6 +850,27 @@ def materialize_lane_clone(
         )
     repo_url = _resolve_origin_url(source_repo_root, raw_url)
 
+    # An explicit review pin is an immutable object ID, not a source ref or a
+    # local branch spelling. Resolve it before clone/reuse so every following
+    # path carries one bound commit. The branch-only lane API keeps its legacy
+    # selected-branch-or-HEAD behavior when no pin was supplied.
+    if seed_commit is not None:
+        if not _SHA40.match(seed_commit):
+            raise CloneExecutionError(
+                f"explicit lane seed must be a lowercase full 40-hex commit sha, got {seed_commit!r}"
+            )
+        seed = gitops.git(source_repo_root, "rev-parse", "--verify", f"{seed_commit}^{{commit}}")
+        if seed.returncode != 0:
+            raise CloneExecutionError(
+                f"cannot resolve explicit lane seed {seed_commit!r} in {source_repo_root} to a commit:\n"
+                f"{seed.stderr.strip() or seed.stdout.strip()}"
+            )
+        seed_sha = seed.stdout.strip()
+        seed_ref: str | None = None
+    else:
+        seed_sha = None
+        seed_ref = None
+
     # The workspace-managed bare cache shares immutable object bytes when present.
     # --reference-if-able degrades silently, so a reference is declared to the
     # verifier ONLY when the cache actually exists; otherwise the verifier would
@@ -850,6 +886,7 @@ def materialize_lane_clone(
             repo_url=repo_url,
             reference_base=reference_base,
             expected_branch=branch,
+            expected_seed=seed_sha,
         )
         return False
 
@@ -858,17 +895,18 @@ def materialize_lane_clone(
     # the source's HEAD commit seeds a new branch. Resolving to a SHA in the source
     # now closes the window in which the source ref could move between selection
     # and fetch, and makes "which commit did this lane start at" answerable.
-    branch_in_source = (
-        gitops.git(source_repo_root, "show-ref", "--verify", f"refs/heads/{branch}").returncode == 0
-    )
-    seed_rev = f"refs/heads/{branch}" if branch_in_source else "HEAD"
-    seed = gitops.git(source_repo_root, "rev-parse", "--verify", f"{seed_rev}^{{commit}}")
-    if seed.returncode != 0:
-        raise CloneExecutionError(
-            f"cannot resolve lane seed {seed_rev!r} in {source_repo_root} to a commit:\n"
-            f"{seed.stderr.strip() or seed.stdout.strip()}"
+    if seed_sha is None:
+        branch_in_source = (
+            gitops.git(source_repo_root, "show-ref", "--verify", f"refs/heads/{branch}").returncode == 0
         )
-    seed_sha = seed.stdout.strip()
+        seed_ref = f"refs/heads/{branch}" if branch_in_source else "HEAD"
+        seed = gitops.git(source_repo_root, "rev-parse", "--verify", f"{seed_ref}^{{commit}}")
+        if seed.returncode != 0:
+            raise CloneExecutionError(
+                f"cannot resolve lane seed {seed_ref!r} in {source_repo_root} to a commit:\n"
+                f"{seed.stderr.strip() or seed.stdout.strip()}"
+            )
+        seed_sha = seed.stdout.strip()
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".{dest.name}.staging-"))
@@ -883,11 +921,17 @@ def materialize_lane_clone(
         if fetch.returncode != 0:
             # Some server configs refuse a by-SHA want; fall back to the containing
             # ref, then still check out the bound SHA below.
-            ref = f"refs/heads/{branch}" if seed_rev.startswith("refs/heads/") else "HEAD"
-            fetch = gitops.git(staging, "fetch", "--no-tags", str(source_repo_root), ref)
-            if fetch.returncode != 0:
+            if seed_commit is None:
+                assert seed_ref is not None
+                fetch = gitops.git(staging, "fetch", "--no-tags", str(source_repo_root), seed_ref)
+                if fetch.returncode != 0:
+                    raise CloneExecutionError(
+                        f"failed to fetch seed {seed_sha} from lane source {source_repo_root}:\n"
+                        f"{fetch.stderr.strip() or fetch.stdout.strip()}"
+                    )
+            else:
                 raise CloneExecutionError(
-                    f"failed to fetch seed {seed_sha} from lane source {source_repo_root}:\n"
+                    f"failed to fetch explicit immutable seed {seed_sha} from lane source {source_repo_root}:\n"
                     f"{fetch.stderr.strip() or fetch.stdout.strip()}"
                 )
         checkout = gitops.git(staging, "checkout", "-B", branch, seed_sha)
@@ -922,6 +966,7 @@ def materialize_lane_clone(
             repo_url=repo_url,
             reference_base=reference_base,
             expected_branch=branch,
+            expected_seed=seed_sha,
         )
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)

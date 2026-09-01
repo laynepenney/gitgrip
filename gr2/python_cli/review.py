@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import gitops
+from .clone_exec import CloneExecutionError
 from .gitops import ensure_lane_checkout
 
 _SHA40 = re.compile(r"\A[0-9a-f]{40}\Z")
@@ -204,12 +205,32 @@ def open_review_lane(
 
     # 3. Materialize over the #807 seam. Capture created-vs-reused: it decides
     #    whether cleanup below is permitted to delete anything.
-    first_materialize = ensure_lane_checkout(
-        source_repo_root=source_repo_root,
-        target_repo_root=lane_repo_root,
-        branch=review_branch,
-        workspace_root=workspace_root,
-    )
+    # ``review_branch`` selects the source object. The local lane branch is a
+    # separate safe name, so a caller that supplies an immutable SHA never turns
+    # that SHA into a mutable branch selector at the clone seam.
+    # The destination is one review lane, so its local branch is intentionally
+    # stable across a later reopen. The immutable seed, not this branch spelling,
+    # decides which commit is reviewed.
+    lane_branch = "grip-review/open"
+    try:
+        first_materialize = ensure_lane_checkout(
+            source_repo_root=source_repo_root,
+            target_repo_root=lane_repo_root,
+            branch=lane_branch,
+            seed_commit=expected_head_sha,
+            workspace_root=workspace_root,
+        )
+    except CloneExecutionError as exc:
+        # The clone seam checks the requested seed during reuse, before it can
+        # mutate a reviewer-owned lane. Translate that refusal into the review
+        # contract's existing preservation wording.
+        if lane_repo_root.exists() and gitops.current_head_sha(lane_repo_root) != expected_head_sha:
+            raise ReviewError(
+                f"an existing review lane at {lane_repo_root} is not the requested head "
+                f"{expected_head_sha}. It is preserved unchanged (it may hold uncommitted "
+                "review notes); run `review close` to drop it, then reopen."
+            ) from exc
+        raise ReviewError(str(exc)) from exc
 
     # 4. The lane must be at the expected head. On a FRESH lane, materialize
     #    binds HEAD to the seed, so a mismatch is a genuine fault and the lane we

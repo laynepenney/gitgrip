@@ -131,6 +131,29 @@ def test_unpushed_branch_lands_at_source_commit(tmp_path):
         assert str(source) not in alt.read_text()
 
 
+def test_explicit_seed_is_not_reinterpreted_as_a_branch_or_source_head(tmp_path):
+    """A review pin is a bound object, while the lane branch is merely local.
+
+    The source stays on main so a regression that falls back to source HEAD lands
+    at a different commit. The local branch remains a stable, safe lane name.
+    """
+    source, _ = _init_source(tmp_path, "repo")
+    review_head = _seed_unpushed_branch(source, "review-alpha")
+    source_head = _run(source, "rev-parse", "HEAD")
+    assert review_head != source_head
+    lane = tmp_path / "lanes" / "a" / "repo"
+
+    ensure_lane_checkout(
+        source_repo_root=source,
+        target_repo_root=lane,
+        branch="grip-review/open",
+        seed_commit=review_head,
+    )
+
+    assert _run(lane, "rev-parse", "HEAD") == review_head
+    assert _run(lane, "rev-parse", "--abbrev-ref", "HEAD") == "grip-review/open"
+
+
 def test_absent_branch_is_created_from_source_head(tmp_path):
     """Behavior 2: no such branch anywhere -> seed from source HEAD and create
     it. The lane's new branch sits at the source's current HEAD commit."""
