@@ -640,7 +640,7 @@ class TestRegenerateGr1Workspace:
         with pytest.raises(SystemExit, match="overwrite"):
             regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
 
-        receipt.write_text(json.dumps({"schema": "gr2-workspace-regeneration/v2", "workspace_root": str(gr1_workspace), "workspace_spec_path": str(gr1_workspace / ".grip" / "workspace_spec.toml"), "grip_repo_path": str(gr1_workspace / ".grip"), "manifest_sha256": hashlib.sha256((gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml").read_bytes()).hexdigest(), "object_store_head": "x", "object_store_status": [], "lane_snapshot": {"files": []}, "observed_old_spec_sha256": "0" * 64, "new_spec_sha256": "0" * 64, "sidecar_sha256": "0" * 64, "materialization": False, "sidecar_relative_path": "../escape"}))
+        receipt.write_text(json.dumps({"schema": "gr2-workspace-regeneration/v2", "workspace_root": str(gr1_workspace), "workspace_spec_path": str(gr1_workspace / ".grip" / "workspace_spec.toml"), "grip_repo_path": str(gr1_workspace / ".grip"), "manifest_sha256": hashlib.sha256((gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml").read_bytes()).hexdigest(), "agents_sha256": hashlib.sha256((gr1_workspace / ".gitgrip" / "agents.toml").read_bytes()).hexdigest(), "object_store_head": "x", "object_store_status": [], "lane_snapshot": {"files": []}, "observed_old_spec_sha256": "0" * 64, "new_spec_sha256": "0" * 64, "sidecar_sha256": "0" * 64, "materialization": False, "sidecar_relative_path": "../escape"}))
         with pytest.raises(SystemExit, match="sidecar path is unsafe"):
             rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=receipt, expected_current_spec_sha256="0" * 64, receipt_path=tmp_path / "out.json")
 

@@ -187,13 +187,18 @@ def bootstrap_gr1_workspace(workspace_root: Path) -> dict[str, object]:
 
 def regenerate_gr1_workspace(workspace_root: Path, *, expected_spec_sha256: str, receipt_path: Path) -> dict[str, object]:
     """Atomically replace only an already-generated spec after strict binding."""
+    workspace_root = workspace_root.resolve()
     if not isinstance(expected_spec_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_spec_sha256):
         raise SystemExit("--expected-spec-sha256 must be a lowercase 64-hex SHA-256")
     manifest_path, manifest_bytes, candidate, compiled = _compiled_gr1_spec(workspace_root)
+    agents_path = gr1_agents_path(workspace_root)
+    _refuse_authority_symlinks(workspace_root, manifest_path, "canonical gripspace manifest")
+    _refuse_authority_symlinks(workspace_root, agents_path, "gr1 agents manifest")
+    agents_bytes = agents_path.read_bytes()
     grip_dir = workspace_root / ".grip"
     spec_path = grip_dir / "workspace_spec.toml"
     git_dir = grip_dir / ".git"
-    for path, label in ((grip_dir, ".grip"), (git_dir, ".grip/.git"), (spec_path, ".grip/workspace_spec.toml")):
+    for path, label in ((grip_dir, ".grip"), (git_dir, ".grip/.git"), (spec_path, ".grip/workspace_spec.toml"), (grip_dir / "state", ".grip/state")):
         _refuse_symlink(path, label)
     if not git_dir.is_dir() or not spec_path.is_file():
         raise SystemExit("regeneration requires an initialized object store and regular generated spec")
@@ -206,6 +211,13 @@ def regenerate_gr1_workspace(workspace_root: Path, *, expected_spec_sha256: str,
         # The compare occurs inside the critical section, so two regenerators
         # cannot both accept the same old bytes and silently overwrite each other.
         _refuse_active_lane_state(workspace_root)
+        locked_manifest, locked_manifest_bytes, locked_candidate, locked_compiled = _compiled_gr1_spec(workspace_root)
+        locked_agents = gr1_agents_path(workspace_root)
+        _refuse_authority_symlinks(workspace_root, locked_manifest, "canonical gripspace manifest")
+        _refuse_authority_symlinks(workspace_root, locked_agents, "gr1 agents manifest")
+        locked_agents_bytes = locked_agents.read_bytes()
+        if locked_manifest != manifest_path or locked_manifest_bytes != manifest_bytes or locked_agents_bytes != agents_bytes or locked_candidate != candidate:
+            raise SystemExit("regeneration source authority changed while awaiting lock")
         old = spec_path.read_bytes()
         old_hash = hashlib.sha256(old).hexdigest()
         if old_hash != expected_spec_sha256:
@@ -226,6 +238,7 @@ def regenerate_gr1_workspace(workspace_root: Path, *, expected_spec_sha256: str,
             "workspace_spec_path": str(spec_path),
             "grip_repo_path": str(grip_dir),
             "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "agents_sha256": hashlib.sha256(agents_bytes).hexdigest(),
             "expected_old_spec_sha256": expected_spec_sha256,
             "observed_old_spec_sha256": old_hash,
             "new_spec_sha256": hashlib.sha256(candidate).hexdigest(),
@@ -277,8 +290,13 @@ def rollback_gr1_workspace(
     _require_new_receipt_target(receipt_path)
     receipt = _load_forward_receipt(rollback_receipt_path, workspace_root, grip_dir, spec_path)
     manifest_path = gr1_manifest_path(workspace_root)
+    agents_path = gr1_agents_path(workspace_root)
+    _refuse_authority_symlinks(workspace_root, manifest_path, "canonical gripspace manifest")
+    _refuse_authority_symlinks(workspace_root, agents_path, "gr1 agents manifest")
     if not manifest_path.is_file() or hashlib.sha256(manifest_path.read_bytes()).hexdigest() != receipt["manifest_sha256"]:
         raise SystemExit("rollback manifest binding differs from receipt")
+    if not agents_path.is_file() or hashlib.sha256(agents_path.read_bytes()).hexdigest() != receipt.get("agents_sha256"):
+        raise SystemExit("rollback agents binding differs from receipt")
     sidecar_path = _bound_sidecar_path(rollback_receipt_path, receipt)
     _refuse_symlink(sidecar_path, "rollback sidecar")
     sidecar = sidecar_path.read_bytes()
@@ -288,6 +306,10 @@ def rollback_gr1_workspace(
     lock_path = grip_dir / "state" / "workspace_spec_regeneration.lock"
     with _regeneration_lock(lock_path):
         _refuse_active_lane_state(workspace_root)
+        _refuse_authority_symlinks(workspace_root, manifest_path, "canonical gripspace manifest")
+        _refuse_authority_symlinks(workspace_root, agents_path, "gr1 agents manifest")
+        if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != receipt["manifest_sha256"] or hashlib.sha256(agents_path.read_bytes()).hexdigest() != receipt.get("agents_sha256"):
+            raise SystemExit("rollback source authority changed while awaiting lock")
         current = spec_path.read_bytes()
         current_hash = hashlib.sha256(current).hexdigest()
         if current_hash != expected_current_spec_sha256 or current_hash != receipt["new_spec_sha256"]:
@@ -463,6 +485,20 @@ def _refuse_symlink(path: Path, label: str) -> None:
         return
     if stat.S_ISLNK(mode):
         raise SystemExit(f"refusing bootstrap: {label} must not be a symlink")
+
+
+def _refuse_authority_symlinks(workspace_root: Path, path: Path, label: str) -> None:
+    """Authority must stay physically below the canonical workspace root."""
+    root = workspace_root.resolve()
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise SystemExit(f"refusing regeneration: {label} escapes workspace") from exc
+    current = root
+    _refuse_symlink(current, "workspace root")
+    for part in relative.parts:
+        current = current / part
+        _refuse_symlink(current, label)
 
 
 def _rollback_bootstrap(
