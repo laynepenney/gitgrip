@@ -665,6 +665,23 @@ class TestRegenerateGr1Workspace:
         with pytest.raises(SystemExit, match="must not be a symlink"):
             rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=receipt, expected_current_spec_sha256=forward["new_spec_sha256"], receipt_path=tmp_path / "symlink.json")
 
+    def test_rollback_refuses_existing_output_and_wrong_store_binding(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        receipt = tmp_path / "forward.json"
+        forward = regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
+        existing_output = tmp_path / "rollback.json"
+        existing_output.write_text("do not replace\n")
+        with pytest.raises(SystemExit, match="overwrite"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=receipt, expected_current_spec_sha256=forward["new_spec_sha256"], receipt_path=existing_output)
+        assert spec_path.read_bytes() != b""
+
+        doc = json.loads(receipt.read_text())
+        doc["object_store_head"] = "0" * 40
+        receipt.write_text(json.dumps(doc))
+        with pytest.raises(SystemExit, match="object-store binding"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=receipt, expected_current_spec_sha256=forward["new_spec_sha256"], receipt_path=tmp_path / "wrong-store.json")
+
 
 # ---------------------------------------------------------------------------
 # workspace status (new command)
