@@ -6,6 +6,7 @@ plus coexistence state awareness and the workspace status command.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -360,6 +361,70 @@ class TestBootstrapGr1:
             bootstrap_gr1_workspace(gr1_workspace)
 
         assert (gr1_workspace / ".grip" / ".git").is_dir()
+
+    @pytest.mark.parametrize("preexisting_grip", [False, True])
+    def test_nonzero_git_init_refuses_without_spec_and_rolls_back_created_state(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch, preexisting_grip: bool
+    ) -> None:
+        if preexisting_grip:
+            (gr1_workspace / ".grip").mkdir()
+        real_git = migration.grip.git
+
+        def fail_init(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+            if args == ("init",):
+                return subprocess.CompletedProcess(["git", *args], 1, "", "injected init failure")
+            return real_git(cwd, *args)
+
+        monkeypatch.setattr(migration.grip, "git", fail_init)
+        with pytest.raises(SystemExit, match="git init failed: injected init failure"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert not (gr1_workspace / ".grip" / "workspace_spec.toml").exists()
+        assert (gr1_workspace / ".grip").exists() is preexisting_grip
+        assert not (gr1_workspace / ".grip" / ".git").exists()
+
+    @pytest.mark.parametrize("config_key", ["user.email", "user.name"])
+    @pytest.mark.parametrize("preexisting_grip", [False, True])
+    def test_nonzero_git_config_refuses_and_rolls_back_new_store(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch, config_key: str, preexisting_grip: bool
+    ) -> None:
+        if preexisting_grip:
+            (gr1_workspace / ".grip").mkdir()
+        real_git = migration.grip.git
+
+        def fail_config(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ("config", config_key):
+                return subprocess.CompletedProcess(["git", *args], 1, "", f"injected {config_key} failure")
+            return real_git(cwd, *args)
+
+        monkeypatch.setattr(migration.grip, "git", fail_config)
+        with pytest.raises(SystemExit, match=f"git config {config_key} failed"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert not (gr1_workspace / ".grip" / "workspace_spec.toml").exists()
+        assert (gr1_workspace / ".grip").exists() is preexisting_grip
+        assert not (gr1_workspace / ".grip" / ".git").exists()
+
+    def test_deleting_git_process_guard_recreates_spec_without_store(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real_git = migration.grip.git
+
+        def missing_init_but_plausible_probe(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+            if args == ("init",):
+                return subprocess.CompletedProcess(["git", *args], 1, "", "injected init failure")
+            if args == ("rev-parse", "--is-inside-work-tree"):
+                return subprocess.CompletedProcess(["git", *args], 0, "true\n", "")
+            return real_git(cwd, *args)
+
+        monkeypatch.setattr(migration.grip, "git", missing_init_but_plausible_probe)
+        monkeypatch.setattr(migration.grip, "_require_git_success", lambda _proc, _action: None)
+
+        result = bootstrap_gr1_workspace(gr1_workspace)
+
+        assert result["status"] == "initialized"
+        assert (gr1_workspace / ".grip" / "workspace_spec.toml").is_file()
+        assert not (gr1_workspace / ".grip" / ".git").exists()
 
     def test_conflicting_existing_spec_refuses_before_initializing_store(self, gr1_workspace: Path) -> None:
         grip_dir = gr1_workspace / ".grip"
