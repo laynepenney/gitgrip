@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from gr2.python_cli.migration import (
+    bootstrap_gr1_workspace,
     compile_gr1_to_workspace_spec,
     detect_gr1_workspace,
     migrate_gr1_workspace,
@@ -178,6 +179,45 @@ class TestMigrateGr1:
         assert parsed["workspace_name"] == gr1_workspace.name
         assert len(parsed["repos"]) == 3
         assert len(parsed["units"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# manifest bootstrap: compile the canonical gr1 manifest and initialize grip
+# ---------------------------------------------------------------------------
+
+class TestBootstrapGr1:
+    def test_compiles_manifest_and_initializes_grip_object_store(self, gr1_workspace: Path) -> None:
+        """The production bootstrap makes a usable gr2 control plane, not a hand-written spec."""
+        result = bootstrap_gr1_workspace(gr1_workspace)
+
+        assert result["status"] == "initialized"
+        assert (gr1_workspace / ".grip" / ".git").is_dir()
+        spec_path = gr1_workspace / ".grip" / "workspace_spec.toml"
+        assert result["workspace_spec_path"] == str(spec_path)
+
+        import tomllib
+        spec = tomllib.loads(spec_path.read_text())
+        assert [repo["name"] for repo in spec["repos"]] == ["grip", "synapt", "mem0"]
+        assert [unit["name"] for unit in spec["units"]] == ["apollo", "atlas"]
+
+    def test_invalid_manifest_refuses_before_creating_grip_state(self, gr1_workspace: Path) -> None:
+        manifest_path = gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
+        manifest_path.write_text("repos: [not-a-map]\n")
+
+        with pytest.raises(SystemExit, match="repos"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert not (gr1_workspace / ".grip").exists()
+
+    def test_idempotent_bootstrap_preserves_compiled_bytes(self, gr1_workspace: Path) -> None:
+        bootstrap_gr1_workspace(gr1_workspace)
+        spec_path = gr1_workspace / ".grip" / "workspace_spec.toml"
+        before = spec_path.read_bytes()
+
+        result = bootstrap_gr1_workspace(gr1_workspace)
+
+        assert result["status"] == "already_initialized"
+        assert spec_path.read_bytes() == before
 
 
 # ---------------------------------------------------------------------------
