@@ -13,6 +13,7 @@ import yaml
 from typer.testing import CliRunner
 
 from gr2.python_cli.app import app
+from gr2.python_cli import migration
 from gr2.python_cli.migration import (
     bootstrap_gr1_workspace,
     compile_gr1_to_workspace_spec,
@@ -140,6 +141,16 @@ class TestCompileGr1:
         for unit in compiled["units"]:
             assert "mem0" not in unit["repos"]
 
+    def test_normalizes_safe_nested_repo_path(self, gr1_workspace: Path) -> None:
+        compiled = compile_gr1_to_workspace_spec(
+            gr1_workspace,
+            {"repos": {"safe": {"path": "./nested//safe", "url": "https://example.invalid/safe.git"}}},
+            {"agents": {"atlas": {}}},
+        )
+
+        assert compiled["repos"] == [{"name": "safe", "path": "nested/safe", "url": "https://example.invalid/safe.git"}]
+        assert compiled["units"][0]["path"] == "agents/atlas/home"
+
 
 class TestMigrateGr1:
     def test_creates_grip_dir_and_spec(self, gr1_workspace: Path) -> None:
@@ -210,6 +221,54 @@ class TestBootstrapGr1:
             bootstrap_gr1_workspace(gr1_workspace)
 
         assert not (gr1_workspace / ".grip").exists()
+
+    @pytest.mark.parametrize(
+        ("repo_name", "repo_path", "agent_name"),
+        [
+            ("escape", "../outside", "atlas"),
+            ("escape", "/outside", "atlas"),
+            ("escape", "nested/../outside", "atlas"),
+            ("escape", "C:/outside", "atlas"),
+            ("../repo", "safe", "atlas"),
+            ("repo/child", "safe", "atlas"),
+            ("escape", "safe", "../unit"),
+            ("escape", "safe", "unit/child"),
+        ],
+    )
+    def test_path_escapes_refuse_before_creating_grip_state(
+        self, gr1_workspace: Path, repo_name: str, repo_path: str, agent_name: str
+    ) -> None:
+        manifest_path = gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
+        manifest_path.write_text(yaml.dump({"repos": {repo_name: {"path": repo_path, "url": "https://example.invalid/escape.git"}}}))
+        (gr1_workspace / ".gitgrip" / "agents.toml").write_text(f"[agents.\"{agent_name}\"]\nworktree = \"main\"\n")
+
+        with pytest.raises(SystemExit, match="cannot compile canonical gripspace manifest"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert not (gr1_workspace / ".grip").exists()
+
+    def test_deleting_repo_path_guard_recreates_the_unsafe_store_side_effect(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mutation control: without the source guard, valid TOML alone is unsafe."""
+        manifest_path = gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
+        manifest_path.write_text(yaml.dump({"repos": {"escape": {"path": "../outside", "url": "https://example.invalid/escape.git"}}}))
+        monkeypatch.setattr(migration, "_safe_workspace_relative_path", lambda value, _field: str(value))
+
+        bootstrap_gr1_workspace(gr1_workspace)
+
+        assert (gr1_workspace / ".grip" / ".git").is_dir()
+
+    def test_deleting_unit_name_guard_recreates_the_unsafe_store_side_effect(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mutation control: unit validation protects the generated agents/<unit>/home path."""
+        (gr1_workspace / ".gitgrip" / "agents.toml").write_text('[agents."../unit"]\nworktree = "main"\n')
+        monkeypatch.setattr(migration, "_safe_workspace_component", lambda value, _field: str(value))
+
+        bootstrap_gr1_workspace(gr1_workspace)
+
+        assert (gr1_workspace / ".grip" / ".git").is_dir()
 
     def test_idempotent_bootstrap_preserves_compiled_bytes(self, gr1_workspace: Path) -> None:
         bootstrap_gr1_workspace(gr1_workspace)
