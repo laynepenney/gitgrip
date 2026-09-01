@@ -516,12 +516,25 @@ pub fn run_spawn_up(
             }
         };
 
+        let worktree_path = resolve_worktree_path(&workspace_root, &agent.worktree);
+
         // Build environment variables for the launch script — GRIPSPACE_ROOT +
-        // SYNAPT_AGENT_ID first (#418, #510), then config/env overrides.
+        // stable identity/recall namespace first, then config/env overrides.
+        // The namespace describes the agent's desk, not whichever child
+        // repository the runtime enters during a turn.
         let grip_root = workspace_root.display();
         let mut launch_env = HashMap::new();
         launch_env.insert("GRIPSPACE_ROOT".to_string(), grip_root.to_string());
         launch_env.insert("SYNAPT_AGENT_ID".to_string(), agent_id.clone());
+        launch_env.insert("SYNAPT_AGENT_NAME".to_string(), name.to_string());
+        launch_env.insert(
+            "SYNAPT_RECALL_WORKTREE".to_string(),
+            worktree_path
+                .file_name()
+                .and_then(|part| part.to_str())
+                .unwrap_or(name)
+                .to_string(),
+        );
         launch_env.insert("AGENT_NAME".to_string(), name.to_string());
         launch_env.insert("AGENT_ROLE".to_string(), agent.role.clone());
         launch_env.insert("SYNAPT_CHANNELS".to_string(), channel.to_string());
@@ -532,7 +545,6 @@ pub fn run_spawn_up(
         launch_env.extend(config.spawn.env.clone());
         launch_env.extend(agent.env.clone());
 
-        let worktree_path = resolve_worktree_path(&workspace_root, &agent.worktree);
         let codex_startup_prompt = if !mock_mode && agent.tool == "codex" {
             read_agent_startup_prompt(&workspace_root, agent).map_err(|e| {
                 anyhow::anyhow!("failed to load Codex startup prompt for {}: {}", name, e)
@@ -625,9 +637,10 @@ pub fn run_spawn_up(
             parts.extend(resolved_defaults.iter().cloned());
             parts.extend(model_inject.iter().cloned());
             parts.extend(resolved_args.iter().cloned());
-            parts.extend(codex_developer_instruction_args(&codex_startup_prompt));
-
-            (shell_join(&parts), Some(expected_process_name(binary)))
+            (
+                finalize_launch_command(parts, &agent.tool, &codex_startup_prompt, &launch_env),
+                Some(expected_process_name(binary)),
+            )
         };
 
         let launch_script = write_launch_script(
@@ -782,6 +795,47 @@ fn codex_developer_instruction_args(startup_prompt: &str) -> Vec<String> {
         "--config".to_string(),
         format!("developer_instructions={value}"),
     ]
+}
+
+/// Carry the agent's stable identity across Codex's MCP process boundary.
+///
+/// Codex starts configured stdio MCP servers itself. `mcp_servers.<id>.env`
+/// is the documented literal environment map for that child process. Keep the
+/// bridge deliberately narrower than the outer launch environment so API keys
+/// and other agent-local values never become Codex configuration arguments.
+fn codex_synapt_mcp_env_args(launch_env: &HashMap<String, String>) -> Vec<String> {
+    const KEYS: &[&str] = &[
+        "SYNAPT_AGENT_ID",
+        "SYNAPT_AGENT_NAME",
+        "SYNAPT_RECALL_ROOT",
+        "SYNAPT_RECALL_WORKTREE",
+    ];
+
+    let mut args = Vec::new();
+    for key in KEYS {
+        let Some(value) = launch_env.get(*key).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        args.push("--config".to_string());
+        args.push(format!(
+            "mcp_servers.synapt.env.{key}={}",
+            toml::Value::String(value.clone())
+        ));
+    }
+    args
+}
+
+fn finalize_launch_command(
+    mut parts: Vec<String>,
+    agent_tool: &str,
+    codex_startup_prompt: &str,
+    launch_env: &HashMap<String, String>,
+) -> String {
+    parts.extend(codex_developer_instruction_args(codex_startup_prompt));
+    if agent_tool == "codex" {
+        parts.extend(codex_synapt_mcp_env_args(launch_env));
+    }
+    shell_join(&parts)
 }
 
 fn generate_synapt_startup_context(
@@ -1904,6 +1958,137 @@ mod tests {
     fn test_codex_developer_instructions_skip_empty_prompt() {
         assert!(codex_developer_instruction_args("").is_empty());
         assert!(codex_developer_instruction_args("  \n").is_empty());
+    }
+
+    fn synapt_env_value(override_arg: &str, key: &str) -> Option<String> {
+        let parsed = override_arg.parse::<toml::Table>().unwrap();
+        parsed
+            .get("mcp_servers")?
+            .get("synapt")?
+            .get("env")?
+            .get(key)?
+            .as_str()
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn test_codex_synapt_mcp_env_is_allowlisted_and_toml_quoted() {
+        let special_name = concat!(
+            "Sentinel's \"night\" watch\\desk\n",
+            "$(touch must-not-run) `touch must-not-run-either` 🦉"
+        );
+        let env = HashMap::from([
+            ("SYNAPT_AGENT_ID".to_string(), "sentinel-001".to_string()),
+            ("SYNAPT_AGENT_NAME".to_string(), special_name.to_string()),
+            (
+                "SYNAPT_RECALL_ROOT".to_string(),
+                "/tmp/recall root".to_string(),
+            ),
+            (
+                "SYNAPT_RECALL_WORKTREE".to_string(),
+                "synapt-global".to_string(),
+            ),
+            (
+                "OPENAI_API_KEY".to_string(),
+                "dummy-secret-that-must-not-cross".to_string(),
+            ),
+            ("EMPTY_ALLOWED_VALUE".to_string(), String::new()),
+        ]);
+
+        let args = codex_synapt_mcp_env_args(&env);
+
+        assert_eq!(args.len(), 8);
+        assert_eq!(args.iter().filter(|arg| *arg == "--config").count(), 4);
+        assert_eq!(
+            synapt_env_value(&args[1], "SYNAPT_AGENT_ID"),
+            Some("sentinel-001".to_string())
+        );
+        assert_eq!(
+            synapt_env_value(&args[3], "SYNAPT_AGENT_NAME"),
+            Some(special_name.to_string())
+        );
+        assert_eq!(
+            synapt_env_value(&args[5], "SYNAPT_RECALL_ROOT"),
+            Some("/tmp/recall root".to_string())
+        );
+        assert_eq!(
+            synapt_env_value(&args[7], "SYNAPT_RECALL_WORKTREE"),
+            Some("synapt-global".to_string())
+        );
+        let rendered = args.join(" ");
+        assert!(!rendered.contains("OPENAI_API_KEY"));
+        assert!(!rendered.contains("dummy-secret-that-must-not-cross"));
+        assert!(!rendered.contains("EMPTY_ALLOWED_VALUE"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_codex_synapt_mcp_override_survives_launch_shell_quoting() {
+        let special_name = "Sentinel's \"night\" watch\\desk\n$(printf injected)";
+        let env = HashMap::from([("SYNAPT_AGENT_NAME".to_string(), special_name.to_string())]);
+        let args = codex_synapt_mcp_env_args(&env);
+        let command = shell_join(&["printf".to_string(), "%s".to_string(), args[1].clone()]);
+
+        let output = Command::new("sh").args(["-c", &command]).output().unwrap();
+
+        assert!(output.status.success());
+        let transported = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(transported, args[1]);
+        assert_eq!(
+            synapt_env_value(&transported, "SYNAPT_AGENT_NAME"),
+            Some(special_name.to_string())
+        );
+    }
+
+    #[test]
+    fn test_generated_codex_launch_command_contains_synapt_mcp_identity_bridge() {
+        let env = HashMap::from([
+            ("SYNAPT_AGENT_ID".to_string(), "sentinel-001".to_string()),
+            ("SYNAPT_AGENT_NAME".to_string(), "sentinel".to_string()),
+            (
+                "SYNAPT_RECALL_WORKTREE".to_string(),
+                "synapt-global".to_string(),
+            ),
+        ]);
+        let base = vec![
+            "codex".to_string(),
+            "resume".to_string(),
+            "--last".to_string(),
+        ];
+
+        let command = finalize_launch_command(base, "codex", "You are Sentinel.", &env);
+
+        assert_eq!(
+            command,
+            shell_join(&[
+                "codex".to_string(),
+                "resume".to_string(),
+                "--last".to_string(),
+                "--config".to_string(),
+                "developer_instructions=\"You are Sentinel.\"".to_string(),
+                "--config".to_string(),
+                "mcp_servers.synapt.env.SYNAPT_AGENT_ID=\"sentinel-001\"".to_string(),
+                "--config".to_string(),
+                "mcp_servers.synapt.env.SYNAPT_AGENT_NAME=\"sentinel\"".to_string(),
+                "--config".to_string(),
+                "mcp_servers.synapt.env.SYNAPT_RECALL_WORKTREE=\"synapt-global\"".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_non_codex_launch_command_never_receives_codex_mcp_overrides() {
+        let env = HashMap::from([("SYNAPT_AGENT_ID".to_string(), "apollo-001".to_string())]);
+
+        let command = finalize_launch_command(
+            vec!["claude".to_string(), "--resume".to_string()],
+            "claude",
+            "",
+            &env,
+        );
+
+        assert_eq!(command, "'claude' '--resume'");
+        assert!(!command.contains("mcp_servers"));
     }
 
     #[test]
