@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from gr2.python_cli import app as app_module
 from gr2.prototypes import lane_workspace_prototype as lanes
 
 
@@ -109,6 +110,24 @@ def test_enter_exit_return_structured_outcomes_and_preserve_return_stack(tmp_pat
     assert exited.current_lane == "home"
     assert exited.exit_code == 0
     assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "home"
+
+
+def test_python_cli_renders_the_transition_writer_outcome(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    workspace = _workspace(tmp_path)
+    lanes.create_lane(_create(workspace, "feature"))
+    capsys.readouterr()
+
+    app_module.lane_enter(workspace, "atlas", "feature", "agent:atlas", False, False, False)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "status": "ok",
+        "action": "enter",
+        "owner_unit": "atlas",
+        "previous_lane": None,
+        "current_lane": "feature",
+        "state_path": str(lanes.current_lane_file(workspace, "atlas")),
+    }
 
 
 def test_concurrent_enters_keep_both_transitions_in_current_or_history(tmp_path: Path) -> None:
