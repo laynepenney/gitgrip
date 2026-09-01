@@ -88,6 +88,16 @@ path = "agents/atlas"
 repos = ["alpha", "beta", "gamma"]
 ''')
     sources = {name: _source(tmp_path, name) for name in ("alpha", "beta", "gamma")}
+    # The compiled workspace is the authorization surface. Replace the fixture
+    # placeholders with the actual canonical origins after source creation.
+    (workspace / ".grip" / "workspace_spec.toml").write_text(
+        "workspace_name = \"m1\"\n\n"
+        + "\n".join(
+            f'[[repos]]\nname = "{name}"\npath = "sources/{name}"\nurl = "{_git(source[0], "remote", "get-url", "origin")}"\n'
+            for name, source in sources.items()
+        )
+        + '\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["alpha", "beta", "gamma"]\n'
+    )
     home = tmp_path / "home"
     _git(tmp_path, "init", "-q", str(home))
     _git(home, "config", "user.email", "m1@example.invalid")
@@ -314,3 +324,95 @@ def test_project_review_cli_adapter_and_structured_rendering_are_registered() ->
     assert "open-project" in commands
     outcome = project_review.ProjectReviewOutcome("refused", "a" * 40, (), (project_review.ProjectReviewFailure("beta", "mismatch for head"),), None, False)
     assert project_review.outcome_payload(outcome) == {"status": "refused", "grip_commit": "a" * 40, "observed": [], "failures": [{"key": "beta", "reason": "mismatch for head"}], "review_root": None, "current_lane_changed": False}
+
+
+def test_unknown_workspace_key_refuses_before_clone_or_review_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace, sources, _home, current = _world(tmp_path)
+    from gr2.python_cli import grip, project_review
+
+    grip.grip_init(workspace)
+    alpha = sources["alpha"]
+    pin = project_review.ProjectReviewPin("grip", f"local:{alpha[0]}", "repos/grip", alpha[1], alpha[2])
+    spec = project_review.make_spec(workspace, [pin])
+    calls: list[str] = []
+    monkeypatch.setattr(project_review.review, "open_review_lane", lambda **_kwargs: calls.append("clone"))
+
+    outcome = project_review.open_project_review(
+        workspace=workspace, owner_unit="atlas", lane_name="unknown-key", spec=spec,
+        sources={"grip": (alpha[0], alpha[2])}, allow_local=True,
+    )
+
+    assert outcome.status == "refused" and outcome.failures[0].key == "grip"
+    assert "unknown workspace repository key" in outcome.failures[0].reason
+    assert calls == []
+    assert outcome.review_root is None
+    assert not (workspace / "reviews" / "atlas" / "unknown-key").exists()
+    assert lanes.current_lane_file(workspace, "atlas").read_bytes() == current
+
+
+def test_workspace_identity_and_source_origin_refuse_before_transport(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace, sources, _home, current = _world(tmp_path)
+    from gr2.python_cli import grip, project_review
+
+    grip.grip_init(workspace)
+    alpha, beta = sources["alpha"], sources["beta"]
+    correct = project_review.ProjectReviewPin("alpha", f"local:{alpha[0]}", "repos/alpha", alpha[1], alpha[2])
+    bad_identity = dataclasses.replace(correct, repo=f"local:{beta[0]}")
+    calls: list[str] = []
+    monkeypatch.setattr(project_review.review, "open_review_lane", lambda **_kwargs: calls.append("clone"))
+
+    identity_outcome = project_review.open_project_review(
+        workspace=workspace, owner_unit="atlas", lane_name="identity", spec=project_review.make_spec(workspace, [bad_identity]),
+        sources={"alpha": (alpha[0], alpha[2])}, allow_local=True,
+    )
+    source_outcome = project_review.open_project_review(
+        workspace=workspace, owner_unit="atlas", lane_name="source-origin", spec=project_review.make_spec(workspace, [correct]),
+        sources={"alpha": (beta[0], beta[2])}, allow_local=True,
+    )
+
+    assert identity_outcome.status == "refused" and "workspace repository identity mismatch" in identity_outcome.failures[0].reason
+    assert source_outcome.status == "refused" and "selected source identity mismatch" in source_outcome.failures[0].reason
+    assert calls == []
+    assert identity_outcome.review_root is None and source_outcome.review_root is None
+    assert not (workspace / "reviews" / "atlas" / "identity").exists()
+    assert not (workspace / "reviews" / "atlas" / "source-origin").exists()
+    assert lanes.current_lane_file(workspace, "atlas").read_bytes() == current
+
+
+def test_deleting_workspace_boundary_recreates_unknown_key_clone_side_effect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace, sources, _home, current = _world(tmp_path)
+    from gr2.python_cli import grip, project_review
+
+    grip.grip_init(workspace)
+    alpha = sources["alpha"]
+    pin = project_review.ProjectReviewPin("grip", f"local:{alpha[0]}", "repos/grip", alpha[1], alpha[2])
+    spec = project_review.make_spec(workspace, [pin])
+    monkeypatch.setattr(project_review, "_validate_workspace_repository_boundary", lambda **_kwargs: None)
+
+    with pytest.raises(SystemExit, match="unknown repos for lane: grip"):
+        project_review.open_project_review(
+            workspace=workspace, owner_unit="atlas", lane_name="boundary-deleted", spec=spec,
+            sources={"grip": (alpha[0], alpha[2])}, allow_local=True,
+        )
+
+    assert (workspace / "reviews" / "atlas" / "boundary-deleted" / "repos" / "grip" / ".git").is_dir()
+    assert lanes.current_lane_file(workspace, "atlas").read_bytes() == current
+
+
+def test_deleting_identity_boundary_recreates_clone_side_effect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace, sources, _home, _current = _world(tmp_path)
+    from gr2.python_cli import grip, project_review
+
+    grip.grip_init(workspace)
+    alpha, beta = sources["alpha"], sources["beta"]
+    pin = project_review.ProjectReviewPin("alpha", f"local:{beta[0]}", "repos/alpha", alpha[1], alpha[2])
+    spec = project_review.make_spec(workspace, [pin])
+    monkeypatch.setattr(project_review, "_validate_workspace_repository_boundary", lambda **_kwargs: None)
+
+    outcome = project_review.open_project_review(
+        workspace=workspace, owner_unit="atlas", lane_name="identity-deleted", spec=spec,
+        sources={"alpha": (alpha[0], alpha[2])}, allow_local=True,
+    )
+
+    assert outcome.status == "opened"
+    assert (workspace / "reviews" / "atlas" / "identity-deleted" / "repos" / "alpha" / ".git").is_dir()
