@@ -638,6 +638,24 @@ def workspace_migrate_gr1(
             typer.echo(f"\nSpec validation failed: {len(payload.get('validation_errors', []))} error(s).")
 
 
+@workspace_app.command("bootstrap-gr1")
+def workspace_bootstrap_gr1(
+    workspace_root: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Compile the canonical gr1 manifest and initialize the gr2 grip store."""
+    workspace_root = workspace_root.resolve()
+    payload = migration.bootstrap_gr1_workspace(workspace_root)
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo("Gr1Bootstrap")
+        for key in ("status", "workspace_root", "manifest_path", "workspace_spec_path", "grip_repo_path"):
+            typer.echo(f"{key} = {payload[key]}")
+        typer.echo(f"repo_count = {payload['repo_count']}")
+        typer.echo(f"unit_count = {payload['unit_count']}")
+
+
 @spec_app.command("show")
 def spec_show(
     workspace_root: Path,

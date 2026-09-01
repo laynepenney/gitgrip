@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import shutil
+import tempfile
 from pathlib import Path
 
 import yaml
+
+from . import grip
+from .gitops import git
 
 
 def gr1_manifest_path(workspace_root: Path) -> Path:
@@ -93,6 +99,100 @@ def migrate_gr1_workspace(workspace_root: Path, *, force: bool = False) -> dict[
         "units": [unit["name"] for unit in compiled["units"]],
         "repos": [repo["name"] for repo in compiled["repos"]],
     }
+
+
+def bootstrap_gr1_workspace(workspace_root: Path) -> dict[str, object]:
+    """Compile the authoritative gr1 manifest and make its gr2 object store usable.
+
+    This is intentionally narrower than migration: it does not snapshot mutable
+    gr1 state or materialize repositories.  It first builds and parses the
+    exact WorkspaceSpec bytes, so malformed source cannot create ``.grip``.
+    The only persistent result is the git-native grip store plus that generated
+    spec.  Repeating the operation accepts only the identical compiled bytes.
+    """
+    manifest_path = gr1_manifest_path(workspace_root)
+    if not manifest_path.is_file():
+        raise SystemExit(f"missing canonical gripspace manifest: {manifest_path}")
+
+    manifest_bytes = manifest_path.read_bytes()
+    try:
+        manifest = yaml.safe_load(manifest_bytes) or {}
+    except yaml.YAMLError as exc:
+        raise SystemExit(f"invalid canonical gripspace manifest: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise SystemExit("canonical gripspace manifest must be a mapping")
+    repos = manifest.get("repos", {})
+    if not isinstance(repos, dict):
+        raise SystemExit("canonical gripspace manifest repos must be a mapping")
+
+    try:
+        agents_doc = _load_agents_doc(workspace_root)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"invalid gr1 agents manifest: {exc}") from exc
+    if not isinstance(agents_doc, dict):
+        raise SystemExit("gr1 agents manifest must be a mapping")
+
+    # All source validation and TOML parsing is deliberately before mkdir, git,
+    # or replacement. A failed compile must leave a gr1-only workspace alone.
+    try:
+        compiled = compile_gr1_to_workspace_spec(workspace_root, manifest, agents_doc)
+        spec_bytes = render_workspace_spec(compiled).encode()
+        import tomllib
+        tomllib.loads(spec_bytes.decode())
+    except (TypeError, ValueError, KeyError, tomllib.TOMLDecodeError) as exc:
+        raise SystemExit(f"cannot compile canonical gripspace manifest: {exc}") from exc
+
+    grip_dir = workspace_root / ".grip"
+    if grip_dir.exists() and not grip_dir.is_dir():
+        raise SystemExit(f"refusing bootstrap: {grip_dir} is not a directory")
+    spec_path = grip_dir / "workspace_spec.toml"
+    git_dir = grip_dir / ".git"
+    if git_dir.is_file():
+        raise SystemExit(f"refusing bootstrap: {git_dir} is not a directory")
+    if git_dir.is_dir():
+        probe = git(grip_dir, "rev-parse", "--is-inside-work-tree")
+        if probe.returncode != 0 or probe.stdout.strip() != "true":
+            raise SystemExit(f"refusing bootstrap: {grip_dir} is not a valid git object store")
+
+    if spec_path.exists() and spec_path.read_bytes() != spec_bytes:
+        raise SystemExit(f"refusing bootstrap: existing generated spec differs: {spec_path}")
+
+    already_initialized = git_dir.is_dir() and spec_path.exists()
+    if not already_initialized:
+        try:
+            grip.grip_init(workspace_root)
+        except grip.GripInitError as exc:
+            raise SystemExit(str(exc)) from exc
+        if not spec_path.exists():
+            _atomic_write(spec_path, spec_bytes)
+
+    return {
+        "status": "already_initialized" if already_initialized else "initialized",
+        "workspace_root": str(workspace_root),
+        "manifest_path": str(manifest_path),
+        "workspace_spec_path": str(spec_path),
+        "grip_repo_path": str(grip_dir),
+        "repo_count": len(compiled["repos"]),
+        "unit_count": len(compiled["units"]),
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "workspace_spec_sha256": hashlib.sha256(spec_bytes).hexdigest(),
+    }
+
+
+def _atomic_write(path: Path, content: bytes) -> None:
+    """Replace one generated control-plane file without exposing partial TOML."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw_temp_path = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temp_path = Path(raw_temp_path)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp_path, path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 def compile_gr1_to_workspace_spec(

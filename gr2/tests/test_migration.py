@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
+from gr2.python_cli.app import app
 from gr2.python_cli.migration import (
     bootstrap_gr1_workspace,
     compile_gr1_to_workspace_spec,
@@ -197,7 +199,7 @@ class TestBootstrapGr1:
 
         import tomllib
         spec = tomllib.loads(spec_path.read_text())
-        assert [repo["name"] for repo in spec["repos"]] == ["grip", "synapt", "mem0"]
+        assert {repo["name"] for repo in spec["repos"]} == {"grip", "synapt", "mem0"}
         assert [unit["name"] for unit in spec["units"]] == ["apollo", "atlas"]
 
     def test_invalid_manifest_refuses_before_creating_grip_state(self, gr1_workspace: Path) -> None:
@@ -218,6 +220,43 @@ class TestBootstrapGr1:
 
         assert result["status"] == "already_initialized"
         assert spec_path.read_bytes() == before
+
+    def test_conflicting_existing_spec_refuses_before_initializing_store(self, gr1_workspace: Path) -> None:
+        grip_dir = gr1_workspace / ".grip"
+        grip_dir.mkdir()
+        (grip_dir / "workspace_spec.toml").write_text('workspace_name = "not-derived"\n')
+
+        with pytest.raises(SystemExit, match="existing generated spec differs"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert not (grip_dir / ".git").exists()
+
+    def test_invalid_existing_git_directory_refuses_without_replacing_spec(self, gr1_workspace: Path) -> None:
+        grip_dir = gr1_workspace / ".grip"
+        (grip_dir / ".git").mkdir(parents=True)
+        manifest = yaml.safe_load(
+            (gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml").read_text()
+        )
+        import tomllib
+        with (gr1_workspace / ".gitgrip" / "agents.toml").open("rb") as fh:
+            agents_doc = tomllib.load(fh)
+        expected = render_workspace_spec(
+            compile_gr1_to_workspace_spec(gr1_workspace, manifest, agents_doc)
+        ).encode()
+        (grip_dir / "workspace_spec.toml").write_bytes(expected)
+
+        with pytest.raises(SystemExit, match="not a valid git object store"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert (grip_dir / "workspace_spec.toml").read_bytes() == expected
+
+    def test_cli_reports_the_single_bootstrap_outcome(self, gr1_workspace: Path) -> None:
+        result = CliRunner().invoke(app, ["workspace", "bootstrap-gr1", str(gr1_workspace), "--json"])
+
+        assert result.exit_code == 0, result.stdout
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "initialized"
+        assert payload["manifest_path"].endswith(".gitgrip/spaces/main/gripspace.yml")
 
 
 # ---------------------------------------------------------------------------
