@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import shutil
-from pathlib import Path
+import stat
+import tempfile
+import tomllib
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
+
+from . import grip
+from .gitops import git
 
 
 def gr1_manifest_path(workspace_root: Path) -> Path:
@@ -95,21 +103,157 @@ def migrate_gr1_workspace(workspace_root: Path, *, force: bool = False) -> dict[
     }
 
 
+def bootstrap_gr1_workspace(workspace_root: Path) -> dict[str, object]:
+    """Compile the authoritative gr1 manifest and make its gr2 object store usable.
+
+    This is intentionally narrower than migration: it does not snapshot mutable
+    gr1 state or materialize repositories.  It first builds and parses the
+    exact WorkspaceSpec bytes, so malformed source cannot create ``.grip``.
+    The only persistent result is the git-native grip store plus that generated
+    spec.  Repeating the operation accepts only the identical compiled bytes.
+    """
+    manifest_path = gr1_manifest_path(workspace_root)
+    if not manifest_path.is_file():
+        raise SystemExit(f"missing canonical gripspace manifest: {manifest_path}")
+
+    manifest_bytes = manifest_path.read_bytes()
+    try:
+        manifest = yaml.safe_load(manifest_bytes) or {}
+    except yaml.YAMLError as exc:
+        raise SystemExit(f"invalid canonical gripspace manifest: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise SystemExit("canonical gripspace manifest must be a mapping")
+    repos = manifest.get("repos", {})
+    if not isinstance(repos, dict):
+        raise SystemExit("canonical gripspace manifest repos must be a mapping")
+
+    try:
+        agents_doc = _load_agents_doc(workspace_root)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"invalid gr1 agents manifest: {exc}") from exc
+    if not isinstance(agents_doc, dict):
+        raise SystemExit("gr1 agents manifest must be a mapping")
+
+    # All source validation and TOML parsing is deliberately before mkdir, git,
+    # or replacement. A failed compile must leave a gr1-only workspace alone.
+    try:
+        compiled = compile_gr1_to_workspace_spec(workspace_root, manifest, agents_doc)
+        spec_bytes = render_workspace_spec(compiled).encode()
+        tomllib.loads(spec_bytes.decode())
+    except (TypeError, ValueError, KeyError, tomllib.TOMLDecodeError) as exc:
+        raise SystemExit(f"cannot compile canonical gripspace manifest: {exc}") from exc
+
+    grip_dir = workspace_root / ".grip"
+    spec_path = grip_dir / "workspace_spec.toml"
+    git_dir = grip_dir / ".git"
+    for path, label in ((grip_dir, ".grip"), (git_dir, ".grip/.git"), (spec_path, ".grip/workspace_spec.toml")):
+        _refuse_symlink(path, label)
+
+    grip_dir_existed = grip_dir.exists()
+    git_dir_existed = git_dir.exists()
+    spec_existed = spec_path.exists()
+    if grip_dir.exists() and not grip_dir.is_dir():
+        raise SystemExit(f"refusing bootstrap: {grip_dir} is not a directory")
+    if git_dir.is_file():
+        raise SystemExit(f"refusing bootstrap: {git_dir} is not a directory")
+    if git_dir.is_dir():
+        probe = git(grip_dir, "rev-parse", "--is-inside-work-tree")
+        if probe.returncode != 0 or probe.stdout.strip() != "true":
+            raise SystemExit(f"refusing bootstrap: {grip_dir} is not a valid git object store")
+
+    if spec_path.exists() and spec_path.read_bytes() != spec_bytes:
+        raise SystemExit(f"refusing bootstrap: existing generated spec differs: {spec_path}")
+
+    already_initialized = git_dir.is_dir() and spec_path.exists()
+    if not already_initialized:
+        try:
+            grip.grip_init(workspace_root)
+            if not spec_path.exists():
+                _atomic_write(spec_path, spec_bytes)
+        except grip.GripInitError as exc:
+            _rollback_bootstrap(grip_dir, git_dir, spec_path, grip_dir_existed, git_dir_existed, spec_existed)
+            raise SystemExit(str(exc)) from exc
+        except BaseException:
+            _rollback_bootstrap(grip_dir, git_dir, spec_path, grip_dir_existed, git_dir_existed, spec_existed)
+            raise
+
+    return {
+        "status": "already_initialized" if already_initialized else "initialized",
+        "workspace_root": str(workspace_root),
+        "manifest_path": str(manifest_path),
+        "workspace_spec_path": str(spec_path),
+        "grip_repo_path": str(grip_dir),
+        "repo_count": len(compiled["repos"]),
+        "unit_count": len(compiled["units"]),
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "workspace_spec_sha256": hashlib.sha256(spec_bytes).hexdigest(),
+    }
+
+
+def _atomic_write(path: Path, content: bytes) -> None:
+    """Replace one generated control-plane file without exposing partial TOML."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw_temp_path = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temp_path = Path(raw_temp_path)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp_path, path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _refuse_symlink(path: Path, label: str) -> None:
+    """Inspect the entry itself, never the target an attacker could redirect."""
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(mode):
+        raise SystemExit(f"refusing bootstrap: {label} must not be a symlink")
+
+
+def _rollback_bootstrap(
+    grip_dir: Path,
+    git_dir: Path,
+    spec_path: Path,
+    grip_dir_existed: bool,
+    git_dir_existed: bool,
+    spec_existed: bool,
+) -> None:
+    """Remove only control-plane entries created by this bootstrap attempt."""
+    for path, label in ((grip_dir, ".grip"), (git_dir, ".grip/.git"), (spec_path, ".grip/workspace_spec.toml")):
+        _refuse_symlink(path, label)
+    if not spec_existed and spec_path.exists():
+        spec_path.unlink()
+    if not git_dir_existed and git_dir.exists():
+        shutil.rmtree(git_dir)
+    if not grip_dir_existed and grip_dir.exists():
+        shutil.rmtree(grip_dir)
+
+
 def compile_gr1_to_workspace_spec(
     workspace_root: Path,
     manifest: dict[str, object],
     agents_doc: dict[str, object],
 ) -> dict[str, object]:
     repos_doc = manifest.get("repos", {}) or {}
+    if not isinstance(repos_doc, dict):
+        raise ValueError("canonical gripspace manifest repos must be a mapping")
     repos: list[dict[str, object]] = []
     writable_repo_names: list[str] = []
 
     for repo_name, repo_doc in repos_doc.items():
-        repo_doc = repo_doc or {}
-        path = str(repo_doc.get("path", "")).strip()
-        normalized_path = path[2:] if path.startswith("./") else path
+        safe_repo_name = _safe_workspace_component(repo_name, "repo name")
+        if not isinstance(repo_doc, dict):
+            raise ValueError(f"repository {safe_repo_name!r} must be a mapping")
+        path = repo_doc.get("path", "")
+        normalized_path = _safe_workspace_relative_path(path, f"repository {safe_repo_name!r} path")
         repo_item = {
-            "name": str(repo_name),
+            "name": safe_repo_name,
             "path": normalized_path,
             "url": str(repo_doc.get("url", "")).strip(),
         }
@@ -121,17 +265,25 @@ def compile_gr1_to_workspace_spec(
             repo_item["reference"] = True
         repos.append(repo_item)
         if not repo_doc.get("reference", False):
-            writable_repo_names.append(str(repo_name))
+            writable_repo_names.append(safe_repo_name)
 
     agents = (agents_doc.get("agents") or {}) or {}
-    unit_names = sorted(agents.keys()) if agents else ["default"]
+    if not isinstance(agents, dict):
+        raise ValueError("gr1 agents manifest agents must be a mapping")
+    unit_items = (
+        sorted((_safe_workspace_component(unit_name, "agent unit name"), unit_doc) for unit_name, unit_doc in agents.items())
+        if agents
+        else [("default", {})]
+    )
     units: list[dict[str, object]] = []
-    for unit_name in unit_names:
-        unit_doc = (agents.get(unit_name) or {}) if agents else {}
+    for safe_unit_name, unit_doc in unit_items:
+        unit_doc = unit_doc or {}
+        if not isinstance(unit_doc, dict):
+            raise ValueError(f"agent unit {safe_unit_name!r} must be a mapping")
         units.append(
             {
-                "name": unit_name,
-                "path": f"agents/{unit_name}/home",
+                "name": safe_unit_name,
+                "path": f"agents/{safe_unit_name}/home",
                 "repos": writable_repo_names,
                 "migration_source": {
                     "worktree": unit_doc.get("worktree"),
@@ -148,6 +300,35 @@ def compile_gr1_to_workspace_spec(
             "migration_source": "gr1",
         },
     }
+
+
+def _safe_workspace_component(value: object, field: str) -> str:
+    """Accept one logical name, never a path fragment or invisible control data."""
+    if not isinstance(value, str) or not value or value in {".", ".."}:
+        raise ValueError(f"{field} must be a non-empty logical name")
+    if "/" in value or "\\" in value or ":" in value or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        raise ValueError(f"{field} must not contain separators or control characters: {value!r}")
+    return value
+
+
+def _safe_workspace_relative_path(value: object, field: str) -> str:
+    """Normalize only a safe, portable workspace-relative manifest path."""
+    if not isinstance(value, str) or not value or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        raise ValueError(f"{field} must be a non-empty relative path")
+    if "\\" in value:
+        raise ValueError(f"{field} must use portable '/' separators: {value!r}")
+    posix_path = PurePosixPath(value)
+    windows_path = PureWindowsPath(value)
+    if (
+        posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or windows_path.root
+        or ".." in posix_path.parts
+        or str(posix_path) in {".", ""}
+    ):
+        raise ValueError(f"{field} escapes the workspace: {value!r}")
+    return posix_path.as_posix()
 
 
 def preserve_gr1_state(workspace_root: Path, migration_dir: Path) -> dict[str, str]:

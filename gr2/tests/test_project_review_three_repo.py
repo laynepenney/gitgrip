@@ -39,10 +39,32 @@ def _source(root: Path, name: str) -> tuple[Path, str, str]:
     return source, base, head
 
 
-def _world(tmp_path: Path):
+def _world(tmp_path: Path, *, bootstrap_from_manifest: bool = False):
     workspace = tmp_path / "workspace"
-    (workspace / ".grip").mkdir(parents=True)
-    (workspace / ".grip" / "workspace_spec.toml").write_text('''schema_version = 1
+    if bootstrap_from_manifest:
+        manifest = workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text('''version: 2
+repos:
+  alpha:
+    url: https://example.invalid/alpha.git
+    path: sources/alpha
+  beta:
+    url: https://example.invalid/beta.git
+    path: sources/beta
+  gamma:
+    url: https://example.invalid/gamma.git
+    path: sources/gamma
+''')
+        (workspace / ".gitgrip" / "agents.toml").write_text('''[agents.atlas]
+worktree = "main"
+channel = "dev"
+''')
+        from gr2.python_cli.migration import bootstrap_gr1_workspace
+        bootstrap_gr1_workspace(workspace)
+    else:
+        (workspace / ".grip").mkdir(parents=True)
+        (workspace / ".grip" / "workspace_spec.toml").write_text('''schema_version = 1
 workspace_name = "m1"
 
 [[repos]]
@@ -95,6 +117,65 @@ def test_three_repo_exact_pins_open_only_after_all_members_verify(tmp_path: Path
     assert home.joinpath("tracked.txt").read_text() == "dirty\n"
     assert home.joinpath("untracked.txt").read_text() == "keep\n"
     assert lanes.current_lane_file(workspace, "atlas").read_bytes() != current
+
+
+def test_manifest_bootstrap_opens_the_authorized_three_repo_review(tmp_path: Path) -> None:
+    """M1's real consumer can start from gr1 manifest state with no hand-written spec."""
+    workspace, sources, _home, _current = _world(tmp_path, bootstrap_from_manifest=True)
+    from gr2.python_cli import project_review
+    pins = [
+        project_review.ProjectReviewPin(name, f"local:{source[0]}", f"repos/{name}", source[1], source[2])
+        for name, source in sources.items()
+    ]
+    spec = project_review.make_spec(workspace, pins)
+    outcome = project_review.open_project_review(
+        workspace=workspace,
+        owner_unit="atlas",
+        lane_name="bootstrap-review",
+        spec=spec,
+        sources={name: (source[0], f"review/{name}") for name, source in sources.items()},
+        allow_local=True,
+    )
+    assert outcome.status == "opened"
+    assert [record.head for record in outcome.observed] == [sources[name][2] for name in ("alpha", "beta", "gamma")]
+
+
+@pytest.mark.parametrize("owner_unit,lane_name", [("../escaped-owner", "review"), ("atlas", ".."), ("C:", "review"), (r"\\server\share", "review"), ("atlas", "child/name")])
+def test_unsafe_review_root_components_refuse_before_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner_unit: str, lane_name: str
+) -> None:
+    workspace, sources, _home, _current = _world(tmp_path, bootstrap_from_manifest=True)
+    from gr2.python_cli import project_review
+    pins = [project_review.ProjectReviewPin(name, f"local:{source[0]}", f"repos/{name}", source[1], source[2]) for name, source in sources.items()]
+    spec = project_review.make_spec(workspace, pins)
+    calls: list[str] = []
+    monkeypatch.setattr(project_review.review, "open_review_lane", lambda **_kwargs: calls.append("clone"))
+
+    outcome = project_review.open_project_review(
+        workspace=workspace, owner_unit=owner_unit, lane_name=lane_name, spec=spec,
+        sources={name: (source[0], f"review/{name}") for name, source in sources.items()}, allow_local=True,
+    )
+
+    assert outcome.status == "refused"
+    assert outcome.failures[0].key == "review_root"
+    assert calls == []
+    assert not (workspace / "escaped-owner").exists()
+
+
+def test_deleting_review_root_preflight_recreates_escaped_clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace, sources, _home, _current = _world(tmp_path, bootstrap_from_manifest=True)
+    from gr2.python_cli import project_review
+    pins = [project_review.ProjectReviewPin(name, f"local:{source[0]}", f"repos/{name}", source[1], source[2]) for name, source in sources.items()]
+    spec = project_review.make_spec(workspace, pins)
+    monkeypatch.setattr(project_review, "_review_path_component", lambda value, _field: value)
+
+    with pytest.raises(SystemExit, match="invalid owner_unit"):
+        project_review.open_project_review(
+            workspace=workspace, owner_unit="../escaped-owner", lane_name="review", spec=spec,
+            sources={name: (source[0], f"review/{name}") for name, source in sources.items()}, allow_local=True,
+        )
+
+    assert (workspace / "escaped-owner" / "review" / "repos" / "alpha" / ".git").is_dir()
 
 
 def test_missing_pin_refuses_before_any_review_materialization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

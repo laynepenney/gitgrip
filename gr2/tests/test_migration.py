@@ -6,12 +6,17 @@ plus coexistence state awareness and the workspace status command.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
+from gr2.python_cli.app import app
+from gr2.python_cli import migration
 from gr2.python_cli.migration import (
+    bootstrap_gr1_workspace,
     compile_gr1_to_workspace_spec,
     detect_gr1_workspace,
     migrate_gr1_workspace,
@@ -137,6 +142,16 @@ class TestCompileGr1:
         for unit in compiled["units"]:
             assert "mem0" not in unit["repos"]
 
+    def test_normalizes_safe_nested_repo_path(self, gr1_workspace: Path) -> None:
+        compiled = compile_gr1_to_workspace_spec(
+            gr1_workspace,
+            {"repos": {"safe": {"path": "./nested//safe", "url": "https://example.invalid/safe.git"}}},
+            {"agents": {"atlas": {}}},
+        )
+
+        assert compiled["repos"] == [{"name": "safe", "path": "nested/safe", "url": "https://example.invalid/safe.git"}]
+        assert compiled["units"][0]["path"] == "agents/atlas/home"
+
 
 class TestMigrateGr1:
     def test_creates_grip_dir_and_spec(self, gr1_workspace: Path) -> None:
@@ -178,6 +193,275 @@ class TestMigrateGr1:
         assert parsed["workspace_name"] == gr1_workspace.name
         assert len(parsed["repos"]) == 3
         assert len(parsed["units"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# manifest bootstrap: compile the canonical gr1 manifest and initialize grip
+# ---------------------------------------------------------------------------
+
+class TestBootstrapGr1:
+    def test_compiles_manifest_and_initializes_grip_object_store(self, gr1_workspace: Path) -> None:
+        """The production bootstrap makes a usable gr2 control plane, not a hand-written spec."""
+        result = bootstrap_gr1_workspace(gr1_workspace)
+
+        assert result["status"] == "initialized"
+        assert (gr1_workspace / ".grip" / ".git").is_dir()
+        spec_path = gr1_workspace / ".grip" / "workspace_spec.toml"
+        assert result["workspace_spec_path"] == str(spec_path)
+
+        import tomllib
+        spec = tomllib.loads(spec_path.read_text())
+        assert {repo["name"] for repo in spec["repos"]} == {"grip", "synapt", "mem0"}
+        assert [unit["name"] for unit in spec["units"]] == ["apollo", "atlas"]
+
+    def test_invalid_manifest_refuses_before_creating_grip_state(self, gr1_workspace: Path) -> None:
+        manifest_path = gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
+        manifest_path.write_text("repos: [not-a-map]\n")
+
+        with pytest.raises(SystemExit, match="repos"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert not (gr1_workspace / ".grip").exists()
+
+    @pytest.mark.parametrize(
+        ("repo_name", "repo_path", "agent_name"),
+        [
+            ("escape", "../outside", "atlas"),
+            ("escape", "/outside", "atlas"),
+            ("escape", "nested/../outside", "atlas"),
+            ("escape", "C:/outside", "atlas"),
+            ("../repo", "safe", "atlas"),
+            ("repo/child", "safe", "atlas"),
+            ("escape", "safe", "../unit"),
+            ("escape", "safe", "unit/child"),
+            ("escape", "safe", "C:"),
+        ],
+    )
+    def test_path_escapes_refuse_before_creating_grip_state(
+        self, gr1_workspace: Path, repo_name: str, repo_path: str, agent_name: str
+    ) -> None:
+        manifest_path = gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
+        manifest_path.write_text(yaml.dump({"repos": {repo_name: {"path": repo_path, "url": "https://example.invalid/escape.git"}}}))
+        (gr1_workspace / ".gitgrip" / "agents.toml").write_text(f"[agents.\"{agent_name}\"]\nworktree = \"main\"\n")
+
+        with pytest.raises(SystemExit, match="cannot compile canonical gripspace manifest"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert not (gr1_workspace / ".grip").exists()
+
+    def test_deleting_repo_path_guard_recreates_the_unsafe_store_side_effect(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mutation control: without the source guard, valid TOML alone is unsafe."""
+        manifest_path = gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
+        manifest_path.write_text(yaml.dump({"repos": {"escape": {"path": "../outside", "url": "https://example.invalid/escape.git"}}}))
+        monkeypatch.setattr(migration, "_safe_workspace_relative_path", lambda value, _field: str(value))
+
+        bootstrap_gr1_workspace(gr1_workspace)
+
+        assert (gr1_workspace / ".grip" / ".git").is_dir()
+
+    def test_deleting_unit_name_guard_recreates_the_unsafe_store_side_effect(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mutation control: unit validation protects the generated agents/<unit>/home path."""
+        (gr1_workspace / ".gitgrip" / "agents.toml").write_text('[agents."../unit"]\nworktree = "main"\n')
+        monkeypatch.setattr(migration, "_safe_workspace_component", lambda value, _field: str(value))
+
+        bootstrap_gr1_workspace(gr1_workspace)
+
+        assert (gr1_workspace / ".grip" / ".git").is_dir()
+
+    def test_idempotent_bootstrap_preserves_compiled_bytes(self, gr1_workspace: Path) -> None:
+        bootstrap_gr1_workspace(gr1_workspace)
+        spec_path = gr1_workspace / ".grip" / "workspace_spec.toml"
+        before = spec_path.read_bytes()
+
+        result = bootstrap_gr1_workspace(gr1_workspace)
+
+        assert result["status"] == "already_initialized"
+        assert spec_path.read_bytes() == before
+
+    def test_existing_empty_grip_directory_is_completed(self, gr1_workspace: Path) -> None:
+        """Repair the observed partial control-plane shape without accepting corrupt git state."""
+        (gr1_workspace / ".grip").mkdir()
+
+        result = bootstrap_gr1_workspace(gr1_workspace)
+
+        assert result["status"] == "initialized"
+        assert (gr1_workspace / ".grip" / ".git").is_dir()
+        assert (gr1_workspace / ".grip" / "workspace_spec.toml").is_file()
+
+    @pytest.mark.parametrize("surface", ["grip", "git", "spec"])
+    def test_symlinked_control_plane_refuses_before_external_write(
+        self, gr1_workspace: Path, tmp_path: Path, surface: str
+    ) -> None:
+        external = tmp_path / "external"
+        external.mkdir()
+        grip_dir = gr1_workspace / ".grip"
+        if surface == "grip":
+            grip_dir.symlink_to(external, target_is_directory=True)
+        elif surface == "git":
+            grip_dir.mkdir()
+            (grip_dir / ".git").symlink_to(external, target_is_directory=True)
+        else:
+            grip_dir.mkdir()
+            (grip_dir / "workspace_spec.toml").symlink_to(external / "spec")
+
+        with pytest.raises(SystemExit, match="must not be a symlink"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert not (external / ".git").exists()
+        assert not (external / "workspace_spec.toml").exists()
+
+    def test_deleting_symlink_guard_recreates_external_write(
+        self, gr1_workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        external = tmp_path / "external"
+        external.mkdir()
+        (gr1_workspace / ".grip").symlink_to(external, target_is_directory=True)
+        monkeypatch.setattr(migration, "_refuse_symlink", lambda _path, _label: None)
+
+        bootstrap_gr1_workspace(gr1_workspace)
+
+        assert (external / ".git").is_dir()
+        assert (external / "workspace_spec.toml").is_file()
+
+    def test_publish_failure_rolls_back_new_object_store(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(migration, "_atomic_write", lambda _path, _content: (_ for _ in ()).throw(OSError("injected publish failure")))
+
+        with pytest.raises(OSError, match="injected publish failure"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert not (gr1_workspace / ".grip").exists()
+
+    def test_publish_failure_preserves_preexisting_partial_directory(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        grip_dir = gr1_workspace / ".grip"
+        grip_dir.mkdir()
+        monkeypatch.setattr(migration, "_atomic_write", lambda _path, _content: (_ for _ in ()).throw(OSError("injected publish failure")))
+
+        with pytest.raises(OSError, match="injected publish failure"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert grip_dir.is_dir()
+        assert not (grip_dir / ".git").exists()
+        assert not (grip_dir / "workspace_spec.toml").exists()
+
+    def test_deleting_rollback_recreates_partial_object_store(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(migration, "_atomic_write", lambda _path, _content: (_ for _ in ()).throw(OSError("injected publish failure")))
+        monkeypatch.setattr(migration, "_rollback_bootstrap", lambda *_args: None)
+
+        with pytest.raises(OSError, match="injected publish failure"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert (gr1_workspace / ".grip" / ".git").is_dir()
+
+    @pytest.mark.parametrize("preexisting_grip", [False, True])
+    def test_nonzero_git_init_refuses_without_spec_and_rolls_back_created_state(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch, preexisting_grip: bool
+    ) -> None:
+        if preexisting_grip:
+            (gr1_workspace / ".grip").mkdir()
+        real_git = migration.grip.git
+
+        def fail_init(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+            if args == ("init",):
+                return subprocess.CompletedProcess(["git", *args], 1, "", "injected init failure")
+            return real_git(cwd, *args)
+
+        monkeypatch.setattr(migration.grip, "git", fail_init)
+        with pytest.raises(SystemExit, match="git init failed: injected init failure"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert not (gr1_workspace / ".grip" / "workspace_spec.toml").exists()
+        assert (gr1_workspace / ".grip").exists() is preexisting_grip
+        assert not (gr1_workspace / ".grip" / ".git").exists()
+
+    @pytest.mark.parametrize("config_key", ["user.email", "user.name"])
+    @pytest.mark.parametrize("preexisting_grip", [False, True])
+    def test_nonzero_git_config_refuses_and_rolls_back_new_store(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch, config_key: str, preexisting_grip: bool
+    ) -> None:
+        if preexisting_grip:
+            (gr1_workspace / ".grip").mkdir()
+        real_git = migration.grip.git
+
+        def fail_config(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ("config", config_key):
+                return subprocess.CompletedProcess(["git", *args], 1, "", f"injected {config_key} failure")
+            return real_git(cwd, *args)
+
+        monkeypatch.setattr(migration.grip, "git", fail_config)
+        with pytest.raises(SystemExit, match=f"git config {config_key} failed"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert not (gr1_workspace / ".grip" / "workspace_spec.toml").exists()
+        assert (gr1_workspace / ".grip").exists() is preexisting_grip
+        assert not (gr1_workspace / ".grip" / ".git").exists()
+
+    def test_deleting_git_process_guard_recreates_spec_without_store(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real_git = migration.grip.git
+
+        def missing_init_but_plausible_probe(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+            if args == ("init",):
+                return subprocess.CompletedProcess(["git", *args], 1, "", "injected init failure")
+            if args == ("rev-parse", "--is-inside-work-tree"):
+                return subprocess.CompletedProcess(["git", *args], 0, "true\n", "")
+            return real_git(cwd, *args)
+
+        monkeypatch.setattr(migration.grip, "git", missing_init_but_plausible_probe)
+        monkeypatch.setattr(migration.grip, "_require_git_success", lambda _proc, _action: None)
+
+        result = bootstrap_gr1_workspace(gr1_workspace)
+
+        assert result["status"] == "initialized"
+        assert (gr1_workspace / ".grip" / "workspace_spec.toml").is_file()
+        assert not (gr1_workspace / ".grip" / ".git").exists()
+
+    def test_conflicting_existing_spec_refuses_before_initializing_store(self, gr1_workspace: Path) -> None:
+        grip_dir = gr1_workspace / ".grip"
+        grip_dir.mkdir()
+        (grip_dir / "workspace_spec.toml").write_text('workspace_name = "not-derived"\n')
+
+        with pytest.raises(SystemExit, match="existing generated spec differs"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert not (grip_dir / ".git").exists()
+
+    def test_invalid_existing_git_directory_refuses_without_replacing_spec(self, gr1_workspace: Path) -> None:
+        grip_dir = gr1_workspace / ".grip"
+        (grip_dir / ".git").mkdir(parents=True)
+        manifest = yaml.safe_load(
+            (gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml").read_text()
+        )
+        import tomllib
+        with (gr1_workspace / ".gitgrip" / "agents.toml").open("rb") as fh:
+            agents_doc = tomllib.load(fh)
+        expected = render_workspace_spec(
+            compile_gr1_to_workspace_spec(gr1_workspace, manifest, agents_doc)
+        ).encode()
+        (grip_dir / "workspace_spec.toml").write_bytes(expected)
+
+        with pytest.raises(SystemExit, match="not a valid git object store"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert (grip_dir / "workspace_spec.toml").read_bytes() == expected
+
+    def test_cli_reports_the_single_bootstrap_outcome(self, gr1_workspace: Path) -> None:
+        result = CliRunner().invoke(app, ["workspace", "bootstrap-gr1", str(gr1_workspace), "--json"])
+
+        assert result.exit_code == 0, result.stdout
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "initialized"
+        assert payload["manifest_path"].endswith(".gitgrip/spaces/main/gripspace.yml")
 
 
 # ---------------------------------------------------------------------------

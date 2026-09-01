@@ -295,10 +295,27 @@ def grip_init(workspace: Path) -> Path:
             f"Remove {git_dir} and run grip_init again."
         )
     if not git_dir.exists():
-        git(grip_dir, "init")
-        git(grip_dir, "config", "user.email", "grip@synapt.dev")
-        git(grip_dir, "config", "user.name", "grip")
+        _require_git_success(git(grip_dir, "init"), "git init")
+        _require_git_success(
+            git(grip_dir, "config", "user.email", "grip@synapt.dev"),
+            "git config user.email",
+        )
+        _require_git_success(
+            git(grip_dir, "config", "user.name", "grip"),
+            "git config user.name",
+        )
+    probe = git(grip_dir, "rev-parse", "--is-inside-work-tree")
+    _require_git_success(probe, "git rev-parse --is-inside-work-tree")
+    if probe.stdout.strip() != "true":
+        raise GripInitError(".grip is not a valid git object store after initialization")
     return grip_dir
+
+
+def _require_git_success(proc: subprocess.CompletedProcess[str], action: str) -> None:
+    if proc.returncode == 0:
+        return
+    diagnostic = (proc.stderr or proc.stdout).strip() or "no diagnostic"
+    raise GripInitError(f"{action} failed: {diagnostic}")
 
 
 def grip_snapshot(
