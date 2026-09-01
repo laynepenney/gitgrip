@@ -5,6 +5,7 @@ import argparse
 import dataclasses
 import re
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Literal
 
 from gr2.prototypes import lane_workspace_prototype as lanes
@@ -47,24 +48,42 @@ class ProjectReviewOutcome:
 
 
 def make_spec(workspace: Path, pins: list[ProjectReviewPin]) -> ProjectReviewSpec:
-    ordered = tuple(sorted(pins, key=lambda pin: pin.key))
+    ordered = tuple(sorted((_canonical_pin(pin) for pin in pins), key=lambda pin: pin.key))
     if not ordered or len({pin.key for pin in ordered}) != len(ordered):
         raise ValueError("project review pins must be non-empty with unique keys")
-    for pin in ordered:
-        if not _SHA40.match(pin.base) or not _SHA40.match(pin.head) or not pin.path or Path(pin.path).is_absolute() or ".." in Path(pin.path).parts:
-            raise ValueError(f"invalid project review pin: {pin.key}")
     commit = grip.create_project_review_commit(workspace, [dataclasses.asdict(pin) for pin in ordered])
     return ProjectReviewSpec("gr2-project-review/v1", commit, ordered)
+
+
+def _normalized_path(value: str) -> str:
+    path = PurePosixPath(value)
+    if not value or path.is_absolute() or ".." in path.parts or str(path) in {".", ""}:
+        raise ValueError(f"invalid project review path: {value!r}")
+    return path.as_posix()
+
+
+def _canonical_pin(pin: ProjectReviewPin) -> ProjectReviewPin:
+    if not pin.key or any(ch in pin.key for ch in "/\\") or not pin.repo or not _SHA40.match(pin.base) or not _SHA40.match(pin.head):
+        raise ValueError(f"invalid project review pin: {pin.key}")
+    return dataclasses.replace(pin, path=_normalized_path(pin.path))
 
 
 def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spec: ProjectReviewSpec, sources: dict[str, tuple[Path, str]], allow_local: bool = False) -> ProjectReviewOutcome:
     """Preflight every immutable pin, then materialize all members before enter."""
     if spec.schema != "gr2-project-review/v1":
         return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure("spec", "unsupported schema"),), None, False)
+    try:
+        canonical_pins = tuple(_canonical_pin(pin) for pin in spec.pins)
+    except ValueError as exc:
+        return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure("spec", str(exc)),), None, False)
     decoded = grip.read_project_review_commit(workspace, spec.grip_commit)
-    if [row["key"] for row in decoded] != [pin.key for pin in spec.pins]:
-        return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure("spec", "commit/spec pin disagreement"),), None, False)
-    for pin in spec.pins:
+    if len(decoded) != len(canonical_pins):
+        return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure("spec", "gr commit member count mismatch"),), None, False)
+    for row, pin in zip(decoded, canonical_pins):
+        for field, expected, observed in (("key", pin.key, row["key"]), ("repo", pin.repo, row["repo"]), ("path", pin.path, _normalized_path(row["path"])), ("base", pin.base, row["base"]), ("head", pin.head, row["head"])):
+            if expected != observed:
+                return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure(pin.key, f"gr commit mismatch for {field}: expected {expected!r}, observed {observed!r}"),), None, False)
+    for pin in canonical_pins:
         source_branch = sources.get(pin.key)
         if source_branch is None:
             return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure(pin.key, "missing source transport"),), None, False)
@@ -74,7 +93,7 @@ def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spe
                 return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure(pin.key, f"missing {label} pin {sha}"),), None, False)
     review_root = workspace / "reviews" / owner_unit / lane_name
     observed: list[review.ReviewRecord] = []
-    for pin in spec.pins:
+    for pin in canonical_pins:
         source, branch = sources[pin.key]
         try:
             record = review.open_review_lane(source_repo_root=source, review_branch=branch, expected_head_sha=pin.head, base_sha=pin.base, lane_repo_root=review_root / "repos" / pin.key, workspace_root=workspace, allow_local=allow_local, echo=lambda _line: None)
@@ -82,8 +101,16 @@ def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spe
             return ProjectReviewOutcome("partial", spec.grip_commit, tuple(observed), (ProjectReviewFailure(pin.key, str(exc)),), review_root, False)
         observed.append(record)
     try:
-        lanes.create_lane(argparse.Namespace(workspace_root=workspace, owner_unit=owner_unit, lane_name=lane_name, type="review", repos=",".join(pin.key for pin in spec.pins), branch="main", source="project-review", default_commands=[]))
+        lanes.create_lane(argparse.Namespace(workspace_root=workspace, owner_unit=owner_unit, lane_name=lane_name, type="review", repos=",".join(pin.key for pin in canonical_pins), branch="main", source="project-review", default_commands=[]))
         lanes.enter_lane(argparse.Namespace(workspace_root=workspace, owner_unit=owner_unit, lane_name=lane_name, actor="project-review", notify_channel=False, recall=False))
     except Exception as exc:
         return ProjectReviewOutcome("partial", spec.grip_commit, tuple(observed), (ProjectReviewFailure("transition", str(exc)),), review_root, False)
     return ProjectReviewOutcome("opened", spec.grip_commit, tuple(observed), (), review_root, True)
+
+
+def outcome_payload(outcome: ProjectReviewOutcome) -> dict[str, object]:
+    return {"status": outcome.status, "grip_commit": outcome.grip_commit,
+            "observed": [record.to_dict() for record in outcome.observed],
+            "failures": [dataclasses.asdict(failure) for failure in outcome.failures],
+            "review_root": str(outcome.review_root) if outcome.review_root else None,
+            "current_lane_changed": outcome.current_lane_changed}

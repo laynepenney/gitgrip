@@ -18,6 +18,7 @@ from . import branch as branch_ops
 from . import commit as commit_ops
 from . import execops, failures, migration, spec_apply, syncops
 from . import pr as pr_ops
+from . import project_review
 from . import push as push_ops
 from .events import EventType, emit_after_outcome
 from .gitops import (
@@ -1453,6 +1454,26 @@ def pr_create(
         typer.echo(json.dumps(payload, indent=2))
     else:
         typer.echo(json.dumps(payload, indent=2))
+
+
+@review_app.command("open-project")
+def review_open_project(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    spec_json: Path = typer.Option(..., "--spec-json", help="Strict ProjectReviewSpec JSON"),
+    sources_json: Path = typer.Option(..., "--sources-json", help="Ephemeral key -> {source, branch} JSON"),
+) -> None:
+    """Open a project review from an immutable spec plus ephemeral transport."""
+    raw = json.loads(spec_json.read_text())
+    pins = tuple(project_review.ProjectReviewPin(**pin) for pin in raw["pins"])
+    spec = project_review.ProjectReviewSpec(raw["schema"], raw["grip_commit"], pins)
+    source_rows = json.loads(sources_json.read_text())
+    sources = {key: (Path(row["source"]), row["branch"]) for key, row in source_rows.items()}
+    outcome = project_review.open_project_review(workspace=workspace_root.resolve(), owner_unit=owner_unit, lane_name=lane_name, spec=spec, sources=sources, allow_local=False)
+    typer.echo(json.dumps(project_review.outcome_payload(outcome), indent=2))
+    if outcome.status != "opened":
+        raise typer.Exit(code=1)
 
 
 @pr_app.command("status")
