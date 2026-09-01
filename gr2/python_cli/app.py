@@ -446,6 +446,16 @@ def _exit(code: int) -> None:
         raise typer.Exit(code=code)
 
 
+def _consume_lane_transition(outcome: lane_proto.LaneTransitionOutcome | int) -> lane_proto.LaneTransitionOutcome | None:
+    """Render the state writer's one outcome instead of inferring one in the CLI."""
+    if isinstance(outcome, lane_proto.LaneTransitionOutcome):
+        typer.echo(json.dumps(outcome.as_dict(), indent=2))
+        _exit(outcome.exit_code)
+        return outcome
+    _exit(outcome)
+    return None
+
+
 @sync_app.command("status")
 def sync_status(
     workspace_root: Path,
@@ -1047,7 +1057,7 @@ def lane_enter(
         notify_channel=notify_channel,
         recall=recall,
     )
-    _exit(lane_proto.enter_lane(ns))
+    outcome = _consume_lane_transition(lane_proto.enter_lane(ns))
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     emit_after_outcome(
         event_type=EventType.LANE_ENTERED,
@@ -1055,7 +1065,7 @@ def lane_enter(
         actor=actor,
         owner_unit=owner_unit,
         payload={
-            "lane_name": lane_name,
+            "lane_name": outcome.current_lane if outcome else lane_name,
             "lane_type": lane_doc.get("type", "feature"),
             "repos": lane_doc.get("repos", []),
         },
@@ -1114,14 +1124,14 @@ def lane_exit(
         notify_channel=notify_channel,
         recall=recall,
     )
-    _exit(lane_proto.exit_lane(ns))
+    outcome = _consume_lane_transition(lane_proto.exit_lane(ns))
     emit_after_outcome(
         event_type=EventType.LANE_EXITED,
         workspace_root=workspace_root,
         actor=actor,
         owner_unit=owner_unit,
         payload={
-            "lane_name": lane_name,
+            "lane_name": outcome.previous_lane if outcome else lane_name,
             "stashed_repos": stashed_repos,
         },
     )

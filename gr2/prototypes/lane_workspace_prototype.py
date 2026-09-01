@@ -13,12 +13,14 @@ This prototype does not mutate git state. It explores three UX questions:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import fcntl
 import json
 import os
 import shlex
 import sys
+import tempfile
 import time
 import tomllib
 from datetime import UTC, datetime, timedelta
@@ -143,6 +145,37 @@ class SharedScratchpad:
                 },
             }
         )
+
+
+@dataclasses.dataclass(frozen=True)
+class LaneTransitionOutcome:
+    """One authoritative result for a lane state transition.
+
+    The prototype CLI and the Typer CLI both render this result.  Neither is
+    allowed to infer success from a path print while the state writer reports a
+    different outcome.
+    """
+
+    action: str
+    owner_unit: str
+    previous_lane: str | None
+    current_lane: str | None
+    state_path: Path
+    status: str = "ok"
+
+    @property
+    def exit_code(self) -> int:
+        return 0 if self.status == "ok" else 1
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "action": self.action,
+            "owner_unit": self.owner_unit,
+            "previous_lane": self.previous_lane,
+            "current_lane": self.current_lane,
+            "state_path": str(self.state_path),
+        }
 
 
 def parse_args() -> argparse.Namespace:
@@ -345,6 +378,47 @@ def shared_scratchpad_file(workspace_root: Path, name: str) -> Path:
 
 def current_lane_file(workspace_root: Path, owner_unit: str) -> Path:
     return workspace_root / ".grip" / "state" / "current_lane" / f"{owner_unit}.json"
+
+
+def lane_transition_lock_file(workspace_root: Path, owner_unit: str) -> Path:
+    """One unit-scoped lock covers complete enter/exit metadata transitions."""
+    return workspace_root / ".grip" / "state" / "lane_transitions" / f"{owner_unit}.lock"
+
+
+def lane_creation_lock_file(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
+    return workspace_root / ".grip" / "state" / "lane_creation" / owner_unit / f"{lane_name}.lock"
+
+
+def scratchpad_creation_lock_file(workspace_root: Path, name: str) -> Path:
+    return workspace_root / ".grip" / "state" / "scratchpad_creation" / f"{name}.lock"
+
+
+@contextlib.contextmanager
+def exclusive_lock(path: Path):
+    """Lock a complete read/modify/write scope, releasing on every path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def atomic_replace_text(path: Path, content: str) -> None:
+    """Publish complete metadata bytes or retain the preceding file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def lane_leases_file(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
@@ -728,11 +802,6 @@ def create_lane(args: argparse.Namespace) -> int:
     if missing:
         raise SystemExit(f"unknown repos for lane: {', '.join(missing)}")
 
-    lane_root = lane_dir(workspace_root, args.owner_unit, args.lane_name)
-    lane_root.mkdir(parents=True, exist_ok=True)
-    (lane_root / "repos").mkdir(exist_ok=True)
-    (lane_root / "context").mkdir(exist_ok=True)
-
     metadata = LaneMetadata(
         schema_version=LANE_SCHEMA_VERSION,
         lane_name=args.lane_name,
@@ -757,60 +826,78 @@ def create_lane(args: argparse.Namespace) -> int:
         shared_with=[],
         handoff_source=None,
     )
-    lane_file(workspace_root, args.owner_unit, args.lane_name).write_text(metadata.as_toml())
-    print(lane_file(workspace_root, args.owner_unit, args.lane_name))
+    lane_root = lane_dir(workspace_root, args.owner_unit, args.lane_name)
+    metadata_path = lane_file(workspace_root, args.owner_unit, args.lane_name)
+    expected = metadata.as_toml()
+    # Refuse the ordinary existing-target case before even publishing lock
+    # scaffolding. The locked recheck below still protects a racing creator.
+    if metadata_path.exists():
+        if metadata_path.read_text() == expected:
+            print(f"lane already exists unchanged: {metadata_path}")
+            return 0
+        raise SystemExit(f"refusing to replace existing lane: {metadata_path}")
+    if lane_root.exists():
+        raise SystemExit(f"refusing to create lane over existing path: {lane_root}")
+    with exclusive_lock(lane_creation_lock_file(workspace_root, args.owner_unit, args.lane_name)):
+        if metadata_path.exists():
+            if metadata_path.read_text() == expected:
+                print(f"lane already exists unchanged: {metadata_path}")
+                return 0
+            raise SystemExit(f"refusing to replace existing lane: {metadata_path}")
+        if lane_root.exists():
+            raise SystemExit(f"refusing to create lane over existing path: {lane_root}")
+        lane_root.mkdir(parents=True)
+        (lane_root / "repos").mkdir()
+        (lane_root / "context").mkdir()
+        atomic_replace_text(metadata_path, expected)
+    print(metadata_path)
     return 0
 
 
-def enter_lane(args: argparse.Namespace) -> int:
+def enter_lane(args: argparse.Namespace) -> LaneTransitionOutcome:
     workspace_root = args.workspace_root.resolve()
     lane_doc = load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
     unit_spec = find_unit_spec(workspace_root, args.owner_unit)
     path = current_lane_file(workspace_root, args.owner_unit)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    with exclusive_lock(lane_transition_lock_file(workspace_root, args.owner_unit)):
+        previous: list[dict] = []
+        previous_lane: str | None = None
+        if path.exists():
+            old = json.loads(path.read_text())
+            previous = old.get("recent", [])
+            current = old.get("current")
+            if current:
+                previous_lane = current.get("lane_name")
+                previous.insert(0, current)
 
-    previous: list[dict] = []
-    if path.exists():
-        old = json.loads(path.read_text())
-        previous = old.get("recent", [])
-        current = old.get("current")
-        if current:
-            previous.insert(0, current)
-
-    deduped: list[dict] = []
-    seen: set[tuple[str, str]] = set()
-    for item in previous:
-        key = (item["owner_unit"], item["lane_name"])
-        if key in seen or key == (args.owner_unit, args.lane_name):
-            continue
-        seen.add(key)
-        deduped.append(item)
-    deduped = deduped[:5]
-
-    doc = {
-        "current": {
-            "owner_unit": args.owner_unit,
-            "agent_id": unit_spec.get("agent_id"),
-            "lane_name": args.lane_name,
-            "lane_type": lane_doc["lane_type"],
-            "repos": lane_doc.get("repos", []),
-            "actor": args.actor,
-            "entered_at": now_utc(),
-        },
-        "recent": deduped,
-    }
-    path.write_text(json.dumps(doc, indent=2) + "\n")
-    event = {
-        "type": "lane_enter",
-        "agent": args.actor,
-        "agent_id": unit_spec.get("agent_id"),
-        "owner_unit": args.owner_unit,
-        "lane": args.lane_name,
-        "lane_type": lane_doc["lane_type"],
-        "repos": lane_doc.get("repos", []),
-        "timestamp": now_utc(),
-    }
-    emit_lane_event(workspace_root, event)
+        deduped: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for item in previous:
+            key = (item["owner_unit"], item["lane_name"])
+            if key in seen or key == (args.owner_unit, args.lane_name):
+                continue
+            seen.add(key)
+            deduped.append(item)
+        doc = {
+            "current": {
+                "owner_unit": args.owner_unit,
+                "agent_id": unit_spec.get("agent_id"),
+                "lane_name": args.lane_name,
+                "lane_type": lane_doc["lane_type"],
+                "repos": lane_doc.get("repos", []),
+                "actor": args.actor,
+                "entered_at": now_utc(),
+            },
+            "recent": deduped[:5],
+        }
+        atomic_replace_text(path, json.dumps(doc, indent=2) + "\n")
+        event = {
+            "type": "lane_enter", "agent": args.actor, "agent_id": unit_spec.get("agent_id"),
+            "owner_unit": args.owner_unit, "lane": args.lane_name,
+            "lane_type": lane_doc["lane_type"], "repos": lane_doc.get("repos", []),
+            "timestamp": now_utc(),
+        }
+        emit_lane_event(workspace_root, event)
     if args.notify_channel:
         event["channel_message"] = (
             f"{args.actor} entered {args.owner_unit}/{args.lane_name} "
@@ -831,27 +918,28 @@ def enter_lane(args: argparse.Namespace) -> int:
                 "timestamp": event["timestamp"],
             },
         )
-    print(path)
-    return 0
+    return LaneTransitionOutcome("enter", args.owner_unit, previous_lane, args.lane_name, path)
 
 
-def exit_lane(args: argparse.Namespace) -> int:
+def exit_lane(args: argparse.Namespace) -> LaneTransitionOutcome:
     workspace_root = args.workspace_root.resolve()
-    doc = load_current_lane_doc(workspace_root, args.owner_unit)
-    current_doc = doc.get("current")
-    if not current_doc:
-        raise SystemExit(f"no current lane to exit for unit: {args.owner_unit}")
-    event = {
-        "type": "lane_exit",
-        "agent": args.actor,
-        "agent_id": current_doc.get("agent_id"),
-        "owner_unit": args.owner_unit,
-        "lane": current_doc["lane_name"],
-        "lane_type": current_doc["lane_type"],
-        "repos": current_doc.get("repos", []),
-        "timestamp": now_utc(),
-    }
-    emit_lane_event(workspace_root, event)
+    path = current_lane_file(workspace_root, args.owner_unit)
+    with exclusive_lock(lane_transition_lock_file(workspace_root, args.owner_unit)):
+        doc = load_current_lane_doc(workspace_root, args.owner_unit)
+        current_doc = doc.get("current")
+        if not current_doc:
+            raise SystemExit(f"no current lane to exit for unit: {args.owner_unit}")
+        event = {
+            "type": "lane_exit", "agent": args.actor, "agent_id": current_doc.get("agent_id"),
+            "owner_unit": args.owner_unit, "lane": current_doc["lane_name"],
+            "lane_type": current_doc["lane_type"], "repos": current_doc.get("repos", []),
+            "timestamp": now_utc(),
+        }
+        recent = doc.get("recent", [])
+        next_current = recent[0] if recent else None
+        updated = {"current": next_current, "recent": recent[1:] if next_current else []}
+        atomic_replace_text(path, json.dumps(updated, indent=2) + "\n")
+        emit_lane_event(workspace_root, event)
     if args.notify_channel:
         event["channel_message"] = (
             f"{args.actor} exited {args.owner_unit}/{current_doc['lane_name']} "
@@ -873,17 +961,7 @@ def exit_lane(args: argparse.Namespace) -> int:
             },
         )
 
-    recent = doc.get("recent", [])
-    next_current = recent[0] if recent else None
-    updated = {
-        "current": next_current,
-        "recent": recent[1:] if next_current else [],
-    }
-    current_lane_file(workspace_root, args.owner_unit).write_text(
-        json.dumps(updated, indent=2) + "\n"
-    )
-    print(current_lane_file(workspace_root, args.owner_unit))
-    return 0
+    return LaneTransitionOutcome("exit", args.owner_unit, current_doc["lane_name"], next_current.get("lane_name") if next_current else None, path)
 
 
 def current_lane(args: argparse.Namespace) -> int:
@@ -1073,16 +1151,17 @@ def create_review_lane(args: argparse.Namespace) -> int:
     lane_path = lane_file(workspace_root, args.owner_unit, lane_name)
     association = f"{args.repo}#{args.pr_number}"
     if lane_path.exists():
-        document = load_lane_doc(workspace_root, args.owner_unit, lane_name)
-        if document.get("lane_type") != "review" or args.repo not in document.get("repos", []):
-            raise SystemExit(
-                f"existing lane is not a review lane for repo {args.repo}: "
-                f"{args.owner_unit}/{lane_name}"
-            )
-        associations = document.setdefault("pr_associations", [])
-        if association not in [item.get("ref") for item in associations]:
-            associations.append({"ref": association})
-        lane_path.write_text(serialize_toml(document))
+        with exclusive_lock(lane_creation_lock_file(workspace_root, args.owner_unit, lane_name)):
+            document = load_lane_doc(workspace_root, args.owner_unit, lane_name)
+            if document.get("lane_type") != "review" or args.repo not in document.get("repos", []):
+                raise SystemExit(
+                    f"existing lane is not a review lane for repo {args.repo}: "
+                    f"{args.owner_unit}/{lane_name}"
+                )
+            associations = document.setdefault("pr_associations", [])
+            if association not in [item.get("ref") for item in associations]:
+                associations.append({"ref": association})
+            atomic_replace_text(lane_path, serialize_toml(document))
         print(f"created review lane {args.owner_unit}/{lane_name} for {association}")
         return 0
 
@@ -1144,18 +1223,18 @@ def share_lane(args: argparse.Namespace) -> int:
     load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
     find_unit_spec(workspace_root, args.target_unit)
     access_path = shared_lane_access_file(workspace_root, args.owner_unit, args.lane_name)
-    access_path.parent.mkdir(parents=True, exist_ok=True)
-    if access_path.exists():
-        doc = json.loads(access_path.read_text())
-    else:
-        doc = {
-            "owner_unit": args.owner_unit,
-            "lane_name": args.lane_name,
-            "shared_with": [],
-        }
-    if args.target_unit not in doc["shared_with"]:
-        doc["shared_with"].append(args.target_unit)
-    access_path.write_text(json.dumps(doc, indent=2) + "\n")
+    with exclusive_lock(lane_creation_lock_file(workspace_root, args.owner_unit, args.lane_name)):
+        if access_path.exists():
+            doc = json.loads(access_path.read_text())
+        else:
+            doc = {
+                "owner_unit": args.owner_unit,
+                "lane_name": args.lane_name,
+                "shared_with": [],
+            }
+        if args.target_unit not in doc["shared_with"]:
+            doc["shared_with"].append(args.target_unit)
+        atomic_replace_text(access_path, json.dumps(doc, indent=2) + "\n")
     print(access_path)
     return 0
 
@@ -1166,11 +1245,6 @@ def create_continuation_lane(args: argparse.Namespace) -> int:
     validate_lane_path_component(args.target_lane_name, "target_lane_name")
     source = load_lane_doc(workspace_root, args.source_owner_unit, args.source_lane_name)
     unit_spec = find_unit_spec(workspace_root, args.target_unit)
-    lane_root = lane_dir(workspace_root, args.target_unit, args.target_lane_name)
-    lane_root.mkdir(parents=True, exist_ok=True)
-    (lane_root / "repos").mkdir(exist_ok=True)
-    (lane_root / "context").mkdir(exist_ok=True)
-
     metadata = LaneMetadata(
         schema_version=LANE_SCHEMA_VERSION,
         lane_name=args.target_lane_name,
@@ -1194,10 +1268,29 @@ def create_continuation_lane(args: argparse.Namespace) -> int:
             "source_lane": args.source_lane_name,
         },
     )
-    lane_file(workspace_root, args.target_unit, args.target_lane_name).write_text(
-        metadata.as_toml()
-    )
-    print(lane_file(workspace_root, args.target_unit, args.target_lane_name))
+    lane_root = lane_dir(workspace_root, args.target_unit, args.target_lane_name)
+    metadata_path = lane_file(workspace_root, args.target_unit, args.target_lane_name)
+    expected = metadata.as_toml()
+    if metadata_path.exists():
+        if metadata_path.read_text() == expected:
+            print(f"lane already exists unchanged: {metadata_path}")
+            return 0
+        raise SystemExit(f"refusing to replace existing lane: {metadata_path}")
+    if lane_root.exists():
+        raise SystemExit(f"refusing to create lane over existing path: {lane_root}")
+    with exclusive_lock(lane_creation_lock_file(workspace_root, args.target_unit, args.target_lane_name)):
+        if metadata_path.exists():
+            if metadata_path.read_text() == expected:
+                print(f"lane already exists unchanged: {metadata_path}")
+                return 0
+            raise SystemExit(f"refusing to replace existing lane: {metadata_path}")
+        if lane_root.exists():
+            raise SystemExit(f"refusing to create lane over existing path: {lane_root}")
+        lane_root.mkdir(parents=True)
+        (lane_root / "repos").mkdir()
+        (lane_root / "context").mkdir()
+        atomic_replace_text(metadata_path, expected)
+    print(metadata_path)
     return 0
 
 
@@ -1289,12 +1382,6 @@ def plan_handoff(args: argparse.Namespace) -> int:
 def create_shared_scratchpad(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     validate_lane_path_component(args.name, "name")
-    root = shared_scratchpad_dir(workspace_root, args.name)
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "docs").mkdir(exist_ok=True)
-    (root / "notes").mkdir(exist_ok=True)
-    (root / "context").mkdir(exist_ok=True)
-
     scratchpad = SharedScratchpad(
         schema_version=SCRATCHPAD_SCHEMA_VERSION,
         name=args.name,
@@ -1310,15 +1397,35 @@ def create_shared_scratchpad(args: argparse.Namespace) -> int:
         created_at=now_utc(),
         updated_at=now_utc(),
     )
-    shared_scratchpad_file(workspace_root, args.name).write_text(scratchpad.as_toml())
-    readme = root / "docs" / "README.md"
-    if not readme.exists():
-        readme.write_text(
+    root = shared_scratchpad_dir(workspace_root, args.name)
+    metadata_path = shared_scratchpad_file(workspace_root, args.name)
+    expected = scratchpad.as_toml()
+    if metadata_path.exists():
+        if metadata_path.read_text() == expected:
+            print(f"scratchpad already exists unchanged: {metadata_path}")
+            return 0
+        raise SystemExit(f"refusing to replace existing scratchpad: {metadata_path}")
+    if root.exists():
+        raise SystemExit(f"refusing to create scratchpad over existing path: {root}")
+    with exclusive_lock(scratchpad_creation_lock_file(workspace_root, args.name)):
+        if metadata_path.exists():
+            if metadata_path.read_text() == expected:
+                print(f"scratchpad already exists unchanged: {metadata_path}")
+                return 0
+            raise SystemExit(f"refusing to replace existing scratchpad: {metadata_path}")
+        if root.exists():
+            raise SystemExit(f"refusing to create scratchpad over existing path: {root}")
+        root.mkdir(parents=True)
+        (root / "docs").mkdir()
+        (root / "notes").mkdir()
+        (root / "context").mkdir()
+        atomic_replace_text(metadata_path, expected)
+        atomic_replace_text(root / "docs" / "README.md",
             f"# {args.name}\n\nPurpose: {args.purpose}\n\nParticipants: "
             + (", ".join(scratchpad.participants) if scratchpad.participants else "unassigned")
             + "\n"
         )
-    print(shared_scratchpad_file(workspace_root, args.name))
+    print(metadata_path)
     return 0
 
 
@@ -1380,7 +1487,7 @@ def audit_shared_scratchpads(args: argparse.Namespace) -> int:
             issues.append("missing-notes-root")
         if not context_root.exists():
             issues.append("missing-context-root")
-        if doc.get("kind") == "doc" and not any(docs_root.iterdir()):
+        if doc.get("kind") == "doc" and docs_root.exists() and not any(docs_root.iterdir()):
             issues.append("empty-docs")
 
         status = "ok" if not issues else "needs-attention"
@@ -1502,7 +1609,7 @@ def plan_exec(args: argparse.Namespace) -> int:
                 print(
                     f"conflict: actor={lease['actor']} mode={lease['mode']} acquired_at={lease['acquired_at']}"
                 )
-        return 0
+        return 1
     if stale_conflicts:
         payload = {
             "status": "blocked",
@@ -1522,7 +1629,7 @@ def plan_exec(args: argparse.Namespace) -> int:
                 print(
                     f"stale-conflict: actor={lease['actor']} mode={lease['mode']} expires_at={lease.get('expires_at', '-')}"
                 )
-        return 0
+        return 1
 
     selected_repos = lane_doc["repos"]
     if args.repos:
@@ -1574,9 +1681,13 @@ def main() -> int:
     if args.command == "create-lane":
         return create_lane(args)
     if args.command == "enter-lane":
-        return enter_lane(args)
+        outcome = enter_lane(args)
+        print(json.dumps(outcome.as_dict(), indent=2))
+        return outcome.exit_code
     if args.command == "exit-lane":
-        return exit_lane(args)
+        outcome = exit_lane(args)
+        print(json.dumps(outcome.as_dict(), indent=2))
+        return outcome.exit_code
     if args.command == "current-lane":
         return current_lane(args)
     if args.command == "lane-history":
