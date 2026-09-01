@@ -682,6 +682,33 @@ class TestRegenerateGr1Workspace:
         with pytest.raises(SystemExit, match="object-store binding"):
             rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=receipt, expected_current_spec_sha256=forward["new_spec_sha256"], receipt_path=tmp_path / "wrong-store.json")
 
+    def test_prepared_marker_recovers_complete_forward_receipt_before_next_attempt(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        receipt = tmp_path / "forward.json"
+        forward = regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
+        receipt.unlink()
+        marker = tmp_path / "forward.json.prepared.json"
+        marker.write_text(json.dumps({"schema": "gr2-workspace-regeneration-prepared/v1", "phase": "prepared", "forward_receipt": receipt.name, "payload": forward}))
+        with pytest.raises(SystemExit, match="overwrite"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
+        assert json.loads(receipt.read_text())["new_spec_sha256"] == forward["new_spec_sha256"]
+        assert not marker.exists()
+        assert hashlib.sha256(spec_path.read_bytes()).hexdigest() == forward["new_spec_sha256"]
+
+    def test_rollback_receipt_failure_compensates_to_pre_rollback_bytes(self, gr1_workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        forward_receipt = tmp_path / "forward.json"
+        forward = regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=forward_receipt)
+        current = spec_path.read_bytes()
+        monkeypatch.setattr(migration, "_write_new_receipt", lambda *_args: (_ for _ in ()).throw(OSError("receipt failure")))
+        with pytest.raises(OSError, match="receipt failure"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=forward_receipt, expected_current_spec_sha256=forward["new_spec_sha256"], receipt_path=tmp_path / "rollback.json")
+        assert spec_path.read_bytes() == current
+        assert forward_receipt.exists()
+        assert not (tmp_path / "rollback.json").exists()
+
 
 # ---------------------------------------------------------------------------
 # workspace status (new command)
