@@ -8,7 +8,9 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -708,6 +710,48 @@ class TestRegenerateGr1Workspace:
         assert spec_path.read_bytes() == current
         assert forward_receipt.exists()
         assert not (tmp_path / "rollback.json").exists()
+
+    @pytest.mark.parametrize("phase", ["marker_durable", "spec_replaced", "receipt_durable", "marker_cleared"])
+    def test_sigkill_at_every_forward_phase_leaves_recoverable_or_actionable_state(self, gr1_workspace: Path, tmp_path: Path, phase: str) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        receipt = tmp_path / "kill-forward.json"
+        program = (
+            "import os,signal,sys,types; from pathlib import Path; root=Path(sys.argv[1]).resolve(); pkg=types.ModuleType('gr2'); pkg.__path__=[str(root)]; sys.modules['gr2']=pkg; "
+            "from gr2.python_cli import migration; "
+            "assert str(Path(migration.__file__).resolve()).startswith(str(root)), migration.__file__; "
+            "p=sys.argv[2]; migration._transaction_phase_hook=lambda x: os.kill(os.getpid(), signal.SIGKILL) if x==p else None; "
+            "migration.regenerate_gr1_workspace(Path(sys.argv[3]), expected_spec_sha256=sys.argv[4], receipt_path=Path(sys.argv[5]))"
+        )
+        gr2_root = Path(__file__).parents[1]
+        child = subprocess.run([sys.executable, "-c", program, str(gr2_root), phase, str(gr1_workspace), expected, str(receipt)])
+        assert child.returncode != 0
+        marker = tmp_path / "kill-forward.json.prepared.json"
+        if phase == "marker_durable":
+            assert marker.exists() and hashlib.sha256(spec_path.read_bytes()).hexdigest() == expected
+        else:
+            assert hashlib.sha256(spec_path.read_bytes()).hexdigest() != expected
+        with pytest.raises(SystemExit):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
+        assert receipt.exists() or marker.exists()
+
+    @pytest.mark.parametrize("written", [b"", b"partial", b"complete receipt"])
+    def test_forward_receipt_writer_failure_compensates_all_output_shapes(self, gr1_workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written: bytes) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        old = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+        receipt = tmp_path / "forward-failure.json"
+        def fail_writer(path: Path, _payload: dict[str, object]) -> None:
+            if written:
+                path.write_bytes(written)
+            raise OSError("injected forward receipt failure")
+        monkeypatch.setattr(migration, "_write_new_receipt", fail_writer)
+        with pytest.raises(OSError, match="injected forward receipt failure"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
+        assert spec_path.read_bytes() == old
+        assert not receipt.exists()
+        assert not (tmp_path / "forward-failure.json.prepared.json").exists()
+        assert not (tmp_path / f"forward-failure.json.old-spec-{expected}.toml").exists()
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,11 @@ from .gitops import git
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 
 
+def _transaction_phase_hook(_phase: str) -> None:
+    """Inert production seam; scratch interruption tests replace this callable."""
+    return None
+
+
 def gr1_manifest_path(workspace_root: Path) -> Path:
     return workspace_root / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
 
@@ -257,19 +262,24 @@ def regenerate_gr1_workspace(workspace_root: Path, *, expected_spec_sha256: str,
         _require_new_receipt_target(marker_path)
         marker = {"schema": "gr2-workspace-regeneration-prepared/v1", "phase": "prepared", "forward_receipt": receipt_path.name, "payload": payload}
         _atomic_write(marker_path, (json.dumps(marker, indent=2, sort_keys=True) + "\n").encode())
+        _transaction_phase_hook("marker_durable")
         try:
             _atomic_write(spec_path, candidate)
+            _transaction_phase_hook("spec_replaced")
             if hashlib.sha256(spec_path.read_bytes()).hexdigest() != hashlib.sha256(candidate).hexdigest():
                 raise SystemExit("atomic generated spec replacement did not bind candidate bytes")
             if git(grip_dir, "rev-parse", "HEAD").stdout.strip() != head:
                 raise SystemExit("regeneration changed object-store HEAD")
             _write_new_receipt(receipt_path, payload)
+            _transaction_phase_hook("receipt_durable")
             marker_path.unlink()
+            _transaction_phase_hook("marker_cleared")
         except BaseException:
             try:
                 _atomic_write(spec_path, old)
                 sidecar_path.unlink(missing_ok=True)
                 marker_path.unlink(missing_ok=True)
+                receipt_path.unlink(missing_ok=True)
             except BaseException as rollback_error:
                 raise SystemExit(f"regeneration publication failed and restore failed: {rollback_error}") from rollback_error
             raise
