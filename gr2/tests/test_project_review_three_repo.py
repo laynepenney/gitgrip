@@ -49,10 +49,20 @@ name = "alpha"
 path = "sources/alpha"
 url = "https://example.invalid/alpha.git"
 
+[[repos]]
+name = "beta"
+path = "sources/beta"
+url = "https://example.invalid/beta.git"
+
+[[repos]]
+name = "gamma"
+path = "sources/gamma"
+url = "https://example.invalid/gamma.git"
+
 [[units]]
 name = "atlas"
 path = "agents/atlas"
-repos = ["alpha"]
+repos = ["alpha", "beta", "gamma"]
 ''')
     sources = {name: _source(tmp_path, name) for name in ("alpha", "beta", "gamma")}
     home = tmp_path / "home"
@@ -70,12 +80,51 @@ repos = ["alpha"]
     return workspace, sources, home, current
 
 
-def test_three_repo_contract_is_red_until_project_service_exists(tmp_path: Path) -> None:
-    """Fixture checkpoint: product code must make this representative fruit real."""
+def test_three_repo_exact_pins_open_only_after_all_members_verify(tmp_path: Path) -> None:
     workspace, sources, home, current = _world(tmp_path)
-    with pytest.raises(ModuleNotFoundError):
-        from gr2.python_cli import project_review  # noqa: F401
+    from gr2.python_cli.project_review import ProjectReviewPin, make_spec, open_project_review
+    pins = [ProjectReviewPin(key=name, repo=f"local:{source[0]}", path=f"repos/{name}", base=source[1], head=source[2]) for name, source in reversed(list(sources.items()))]
+    from gr2.python_cli import grip
+    grip.grip_init(workspace)
+    spec = make_spec(workspace, pins)
+    outcome = open_project_review(workspace=workspace, owner_unit="atlas", lane_name="review-m1", spec=spec, sources={name: (source[0], f"review/{name}") for name, source in sources.items()}, allow_local=True)
+    assert outcome.status == "opened"
+    assert [record.head for record in outcome.observed] == [sources[name][2] for name in ("alpha", "beta", "gamma")]
+    assert all((outcome.review_root / "repos" / name / ".git").is_dir() for name in sources)
     assert home.joinpath("tracked.txt").read_text() == "dirty\n"
     assert home.joinpath("untracked.txt").read_text() == "keep\n"
+    assert lanes.current_lane_file(workspace, "atlas").read_bytes() != current
+
+
+def test_missing_pin_refuses_before_any_review_materialization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace, sources, _home, current = _world(tmp_path)
+    from gr2.python_cli import grip, project_review
+    grip.grip_init(workspace)
+    pins = [project_review.ProjectReviewPin(name, f"local:{source[0]}", f"repos/{name}", source[1], ("f" * 40 if name == "gamma" else source[2])) for name, source in sources.items()]
+    spec = project_review.make_spec(workspace, pins)
+    calls: list[str] = []
+    monkeypatch.setattr(project_review.review, "open_review_lane", lambda **kwargs: calls.append("clone"))
+    outcome = project_review.open_project_review(workspace=workspace, owner_unit="atlas", lane_name="missing", spec=spec, sources={name: (source[0], f"review/{name}") for name, source in sources.items()}, allow_local=True)
+    assert outcome.status == "refused" and outcome.failures[0].key == "gamma"
+    assert calls == []
     assert lanes.current_lane_file(workspace, "atlas").read_bytes() == current
-    assert [values[1:] for values in sources.values()]
+
+
+def test_beta_failure_is_partial_and_never_enters_review_lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace, sources, _home, current = _world(tmp_path)
+    from gr2.python_cli import grip, project_review
+    grip.grip_init(workspace)
+    spec = project_review.make_spec(workspace, [project_review.ProjectReviewPin(name, f"local:{source[0]}", f"repos/{name}", source[1], source[2]) for name, source in sources.items()])
+    real = project_review.review.open_review_lane
+    calls: list[str] = []
+    def fail_beta(**kwargs):
+        key = kwargs["lane_repo_root"].name
+        calls.append(key)
+        if key == "beta":
+            raise RuntimeError("beta injected failure")
+        return real(**kwargs)
+    monkeypatch.setattr(project_review.review, "open_review_lane", fail_beta)
+    outcome = project_review.open_project_review(workspace=workspace, owner_unit="atlas", lane_name="partial", spec=spec, sources={name: (source[0], f"review/{name}") for name, source in sources.items()}, allow_local=True)
+    assert outcome.status == "partial" and calls == ["alpha", "beta"]
+    assert [record.head for record in outcome.observed] == [sources["alpha"][2]]
+    assert lanes.current_lane_file(workspace, "atlas").read_bytes() == current

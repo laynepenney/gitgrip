@@ -8,6 +8,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 
 from .gitops import git
 
@@ -43,6 +44,49 @@ class GripDiff:
     changed: dict[str, dict[str, str]] = field(default_factory=dict)
     added: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
+
+
+_PROJECT_REVIEW_SCHEMA = "gr2-project-review/v1"
+_SHA40 = re.compile(r"\A[0-9a-f]{40}\Z")
+
+
+def create_project_review_commit(workspace: Path, pins: list[dict[str, str]]) -> str:
+    """Encode the minimal project-review gr tree through the sole object seam."""
+    _validate_grip_repo(workspace)
+    if not pins:
+        raise GripCorruptError("project review requires at least one repository pin")
+    entries: list[str] = []
+    seen: set[str] = set()
+    for pin in sorted(pins, key=lambda item: item["key"]):
+        key = pin.get("key", "")
+        if not key or key in seen or any(ch in key for ch in "/\\"):
+            raise GripCorruptError(f"invalid or duplicate project review key: {key!r}")
+        seen.add(key)
+        fields: list[str] = []
+        for name, value in (("remote", pin.get("repo", "")), ("path", pin.get("path", "")), ("commit", pin.get("head", "")), ("base", pin.get("base", ""))):
+            if not value or (name in {"commit", "base"} and not _SHA40.match(value)):
+                raise GripCorruptError(f"invalid project review {name} for {key}")
+            fields.append(f"100644 blob {_hash_blob(workspace, value)}\t{name}")
+        entries.append(f"040000 tree {_mktree(workspace, fields)}\t{key}")
+    repos_tree = _mktree(workspace, entries)
+    meta_tree = _mktree(workspace, [f"100644 blob {_hash_blob(workspace, _PROJECT_REVIEW_SCHEMA)}\tschema", f"100644 blob {_hash_blob(workspace, 'review')}\tkind"])
+    root_tree = _mktree(workspace, [f"040000 tree {meta_tree}\t.grip", f"040000 tree {repos_tree}\trepos"])
+    commit = _commit_tree(workspace, root_tree, parent=_current_head(workspace), message="grip project review")
+    _grip_git(workspace, "update-ref", "HEAD", commit)
+    return commit
+
+
+def read_project_review_commit(workspace: Path, commit: str) -> list[dict[str, str]]:
+    """Strictly decode the minimal reviewed repository fields."""
+    if _grip_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _PROJECT_REVIEW_SCHEMA:
+        raise GripCorruptError("not a gr2 project review commit")
+    rows = _read_repo_state(workspace, commit)
+    decoded: list[dict[str, str]] = []
+    for key, fields in sorted(rows.items()):
+        if set(fields) != {"remote", "path", "commit", "base"} or not _SHA40.match(fields["commit"]) or not _SHA40.match(fields["base"]):
+            raise GripCorruptError(f"invalid project review repository tree: {key}")
+        decoded.append({"key": key, "repo": fields["remote"], "path": fields["path"], "head": fields["commit"], "base": fields["base"]})
+    return decoded
 
 
 # ---------------------------------------------------------------------------
