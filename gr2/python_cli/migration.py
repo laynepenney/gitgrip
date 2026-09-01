@@ -204,6 +204,7 @@ def regenerate_gr1_workspace(workspace_root: Path, *, expected_spec_sha256: str,
         raise SystemExit("regeneration requires an initialized object store and regular generated spec")
     _refuse_active_lane_state(workspace_root)
     _require_clean_regeneration_store(grip_dir)
+    _recover_or_refuse_prepared_marker(receipt_path, workspace_root, spec_path)
     _require_new_receipt_target(receipt_path)
 
     lock_path = grip_dir / "state" / "workspace_spec_regeneration.lock"
@@ -252,6 +253,10 @@ def regenerate_gr1_workspace(workspace_root: Path, *, expected_spec_sha256: str,
             "repo_count": len(compiled["repos"]),
             "unit_count": len(compiled["units"]),
         }
+        marker_path = _prepared_marker_path(receipt_path)
+        _require_new_receipt_target(marker_path)
+        marker = {"schema": "gr2-workspace-regeneration-prepared/v1", "phase": "prepared", "forward_receipt": receipt_path.name, "payload": payload}
+        _atomic_write(marker_path, (json.dumps(marker, indent=2, sort_keys=True) + "\n").encode())
         try:
             _atomic_write(spec_path, candidate)
             if hashlib.sha256(spec_path.read_bytes()).hexdigest() != hashlib.sha256(candidate).hexdigest():
@@ -259,14 +264,40 @@ def regenerate_gr1_workspace(workspace_root: Path, *, expected_spec_sha256: str,
             if git(grip_dir, "rev-parse", "HEAD").stdout.strip() != head:
                 raise SystemExit("regeneration changed object-store HEAD")
             _write_new_receipt(receipt_path, payload)
+            marker_path.unlink()
         except BaseException:
             try:
                 _atomic_write(spec_path, old)
                 sidecar_path.unlink(missing_ok=True)
+                marker_path.unlink(missing_ok=True)
             except BaseException as rollback_error:
                 raise SystemExit(f"regeneration publication failed and restore failed: {rollback_error}") from rollback_error
             raise
         return payload
+
+
+def _prepared_marker_path(receipt_path: Path) -> Path:
+    return receipt_path.parent / f"{receipt_path.name}.prepared.json"
+
+
+def _recover_or_refuse_prepared_marker(receipt_path: Path, workspace_root: Path, spec_path: Path) -> None:
+    marker_path = _prepared_marker_path(receipt_path)
+    _refuse_symlink(marker_path, "prepared regeneration marker")
+    if not marker_path.exists():
+        return
+    try:
+        marker = json.loads(marker_path.read_text())
+        payload = marker["payload"]
+        if marker.get("schema") != "gr2-workspace-regeneration-prepared/v1" or marker.get("phase") != "prepared" or marker.get("forward_receipt") != receipt_path.name or payload.get("workspace_root") != str(workspace_root):
+            raise ValueError("marker binding is invalid")
+        if receipt_path.exists():
+            raise ValueError("receipt already exists")
+        if hashlib.sha256(spec_path.read_bytes()).hexdigest() != payload.get("new_spec_sha256"):
+            raise ValueError("generated spec does not match prepared new hash")
+        _write_new_receipt(receipt_path, payload)
+        marker_path.unlink()
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"pending regeneration marker requires manual resolution: {marker_path}: {exc}") from exc
 
 
 def rollback_gr1_workspace(
@@ -319,11 +350,15 @@ def rollback_gr1_workspace(
         head = git(grip_dir, "rev-parse", "HEAD").stdout.strip()
         if head != receipt["object_store_head"] or _store_status(grip_dir) != receipt["object_store_status"]:
             raise SystemExit("rollback object-store binding differs from receipt")
-        _atomic_write(spec_path, sidecar)
-        if hashlib.sha256(spec_path.read_bytes()).hexdigest() != receipt["observed_old_spec_sha256"]:
-            raise SystemExit("rollback replacement did not restore receipt sidecar bytes")
-        if git(grip_dir, "rev-parse", "HEAD").stdout.strip() != head:
-            raise SystemExit("rollback changed object-store HEAD")
+        try:
+            _atomic_write(spec_path, sidecar)
+            if hashlib.sha256(spec_path.read_bytes()).hexdigest() != receipt["observed_old_spec_sha256"]:
+                raise SystemExit("rollback replacement did not restore receipt sidecar bytes")
+            if git(grip_dir, "rev-parse", "HEAD").stdout.strip() != head:
+                raise SystemExit("rollback changed object-store HEAD")
+        except BaseException:
+            _atomic_write(spec_path, current)
+            raise
         payload = {
             "schema": "gr2-workspace-regeneration-rollback/v1",
             "status": "rolled_back",
@@ -337,7 +372,15 @@ def rollback_gr1_workspace(
             "operations": ["atomic_workspace_spec_restore"],
             "materialization": False,
         }
-        _write_new_receipt(receipt_path, payload)
+        try:
+            _write_new_receipt(receipt_path, payload)
+        except BaseException:
+            try:
+                _atomic_write(spec_path, current)
+                receipt_path.unlink(missing_ok=True)
+            except BaseException as compensation_error:
+                raise SystemExit(f"rollback receipt publication failed and compensation failed: {compensation_error}") from compensation_error
+            raise
         return payload
 
 
