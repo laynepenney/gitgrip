@@ -642,10 +642,18 @@ def workspace_migrate_gr1(
 def workspace_bootstrap_gr1(
     workspace_root: Path,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    regenerate: bool = typer.Option(False, "--regenerate", help="Atomically regenerate an existing generated spec"),
+    expected_spec_sha256: Optional[str] = typer.Option(None, "--expected-spec-sha256"),
+    receipt: Optional[Path] = typer.Option(None, "--receipt"),
 ) -> None:
     """Compile the canonical gr1 manifest and initialize the gr2 grip store."""
     workspace_root = workspace_root.resolve()
-    payload = migration.bootstrap_gr1_workspace(workspace_root)
+    if regenerate:
+        if expected_spec_sha256 is None or receipt is None:
+            raise typer.BadParameter("--regenerate requires --expected-spec-sha256 and --receipt")
+        payload = migration.regenerate_gr1_workspace(workspace_root, expected_spec_sha256=expected_spec_sha256, receipt_path=receipt)
+    else:
+        payload = migration.bootstrap_gr1_workspace(workspace_root)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:

@@ -5,6 +5,8 @@ plus coexistence state awareness and the workspace status command.
 """
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -20,6 +22,7 @@ from gr2.python_cli.migration import (
     compile_gr1_to_workspace_spec,
     detect_gr1_workspace,
     migrate_gr1_workspace,
+    regenerate_gr1_workspace,
     render_workspace_spec,
     workspace_status,
 )
@@ -462,6 +465,135 @@ class TestBootstrapGr1:
         payload = json.loads(result.stdout)
         assert payload["status"] == "initialized"
         assert payload["manifest_path"].endswith(".gitgrip/spaces/main/gripspace.yml")
+
+
+class TestRegenerateGr1Workspace:
+    """Regeneration is deliberately narrower than bootstrap and materialization."""
+
+    def _prepared(self, workspace: Path) -> tuple[Path, str]:
+        bootstrap_gr1_workspace(workspace)
+        spec_path = workspace / ".grip" / "workspace_spec.toml"
+        return spec_path, hashlib.sha256(spec_path.read_bytes()).hexdigest()
+
+    def _url_only_manifest_change(self, workspace: Path) -> None:
+        manifest_path = workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
+        manifest = yaml.safe_load(manifest_path.read_text())
+        manifest["repos"]["synapt"]["url"] = "git@github.com:synapt-dev/recall.git"
+        manifest_path.write_text(yaml.dump(manifest))
+
+    def test_url_only_change_replaces_only_generated_spec_and_emits_nonmaterializing_receipt(
+        self, gr1_workspace: Path, tmp_path: Path
+    ) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        before_git = (gr1_workspace / ".grip" / ".git").stat().st_ino
+        self._url_only_manifest_change(gr1_workspace)
+        receipt = tmp_path / "receipt.json"
+
+        result = regenerate_gr1_workspace(
+            gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt
+        )
+
+        assert result["status"] == "regenerated"
+        assert result["materialization"] is False
+        assert result["expected_old_spec_sha256"] == expected
+        assert result["new_spec_sha256"] != expected
+        assert (gr1_workspace / ".grip" / ".git").stat().st_ino == before_git
+        assert "recall.git" in spec_path.read_text()
+        assert json.loads(receipt.read_text())["new_spec_sha256"] == result["new_spec_sha256"]
+
+    def test_wrong_expected_hash_refuses_before_replacing_spec(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, _ = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+
+        with pytest.raises(SystemExit, match="expected old spec hash"):
+            regenerate_gr1_workspace(
+                gr1_workspace, expected_spec_sha256="0" * 64, receipt_path=tmp_path / "receipt.json"
+            )
+
+        assert spec_path.read_bytes() == before
+        assert not (tmp_path / "receipt.json").exists()
+
+    def test_dirty_object_store_refuses_before_replacing_spec(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+        (gr1_workspace / ".grip" / "unexpected").write_text("dirty\n")
+
+        with pytest.raises(SystemExit, match="dirty object store"):
+            regenerate_gr1_workspace(
+                gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json"
+            )
+
+        assert spec_path.read_bytes() == before
+
+    def test_active_lane_and_lease_refuse_before_replacing_spec(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+        current = gr1_workspace / ".grip" / "state" / "current_lane" / "apollo.json"
+        current.parent.mkdir(parents=True)
+        current.write_text(json.dumps({"current": {"lane_name": "review"}}))
+
+        with pytest.raises(SystemExit, match="active lanes"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json")
+        assert spec_path.read_bytes() == before
+
+        current.write_text(json.dumps({"current": None}))
+        leases = gr1_workspace / "agents" / "apollo" / "lanes" / "review" / "leases.json"
+        leases.parent.mkdir(parents=True)
+        leases.write_text(json.dumps([{"actor": "apollo"}]))
+        with pytest.raises(SystemExit, match="active lane leases"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json")
+        assert spec_path.read_bytes() == before
+
+    def test_atomic_publish_failure_preserves_old_spec(self, gr1_workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+        monkeypatch.setattr(migration, "_atomic_write", lambda _path, _content: (_ for _ in ()).throw(OSError("injected atomic failure")))
+
+        with pytest.raises(OSError, match="injected atomic failure"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json")
+        assert spec_path.read_bytes() == before
+
+    def test_lock_rechecks_expected_hash_after_a_competing_writer(self, gr1_workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+
+        @contextlib.contextmanager
+        def competing_writer(_path: Path):
+            spec_path.write_bytes(b"competing bytes\n")
+            yield
+
+        monkeypatch.setattr(migration.lane_proto, "exclusive_lock", competing_writer)
+        with pytest.raises(SystemExit, match="expected old spec hash"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json")
+        assert spec_path.read_bytes() == b"competing bytes\n"
+        assert not (tmp_path / "receipt.json").exists()
+
+    def test_symlinked_generated_spec_refuses_without_touching_target(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        external = tmp_path / "external-spec"
+        external.write_bytes(spec_path.read_bytes())
+        spec_path.unlink()
+        spec_path.symlink_to(external)
+        self._url_only_manifest_change(gr1_workspace)
+
+        with pytest.raises(SystemExit, match="must not be a symlink"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json")
+        assert external.read_bytes() != b""
+
+    def test_cli_requires_caller_selected_receipt_for_regeneration(self, gr1_workspace: Path) -> None:
+        _spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        result = CliRunner().invoke(
+            app,
+            ["workspace", "bootstrap-gr1", str(gr1_workspace), "--regenerate", "--expected-spec-sha256", expected],
+        )
+        assert result.exit_code != 0
+        assert "--receipt" in result.output
 
 
 # ---------------------------------------------------------------------------
