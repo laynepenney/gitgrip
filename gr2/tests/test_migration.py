@@ -221,6 +221,16 @@ class TestBootstrapGr1:
         assert result["status"] == "already_initialized"
         assert spec_path.read_bytes() == before
 
+    def test_existing_empty_grip_directory_is_completed(self, gr1_workspace: Path) -> None:
+        """Repair the observed partial control-plane shape without accepting corrupt git state."""
+        (gr1_workspace / ".grip").mkdir()
+
+        result = bootstrap_gr1_workspace(gr1_workspace)
+
+        assert result["status"] == "initialized"
+        assert (gr1_workspace / ".grip" / ".git").is_dir()
+        assert (gr1_workspace / ".grip" / "workspace_spec.toml").is_file()
+
     def test_conflicting_existing_spec_refuses_before_initializing_store(self, gr1_workspace: Path) -> None:
         grip_dir = gr1_workspace / ".grip"
         grip_dir.mkdir()
