@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 import shutil
+import stat
 import tempfile
 import tomllib
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -143,10 +144,16 @@ def bootstrap_gr1_workspace(workspace_root: Path) -> dict[str, object]:
         raise SystemExit(f"cannot compile canonical gripspace manifest: {exc}") from exc
 
     grip_dir = workspace_root / ".grip"
-    if grip_dir.exists() and not grip_dir.is_dir():
-        raise SystemExit(f"refusing bootstrap: {grip_dir} is not a directory")
     spec_path = grip_dir / "workspace_spec.toml"
     git_dir = grip_dir / ".git"
+    for path, label in ((grip_dir, ".grip"), (git_dir, ".grip/.git"), (spec_path, ".grip/workspace_spec.toml")):
+        _refuse_symlink(path, label)
+
+    grip_dir_existed = grip_dir.exists()
+    git_dir_existed = git_dir.exists()
+    spec_existed = spec_path.exists()
+    if grip_dir.exists() and not grip_dir.is_dir():
+        raise SystemExit(f"refusing bootstrap: {grip_dir} is not a directory")
     if git_dir.is_file():
         raise SystemExit(f"refusing bootstrap: {git_dir} is not a directory")
     if git_dir.is_dir():
@@ -161,10 +168,14 @@ def bootstrap_gr1_workspace(workspace_root: Path) -> dict[str, object]:
     if not already_initialized:
         try:
             grip.grip_init(workspace_root)
+            if not spec_path.exists():
+                _atomic_write(spec_path, spec_bytes)
         except grip.GripInitError as exc:
+            _rollback_bootstrap(grip_dir, git_dir, spec_path, grip_dir_existed, git_dir_existed, spec_existed)
             raise SystemExit(str(exc)) from exc
-        if not spec_path.exists():
-            _atomic_write(spec_path, spec_bytes)
+        except BaseException:
+            _rollback_bootstrap(grip_dir, git_dir, spec_path, grip_dir_existed, git_dir_existed, spec_existed)
+            raise
 
     return {
         "status": "already_initialized" if already_initialized else "initialized",
@@ -193,6 +204,35 @@ def _atomic_write(path: Path, content: bytes) -> None:
     except BaseException:
         temp_path.unlink(missing_ok=True)
         raise
+
+
+def _refuse_symlink(path: Path, label: str) -> None:
+    """Inspect the entry itself, never the target an attacker could redirect."""
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(mode):
+        raise SystemExit(f"refusing bootstrap: {label} must not be a symlink")
+
+
+def _rollback_bootstrap(
+    grip_dir: Path,
+    git_dir: Path,
+    spec_path: Path,
+    grip_dir_existed: bool,
+    git_dir_existed: bool,
+    spec_existed: bool,
+) -> None:
+    """Remove only control-plane entries created by this bootstrap attempt."""
+    for path, label in ((grip_dir, ".grip"), (git_dir, ".grip/.git"), (spec_path, ".grip/workspace_spec.toml")):
+        _refuse_symlink(path, label)
+    if not spec_existed and spec_path.exists():
+        spec_path.unlink()
+    if not git_dir_existed and git_dir.exists():
+        shutil.rmtree(git_dir)
+    if not grip_dir_existed and grip_dir.exists():
+        shutil.rmtree(grip_dir)
 
 
 def compile_gr1_to_workspace_spec(
@@ -266,7 +306,7 @@ def _safe_workspace_component(value: object, field: str) -> str:
     """Accept one logical name, never a path fragment or invisible control data."""
     if not isinstance(value, str) or not value or value in {".", ".."}:
         raise ValueError(f"{field} must be a non-empty logical name")
-    if "/" in value or "\\" in value or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+    if "/" in value or "\\" in value or ":" in value or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
         raise ValueError(f"{field} must not contain separators or control characters: {value!r}")
     return value
 

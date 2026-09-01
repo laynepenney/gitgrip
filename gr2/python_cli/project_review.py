@@ -5,7 +5,7 @@ import argparse
 import dataclasses
 import re
 from pathlib import Path
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Literal
 
 from gr2.prototypes import lane_workspace_prototype as lanes
@@ -68,10 +68,32 @@ def _canonical_pin(pin: ProjectReviewPin) -> ProjectReviewPin:
     return dataclasses.replace(pin, path=_normalized_path(pin.path))
 
 
+def _review_path_component(value: str, field: str) -> str:
+    """Validate names before they become a clone destination or lane path."""
+    if not value or value in {".", ".."}:
+        raise ValueError(f"invalid {field}: {value!r}")
+    windows = PureWindowsPath(value)
+    if (
+        "/" in value
+        or "\\" in value
+        or ":" in value
+        or windows.drive
+        or windows.root
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+    ):
+        raise ValueError(f"invalid {field}: {value!r}")
+    return value
+
+
 def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spec: ProjectReviewSpec, sources: dict[str, tuple[Path, str]], allow_local: bool = False) -> ProjectReviewOutcome:
     """Preflight every immutable pin, then materialize all members before enter."""
     if spec.schema != "gr2-project-review/v1":
         return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure("spec", "unsupported schema"),), None, False)
+    try:
+        owner_unit = _review_path_component(owner_unit, "owner unit")
+        lane_name = _review_path_component(lane_name, "lane name")
+    except ValueError as exc:
+        return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure("review_root", str(exc)),), None, False)
     try:
         canonical_pins = tuple(_canonical_pin(pin) for pin in spec.pins)
     except ValueError as exc:

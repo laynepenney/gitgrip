@@ -233,6 +233,7 @@ class TestBootstrapGr1:
             ("repo/child", "safe", "atlas"),
             ("escape", "safe", "../unit"),
             ("escape", "safe", "unit/child"),
+            ("escape", "safe", "C:"),
         ],
     )
     def test_path_escapes_refuse_before_creating_grip_state(
@@ -289,6 +290,76 @@ class TestBootstrapGr1:
         assert result["status"] == "initialized"
         assert (gr1_workspace / ".grip" / ".git").is_dir()
         assert (gr1_workspace / ".grip" / "workspace_spec.toml").is_file()
+
+    @pytest.mark.parametrize("surface", ["grip", "git", "spec"])
+    def test_symlinked_control_plane_refuses_before_external_write(
+        self, gr1_workspace: Path, tmp_path: Path, surface: str
+    ) -> None:
+        external = tmp_path / "external"
+        external.mkdir()
+        grip_dir = gr1_workspace / ".grip"
+        if surface == "grip":
+            grip_dir.symlink_to(external, target_is_directory=True)
+        elif surface == "git":
+            grip_dir.mkdir()
+            (grip_dir / ".git").symlink_to(external, target_is_directory=True)
+        else:
+            grip_dir.mkdir()
+            (grip_dir / "workspace_spec.toml").symlink_to(external / "spec")
+
+        with pytest.raises(SystemExit, match="must not be a symlink"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert not (external / ".git").exists()
+        assert not (external / "workspace_spec.toml").exists()
+
+    def test_deleting_symlink_guard_recreates_external_write(
+        self, gr1_workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        external = tmp_path / "external"
+        external.mkdir()
+        (gr1_workspace / ".grip").symlink_to(external, target_is_directory=True)
+        monkeypatch.setattr(migration, "_refuse_symlink", lambda _path, _label: None)
+
+        bootstrap_gr1_workspace(gr1_workspace)
+
+        assert (external / ".git").is_dir()
+        assert (external / "workspace_spec.toml").is_file()
+
+    def test_publish_failure_rolls_back_new_object_store(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(migration, "_atomic_write", lambda _path, _content: (_ for _ in ()).throw(OSError("injected publish failure")))
+
+        with pytest.raises(OSError, match="injected publish failure"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert not (gr1_workspace / ".grip").exists()
+
+    def test_publish_failure_preserves_preexisting_partial_directory(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        grip_dir = gr1_workspace / ".grip"
+        grip_dir.mkdir()
+        monkeypatch.setattr(migration, "_atomic_write", lambda _path, _content: (_ for _ in ()).throw(OSError("injected publish failure")))
+
+        with pytest.raises(OSError, match="injected publish failure"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert grip_dir.is_dir()
+        assert not (grip_dir / ".git").exists()
+        assert not (grip_dir / "workspace_spec.toml").exists()
+
+    def test_deleting_rollback_recreates_partial_object_store(
+        self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(migration, "_atomic_write", lambda _path, _content: (_ for _ in ()).throw(OSError("injected publish failure")))
+        monkeypatch.setattr(migration, "_rollback_bootstrap", lambda *_args: None)
+
+        with pytest.raises(OSError, match="injected publish failure"):
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        assert (gr1_workspace / ".grip" / ".git").is_dir()
 
     def test_conflicting_existing_spec_refuses_before_initializing_store(self, gr1_workspace: Path) -> None:
         grip_dir = gr1_workspace / ".grip"
