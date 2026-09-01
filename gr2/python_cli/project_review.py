@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import re
+import tomllib
 from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Literal
@@ -120,10 +121,9 @@ def _validate_workspace_repository_boundary(
     transition. A project review may only materialize repositories the compiled
     workspace itself authorizes.
     """
-    try:
-        workspace_doc = spec_apply.load_workspace_spec_doc(workspace)
-    except SystemExit as exc:
-        return ProjectReviewFailure("workspace_spec", str(exc))
+    workspace_doc, failure = _load_workspace_boundary_doc(workspace)
+    if failure is not None:
+        return failure
     entries: dict[str, str] = {}
     for row in workspace_doc.get("repos", []):
         if not isinstance(row, dict):
@@ -164,6 +164,14 @@ def _validate_workspace_repository_boundary(
                 f"selected source identity mismatch: source {source_identity!r}, pin {pin_identity!r}",
             )
     return None
+
+
+def _load_workspace_boundary_doc(workspace: Path) -> tuple[dict[str, object] | None, ProjectReviewFailure | None]:
+    """Keep absent and malformed authority in the review outcome channel."""
+    try:
+        return spec_apply.load_workspace_spec_doc(workspace), None
+    except (SystemExit, tomllib.TOMLDecodeError) as exc:
+        return None, ProjectReviewFailure("workspace_spec", str(exc))
 
 
 def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spec: ProjectReviewSpec, sources: dict[str, tuple[Path, str]], allow_local: bool = False) -> ProjectReviewOutcome:
