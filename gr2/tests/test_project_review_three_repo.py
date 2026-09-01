@@ -119,6 +119,82 @@ def test_three_repo_exact_pins_open_only_after_all_members_verify(tmp_path: Path
     assert lanes.current_lane_file(workspace, "atlas").read_bytes() != current
 
 
+def test_three_immutable_seed_sources_open_at_pins_not_source_heads(tmp_path: Path) -> None:
+    """The dogfood shape: transports may name a resolved SHA, not a branch.
+
+    Every source remains on main, which differs from its review pin. All three
+    lanes must still materialize at their immutable pins and enter together.
+    """
+    workspace, sources, _home, _current = _world(tmp_path)
+    from gr2.python_cli import grip, project_review
+
+    grip.grip_init(workspace)
+    pins = [
+        project_review.ProjectReviewPin(name, f"local:{source[0]}", f"repos/{name}", source[1], source[2])
+        for name, source in sources.items()
+    ]
+    spec = project_review.make_spec(workspace, pins)
+    assert all(_git(source[0], "rev-parse", "HEAD") != source[2] for source in sources.values())
+
+    outcome = project_review.open_project_review(
+        workspace=workspace,
+        owner_unit="atlas",
+        lane_name="immutable-seeds",
+        spec=spec,
+        sources={name: (source[0], source[2]) for name, source in sources.items()},
+        allow_local=True,
+    )
+
+    assert outcome.status == "opened"
+    assert [record.head for record in outcome.observed] == [sources[name][2] for name in ("alpha", "beta", "gamma")]
+    assert all(
+        _git(outcome.review_root / "repos" / name, "rev-parse", "HEAD") == sources[name][2]
+        for name in sources
+    )
+
+
+def test_deleting_explicit_seed_recreates_wrong_source_head_partial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutation control: omitting the explicit seed reproduces the live mismatch.
+
+    The retained post-materialization check catches it, but the review remains
+    partial and never enters the current lane. This proves the seed propagation,
+    rather than the final checker, is what opens all three pinned repositories.
+    """
+    workspace, sources, _home, current = _world(tmp_path)
+    from gr2.python_cli import grip, project_review, review
+
+    grip.grip_init(workspace)
+    pins = [
+        project_review.ProjectReviewPin(name, f"local:{source[0]}", f"repos/{name}", source[1], source[2])
+        for name, source in sources.items()
+    ]
+    spec = project_review.make_spec(workspace, pins)
+    real = review.ensure_lane_checkout
+    calls: list[dict[str, object]] = []
+
+    def drop_seed(**kwargs):
+        calls.append(dict(kwargs))
+        kwargs.pop("seed_commit")
+        return real(**kwargs)
+
+    monkeypatch.setattr(review, "ensure_lane_checkout", drop_seed)
+    outcome = project_review.open_project_review(
+        workspace=workspace,
+        owner_unit="atlas",
+        lane_name="seed-deleted",
+        spec=spec,
+        sources={name: (source[0], source[2]) for name, source in sources.items()},
+        allow_local=True,
+    )
+
+    assert calls and calls[0]["seed_commit"] == sources["alpha"][2]
+    assert outcome.status == "partial"
+    assert outcome.failures[0].key == "alpha"
+    assert sources["alpha"][1] in outcome.failures[0].reason
+    assert lanes.current_lane_file(workspace, "atlas").read_bytes() == current
+    assert not (workspace / "reviews" / "atlas" / "seed-deleted" / "repos" / "alpha").exists()
+
+
 def test_manifest_bootstrap_opens_the_authorized_three_repo_review(tmp_path: Path) -> None:
     """M1's real consumer can start from gr1 manifest state with no hand-written spec."""
     workspace, sources, _home, _current = _world(tmp_path, bootstrap_from_manifest=True)
