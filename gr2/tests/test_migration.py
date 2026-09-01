@@ -23,6 +23,7 @@ from gr2.python_cli.migration import (
     detect_gr1_workspace,
     migrate_gr1_workspace,
     regenerate_gr1_workspace,
+    rollback_gr1_workspace,
     render_workspace_spec,
     workspace_status,
 )
@@ -594,6 +595,75 @@ class TestRegenerateGr1Workspace:
         )
         assert result.exit_code != 0
         assert "--receipt" in result.output
+
+    def test_receipt_bound_round_trip_restores_exact_old_bytes(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+        forward_receipt = tmp_path / "forward.json"
+        forward = regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=forward_receipt)
+        sidecar = tmp_path / json.loads(forward_receipt.read_text())["sidecar_relative_path"]
+        assert sidecar.read_bytes() == before
+        assert forward["sidecar_sha256"] == expected
+
+        rollback = rollback_gr1_workspace(
+            gr1_workspace,
+            rollback_receipt_path=forward_receipt,
+            expected_current_spec_sha256=forward["new_spec_sha256"],
+            receipt_path=tmp_path / "rollback.json",
+        )
+        assert spec_path.read_bytes() == before
+        assert rollback["status"] == "rolled_back"
+        assert rollback["materialization"] is False
+
+    def test_rollback_refuses_stale_or_tampered_authority(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+        forward_receipt = tmp_path / "forward.json"
+        forward = regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=forward_receipt)
+
+        with pytest.raises(SystemExit, match="current spec hash"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=forward_receipt, expected_current_spec_sha256=expected, receipt_path=tmp_path / "stale.json")
+        assert spec_path.read_bytes() != before
+
+        sidecar = tmp_path / json.loads(forward_receipt.read_text())["sidecar_relative_path"]
+        sidecar.write_text("tampered\n")
+        with pytest.raises(SystemExit, match="sidecar hash"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=forward_receipt, expected_current_spec_sha256=forward["new_spec_sha256"], receipt_path=tmp_path / "tampered.json")
+
+    def test_existing_receipt_and_unsafe_sidecar_path_refuse(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        _spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        receipt = tmp_path / "forward.json"
+        receipt.write_text("existing\n")
+        with pytest.raises(SystemExit, match="overwrite"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
+
+        receipt.write_text(json.dumps({"schema": "gr2-workspace-regeneration/v2", "workspace_root": str(gr1_workspace), "workspace_spec_path": str(gr1_workspace / ".grip" / "workspace_spec.toml"), "grip_repo_path": str(gr1_workspace / ".grip"), "manifest_sha256": hashlib.sha256((gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml").read_bytes()).hexdigest(), "object_store_head": "x", "object_store_status": [], "lane_snapshot": {"files": []}, "observed_old_spec_sha256": "0" * 64, "new_spec_sha256": "0" * 64, "sidecar_sha256": "0" * 64, "materialization": False, "sidecar_relative_path": "../escape"}))
+        with pytest.raises(SystemExit, match="sidecar path is unsafe"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=receipt, expected_current_spec_sha256="0" * 64, receipt_path=tmp_path / "out.json")
+
+    def test_rollback_refuses_altered_receipt_workspace_and_symlinked_sidecar(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        _spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        receipt = tmp_path / "forward.json"
+        forward = regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
+        doc = json.loads(receipt.read_text())
+        doc["workspace_root"] = "/wrong/workspace"
+        receipt.write_text(json.dumps(doc))
+        with pytest.raises(SystemExit, match="workspace binding"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=receipt, expected_current_spec_sha256=forward["new_spec_sha256"], receipt_path=tmp_path / "wrong-workspace.json")
+
+        doc["workspace_root"] = str(gr1_workspace)
+        receipt.write_text(json.dumps(doc))
+        sidecar = tmp_path / doc["sidecar_relative_path"]
+        copy = tmp_path / "sidecar-copy"
+        copy.write_bytes(sidecar.read_bytes())
+        sidecar.unlink()
+        sidecar.symlink_to(copy)
+        with pytest.raises(SystemExit, match="must not be a symlink"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=receipt, expected_current_spec_sha256=forward["new_spec_sha256"], receipt_path=tmp_path / "symlink.json")
 
 
 # ---------------------------------------------------------------------------

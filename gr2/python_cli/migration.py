@@ -199,6 +199,7 @@ def regenerate_gr1_workspace(workspace_root: Path, *, expected_spec_sha256: str,
         raise SystemExit("regeneration requires an initialized object store and regular generated spec")
     _refuse_active_lane_state(workspace_root)
     _require_clean_regeneration_store(grip_dir)
+    _require_new_receipt_target(receipt_path)
 
     lock_path = grip_dir / "state" / "workspace_spec_regeneration.lock"
     with _regeneration_lock(lock_path):
@@ -212,31 +213,110 @@ def regenerate_gr1_workspace(workspace_root: Path, *, expected_spec_sha256: str,
         if old == candidate:
             raise SystemExit("regeneration candidate is identical to existing generated spec")
         head = git(grip_dir, "rev-parse", "HEAD").stdout.strip()
-        _atomic_write(spec_path, candidate)
-        if hashlib.sha256(spec_path.read_bytes()).hexdigest() != hashlib.sha256(candidate).hexdigest():
-            raise SystemExit("atomic generated spec replacement did not bind candidate bytes")
-        if git(grip_dir, "rev-parse", "HEAD").stdout.strip() != head:
-            raise SystemExit("regeneration changed object-store HEAD")
+        lane_snapshot = _lane_snapshot(workspace_root)
+        status_snapshot = _store_status(grip_dir)
+        sidecar_path = _sidecar_path(receipt_path, old_hash)
+        _require_new_receipt_target(sidecar_path)
+        _atomic_write(sidecar_path, old)
+        payload = {
+            "schema": "gr2-workspace-regeneration/v2",
+            "status": "regenerated",
+            "workspace_root": str(workspace_root),
+            "manifest_path": str(manifest_path),
+            "workspace_spec_path": str(spec_path),
+            "grip_repo_path": str(grip_dir),
+            "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "expected_old_spec_sha256": expected_spec_sha256,
+            "observed_old_spec_sha256": old_hash,
+            "new_spec_sha256": hashlib.sha256(candidate).hexdigest(),
+            "sidecar_relative_path": sidecar_path.name,
+            "sidecar_sha256": old_hash,
+            "object_store_head": head,
+            "object_store_status": status_snapshot,
+            "lane_snapshot": lane_snapshot,
+            "operations": ["atomic_workspace_spec_replace"],
+            "materialization": False,
+            "repo_count": len(compiled["repos"]),
+            "unit_count": len(compiled["units"]),
+        }
+        try:
+            _atomic_write(spec_path, candidate)
+            if hashlib.sha256(spec_path.read_bytes()).hexdigest() != hashlib.sha256(candidate).hexdigest():
+                raise SystemExit("atomic generated spec replacement did not bind candidate bytes")
+            if git(grip_dir, "rev-parse", "HEAD").stdout.strip() != head:
+                raise SystemExit("regeneration changed object-store HEAD")
+            _write_new_receipt(receipt_path, payload)
+        except BaseException:
+            try:
+                _atomic_write(spec_path, old)
+                sidecar_path.unlink(missing_ok=True)
+            except BaseException as rollback_error:
+                raise SystemExit(f"regeneration publication failed and restore failed: {rollback_error}") from rollback_error
+            raise
+        return payload
 
-    payload = {
-        "schema": "gr2-workspace-regeneration/v1",
-        "status": "regenerated",
-        "workspace_root": str(workspace_root),
-        "manifest_path": str(manifest_path),
-        "workspace_spec_path": str(spec_path),
-        "grip_repo_path": str(grip_dir),
-        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
-        "expected_old_spec_sha256": expected_spec_sha256,
-        "observed_old_spec_sha256": old_hash,
-        "new_spec_sha256": hashlib.sha256(candidate).hexdigest(),
-        "object_store_head": head,
-        "operations": ["atomic_workspace_spec_replace"],
-        "materialization": False,
-        "repo_count": len(compiled["repos"]),
-        "unit_count": len(compiled["units"]),
-    }
-    _write_regeneration_receipt(receipt_path, payload)
-    return payload
+
+def rollback_gr1_workspace(
+    workspace_root: Path,
+    *,
+    rollback_receipt_path: Path,
+    expected_current_spec_sha256: str,
+    receipt_path: Path,
+) -> dict[str, object]:
+    """Restore one receipt-bound generated spec without materializing repos."""
+    if not isinstance(expected_current_spec_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_current_spec_sha256):
+        raise SystemExit("--expected-current-spec-sha256 must be a lowercase 64-hex SHA-256")
+    workspace_root = workspace_root.resolve()
+    grip_dir, spec_path, git_dir = workspace_root / ".grip", workspace_root / ".grip" / "workspace_spec.toml", workspace_root / ".grip" / ".git"
+    for path, label in ((grip_dir, ".grip"), (git_dir, ".grip/.git"), (spec_path, ".grip/workspace_spec.toml"), (rollback_receipt_path, "rollback receipt")):
+        _refuse_symlink(path, label)
+    if not git_dir.is_dir() or not spec_path.is_file() or not rollback_receipt_path.is_file():
+        raise SystemExit("rollback requires an initialized object store, regular generated spec, and regular receipt")
+    _refuse_active_lane_state(workspace_root)
+    _require_clean_regeneration_store(grip_dir)
+    _require_new_receipt_target(receipt_path)
+    receipt = _load_forward_receipt(rollback_receipt_path, workspace_root, grip_dir, spec_path)
+    manifest_path = gr1_manifest_path(workspace_root)
+    if not manifest_path.is_file() or hashlib.sha256(manifest_path.read_bytes()).hexdigest() != receipt["manifest_sha256"]:
+        raise SystemExit("rollback manifest binding differs from receipt")
+    sidecar_path = _bound_sidecar_path(rollback_receipt_path, receipt)
+    _refuse_symlink(sidecar_path, "rollback sidecar")
+    sidecar = sidecar_path.read_bytes()
+    if hashlib.sha256(sidecar).hexdigest() != receipt["sidecar_sha256"] or hashlib.sha256(sidecar).hexdigest() != receipt["observed_old_spec_sha256"]:
+        raise SystemExit("rollback sidecar hash does not match receipt")
+
+    lock_path = grip_dir / "state" / "workspace_spec_regeneration.lock"
+    with _regeneration_lock(lock_path):
+        _refuse_active_lane_state(workspace_root)
+        current = spec_path.read_bytes()
+        current_hash = hashlib.sha256(current).hexdigest()
+        if current_hash != expected_current_spec_sha256 or current_hash != receipt["new_spec_sha256"]:
+            raise SystemExit("rollback current spec hash does not match caller and receipt binding")
+        if _lane_snapshot(workspace_root) != receipt["lane_snapshot"]:
+            raise SystemExit("rollback lane or lease state differs from receipt binding")
+        head = git(grip_dir, "rev-parse", "HEAD").stdout.strip()
+        if head != receipt["object_store_head"] or _store_status(grip_dir) != receipt["object_store_status"]:
+            raise SystemExit("rollback object-store binding differs from receipt")
+        _atomic_write(spec_path, sidecar)
+        if hashlib.sha256(spec_path.read_bytes()).hexdigest() != receipt["observed_old_spec_sha256"]:
+            raise SystemExit("rollback replacement did not restore receipt sidecar bytes")
+        if git(grip_dir, "rev-parse", "HEAD").stdout.strip() != head:
+            raise SystemExit("rollback changed object-store HEAD")
+        payload = {
+            "schema": "gr2-workspace-regeneration-rollback/v1",
+            "status": "rolled_back",
+            "workspace_root": str(workspace_root),
+            "rollback_of_receipt_sha256": hashlib.sha256(rollback_receipt_path.read_bytes()).hexdigest(),
+            "rollback_of_receipt": rollback_receipt_path.name,
+            "expected_current_spec_sha256": expected_current_spec_sha256,
+            "restored_spec_sha256": receipt["observed_old_spec_sha256"],
+            "object_store_head": head,
+            "lane_snapshot": receipt["lane_snapshot"],
+            "operations": ["atomic_workspace_spec_restore"],
+            "materialization": False,
+        }
+        _write_new_receipt(receipt_path, payload)
+        return payload
 
 
 @contextlib.contextmanager
@@ -263,6 +343,25 @@ def _require_clean_regeneration_store(grip_dir: Path) -> None:
         raise SystemExit("regeneration refuses dirty object store outside generated workspace_spec.toml")
 
 
+def _store_status(grip_dir: Path) -> list[str]:
+    status = git(grip_dir, "status", "--porcelain")
+    if status.returncode != 0:
+        raise SystemExit("regeneration requires a readable object-store status")
+    return status.stdout.splitlines()
+
+
+def _lane_snapshot(workspace_root: Path) -> dict[str, object]:
+    """Bind empty/inactive lane state, rather than merely assuming it remains so."""
+    rows: list[dict[str, str]] = []
+    for root, pattern in ((workspace_root / ".grip" / "state" / "current_lane", "*.json"), (workspace_root / "agents", "*/lanes/*/leases.json")):
+        if not root.exists():
+            continue
+        for path in sorted(root.glob(pattern)):
+            _refuse_symlink(path, f"{path.relative_to(workspace_root)}")
+            rows.append({"path": str(path.relative_to(workspace_root)), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    return {"files": rows}
+
+
 def _refuse_active_lane_state(workspace_root: Path) -> None:
     """Do not change the control plane while a lane or lease can consume it."""
     state_root = workspace_root / ".grip" / "state"
@@ -286,12 +385,53 @@ def _refuse_active_lane_state(workspace_root: Path) -> None:
             raise SystemExit("regeneration refuses active lane leases")
 
 
-def _write_regeneration_receipt(receipt_path: Path, payload: dict[str, object]) -> None:
-    """Receipt location is caller-selected, but never follows a symlink."""
-    _refuse_symlink(receipt_path, "regeneration receipt")
-    if not receipt_path.parent.is_dir():
-        raise SystemExit(f"receipt parent must already exist: {receipt_path.parent}")
-    _atomic_write(receipt_path, (json.dumps(payload, indent=2) + "\n").encode())
+def _require_new_receipt_target(path: Path) -> None:
+    """Receipt artifacts are append-only authority, never overwriteable state."""
+    _refuse_symlink(path.parent, "receipt directory")
+    _refuse_symlink(path, "regeneration receipt")
+    if not path.parent.is_dir():
+        raise SystemExit(f"receipt parent must already exist: {path.parent}")
+    if path.exists():
+        raise SystemExit(f"refusing to overwrite existing receipt artifact: {path}")
+
+
+def _sidecar_path(receipt_path: Path, old_hash: str) -> Path:
+    relative = f"{receipt_path.name}.old-spec-{old_hash}.toml"
+    if Path(relative).is_absolute() or ".." in Path(relative).parts:
+        raise SystemExit("generated receipt sidecar path is unsafe")
+    return receipt_path.parent / relative
+
+
+def _bound_sidecar_path(receipt_path: Path, receipt: dict[str, object]) -> Path:
+    relative = receipt.get("sidecar_relative_path")
+    if not isinstance(relative, str):
+        raise SystemExit("rollback receipt lacks a relative sidecar path")
+    candidate = Path(relative)
+    if candidate.is_absolute() or ".." in candidate.parts or len(candidate.parts) != 1:
+        raise SystemExit("rollback receipt sidecar path is unsafe")
+    return receipt_path.parent / candidate
+
+
+def _write_new_receipt(receipt_path: Path, payload: dict[str, object]) -> None:
+    _require_new_receipt_target(receipt_path)
+    _atomic_write(receipt_path, (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode())
+
+
+def _load_forward_receipt(receipt_path: Path, workspace_root: Path, grip_dir: Path, spec_path: Path) -> dict[str, object]:
+    try:
+        receipt = json.loads(receipt_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"rollback cannot parse receipt: {exc}") from exc
+    if not isinstance(receipt, dict) or receipt.get("schema") != "gr2-workspace-regeneration/v2":
+        raise SystemExit("rollback receipt is not a successful regeneration receipt")
+    required = ("workspace_root", "workspace_spec_path", "grip_repo_path", "manifest_sha256", "object_store_head", "object_store_status", "lane_snapshot", "observed_old_spec_sha256", "new_spec_sha256", "sidecar_sha256", "materialization")
+    if any(key not in receipt for key in required) or receipt["materialization"] is not False:
+        raise SystemExit("rollback receipt is missing required immutable bindings")
+    if receipt["workspace_root"] != str(workspace_root) or receipt["workspace_spec_path"] != str(spec_path) or receipt["grip_repo_path"] != str(grip_dir):
+        raise SystemExit("rollback receipt workspace binding differs from requested workspace")
+    if not all(isinstance(receipt[key], str) and re.fullmatch(r"[0-9a-f]{64}", receipt[key]) for key in ("manifest_sha256", "observed_old_spec_sha256", "new_spec_sha256", "sidecar_sha256")):
+        raise SystemExit("rollback receipt has invalid SHA-256 bindings")
+    return receipt
 
 
 def _atomic_write(path: Path, content: bytes) -> None:

@@ -645,10 +645,23 @@ def workspace_bootstrap_gr1(
     regenerate: bool = typer.Option(False, "--regenerate", help="Atomically regenerate an existing generated spec"),
     expected_spec_sha256: Optional[str] = typer.Option(None, "--expected-spec-sha256"),
     receipt: Optional[Path] = typer.Option(None, "--receipt"),
+    rollback_receipt: Optional[Path] = typer.Option(None, "--rollback-receipt"),
+    expected_current_spec_sha256: Optional[str] = typer.Option(None, "--expected-current-spec-sha256"),
 ) -> None:
     """Compile the canonical gr1 manifest and initialize the gr2 grip store."""
     workspace_root = workspace_root.resolve()
-    if regenerate:
+    if rollback_receipt is not None:
+        if regenerate or expected_spec_sha256 is not None:
+            raise typer.BadParameter("--rollback-receipt is mutually exclusive with regeneration inputs")
+        if expected_current_spec_sha256 is None or receipt is None:
+            raise typer.BadParameter("--rollback-receipt requires --expected-current-spec-sha256 and --receipt")
+        payload = migration.rollback_gr1_workspace(
+            workspace_root,
+            rollback_receipt_path=rollback_receipt,
+            expected_current_spec_sha256=expected_current_spec_sha256,
+            receipt_path=receipt,
+        )
+    elif regenerate:
         if expected_spec_sha256 is None or receipt is None:
             raise typer.BadParameter("--regenerate requires --expected-spec-sha256 and --receipt")
         payload = migration.regenerate_gr1_workspace(workspace_root, expected_spec_sha256=expected_spec_sha256, receipt_path=receipt)
