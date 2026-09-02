@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
+
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -31,7 +36,17 @@ def _init_repo(path: Path) -> Path:
 
 
 def _bare(path: Path) -> Path:
-    subprocess.run(["git", "init", "--bare", str(path)], check=True, capture_output=True, text=True)
+    # -b main pins the bare's symbolic HEAD to refs/heads/main regardless of the
+    # host's init.defaultBranch. Without it, a master-default runner (CI) leaves
+    # HEAD at refs/heads/master; a later `git clone` of this bare cannot check
+    # out (only refs/heads/main is ever pushed here), lands on an unborn master,
+    # and `git push origin main` then fails "src refspec main does not match any".
+    subprocess.run(
+        ["git", "init", "--bare", "-b", "main", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     return path
 
 
@@ -224,8 +239,18 @@ def test_cli_exposes_force_with_lease_but_never_raw_force(tmp_path: Path) -> Non
     unsafe = runner.invoke(app, ["push", "--repo-path", str(repo), "--force"])
 
     assert safe.exit_code == 0, safe.output
-    assert unsafe.exit_code != 0
-    assert "No such option: --force" in unsafe.output
+    # Assert the BEHAVIOR — raw --force is rejected and never offered — not the
+    # exact wording of Typer's usage error. That wording is a Rich-formatted
+    # panel that varies by Typer/Click version (it changed from a plain
+    # "No such option: --force" line to a coloured panel), and matching its text
+    # is what made this test brittle. Exit code + the --help option surface are
+    # the stable contract.
+    assert unsafe.exit_code != 0, unsafe.output
+    help_output = _strip_ansi(runner.invoke(app, ["push", "--help"]).output)
+    assert "--force-with-lease" in help_output
+    # --force-with-lease contains the substring "--force"; strip it before
+    # asserting a bare --force option is absent.
+    assert "--force" not in help_output.replace("--force-with-lease", "")
     assert _git(repo, "config", "--get", "branch.main.remote").stdout.strip() == "upstream"
 
 
