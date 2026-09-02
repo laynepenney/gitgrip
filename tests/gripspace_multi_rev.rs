@@ -50,20 +50,15 @@ fn build_one_repo_two_gripspace_origin(root: &Path, bare_initial_branch: &str) -
     let bare = root.join("frag.git");
     let initial_branch = format!("--initial-branch={bare_initial_branch}");
     git(root, &["init", "--bare", &initial_branch, "frag.git"]);
-    let url = {
-        let abs_path = std::fs::canonicalize(&bare).unwrap_or_else(|_| bare.clone());
-        let path_str = abs_path.display().to_string();
-        let normalized = path_str.replace('\\', "/");
-        #[cfg(target_os = "windows")]
-        let url = if normalized.len() > 2 && normalized.chars().nth(1) == Some(':') {
-            format!("file:///{}", normalized)
-        } else {
-            format!("file://{}", normalized)
-        };
-        #[cfg(not(target_os = "windows"))]
-        let url = format!("file://{}", normalized);
-        url
-    };
+    // Build the file:// URL through the production helper, not a hand-rolled
+    // copy. This fixture previously inlined the URL logic, and that copy still
+    // carried the pre-fix bug std::fs::canonicalize returns a verbatim
+    // `\\?\C:\…` path on Windows, which the naive `\`→`/` + `nth(1)==':'` check
+    // mangled into `file:////?/C:/…` — an unclonable URL. It failed only on the
+    // Windows runner (canonicalize yields no verbatim prefix off Windows), which
+    // is exactly why the inline copy survived when the production function was
+    // fixed. One implementation, exercised on every platform, cannot drift again.
+    let url = gitgrip::core::gripspace::path_to_file_url(&bare);
 
     let w = root.join("seed");
     std::fs::create_dir_all(&w).unwrap();
@@ -266,7 +261,11 @@ fn same_url_same_rev_twice_still_yields_one_space() {
         root,
         &["init", "--bare", "--initial-branch=master", "frag.git"],
     );
-    let url = format!("file://{}", bare.display());
+    // Through the production helper: a raw `file://{display}` is `file://C:\…`
+    // on Windows, and gripspace_name() splits on `/` only, so the name never
+    // resolves to "frag" and the dedup assertion sees an empty set. The helper
+    // yields forward-slash `file:///C:/…`. No-op off Windows.
+    let url = gitgrip::core::gripspace::path_to_file_url(&bare);
 
     let w = root.join("seed");
     std::fs::create_dir_all(&w).unwrap();
