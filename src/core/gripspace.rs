@@ -158,11 +158,18 @@ fn is_drive_letter_path(normalized: &str) -> bool {
 /// under different groups, they will collide. Use `rev` to disambiguate or
 /// rename one of the repositories.
 pub fn gripspace_name(url: &str) -> String {
-    let url = url.trim_end_matches('/');
-    let last = url.rsplit('/').next().unwrap_or(url);
+    // Accept both POSIX and Windows path separators. A local Windows source
+    // path (`C:\...\space`) reaches here raw — `resolve_space_name` passes
+    // `config.url` unnormalized — and splitting only on `/` returned the whole
+    // backslash path, which `validate_space_name` then rejected. This is the
+    // Windows analogue of the unix path handling. Shape-based (treat `\` as a
+    // separator on any host), consistent with `canonical_path_str_to_file_url`.
+    let sep = |c: char| c == '/' || c == '\\';
+    let url = url.trim_end_matches(sep);
+    let last = url.rsplit(sep).next().unwrap_or(url);
     // Handle SSH URLs like git@github.com:user/repo.git
     let last = last.rsplit(':').next().unwrap_or(last);
-    let last = last.rsplit('/').next().unwrap_or(last);
+    let last = last.rsplit(sep).next().unwrap_or(last);
     last.trim_end_matches(".git").to_string()
 }
 
@@ -1512,6 +1519,37 @@ mod tests {
         );
     }
 
+    /// A raw Windows path reaches `gripspace_name` unnormalized (the local-source
+    /// case: `resolve_space_name` passes `config.url` as-is). Splitting only on
+    /// `/` returned the whole backslash string, which `validate_space_name` then
+    /// rejected — the Windows analogue of the unix local-path handling. Runs on
+    /// any host because `gripspace_name` is a pure string function.
+    #[test]
+    fn test_gripspace_name_windows_raw_path() {
+        assert_eq!(
+            gripspace_name(r"C:\Users\runner\AppData\Local\Temp\abc\source-space"),
+            "source-space"
+        );
+    }
+
+    #[test]
+    fn test_gripspace_name_windows_raw_path_with_git_suffix() {
+        assert_eq!(gripspace_name(r"C:\repos\base.git"), "base");
+    }
+
+    #[test]
+    fn test_gripspace_name_windows_trailing_backslash() {
+        assert_eq!(gripspace_name(r"C:\repos\my-space\"), "my-space");
+    }
+
+    /// The malformed `file://C:\...` URL that `format!("file://{}", path.display())`
+    /// produces on Windows (documented on `file_url` below): backslashes and the
+    /// drive letter must not corrupt the extracted name.
+    #[test]
+    fn test_gripspace_name_windows_malformed_file_url() {
+        assert_eq!(gripspace_name(r"file://C:\Users\example\base.git"), "base");
+    }
+
     /// Build a well-formed `file://` URL for a local path on any platform.
     ///
     /// `format!("file://{}", path.display())` is correct on Unix and WRONG on
@@ -1579,17 +1617,19 @@ mod tests {
     }
 
     #[test]
-    fn the_old_spelling_is_what_broke_windows() {
-        // Pins the DIAGNOSIS, not just the fix. If gripspace_name ever stops
-        // splitting on ':' this test fails and tells the next reader that the
-        // Windows workaround may no longer be needed -- rather than leaving a
-        // fix in place whose reason nobody can reconstruct.
-        let broken = format!("file://{}", r"C:\Users\RUNNER~1\Temp\base.git");
-        let derived = gripspace_name(&broken);
-        assert_ne!(derived, "base", "the old spelling no longer misderives");
+    fn windows_file_url_derives_the_basename() {
+        // Was `the_old_spelling_is_what_broke_windows`, a diagnosis-pin that
+        // asserted gripspace_name MISderived a Windows file URL (backslash split
+        // left the drive letter and `~` short-name in the name, failing the
+        // allowlist). The backslash-separator fix in gripspace_name resolves
+        // that, so this now pins the FIX: a Windows file URL derives the
+        // basename and passes the allowlist.
+        let windows_url = format!("file://{}", r"C:\Users\RUNNER~1\Temp\base.git");
+        let derived = gripspace_name(&windows_url);
+        assert_eq!(derived, "base", "windows file URL must derive the basename");
         assert!(
-            validate_space_name(&derived).is_err(),
-            "expected {derived:?} to fail the name allowlist"
+            validate_space_name(&derived).is_ok(),
+            "derived name {derived:?} must pass the allowlist"
         );
     }
 
