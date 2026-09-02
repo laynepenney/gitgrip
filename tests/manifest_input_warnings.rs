@@ -56,7 +56,10 @@ fn origin_with_manifest(manifest_body: &str) -> (TempDir, String) {
     // found". That is the CI-only failure of these tests (green locally where
     // init.defaultBranch=main); reproduced with GIT_CONFIG init.defaultBranch=master.
     git(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
-    let url = format!("file://{}", bare.display());
+    // Through the production helper so the URL is forward-slash `file:///C:/…`
+    // on Windows, not `file://C:\…` (a raw display()), which gripspace_name()
+    // cannot parse. No-op off Windows. Same class as gripspace_multi_rev.
+    let url = gitgrip::core::gripspace::path_to_file_url(&bare);
 
     let work = temp.path().join("work");
     std::fs::create_dir_all(&work).unwrap();
