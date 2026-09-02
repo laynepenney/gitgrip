@@ -764,15 +764,31 @@ fn start_cancel_controller(pid: u32, cancel_flag: Option<Arc<AtomicBool>>) -> Ca
     }
 }
 
+// The MCP server speaks newline-delimited JSON-RPC on its OWN stdout. A kill
+// subprocess run with the default inherited stdio writes to that same stdout —
+// on Windows `taskkill` prints "SUCCESS: The process ... has been terminated."
+// which lands mid-stream and makes the client's next `serde_json::from_str`
+// fail (the test_mcp_server cancel/concurrent cases, red only on Windows). Unix
+// `kill` is silent
+// on success so it never surfaced there. Redirect both streams to null so the
+// cancel path can never corrupt the response stream.
 #[cfg(unix)]
 fn kill_process(pid: u32) -> std::io::Result<()> {
     let pid_s = pid.to_string();
-    let status = Command::new("kill").args(["-TERM", &pid_s]).status()?;
+    let status = Command::new("kill")
+        .args(["-TERM", &pid_s])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
     if status.success() {
         return Ok(());
     }
 
-    let status = Command::new("kill").args(["-KILL", &pid_s]).status()?;
+    let status = Command::new("kill")
+        .args(["-KILL", &pid_s])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
     if status.success() {
         Ok(())
     } else {
@@ -784,6 +800,8 @@ fn kill_process(pid: u32) -> std::io::Result<()> {
 fn kill_process(pid: u32) -> std::io::Result<()> {
     let status = Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()?;
     if status.success() {
         Ok(())
