@@ -50,7 +50,20 @@ fn build_one_repo_two_gripspace_origin(root: &Path, bare_initial_branch: &str) -
     let bare = root.join("frag.git");
     let initial_branch = format!("--initial-branch={bare_initial_branch}");
     git(root, &["init", "--bare", &initial_branch, "frag.git"]);
-    let url = format!("file://{}", bare.display());
+    let url = {
+        let abs_path = std::fs::canonicalize(&bare).unwrap_or_else(|_| bare.clone());
+        let path_str = abs_path.display().to_string();
+        let normalized = path_str.replace('\\', "/");
+        #[cfg(target_os = "windows")]
+        let url = if normalized.len() > 2 && normalized.chars().nth(1) == Some(':') {
+            format!("file:///{}", normalized)
+        } else {
+            format!("file://{}", normalized)
+        };
+        #[cfg(not(target_os = "windows"))]
+        let url = format!("file://{}", normalized);
+        url
+    };
 
     let w = root.join("seed");
     std::fs::create_dir_all(&w).unwrap();
