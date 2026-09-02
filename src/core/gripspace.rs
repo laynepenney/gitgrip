@@ -81,28 +81,71 @@ pub fn requested_gripspace_revision(
 /// - Unix: `/tmp/repo` -> `file:///tmp/repo`
 /// - Windows: `C:\Users\repo` -> `file:///C:/Users/repo`
 pub fn path_to_file_url(path: &Path) -> String {
+    // The only platform-behaving step: std::fs::canonicalize. On Windows it
+    // returns an extended-length *verbatim* path (`\\?\C:\...`, or `\\?\UNC\`
+    // for a share), which the URL build must account for. Everything after this
+    // line is a pure function exercised on every platform by the unit tests.
     let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let path_str = abs_path.display().to_string();
+    canonical_path_str_to_file_url(&abs_path.display().to_string())
+}
+
+/// Strip a Windows extended-length (verbatim) prefix from a raw path string.
+///
+/// `std::fs::canonicalize` on Windows returns verbatim paths:
+/// - `\\?\C:\proj\x`   -> `C:\proj\x`       (verbatim drive)
+/// - `\\?\UNC\srv\shr` -> `srv\shr`         (verbatim UNC; the `\\` authority
+///   is dropped here and re-supplied as the URL host by the builder's fallthrough)
+///
+/// A path without a verbatim prefix (any POSIX path, or a plain Windows path)
+/// is returned unchanged, so the function is a no-op on the platforms where the
+/// prefix never appears.
+fn strip_windows_verbatim_prefix(path_str: &str) -> &str {
+    if let Some(rest) = path_str.strip_prefix(r"\\?\UNC\") {
+        rest
+    } else if let Some(rest) = path_str.strip_prefix(r"\\?\") {
+        rest
+    } else {
+        path_str
+    }
+}
+
+/// Pure `canonicalized-path-string -> file:// URL`. Split out of
+/// `path_to_file_url` so the verbatim-prefix handling and drive-letter shaping
+/// are testable on every platform, not only on a Windows runner.
+///
+/// The drive-letter case is detected by SHAPE (`X:/...`), not by
+/// `cfg!(target_os = "windows")`: a POSIX-canonicalized path always begins with
+/// `/`, so it can never collide, and shape-detection is what lets a darwin test
+/// feed a Windows-shaped input and assert the exact URL.
+fn canonical_path_str_to_file_url(path_str: &str) -> String {
+    let stripped = strip_windows_verbatim_prefix(path_str);
 
     // Convert backslashes to forward slashes
-    let normalized = path_str.replace('\\', "/");
+    let normalized = stripped.replace('\\', "/");
 
     // Ensure file:// prefix with proper formatting
     if normalized.starts_with("file://") {
         normalized
-    } else if cfg!(target_os = "windows")
-        && normalized.len() > 2
-        && normalized.chars().nth(1) == Some(':')
-    {
+    } else if is_drive_letter_path(&normalized) {
         // Windows absolute path like C:/Users/...
         format!("file:///{}", normalized)
     } else if normalized.starts_with('/') {
         // Unix absolute path
         format!("file://{}", normalized)
     } else {
-        // Fallback: assume file:// prefix
+        // Fallback (also the verbatim-UNC host case: srv/shr -> file://srv/shr)
         format!("file://{}", normalized)
     }
+}
+
+/// True for a forward-slash-normalized Windows drive path such as `C:/proj/x`:
+/// an ASCII letter, a colon, then a slash. Shape-based so it holds on any host.
+fn is_drive_letter_path(normalized: &str) -> bool {
+    let mut chars = normalized.chars();
+    matches!(
+        (chars.next(), chars.next(), chars.next()),
+        (Some(c), Some(':'), Some('/')) if c.is_ascii_alphabetic()
+    )
 }
 
 /// Extract a gripspace name from its URL.
@@ -1223,6 +1266,91 @@ pub fn get_gripspace_rev(gripspace_path: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        canonical_path_str_to_file_url, is_drive_letter_path, strip_windows_verbatim_prefix,
+    };
+
+    // ── path_to_file_url: verbatim-prefix handling, testable off Windows ─────
+    //
+    // std::fs::canonicalize on Windows returns an extended-length VERBATIM path
+    // (`\\?\C:\...`). The old builder replaced `\` with `/` (→ `//?/C:/...`),
+    // then looked for a ':' at index 1 — which is now '/', so it fell through to
+    // the POSIX branch and emitted `file:////?/C:/...`, a URL git cannot clone.
+    // That is exactly why link.rs's detached_source_requires_recorded_pin_provenance
+    // panicked on ensure_gripspace().unwrap() on the Windows runner (and only there).
+    //
+    // These feed canonicalize's Windows output shape as literal strings so the
+    // pure builder is exercised on every host; the real Windows-clone integration
+    // remains witnessed by CI on the promote re-cut.
+
+    #[test]
+    fn verbatim_drive_prefix_becomes_a_clonable_file_url() {
+        // THE regression witness. Revert the strip (or the drive-shape check
+        // back to a bare nth(1)==':') and this goes red with file:////?/C:/...
+        // (On the CI runner the real path was under the runner's temp dir; a
+        // neutral synthetic drive path exercises the identical verbatim shape.)
+        assert_eq!(
+            canonical_path_str_to_file_url(r"\\?\C:\builds\proj\repo"),
+            "file:///C:/builds/proj/repo"
+        );
+    }
+
+    #[test]
+    fn verbatim_unc_prefix_maps_the_share_to_the_url_host() {
+        // \\?\UNC\server\share\path represents \\server\share\path; the share
+        // authority becomes the file:// host: file://server/share/path.
+        assert_eq!(
+            canonical_path_str_to_file_url(r"\\?\UNC\server\share\path\repo"),
+            "file://server/share/path/repo"
+        );
+    }
+
+    #[test]
+    fn posix_absolute_path_is_the_control_and_is_unchanged() {
+        assert_eq!(
+            canonical_path_str_to_file_url("/tmp/source-space"),
+            "file:///tmp/source-space"
+        );
+    }
+
+    #[test]
+    fn plain_windows_drive_without_verbatim_prefix_still_works() {
+        assert_eq!(
+            canonical_path_str_to_file_url(r"C:\proj\a\repo"),
+            "file:///C:/proj/a/repo"
+        );
+    }
+
+    #[test]
+    fn an_already_formed_file_url_passes_through() {
+        assert_eq!(
+            canonical_path_str_to_file_url("file:///already/a/url"),
+            "file:///already/a/url"
+        );
+    }
+
+    #[test]
+    fn strip_windows_verbatim_prefix_covers_drive_unc_and_passthrough() {
+        assert_eq!(strip_windows_verbatim_prefix(r"\\?\C:\x"), r"C:\x");
+        assert_eq!(
+            strip_windows_verbatim_prefix(r"\\?\UNC\srv\shr"),
+            r"srv\shr"
+        );
+        // UNC is checked before the bare \\?\ so it is not truncated to `UNC\...`.
+        assert_eq!(strip_windows_verbatim_prefix("/posix/path"), "/posix/path");
+        assert_eq!(strip_windows_verbatim_prefix(r"C:\plain"), r"C:\plain");
+    }
+
+    #[test]
+    fn is_drive_letter_path_is_shape_based_not_platform_based() {
+        assert!(is_drive_letter_path("C:/proj/x"));
+        assert!(is_drive_letter_path("d:/lower/is/fine"));
+        assert!(!is_drive_letter_path("/tmp/posix")); // POSIX absolute
+        assert!(!is_drive_letter_path("srv/shr/path")); // UNC host, no drive
+        assert!(!is_drive_letter_path("C:")); // no path component
+        assert!(!is_drive_letter_path("1:/not/a/letter"));
+    }
+
     // ── GAP 2: included gripspaces' composefiles ────────────────────────────
 
     fn cf(
