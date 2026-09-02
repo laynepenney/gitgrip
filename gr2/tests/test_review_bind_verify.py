@@ -213,6 +213,66 @@ def test_reconstruct_refuses_on_tree_mismatch(tmp_path):
     with pytest.raises(GripReviewRefused) as exc:
         grip.reconstruct_review_lane(ws, tampered, "recall", tmp_path / "lane2")
     assert exc.value.refusal == "tree_mismatch"
+
+
+def test_run_executes_declared_checks_in_the_lane(tmp_path):
+    remote, base, head = _fixture_remote(tmp_path)
+    work = tmp_path / "work"
+    ws = _grip_ws(tmp_path)
+    row = _row(remote, base, head)
+    row["source"] = str(work)
+    row["evidence"] = (
+        "label: HEAD_SHA\ncommand: git rev-parse HEAD\nexit: 0\n"
+        "---\n"
+        "label: TREE\ncommand: git rev-parse HEAD^{tree}\nexit: 0\n"
+    )
+    commit = grip.create_review_bind_commit(ws, [row])
+
+    result = grip.run_review_checks(ws, commit, "recall", tmp_path / "lane")
+    runs = result["runs"]
+    assert [r["label"] for r in runs] == ["HEAD_SHA", "TREE"]
+    assert all(r["exit"] == 0 and r["exit_matched"] for r in runs)
+    # Each check ran with cwd = the reconstructed lane, not the base workspace.
+    assert all(r["cwd"] == result["materialized"]["lane"] for r in runs)
+    # Resolution pins imports at the lane (no src/ in this fixture, so the lane root).
+    assert result["import_resolution"] == result["materialized"]["lane"]
+
+
+def test_receipt_binds_axes_actor_liveness_and_gates_blocking_findings(tmp_path):
+    remote, base, head = _fixture_remote(tmp_path)
+    work = tmp_path / "work"
+    ws = _grip_ws(tmp_path)
+    row = _row(remote, base, head)
+    row["source"] = str(work)
+    row["evidence"] = "label: T\ncommand: true\nexit: 0\n"
+    commit = grip.create_review_bind_commit(ws, [row])
+    run_results = grip.run_review_checks(ws, commit, "recall", tmp_path / "lane")
+
+    receipt = grip.build_review_receipt(
+        ws, commit, actor="apollo", verdict="ratify",
+        axes={"code": "ran", "disclosure": "read"},
+        run_results=run_results, read=["texts/recall/title", "texts/recall/body"],
+    )
+    assert receipt["actor"] == "apollo"
+    assert receipt["axes"] == {"code": "ran", "disclosure": "read"}
+    assert receipt["verify"]["tree_matches"] is True
+    assert receipt["materialized"]["reconstructed_tree"] == receipt["materialized"]["bound_head_tree"]
+    # Liveness: the bound base is still the live head of dev on the fixture remote.
+    assert receipt["liveness"][0]["state"] == "equal"
+    assert receipt["expires_on"]["any_base_moved"] is False
+
+    # A block needs a complete blocking finding.
+    with pytest.raises(grip.GripReviewRefused) as e1:
+        grip.build_review_receipt(ws, commit, actor="a", verdict="block",
+                                  axes={}, run_results=run_results, findings=[])
+    assert e1.value.refusal == "block_without_blocking_finding"
+    with pytest.raises(grip.GripReviewRefused) as e2:
+        grip.build_review_receipt(ws, commit, actor="a", verdict="block",
+                                  axes={}, run_results=run_results,
+                                  findings=[{"blocking": True, "claim": "x", "seam": "s"}])
+    assert e2.value.refusal == "incomplete_blocking_finding"
+
+
 def test_policy_hook_sees_carried_bytes_and_refuses_on_hit(tmp_path):
     remote, base, head = _fixture_remote(tmp_path)
     work = tmp_path / "work"

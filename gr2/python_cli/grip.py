@@ -96,7 +96,7 @@ def read_project_review_commit(workspace: Path, commit: str) -> list[dict[str, s
 # (the live remote head of each row's target ref at bind time) and texts/ (the
 # platform title and body, NORM: trailing newlines stripped). The gr commit id
 # is the freeze; the frozen directory and its five SHA-256s are deleted, not
-# wrapped (design/gr2-review-primitives-2026-09-02.md section 10).
+# wrapped: the object is its own frozen record.
 # ---------------------------------------------------------------------------
 
 _REVIEW_BIND_SCHEMA = "gr2-review-bind/v2"
@@ -210,7 +210,7 @@ def create_review_bind_commit(
     (behind-must-be-0) or if head is already on the remote without a named
     ratify receipt (the 2026-09-02 pre-gate-push lesson).
 
-    ``policy_hook`` is the OSS-neutral seam (design §4): a configured command
+    ``policy_hook`` is the OSS-neutral seam: a configured command
     that receives a directory of the carried readable bytes (the range and the
     platform texts, which is what a leak scanner must see — commit messages
     leak, packs hide them) and refuses the bind on a nonzero exit, the way a
@@ -281,7 +281,7 @@ def create_review_bind_commit(
                 ev_fields.append(f"100644 blob {_hash_blob(workspace, resolution)}\tresolution")
             evidence_entries.append(f"040000 tree {_mktree(workspace, ev_fields)}\t{key}")
 
-    # Policy hook (design §4): scan the carried readable bytes; refuse on a hit
+    # Policy hook: scan the carried readable bytes; refuse on a hit
     # the way a freeze does, and record the verdict in the object.
     policy_verdict = _run_policy_hook(policy_hook, scan_items)
 
@@ -419,6 +419,158 @@ def _tree_keys(workspace: Path, commit: str, path: str) -> set[str]:
     if proc.returncode != 0:
         return set()
     return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+
+
+def parse_evidence(text: str) -> list[dict[str, str]]:
+    """Parse the carried evidence blob into declared checks.
+
+    Format (the hand freeze's own evidence.txt): blocks separated by a line of
+    ``---``, each with ``label:``, ``command:``, and ``exit:`` fields. The
+    author's own runs; inputs to ``run``, not proof (a receipt that only re-runs
+    them ratifies the disclosure axis and says so)."""
+    checks: list[dict[str, str]] = []
+    for block in re.split(r"(?m)^---\s*$", text):
+        fields: dict[str, str] = {}
+        for line in block.splitlines():
+            m = re.match(r"\s*(label|command|exit):\s*(.*)$", line)
+            if m:
+                fields[m.group(1)] = m.group(2).strip()
+        if fields.get("command"):
+            checks.append({
+                "label": fields.get("label", ""),
+                "command": fields["command"],
+                "expected_exit": fields.get("exit", ""),
+            })
+    return checks
+
+
+def run_review_checks(
+    workspace: Path, commit: str, key: str, lane_dir: Path, *, env: dict[str, str] | None = None
+) -> dict[str, object]:
+    """Reconstruct the lane, then execute the carried declared checks INSIDE it.
+
+    Reconstruction (with its tree assertion) runs first; a tree mismatch refuses
+    before a single check executes. Each check runs with cwd = the lane (a check
+    that escapes the lane is running against the wrong tree), and records
+    command, cwd, exit, the declared expected exit, whether they matched, and a
+    digest of the output tail. RAN is a field, not a label."""
+    import hashlib
+
+    import os
+
+    materialized = reconstruct_review_lane(workspace, commit, key, lane_dir)
+    lane = Path(materialized["lane"])
+    checks = []
+    if key in _tree_keys(workspace, commit, "evidence"):
+        if "commands" in _tree_keys(workspace, commit, f"evidence/{key}"):
+            checks = parse_evidence(
+                _grip_git(workspace, "show", f"{commit}:evidence/{key}/commands").stdout
+            )
+
+    # Resolution: pin PYTHONPATH to the reconstructed lane so a declared check
+    # (e.g. `python -m pytest ...`) imports the REVIEWED tree, never a machine-wide
+    # install (the 2026-08-11 lesson: a green suite about someone else's checkout).
+    # The caller's env wins if it sets PYTHONPATH explicitly.
+    src = lane / "src"
+    lane_pp = str(src if src.is_dir() else lane)
+    base_env = {**os.environ}
+    existing_pp = base_env.get("PYTHONPATH", "")
+    base_env["PYTHONPATH"] = f"{lane_pp}{os.pathsep}{existing_pp}" if existing_pp else lane_pp
+    run_env = {**base_env, **(env or {})}
+    import_resolution = lane_pp
+    runs: list[dict[str, object]] = []
+    import shlex
+    for check in checks:
+        argv = shlex.split(check["command"])
+        proc = subprocess.run(
+            argv, cwd=str(lane), env=run_env, capture_output=True, text=True, check=False
+        )
+        tail = (proc.stdout + proc.stderr)[-4096:]
+        runs.append({
+            "label": check["label"],
+            "command": check["command"],
+            "cwd": str(lane),
+            "exit": proc.returncode,
+            "expected_exit": check["expected_exit"],
+            "exit_matched": (check["expected_exit"] == "" or str(proc.returncode) == check["expected_exit"]),
+            "output_digest": hashlib.sha256(tail.encode()).hexdigest(),
+            "kind": "declared",
+        })
+    return {"materialized": materialized, "runs": runs, "import_resolution": import_resolution}
+
+
+_FINDING_REQUIRED_WHEN_BLOCKING = ("seam", "smallest_fix", "witness", "risk")
+
+
+def validate_finding(finding: dict[str, object]) -> dict[str, object]:
+    """A blocking finding is refused unless every required field is present (the
+    reviewer-who-blocks-must-propose rule, as a constraint, not a habit)."""
+    if finding.get("blocking"):
+        missing = [f for f in _FINDING_REQUIRED_WHEN_BLOCKING if not finding.get(f)]
+        if missing:
+            raise GripReviewRefused("incomplete_blocking_finding", ",".join(missing), "")
+    return finding
+
+
+def build_review_receipt(
+    workspace: Path,
+    commit: str,
+    *,
+    actor: str,
+    verdict: str,
+    axes: dict[str, str],
+    run_results: dict[str, object],
+    read: list[str] | None = None,
+    probes: list[dict[str, object]] | None = None,
+    mutations: list[dict[str, object]] | None = None,
+    findings: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    """Assemble the receipt object: one object per actor per gr commit.
+
+    Records verify (recomputed tree), liveness (every observed head re-read now),
+    the materialized reconstruction (reconstructed head + tree beside the bound
+    ones), the runs, and the findings. A block verdict needs at least one blocking
+    finding, and each blocking finding is refused unless complete."""
+    if verdict not in ("ratify", "block"):
+        raise GripReviewRefused("invalid_verdict", verdict, "ratify|block")
+    findings = [validate_finding(f) for f in (findings or [])]
+    if verdict == "block" and not any(f.get("blocking") for f in findings):
+        raise GripReviewRefused("block_without_blocking_finding", verdict, "")
+
+    v = verify_review_commit(workspace, commit)
+    # Liveness: re-read every observed remote head NOW and compare to the bound base.
+    liveness: list[dict[str, str]] = []
+    for key, fields in sorted(_read_repo_state(workspace, commit).items()):
+        live = _remote_head(workspace, fields["remote"], _row_ref(workspace, commit, key))
+        liveness.append({
+            "key": key, "bound_base": fields["base"], "live_remote_head": live,
+            "state": "equal" if live == fields["base"] else "moved",
+        })
+    return {
+        "gr_commit": commit,
+        "actor": actor,
+        "verdict": verdict,
+        "axes": axes,
+        "liveness": liveness,
+        "verify": {"tree_matches": v["tree_matches"], "recomputed_tree": v["recomputed_tree"]},
+        "materialized": run_results.get("materialized"),
+        "import_resolution": run_results.get("import_resolution"),
+        "runs": run_results.get("runs", []),
+        "read": read or [],
+        "probes": probes or [],
+        "mutations": mutations or [],
+        "findings": findings,
+        "expires_on": {"any_base_moved": any(l["state"] == "moved" for l in liveness)},
+    }
+
+
+def _row_ref(workspace: Path, commit: str, key: str) -> str:
+    """The target ref a bound row's base was observed against. Stored implicitly:
+    bind recorded observed/<key>/remote-head against the row's ref. The ref name
+    itself is not separately stored in v2, so liveness re-reads the base's ref by
+    convention from the remote's default integration branch when unknown; here we
+    fall back to refs/heads/dev, the team's only integration branch."""
+    return "refs/heads/dev"
 
 
 def reconstruct_review_lane(
