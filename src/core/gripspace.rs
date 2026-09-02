@@ -81,8 +81,7 @@ pub fn requested_gripspace_revision(
 /// - Unix: `/tmp/repo` -> `file:///tmp/repo`
 /// - Windows: `C:\Users\repo` -> `file:///C:/Users/repo`
 pub fn path_to_file_url(path: &Path) -> String {
-    let abs_path = std::fs::canonicalize(path)
-        .unwrap_or_else(|_| path.to_path_buf());
+    let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let path_str = abs_path.display().to_string();
 
     // Convert backslashes to forward slashes
@@ -91,7 +90,10 @@ pub fn path_to_file_url(path: &Path) -> String {
     // Ensure file:// prefix with proper formatting
     if normalized.starts_with("file://") {
         normalized
-    } else if cfg!(target_os = "windows") && normalized.len() > 2 && normalized.chars().nth(1) == Some(':') {
+    } else if cfg!(target_os = "windows")
+        && normalized.len() > 2
+        && normalized.chars().nth(1) == Some(':')
+    {
         // Windows absolute path like C:/Users/...
         format!("file:///{}", normalized)
     } else if normalized.starts_with('/') {
@@ -2723,8 +2725,16 @@ repos:
         {
             let path = std::path::PathBuf::from("/tmp/test-repo");
             let url = path_to_file_url(&path);
-            assert!(url.starts_with("file:///"), "URL should start with file:///, got: {}", url);
-            assert!(url.contains("test-repo"), "URL should contain repo name, got: {}", url);
+            assert!(
+                url.starts_with("file:///"),
+                "URL should start with file:///, got: {}",
+                url
+            );
+            assert!(
+                url.contains("test-repo"),
+                "URL should contain repo name, got: {}",
+                url
+            );
         }
     }
 
@@ -2734,7 +2744,10 @@ repos:
         {
             let path = std::path::PathBuf::from("C:\\temp\\test-repo");
             let url = path_to_file_url(&path);
-            assert!(url.starts_with("file:///"), "URL should start with file:///");
+            assert!(
+                url.starts_with("file:///"),
+                "URL should start with file:///"
+            );
             assert!(url.contains("test-repo"), "URL should contain repo name");
             assert!(!url.contains('\\'), "URL should not contain backslashes");
         }
@@ -2750,7 +2763,13 @@ repos:
         };
         let url = path_to_file_url(&path);
         let name = gripspace_name(&url);
-        assert_eq!(name, "source-space", "Should extract valid gripspace name from file URL");
-        assert!(validate_space_name(&name).is_ok(), "Extracted name should be valid for gripspace");
+        assert_eq!(
+            name, "source-space",
+            "Should extract valid gripspace name from file URL"
+        );
+        assert!(
+            validate_space_name(&name).is_ok(),
+            "Extracted name should be valid for gripspace"
+        );
     }
 }

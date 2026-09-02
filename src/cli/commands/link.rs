@@ -1165,8 +1165,14 @@ manifest:
 
         // Positive control: the same detached object is accepted when the
         // materializer records that exact commit as the requested revision.
+        // The URL must be the SAME file:// form as the unpinned config above:
+        // reuse of the existing "source-space" clone (and thus recording the pin
+        // onto it, rather than allocating a new rev-suffixed space) is keyed on
+        // is_same_remote, which compares the clone's recorded origin URL. A raw
+        // path here reads as a different remote, so the pin lands on a new space
+        // and the manifest's "source-space" reference stays unpinned.
         let pinned = GripspaceConfig {
-            url: origin.display().to_string(),
+            url: crate::core::gripspace::path_to_file_url(&origin),
             rev: Some(pinned_sha),
         };
         let pinned_clone = crate::core::gripspace::ensure_gripspace(&spaces, &pinned).unwrap();
