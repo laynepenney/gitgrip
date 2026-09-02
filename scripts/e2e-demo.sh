@@ -8,6 +8,15 @@
 
 set -uo pipefail
 
+# --- Isolate onto a private tmux server -------------------------------------
+# Every tmux call below (this script's and gr's) lands on a throwaway socket,
+# so this demo cannot spawn/down/kill anything on the default socket where the
+# live agent fleet runs. See config claude.md, Workspace Etiquette.
+unset TMUX
+TMUX_TMPDIR="$(mktemp -d)"
+export TMUX_TMPDIR
+trap 'tmux kill-server 2>/dev/null || true; rm -rf "$TMUX_TMPDIR"' EXIT
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -61,10 +70,16 @@ if [ ! -f ".gitgrip/agents.toml" ]; then
 fi
 pass "agents.toml found"
 
-# Kill any existing session
+# Resolve the session name from the config (never a literal "synapt": a literal
+# here targets the live fleet's session). The private socket started empty, so
+# there is no pre-existing session to kill.
 SESSION=$(grep 'session_name' .gitgrip/agents.toml 2>/dev/null | head -1 | sed 's/.*= *"//' | sed 's/".*//')
-SESSION="${SESSION:-synapt}"
-tmux kill-session -t "$SESSION" 2>/dev/null || true
+if [ -z "$SESSION" ]; then
+    fail ".gitgrip/agents.toml declares no session_name"
+    echo ""
+    echo "Result: FAIL (session_name required; refusing to default to a literal)"
+    exit 1
+fi
 
 # Spawn mock agents
 echo ""
