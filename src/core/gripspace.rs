@@ -72,6 +72,37 @@ pub fn requested_gripspace_revision(
     Ok((!value.is_empty()).then_some(value))
 }
 
+/// Convert a file path to a proper `file://` URL.
+///
+/// Handles both Unix and Windows paths, converting backslashes to forward slashes
+/// and ensuring the URL is properly formatted for use with git operations.
+///
+/// Examples:
+/// - Unix: `/tmp/repo` -> `file:///tmp/repo`
+/// - Windows: `C:\Users\repo` -> `file:///C:/Users/repo`
+pub fn path_to_file_url(path: &Path) -> String {
+    let abs_path = std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf());
+    let path_str = abs_path.display().to_string();
+
+    // Convert backslashes to forward slashes
+    let normalized = path_str.replace('\\', "/");
+
+    // Ensure file:// prefix with proper formatting
+    if normalized.starts_with("file://") {
+        normalized
+    } else if cfg!(target_os = "windows") && normalized.len() > 2 && normalized.chars().nth(1) == Some(':') {
+        // Windows absolute path like C:/Users/...
+        format!("file:///{}", normalized)
+    } else if normalized.starts_with('/') {
+        // Unix absolute path
+        format!("file://{}", normalized)
+    } else {
+        // Fallback: assume file:// prefix
+        format!("file://{}", normalized)
+    }
+}
+
 /// Extract a gripspace name from its URL.
 ///
 /// Takes the last path component without `.git` suffix.
@@ -2684,5 +2715,42 @@ repos:
     #[test]
     fn test_validate_space_name_rejects_embedded_dotdot() {
         assert!(validate_space_name("a..b").is_err());
+    }
+
+    #[test]
+    fn test_path_to_file_url_unix() {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let path = std::path::PathBuf::from("/tmp/test-repo");
+            let url = path_to_file_url(&path);
+            assert!(url.starts_with("file:///"), "URL should start with file:///, got: {}", url);
+            assert!(url.contains("test-repo"), "URL should contain repo name, got: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_path_to_file_url_windows() {
+        #[cfg(target_os = "windows")]
+        {
+            let path = std::path::PathBuf::from("C:\\temp\\test-repo");
+            let url = path_to_file_url(&path);
+            assert!(url.starts_with("file:///"), "URL should start with file:///");
+            assert!(url.contains("test-repo"), "URL should contain repo name");
+            assert!(!url.contains('\\'), "URL should not contain backslashes");
+        }
+    }
+
+    #[test]
+    fn test_path_to_file_url_extracts_gripspace_name() {
+        // Verify that the extracted gripspace name is valid for filesystem use
+        let path = if cfg!(target_os = "windows") {
+            std::path::PathBuf::from("C:\\temp\\source-space")
+        } else {
+            std::path::PathBuf::from("/tmp/source-space")
+        };
+        let url = path_to_file_url(&path);
+        let name = gripspace_name(&url);
+        assert_eq!(name, "source-space", "Should extract valid gripspace name from file URL");
+        assert!(validate_space_name(&name).is_ok(), "Extracted name should be valid for gripspace");
     }
 }

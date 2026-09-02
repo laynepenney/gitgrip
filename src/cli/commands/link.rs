@@ -1138,7 +1138,7 @@ manifest:
         let pinned_sha = source_repo(&origin);
 
         let unpinned = GripspaceConfig {
-            url: origin.display().to_string(),
+            url: crate::core::gripspace::path_to_file_url(&origin),
             rev: None,
         };
         let clone = crate::core::gripspace::ensure_gripspace(&spaces, &unpinned).unwrap();
