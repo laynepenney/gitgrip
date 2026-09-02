@@ -626,11 +626,24 @@ fn run_gitgrip_command(
     let out_thread = thread::spawn(move || capture_stream(stdout, max_capture));
     let err_thread = thread::spawn(move || capture_stream(stderr, max_capture));
 
-    let cancel_status = start_cancel_controller(child.id(), cancel_flag.clone());
+    let __probe_pid = child.id();
+    let cancel_status = start_cancel_controller(__probe_pid, cancel_flag.clone());
 
+    eprintln!("[probe] child.wait enter pid={__probe_pid}");
+    let __probe_wait = std::time::Instant::now();
     let status = child.wait().context("Failed waiting for subprocess")?;
+    eprintln!(
+        "[probe] child.wait exit pid={__probe_pid} in {:?}",
+        __probe_wait.elapsed()
+    );
     cancel_status.done.store(true, Ordering::SeqCst);
+    eprintln!("[probe] join enter pid={__probe_pid}");
+    let __probe_join = std::time::Instant::now();
     let _ = cancel_status.join.join();
+    eprintln!(
+        "[probe] join exit pid={__probe_pid} in {:?}",
+        __probe_join.elapsed()
+    );
     let cancelled = cancel_status.kill_sent.load(Ordering::SeqCst);
 
     let (stdout, stdout_truncated) = out_thread
@@ -774,12 +787,19 @@ fn start_cancel_controller(pid: u32, cancel_flag: Option<Arc<AtomicBool>>) -> Ca
 // cancel path can never corrupt the response stream.
 #[cfg(unix)]
 fn kill_process(pid: u32) -> std::io::Result<()> {
+    eprintln!("[probe] kill_process(kill) enter pid={pid}");
+    let __t = std::time::Instant::now();
     let pid_s = pid.to_string();
     let status = Command::new("kill")
         .args(["-TERM", &pid_s])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
+    eprintln!(
+        "[probe] kill_process(kill -TERM) returned in {:?} success={}",
+        __t.elapsed(),
+        status.success()
+    );
     if status.success() {
         return Ok(());
     }
@@ -798,11 +818,18 @@ fn kill_process(pid: u32) -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn kill_process(pid: u32) -> std::io::Result<()> {
+    eprintln!("[probe] kill_process(taskkill) enter pid={pid}");
+    let __t = std::time::Instant::now();
     let status = Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/F"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
+    eprintln!(
+        "[probe] kill_process(taskkill) returned in {:?} success={}",
+        __t.elapsed(),
+        status.success()
+    );
     if status.success() {
         Ok(())
     } else {

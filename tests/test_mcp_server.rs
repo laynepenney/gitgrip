@@ -90,7 +90,9 @@ impl ServerHarness {
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            // PROBE ONLY (do not merge): inherit so the server's [probe] stderr
+            // timing lines reach the CI log. Normally piped-and-unread.
+            .stderr(Stdio::inherit())
             .spawn()
             .expect("spawn mcp server");
 
