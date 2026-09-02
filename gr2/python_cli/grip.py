@@ -90,6 +90,395 @@ def read_project_review_commit(workspace: Path, commit: str) -> list[dict[str, s
 
 
 # ---------------------------------------------------------------------------
+# Milestone 1.2 — the gate on gr2: review bind + verify
+#
+# A review gr commit is a project-review commit plus two subtrees: observed/
+# (the live remote head of each row's target ref at bind time) and texts/ (the
+# platform title and body, NORM: trailing newlines stripped). The gr commit id
+# is the freeze; the frozen directory and its five SHA-256s are deleted, not
+# wrapped (design/gr2-review-primitives-2026-09-02.md section 10).
+# ---------------------------------------------------------------------------
+
+_REVIEW_BIND_SCHEMA = "gr2-review-bind/v2"
+
+
+class GripReviewRefused(Exception):
+    """A bind refusal. Carries the refusal name and the two values that disagreed."""
+
+    def __init__(self, refusal: str, expected: str = "", observed: str = "") -> None:
+        self.refusal = refusal
+        self.expected = expected
+        self.observed = observed
+        detail = f": expected {expected!r}, observed {observed!r}" if expected or observed else ""
+        super().__init__(f"{refusal}{detail}")
+
+
+def _norm_text(value: str) -> str:
+    """NORM a platform text: strip trailing newlines (the freeze's own rule)."""
+    return value.rstrip("\n")
+
+
+def _remote_head(workspace: Path, remote: str, ref: str) -> str:
+    """The live head of one ref on a remote, or '' if absent. A ref name like
+    refs/heads/<branch>; ls-remote is read-only and needs no local ref."""
+    proc = _grip_git(workspace, "ls-remote", remote, ref)
+    if proc.returncode != 0:
+        raise GripReviewRefused("remote_unreadable", ref, proc.stderr.strip()[:120])
+    line = proc.stdout.strip().splitlines()
+    return line[0].split("\t", 1)[0] if line else ""
+
+
+def _head_present_on_remote(workspace: Path, remote: str, head: str) -> bool:
+    """True if the head SHA is already an object any ref on the remote points at.
+    A pre-push branch's head is present at no ref; a re-freeze of an already
+    pushed head is refused unless a prior ratify receipt is named."""
+    proc = _grip_git(workspace, "ls-remote", remote)
+    if proc.returncode != 0:
+        raise GripReviewRefused("remote_unreadable", remote, proc.stderr.strip()[:120])
+    return any(row.split("\t", 1)[0] == head for row in proc.stdout.splitlines())
+
+
+def _source_capture(source: str, *args: str) -> str:
+    """Run a read-only git command in the author's source repo and return stdout.
+
+    Bind carries the frozen set INSIDE the gr commit (decision (a), 2026-09-02):
+    the object must reconstruct a pre-push head with nothing but itself and the
+    live base, so bind derives the range, the fuller metadata, and the head tree
+    from the source that actually holds the head. Read-only; a failure refuses
+    the bind rather than writing a partial object."""
+    proc = subprocess.run(
+        ["git", "-C", source, *args], capture_output=True, text=True, check=False
+    )
+    if proc.returncode != 0:
+        raise GripReviewRefused(
+            "source_unreadable", f"{source} git {' '.join(args)}", proc.stderr.strip()[:160]
+        )
+    return proc.stdout
+
+
+def _carry_objects(workspace: Path, source: str, base: str, head: str) -> dict[str, str]:
+    """From the author's source repo, capture the range (format-patch base..head),
+    the fuller metadata (author+committer per commit), and the head tree. These
+    are the bytes the hand freeze produced by hand; here they live in the object.
+    The head tree is recorded so ``run`` can assert the reconstruction matches it
+    WITHOUT needing the pre-push head object anywhere but the range."""
+    if _source_capture(source, "rev-parse", "--verify", f"{head}^{{commit}}").strip() != head:
+        raise GripReviewRefused("source_missing_head", head, source)
+    if _source_capture(source, "rev-parse", "--verify", f"{base}^{{commit}}").strip() != base:
+        raise GripReviewRefused("source_missing_base", base, source)
+    range_patch = _source_capture(source, "format-patch", f"{base}..{head}", "--stdout")
+    if not range_patch.strip():
+        raise GripReviewRefused("empty_range", f"{base}..{head}", source)
+    metadata = _source_capture(source, "log", "--format=fuller", f"{base}..{head}")
+    head_tree = _source_capture(source, "rev-parse", f"{head}^{{tree}}").strip()
+    return {"range.patch": range_patch, "metadata": metadata, "head-tree": head_tree}
+
+
+def _run_policy_hook(policy_hook: list[str] | None, scan_items: list[tuple[str, str]]) -> str:
+    """Run the configured policy hook over the carried readable bytes.
+
+    None = OSS default, no hook, recorded as ``no-policy``. Otherwise the carried
+    range and texts are written to a temp directory and the hook is invoked with
+    that directory as its last argument; a nonzero exit REFUSES the bind (a bind
+    that carries a leak refuses like a freeze), and the clean verdict is recorded
+    in the object so a second reader can see which policy cleared it."""
+    if policy_hook is None:
+        return "no-policy"
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        for name, content in scan_items:
+            (Path(td) / name).write_text(content)
+        proc = subprocess.run(
+            [*policy_hook, td], capture_output=True, text=True, check=False
+        )
+        if proc.returncode != 0:
+            raise GripReviewRefused(
+                "policy_hook_refused", " ".join(policy_hook),
+                (proc.stdout + proc.stderr).strip()[:200],
+            )
+        return f"clean: {' '.join(policy_hook)} exit 0"
+
+
+def create_review_bind_commit(
+    workspace: Path, rows: list[dict[str, str]], *, ratified: str | None = None,
+    policy_hook: list[str] | None = None,
+) -> str:
+    """Bind a review gr commit. Each row: key, remote, path, head, base, ref, title, body.
+
+    Reads the live remote head of every row's target ref, records it under
+    observed/, and refuses BEFORE writing anything if base is not that head
+    (behind-must-be-0) or if head is already on the remote without a named
+    ratify receipt (the 2026-09-02 pre-gate-push lesson).
+
+    ``policy_hook`` is the OSS-neutral seam (design §4): a configured command
+    that receives a directory of the carried readable bytes (the range and the
+    platform texts, which is what a leak scanner must see — commit messages
+    leak, packs hide them) and refuses the bind on a nonzero exit, the way a
+    freeze refuses today. OSS ships no hook (records ``no-policy``); our config
+    points it at the leak scanner. The verdict is recorded in the object."""
+    _validate_grip_repo(workspace)
+    if not rows:
+        raise GripCorruptError("review bind requires at least one repository row")
+    entries: list[str] = []
+    observed_entries: list[str] = []
+    texts_entries: list[str] = []
+    objects_entries: list[str] = []
+    evidence_entries: list[str] = []
+    scan_items: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for row in sorted(rows, key=lambda item: item["key"]):
+        key = row.get("key", "")
+        if not key or key in seen or any(ch in key for ch in "/\\"):
+            raise GripCorruptError(f"invalid or duplicate review key: {key!r}")
+        seen.add(key)
+        remote, path, head, base, ref = (
+            row.get("remote", ""), row.get("path", ""), row.get("head", ""),
+            row.get("base", ""), row.get("ref", ""),
+        )
+        for name, value, sha in (("remote", remote, False), ("path", path, False),
+                                 ("commit", head, True), ("base", base, True), ("ref", ref, False)):
+            if not value or (sha and not _SHA40.match(value)):
+                raise GripReviewRefused("invalid_field", f"{key}/{name}", value)
+
+        # Refusal 1: base must be the live remote head of the target ref.
+        observed = _remote_head(workspace, remote, ref)
+        if base != observed:
+            raise GripReviewRefused("base_not_live_head", base, observed)
+        # Refusal 2: head must not already be on the remote (unless ratified).
+        if _head_present_on_remote(workspace, remote, head) and not ratified:
+            raise GripReviewRefused("head_already_on_remote", head, "present")
+
+        fields = [f"100644 blob {_hash_blob(workspace, v)}\t{n}"
+                  for n, v in (("remote", remote), ("path", path), ("commit", head), ("base", base))]
+        entries.append(f"040000 tree {_mktree(workspace, fields)}\t{key}")
+        observed_entries.append(
+            f"040000 tree {_mktree(workspace, [f'100644 blob {_hash_blob(workspace, observed)}\tremote-head'])}\t{key}"
+        )
+        title = _norm_text(row.get("title", ""))
+        body = _norm_text(row.get("body", ""))
+        text_fields = [f"100644 blob {_hash_blob(workspace, title)}\ttitle",
+                       f"100644 blob {_hash_blob(workspace, body)}\tbody"]
+        texts_entries.append(f"040000 tree {_mktree(workspace, text_fields)}\t{key}")
+
+        # (a): carry the frozen set inside the object. A row with a source repo
+        # carries range.patch + fuller metadata + head-tree so a pre-push head
+        # reconstructs from the object alone. Rows without a source are the
+        # legacy shape (SHAs only) and carry no objects subtree entry.
+        scan_items.append((f"{key}.title", title))
+        scan_items.append((f"{key}.body", body))
+        source = row.get("source")
+        if source:
+            obj = _carry_objects(workspace, source, base, head)
+            obj_fields = [f"100644 blob {_hash_blob(workspace, obj[n])}\t{n}"
+                          for n in ("range.patch", "metadata", "head-tree")]
+            objects_entries.append(f"040000 tree {_mktree(workspace, obj_fields)}\t{key}")
+            scan_items.append((f"{key}.range.patch", obj["range.patch"]))
+        evidence = row.get("evidence")
+        if evidence:
+            ev_fields = [f"100644 blob {_hash_blob(workspace, evidence)}\tcommands"]
+            resolution = row.get("resolution")
+            if resolution:
+                ev_fields.append(f"100644 blob {_hash_blob(workspace, resolution)}\tresolution")
+            evidence_entries.append(f"040000 tree {_mktree(workspace, ev_fields)}\t{key}")
+
+    # Policy hook (design §4): scan the carried readable bytes; refuse on a hit
+    # the way a freeze does, and record the verdict in the object.
+    policy_verdict = _run_policy_hook(policy_hook, scan_items)
+
+    repos_tree = _mktree(workspace, entries)
+    observed_tree = _mktree(workspace, observed_entries)
+    texts_tree = _mktree(workspace, texts_entries)
+    meta_tree = _mktree(workspace, [
+        f"100644 blob {_hash_blob(workspace, _REVIEW_BIND_SCHEMA)}\tschema",
+        f"100644 blob {_hash_blob(workspace, 'review')}\tkind",
+        f"100644 blob {_hash_blob(workspace, policy_verdict)}\tpolicy",
+    ])
+    root_fields = [
+        f"040000 tree {meta_tree}\t.grip",
+        f"040000 tree {observed_tree}\tobserved",
+        f"040000 tree {repos_tree}\trepos",
+        f"040000 tree {texts_tree}\ttexts",
+    ]
+    if objects_entries:
+        root_fields.append(f"040000 tree {_mktree(workspace, objects_entries)}\tobjects")
+    if evidence_entries:
+        root_fields.append(f"040000 tree {_mktree(workspace, evidence_entries)}\tevidence")
+    root_tree = _mktree(workspace, root_fields)
+    commit = _commit_tree(workspace, root_tree, parent=_current_head(workspace), message="grip review bind")
+    _grip_git(workspace, "update-ref", "HEAD", commit)
+    return commit
+
+
+def verify_review_commit(workspace: Path, commit: str) -> dict[str, object]:
+    """Re-derive the review gr commit from its own objects and report what was
+    measured: the recomputed root tree (must equal the commit's tree, else
+    corruption), and per row the remote/path/head/base, the observed remote
+    head, and the SHA-256 of each NORM'd text (the bridge to the frozen title/
+    body NORM the hand gate produced)."""
+    import hashlib
+
+    if _grip_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
+        raise GripCorruptError("not a gr2 review bind commit")
+
+    stored_tree = _grip_git(workspace, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
+    rows = _read_repo_state(workspace, commit)
+    root_paths = {
+        line.strip()
+        for line in _grip_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines()
+        if line.strip()
+    }
+    has_objects = "objects" in root_paths
+    has_evidence = "evidence" in root_paths
+    objects_keys = _tree_keys(workspace, commit, "objects") if has_objects else set()
+    evidence_keys = _tree_keys(workspace, commit, "evidence") if has_evidence else set()
+    measured: list[dict[str, str]] = []
+    recomputed_entries: list[str] = []
+    observed_recomputed: list[str] = []
+    texts_recomputed: list[str] = []
+    objects_recomputed: list[str] = []
+    evidence_recomputed: list[str] = []
+    for key, fields in sorted(rows.items()):
+        if set(fields) != {"remote", "path", "commit", "base"}:
+            raise GripCorruptError(f"invalid review repository tree: {key}")
+        observed = _grip_git(workspace, "show", f"{commit}:observed/{key}/remote-head").stdout.strip()
+        title = _grip_git(workspace, "show", f"{commit}:texts/{key}/title").stdout
+        body = _grip_git(workspace, "show", f"{commit}:texts/{key}/body").stdout
+        title_norm = _norm_text(title)
+        body_norm = _norm_text(body)
+        row_measured = {
+            "key": key, "remote": fields["remote"], "path": fields["path"],
+            "head": fields["commit"], "base": fields["base"], "observed_remote_head": observed,
+            "base_equals_observed": str(fields["base"] == observed),
+            "title_sha256": hashlib.sha256(title_norm.encode()).hexdigest(),
+            "body_sha256": hashlib.sha256(body_norm.encode()).hexdigest(),
+        }
+        # Recompute the three base subtrees from the decoded content, exactly as bind built them.
+        f = [f"100644 blob {_hash_blob(workspace, v)}\t{n}"
+             for n, v in (("remote", fields["remote"]), ("path", fields["path"]),
+                          ("commit", fields["commit"]), ("base", fields["base"]))]
+        recomputed_entries.append(f"040000 tree {_mktree(workspace, f)}\t{key}")
+        observed_recomputed.append(
+            f"040000 tree {_mktree(workspace, [f'100644 blob {_hash_blob(workspace, observed)}\tremote-head'])}\t{key}"
+        )
+        tf = [f"100644 blob {_hash_blob(workspace, title_norm)}\ttitle",
+              f"100644 blob {_hash_blob(workspace, body_norm)}\tbody"]
+        texts_recomputed.append(f"040000 tree {_mktree(workspace, tf)}\t{key}")
+
+        # (a): the carried frozen set. head-tree is what run asserts the
+        # reconstruction against; range/metadata are the readable bytes the
+        # leak scanner and reviewer see.
+        if key in objects_keys:
+            rng = _grip_git(workspace, "show", f"{commit}:objects/{key}/range.patch").stdout
+            meta = _grip_git(workspace, "show", f"{commit}:objects/{key}/metadata").stdout
+            head_tree = _grip_git(workspace, "show", f"{commit}:objects/{key}/head-tree").stdout.strip()
+            of = [f"100644 blob {_hash_blob(workspace, v)}\t{n}"
+                  for n, v in (("range.patch", rng), ("metadata", meta), ("head-tree", head_tree))]
+            objects_recomputed.append(f"040000 tree {_mktree(workspace, of)}\t{key}")
+            row_measured["head_tree"] = head_tree
+            row_measured["range_sha256"] = hashlib.sha256(rng.encode()).hexdigest()
+        if key in evidence_keys:
+            ev_paths = _tree_keys(workspace, commit, f"evidence/{key}")
+            ef = []
+            for name in ("commands", "resolution"):
+                if name in ev_paths:
+                    content = _grip_git(workspace, "show", f"{commit}:evidence/{key}/{name}").stdout
+                    ef.append(f"100644 blob {_hash_blob(workspace, content)}\t{name}")
+            evidence_recomputed.append(f"040000 tree {_mktree(workspace, ef)}\t{key}")
+
+        measured.append(row_measured)
+
+    policy = _grip_git(workspace, "show", f"{commit}:.grip/policy").stdout
+    meta_tree = _mktree(workspace, [
+        f"100644 blob {_hash_blob(workspace, _REVIEW_BIND_SCHEMA)}\tschema",
+        f"100644 blob {_hash_blob(workspace, 'review')}\tkind",
+        f"100644 blob {_hash_blob(workspace, policy)}\tpolicy",
+    ])
+    root_fields = [
+        f"040000 tree {meta_tree}\t.grip",
+        f"040000 tree {_mktree(workspace, observed_recomputed)}\tobserved",
+        f"040000 tree {_mktree(workspace, recomputed_entries)}\trepos",
+        f"040000 tree {_mktree(workspace, texts_recomputed)}\ttexts",
+    ]
+    if objects_recomputed:
+        root_fields.append(f"040000 tree {_mktree(workspace, objects_recomputed)}\tobjects")
+    if evidence_recomputed:
+        root_fields.append(f"040000 tree {_mktree(workspace, evidence_recomputed)}\tevidence")
+    recomputed_tree = _mktree(workspace, root_fields)
+    return {
+        "commit": commit,
+        "stored_tree": stored_tree,
+        "recomputed_tree": recomputed_tree,
+        "tree_matches": stored_tree == recomputed_tree,
+        "rows": measured,
+    }
+
+
+def _tree_keys(workspace: Path, commit: str, path: str) -> set[str]:
+    """The immediate child names of a subtree in a gr commit (empty if absent)."""
+    proc = _grip_git(workspace, "ls-tree", "--name-only", f"{commit}:{path}")
+    if proc.returncode != 0:
+        return set()
+    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+
+
+def reconstruct_review_lane(
+    workspace: Path, commit: str, key: str, lane_dir: Path
+) -> dict[str, str]:
+    """Materialize a bound row's head by reconstruction, decision (a).
+
+    Clone the recorded remote, check out the recorded BASE (the live remote head
+    at bind), ``git am`` the carried range, and assert the resulting tree equals
+    the bound head-tree. The reconstruction never needs the pre-push head object
+    anywhere but the carried range; a tree mismatch is a REFUSAL, raised before
+    ``run`` executes a single check (a check over a tree that is not the reviewed
+    tree is a finding about the wrong bytes). Commit identity is irrelevant here
+    because the assertion is on the TREE, not the head SHA."""
+    if key not in _tree_keys(workspace, commit, "objects"):
+        raise GripReviewRefused("row_carries_no_objects", key, "reconstruction needs a carried range")
+    repo = _read_repo_state(workspace, commit)[key]
+    remote, base, bound_head = repo["remote"], repo["base"], repo["commit"]
+    head_tree_expected = _grip_git(workspace, "show", f"{commit}:objects/{key}/head-tree").stdout.strip()
+
+    lane_dir = Path(lane_dir)
+    lane_dir.parent.mkdir(parents=True, exist_ok=True)
+    range_file = lane_dir.parent / f".{key}.range.patch"
+    range_file.write_text(_grip_git(workspace, "show", f"{commit}:objects/{key}/range.patch").stdout)
+
+    def _lg(*args: str, allow_fail: bool = False) -> subprocess.CompletedProcess[str]:
+        proc = subprocess.run(
+            ["git", "-c", "user.name=grip-review", "-c", "user.email=review@grip", "-C",
+             str(lane_dir), *args],
+            capture_output=True, text=True, check=False,
+        )
+        if proc.returncode != 0 and not allow_fail:
+            raise GripReviewRefused("reconstruct_failed", " ".join(args), proc.stderr.strip()[:160])
+        return proc
+
+    clone = subprocess.run(
+        ["git", "clone", "--quiet", remote, str(lane_dir)],
+        capture_output=True, text=True, check=False,
+    )
+    if clone.returncode != 0:
+        raise GripReviewRefused("clone_failed", remote, clone.stderr.strip()[:160])
+    if _lg("rev-parse", "--verify", f"{base}^{{commit}}", allow_fail=True).returncode != 0:
+        raise GripReviewRefused("base_unreachable_on_remote", base, remote)
+    _lg("checkout", "--detach", base)
+    _lg("am", str(range_file))
+
+    reconstructed_head = _lg("rev-parse", "HEAD").stdout.strip()
+    reconstructed_tree = _lg("rev-parse", "HEAD^{tree}").stdout.strip()
+    if reconstructed_tree != head_tree_expected:
+        raise GripReviewRefused("tree_mismatch", head_tree_expected, reconstructed_tree)
+    return {
+        "lane": str(lane_dir),
+        "bound_head": bound_head,
+        "reconstructed_head": reconstructed_head,
+        "bound_head_tree": head_tree_expected,
+        "reconstructed_tree": reconstructed_tree,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
