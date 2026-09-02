@@ -32,8 +32,11 @@ fn every_release_path_depends_on_ci() {
 #[test]
 fn crates_publish_runs_package_verification() {
     assert!(
-        RELEASE_WORKFLOW.contains("run: cargo publish --allow-dirty"),
-        "cargo publish must retain its build-and-test verification"
+        RELEASE_WORKFLOW.contains("run: cargo publish --locked"),
+        "cargo publish must run with --locked so a Cargo.lock drift fails the \
+         publish loudly instead of silently regenerating the lock (changed from \
+         --allow-dirty in 8ca60c2; publish-crates is a fresh checkout with no \
+         build step, so the tree is clean at publish time)"
     );
     assert!(
         !RELEASE_WORKFLOW.contains("cargo publish --no-verify"),
