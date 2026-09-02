@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -128,7 +129,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test --all-features
+        # --no-fail-fast so ONE run surfaces every failing test binary. Without
+        # it cargo stops at the first failing binary, and a later binary's
+        # failure is invisible until the earlier one is fixed and the run
+        # repeated — which is exactly how a Windows-only fixture bug hid a second
+        # same-class bug in a binary that never ran (grip promote ci-green).
+        run: cargo test --all-features --no-fail-fast
 
   test-windows:
     name: Test (windows-latest)
@@ -163,7 +169,9 @@ jobs:
           RUSTFLAGS: '-C link-arg=advapi32.lib -C link-arg=/STACK:8388608'
 
       - name: Run tests
-        run: cargo test --all-features
+        # --no-fail-fast: see the matrix job's note. On Windows especially, one
+        # run must surface every failing binary rather than stopping at the first.
+        run: cargo test --all-features --no-fail-fast
         env:
           RUSTFLAGS: '-C link-arg=advapi32.lib -C link-arg=/STACK:8388608'
 

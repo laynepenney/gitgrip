@@ -5,8 +5,11 @@
 
 use crate::cli::output::Output;
 use colored::Colorize;
-use serde::Deserialize;
+use fs2::FileExt;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -57,6 +60,10 @@ pub struct SpawnGlobal {
     /// Org ID for the agent registry. Defaults to session_name if not set.
     #[serde(default)]
     pub org_id: Option<String>,
+    /// Opaque recipient-owned store coordinate published to the routing file.
+    /// Defaults to `org_id`, then `session_name`.
+    #[serde(default)]
+    pub store_coordinate: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -213,6 +220,168 @@ fn sorted_agent_names(agents: &HashMap<String, AgentConfig>) -> Vec<String> {
     let mut names: Vec<String> = agents.keys().cloned().collect();
     names.sort();
     names
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct AgentRoutingRecord {
+    gripspace: String,
+    qualified_alias: String,
+    agent_id: String,
+    store_coordinate: String,
+    target: String,
+    runtime: String,
+}
+
+fn routing_file_path() -> Option<PathBuf> {
+    std::env::var_os("SYNAPT_AGENT_PANES_FILE")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn build_routing_records(
+    config: &SpawnConfig,
+    agent_ids: &HashMap<String, String>,
+) -> anyhow::Result<Vec<AgentRoutingRecord>> {
+    let gripspace = config
+        .spawn
+        .org_id
+        .as_deref()
+        .unwrap_or(&config.spawn.session_name);
+    let store_coordinate = config
+        .spawn
+        .store_coordinate
+        .as_deref()
+        .unwrap_or(gripspace);
+    sorted_agent_names(&config.agents)
+        .into_iter()
+        .map(|name| {
+            let agent_id = agent_ids.get(&name).ok_or_else(|| {
+                anyhow::anyhow!("stable agent ID was not resolved for configured agent {name}")
+            })?;
+            Ok(AgentRoutingRecord {
+                gripspace: gripspace.to_string(),
+                qualified_alias: format!("{}:{}", gripspace, name),
+                agent_id: agent_id.clone(),
+                store_coordinate: store_coordinate.to_string(),
+                target: format!("{}:{}", config.spawn.session_name, name),
+                runtime: config.agents[&name].tool.clone(),
+            })
+        })
+        .collect()
+}
+
+fn routing_entry_gripspace(value: &Value) -> Option<&str> {
+    value.get("gripspace").and_then(Value::as_str).or_else(|| {
+        value
+            .get("target")
+            .and_then(Value::as_str)
+            .and_then(|target| target.split_once(':').map(|(owner, _)| owner))
+    })
+}
+
+fn qualified_alias_from_entry(key: &str, value: &Value) -> Option<String> {
+    if key.contains(':') {
+        return Some(key.to_string());
+    }
+    value
+        .get("qualified_alias")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("target").and_then(Value::as_str))
+        .filter(|alias| alias.contains(':'))
+        .map(str::to_string)
+}
+
+fn merge_routing_records(
+    existing: Value,
+    gripspace: &str,
+    records: &[AgentRoutingRecord],
+) -> anyhow::Result<Value> {
+    let existing = existing
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("routing file must contain a JSON object"))?;
+    let mut qualified = serde_json::Map::new();
+
+    for (key, value) in existing {
+        if routing_entry_gripspace(value) == Some(gripspace) {
+            continue;
+        }
+        if let Some(alias) = qualified_alias_from_entry(key, value) {
+            qualified.entry(alias).or_insert_with(|| value.clone());
+        } else {
+            qualified.insert(key.clone(), value.clone());
+        }
+    }
+
+    for record in records {
+        qualified.insert(
+            record.qualified_alias.clone(),
+            serde_json::to_value(record)?,
+        );
+    }
+
+    let mut bare_counts: HashMap<String, usize> = HashMap::new();
+    for key in qualified.keys().filter(|key| key.contains(':')) {
+        let bare = key.split_once(':').expect("checked above").1.to_string();
+        *bare_counts.entry(bare).or_default() += 1;
+    }
+
+    let aliases: Vec<(String, Value)> = qualified
+        .iter()
+        .filter_map(|(key, value)| {
+            let (_, bare) = key.split_once(':')?;
+            (bare_counts.get(bare) == Some(&1)).then(|| (bare.to_string(), value.clone()))
+        })
+        .collect();
+    for (bare, value) in aliases {
+        qualified.insert(bare, value);
+    }
+
+    Ok(Value::Object(qualified))
+}
+
+fn atomic_upsert_routing_file(
+    path: &Path,
+    gripspace: &str,
+    records: &[AgentRoutingRecord],
+) -> anyhow::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        anyhow::anyhow!("routing file has no parent directory: {}", path.display())
+    })?;
+    std::fs::create_dir_all(parent)?;
+
+    let lock_path = parent.join(format!(
+        ".{}.lock",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("agent-routing")
+    ));
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    lock.lock_exclusive()?;
+
+    let existing = match std::fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str(&raw)
+            .map_err(|error| anyhow::anyhow!("failed to parse {}: {}", path.display(), error))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Value::Object(serde_json::Map::new())
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let merged = merge_routing_records(existing, gripspace, records)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    serde_json::to_writer_pretty(&mut temporary, &merged)?;
+    temporary.write_all(b"\n")?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    if let Ok(directory) = OpenOptions::new().read(true).open(parent) {
+        let _ = directory.sync_all();
+    }
+    FileExt::unlock(&lock)?;
+    Ok(())
 }
 
 fn agent_window_tmux_options() -> [(&'static str, &'static str); 2] {
@@ -438,13 +607,12 @@ pub fn run_spawn_up(
     let (config, workspace_root) = load_config(config_path.as_deref())?;
     let session = &config.spawn.session_name;
     let mock_mode = force_mock || config.spawn.mock_launch;
-
-    // Ensure tmux session exists
-    if !session_exists(session) {
-        create_session(session)?;
-        Output::info(&format!("Created tmux session '{}'", session));
-    }
-
+    let gripspace = config
+        .spawn
+        .org_id
+        .as_deref()
+        .unwrap_or(&config.spawn.session_name);
+    let org_dir = crate::core::agent_registry::org_dir(gripspace);
     let names = sorted_agent_names(&config.agents);
     let targets: Vec<&str> = match &agent_filter {
         Some(name) => {
@@ -457,8 +625,40 @@ pub fn run_spawn_up(
             }
             vec![name.as_str()]
         }
-        None => names.iter().map(|s| s.as_str()).collect(),
+        None => names.iter().map(|name| name.as_str()).collect(),
     };
+    let mut agent_ids = HashMap::new();
+    for name in &names {
+        let agent = &config.agents[name];
+        let agent_id =
+            match crate::core::agent_registry::get_agent_by_name(&org_dir, gripspace, name)? {
+                Some(entry) => entry.agent_id,
+                None => crate::core::agent_registry::register_agent(
+                    &org_dir,
+                    gripspace,
+                    name,
+                    Some(&agent.role),
+                )?,
+            };
+        agent_ids.insert(name.clone(), agent_id);
+    }
+
+    if let Some(path) = routing_file_path() {
+        let records = build_routing_records(&config, &agent_ids)?;
+        atomic_upsert_routing_file(&path, gripspace, &records).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to refresh configured agent routing file {}: {}",
+                path.display(),
+                error
+            )
+        })?;
+    }
+
+    // Ensure tmux session exists
+    if !session_exists(session) {
+        create_session(session)?;
+        Output::info(&format!("Created tmux session '{}'", session));
+    }
 
     println!();
     Output::header(&format!(
@@ -490,38 +690,28 @@ pub fn run_spawn_up(
                 .status();
         }
 
-        // Register agent in org registry and get stable ID (#510)
-        let org_id = config
-            .spawn
-            .org_id
-            .as_deref()
-            .unwrap_or(&config.spawn.session_name);
-        let org_dir = crate::core::agent_registry::org_dir(org_id);
-        let agent_id = match crate::core::agent_registry::get_agent_by_name(&org_dir, org_id, name)
-        {
-            Ok(Some(entry)) => entry.agent_id,
-            _ => {
-                match crate::core::agent_registry::register_agent(
-                    &org_dir,
-                    org_id,
-                    name,
-                    Some(&agent.role),
-                ) {
-                    Ok(id) => id,
-                    Err(e) => {
-                        Output::warning(&format!("Failed to register agent '{}': {}", name, e));
-                        format!("{}-000", name.to_lowercase())
-                    }
-                }
-            }
-        };
+        // Stable IDs were resolved before any pane or routing-file mutation.
+        let agent_id = agent_ids[*name].clone();
+
+        let worktree_path = resolve_worktree_path(&workspace_root, &agent.worktree);
 
         // Build environment variables for the launch script — GRIPSPACE_ROOT +
-        // SYNAPT_AGENT_ID first (#418, #510), then config/env overrides.
+        // stable identity/recall namespace first, then config/env overrides.
+        // The namespace describes the agent's desk, not whichever child
+        // repository the runtime enters during a turn.
         let grip_root = workspace_root.display();
         let mut launch_env = HashMap::new();
         launch_env.insert("GRIPSPACE_ROOT".to_string(), grip_root.to_string());
         launch_env.insert("SYNAPT_AGENT_ID".to_string(), agent_id.clone());
+        launch_env.insert("SYNAPT_AGENT_NAME".to_string(), name.to_string());
+        launch_env.insert(
+            "SYNAPT_RECALL_WORKTREE".to_string(),
+            worktree_path
+                .file_name()
+                .and_then(|part| part.to_str())
+                .unwrap_or(name)
+                .to_string(),
+        );
         launch_env.insert("AGENT_NAME".to_string(), name.to_string());
         launch_env.insert("AGENT_ROLE".to_string(), agent.role.clone());
         launch_env.insert("SYNAPT_CHANNELS".to_string(), channel.to_string());
@@ -532,7 +722,6 @@ pub fn run_spawn_up(
         launch_env.extend(config.spawn.env.clone());
         launch_env.extend(agent.env.clone());
 
-        let worktree_path = resolve_worktree_path(&workspace_root, &agent.worktree);
         let codex_startup_prompt = if !mock_mode && agent.tool == "codex" {
             read_agent_startup_prompt(&workspace_root, agent).map_err(|e| {
                 anyhow::anyhow!("failed to load Codex startup prompt for {}: {}", name, e)
@@ -625,9 +814,10 @@ pub fn run_spawn_up(
             parts.extend(resolved_defaults.iter().cloned());
             parts.extend(model_inject.iter().cloned());
             parts.extend(resolved_args.iter().cloned());
-            parts.extend(codex_developer_instruction_args(&codex_startup_prompt));
-
-            (shell_join(&parts), Some(expected_process_name(binary)))
+            (
+                finalize_launch_command(parts, &agent.tool, &codex_startup_prompt, &launch_env),
+                Some(expected_process_name(binary)),
+            )
         };
 
         let launch_script = write_launch_script(
@@ -782,6 +972,47 @@ fn codex_developer_instruction_args(startup_prompt: &str) -> Vec<String> {
         "--config".to_string(),
         format!("developer_instructions={value}"),
     ]
+}
+
+/// Carry the agent's stable identity across Codex's MCP process boundary.
+///
+/// Codex starts configured stdio MCP servers itself. `mcp_servers.<id>.env`
+/// is the documented literal environment map for that child process. Keep the
+/// bridge deliberately narrower than the outer launch environment so API keys
+/// and other agent-local values never become Codex configuration arguments.
+fn codex_synapt_mcp_env_args(launch_env: &HashMap<String, String>) -> Vec<String> {
+    const KEYS: &[&str] = &[
+        "SYNAPT_AGENT_ID",
+        "SYNAPT_AGENT_NAME",
+        "SYNAPT_RECALL_ROOT",
+        "SYNAPT_RECALL_WORKTREE",
+    ];
+
+    let mut args = Vec::new();
+    for key in KEYS {
+        let Some(value) = launch_env.get(*key).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        args.push("--config".to_string());
+        args.push(format!(
+            "mcp_servers.synapt.env.{key}={}",
+            toml::Value::String(value.clone())
+        ));
+    }
+    args
+}
+
+fn finalize_launch_command(
+    mut parts: Vec<String>,
+    agent_tool: &str,
+    codex_startup_prompt: &str,
+    launch_env: &HashMap<String, String>,
+) -> String {
+    parts.extend(codex_developer_instruction_args(codex_startup_prompt));
+    if agent_tool == "codex" {
+        parts.extend(codex_synapt_mcp_env_args(launch_env));
+    }
+    shell_join(&parts)
 }
 
 fn generate_synapt_startup_context(
@@ -1681,6 +1912,135 @@ pub fn run_spawn_web(port: u16, no_open: bool, _quiet: bool) -> anyhow::Result<(
 mod tests {
     use super::*;
 
+    fn routing_record(
+        gripspace: &str,
+        name: &str,
+        agent_id: &str,
+        runtime: &str,
+    ) -> AgentRoutingRecord {
+        AgentRoutingRecord {
+            gripspace: gripspace.into(),
+            qualified_alias: format!("{}:{}", gripspace, name),
+            agent_id: agent_id.into(),
+            store_coordinate: format!("store-{}", gripspace),
+            target: format!("{}:{}", gripspace, name),
+            runtime: runtime.into(),
+        }
+    }
+
+    #[test]
+    fn test_routing_upsert_replaces_owned_records_and_preserves_other_gripspaces() {
+        let existing = serde_json::json!({
+            "apollo": {"target": "synapt:apollo", "runtime": "claude"},
+            "anchor": {"target": "conversa:anchor", "runtime": "claude"}
+        });
+        let merged = merge_routing_records(
+            existing,
+            "synapt",
+            &[routing_record("synapt", "apollo", "apollo-001", "codex")],
+        )
+        .unwrap();
+
+        assert_eq!(merged["synapt:apollo"]["runtime"], "codex");
+        assert_eq!(merged["synapt:apollo"]["agent_id"], "apollo-001");
+        assert_eq!(merged["synapt:apollo"]["store_coordinate"], "store-synapt");
+        assert_eq!(merged["apollo"], merged["synapt:apollo"]);
+        assert_eq!(merged["conversa:anchor"]["runtime"], "claude");
+        assert_eq!(merged["anchor"], merged["conversa:anchor"]);
+    }
+
+    #[test]
+    fn test_routing_upsert_rejects_ambiguous_bare_alias_by_omission() {
+        let existing = serde_json::json!({
+            "conversa:reviewer": {
+                "gripspace": "conversa",
+                "qualified_alias": "conversa:reviewer",
+                "agent_id": "reviewer-002",
+                "store_coordinate": "opaque-conversa",
+                "target": "conversa:reviewer",
+                "runtime": "claude"
+            }
+        });
+        let merged = merge_routing_records(
+            existing,
+            "synapt",
+            &[routing_record(
+                "synapt",
+                "reviewer",
+                "reviewer-001",
+                "codex",
+            )],
+        )
+        .unwrap();
+
+        assert!(merged.get("reviewer").is_none());
+        assert!(merged.get("synapt:reviewer").is_some());
+        assert!(merged.get("conversa:reviewer").is_some());
+    }
+
+    #[test]
+    fn test_routing_file_concurrent_upserts_preserve_both_gripspaces() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("agent-panes.json");
+        let first_path = path.clone();
+        let second_path = path.clone();
+
+        let first = std::thread::spawn(move || {
+            atomic_upsert_routing_file(
+                &first_path,
+                "synapt",
+                &[routing_record("synapt", "apollo", "apollo-001", "codex")],
+            )
+        });
+        let second = std::thread::spawn(move || {
+            atomic_upsert_routing_file(
+                &second_path,
+                "conversa",
+                &[routing_record("conversa", "anchor", "anchor-001", "claude")],
+            )
+        });
+
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+        let value: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(value["synapt:apollo"]["runtime"], "codex");
+        assert_eq!(value["conversa:anchor"]["runtime"], "claude");
+    }
+
+    #[test]
+    fn test_spawn_config_generates_runtime_identity_and_opaque_store_routing_record() {
+        let mut agent = make_agent("gpt-5.6-sol", vec![]);
+        agent.tool = "codex".into();
+        let config = SpawnConfig {
+            spawn: SpawnGlobal {
+                session_name: "synapt-live".into(),
+                channel: "dev".into(),
+                auto_journal: false,
+                mock_launch: false,
+                env: HashMap::new(),
+                org_id: Some("synapt".into()),
+                store_coordinate: Some("opaque-coordinate-7".into()),
+            },
+            tools: HashMap::new(),
+            agents: HashMap::from([("sentinel".into(), agent)]),
+        };
+        let ids = HashMap::from([("sentinel".into(), "sentinel-001".into())]);
+
+        let records = build_routing_records(&config, &ids).unwrap();
+
+        assert_eq!(
+            records,
+            vec![AgentRoutingRecord {
+                gripspace: "synapt".into(),
+                qualified_alias: "synapt:sentinel".into(),
+                agent_id: "sentinel-001".into(),
+                store_coordinate: "opaque-coordinate-7".into(),
+                target: "synapt-live:sentinel".into(),
+                runtime: "codex".into(),
+            }]
+        );
+    }
+
     fn make_agent(model: &str, args: Vec<&str>) -> AgentConfig {
         AgentConfig {
             role: "test".into(),
@@ -1904,6 +2264,137 @@ mod tests {
     fn test_codex_developer_instructions_skip_empty_prompt() {
         assert!(codex_developer_instruction_args("").is_empty());
         assert!(codex_developer_instruction_args("  \n").is_empty());
+    }
+
+    fn synapt_env_value(override_arg: &str, key: &str) -> Option<String> {
+        let parsed = override_arg.parse::<toml::Table>().unwrap();
+        parsed
+            .get("mcp_servers")?
+            .get("synapt")?
+            .get("env")?
+            .get(key)?
+            .as_str()
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn test_codex_synapt_mcp_env_is_allowlisted_and_toml_quoted() {
+        let special_name = concat!(
+            "Sentinel's \"night\" watch\\desk\n",
+            "$(touch must-not-run) `touch must-not-run-either` 🦉"
+        );
+        let env = HashMap::from([
+            ("SYNAPT_AGENT_ID".to_string(), "sentinel-001".to_string()),
+            ("SYNAPT_AGENT_NAME".to_string(), special_name.to_string()),
+            (
+                "SYNAPT_RECALL_ROOT".to_string(),
+                "/tmp/recall root".to_string(),
+            ),
+            (
+                "SYNAPT_RECALL_WORKTREE".to_string(),
+                "synapt-global".to_string(),
+            ),
+            (
+                "OPENAI_API_KEY".to_string(),
+                "dummy-secret-that-must-not-cross".to_string(),
+            ),
+            ("EMPTY_ALLOWED_VALUE".to_string(), String::new()),
+        ]);
+
+        let args = codex_synapt_mcp_env_args(&env);
+
+        assert_eq!(args.len(), 8);
+        assert_eq!(args.iter().filter(|arg| *arg == "--config").count(), 4);
+        assert_eq!(
+            synapt_env_value(&args[1], "SYNAPT_AGENT_ID"),
+            Some("sentinel-001".to_string())
+        );
+        assert_eq!(
+            synapt_env_value(&args[3], "SYNAPT_AGENT_NAME"),
+            Some(special_name.to_string())
+        );
+        assert_eq!(
+            synapt_env_value(&args[5], "SYNAPT_RECALL_ROOT"),
+            Some("/tmp/recall root".to_string())
+        );
+        assert_eq!(
+            synapt_env_value(&args[7], "SYNAPT_RECALL_WORKTREE"),
+            Some("synapt-global".to_string())
+        );
+        let rendered = args.join(" ");
+        assert!(!rendered.contains("OPENAI_API_KEY"));
+        assert!(!rendered.contains("dummy-secret-that-must-not-cross"));
+        assert!(!rendered.contains("EMPTY_ALLOWED_VALUE"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_codex_synapt_mcp_override_survives_launch_shell_quoting() {
+        let special_name = "Sentinel's \"night\" watch\\desk\n$(printf injected)";
+        let env = HashMap::from([("SYNAPT_AGENT_NAME".to_string(), special_name.to_string())]);
+        let args = codex_synapt_mcp_env_args(&env);
+        let command = shell_join(&["printf".to_string(), "%s".to_string(), args[1].clone()]);
+
+        let output = Command::new("sh").args(["-c", &command]).output().unwrap();
+
+        assert!(output.status.success());
+        let transported = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(transported, args[1]);
+        assert_eq!(
+            synapt_env_value(&transported, "SYNAPT_AGENT_NAME"),
+            Some(special_name.to_string())
+        );
+    }
+
+    #[test]
+    fn test_generated_codex_launch_command_contains_synapt_mcp_identity_bridge() {
+        let env = HashMap::from([
+            ("SYNAPT_AGENT_ID".to_string(), "sentinel-001".to_string()),
+            ("SYNAPT_AGENT_NAME".to_string(), "sentinel".to_string()),
+            (
+                "SYNAPT_RECALL_WORKTREE".to_string(),
+                "synapt-global".to_string(),
+            ),
+        ]);
+        let base = vec![
+            "codex".to_string(),
+            "resume".to_string(),
+            "--last".to_string(),
+        ];
+
+        let command = finalize_launch_command(base, "codex", "You are Sentinel.", &env);
+
+        assert_eq!(
+            command,
+            shell_join(&[
+                "codex".to_string(),
+                "resume".to_string(),
+                "--last".to_string(),
+                "--config".to_string(),
+                "developer_instructions=\"You are Sentinel.\"".to_string(),
+                "--config".to_string(),
+                "mcp_servers.synapt.env.SYNAPT_AGENT_ID=\"sentinel-001\"".to_string(),
+                "--config".to_string(),
+                "mcp_servers.synapt.env.SYNAPT_AGENT_NAME=\"sentinel\"".to_string(),
+                "--config".to_string(),
+                "mcp_servers.synapt.env.SYNAPT_RECALL_WORKTREE=\"synapt-global\"".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_non_codex_launch_command_never_receives_codex_mcp_overrides() {
+        let env = HashMap::from([("SYNAPT_AGENT_ID".to_string(), "apollo-001".to_string())]);
+
+        let command = finalize_launch_command(
+            vec!["claude".to_string(), "--resume".to_string()],
+            "claude",
+            "",
+            &env,
+        );
+
+        assert_eq!(command, "'claude' '--resume'");
+        assert!(!command.contains("mcp_servers"));
     }
 
     #[test]

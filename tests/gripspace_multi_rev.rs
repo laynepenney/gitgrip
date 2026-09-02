@@ -46,10 +46,19 @@ fn git(dir: &Path, args: &[&str]) {
 ///   `extras`    — fragment MARKER-EXTRAS-b17c
 /// The manifest declares the SAME url as two gripspaces at the two revs and
 /// composes one CLAUDE.md from both plus the local part.
-fn build_one_repo_two_gripspace_origin(root: &Path) -> String {
+fn build_one_repo_two_gripspace_origin(root: &Path, bare_initial_branch: &str) -> String {
     let bare = root.join("frag.git");
-    git(root, &["init", "--bare", "frag.git"]);
-    let url = format!("file://{}", bare.display());
+    let initial_branch = format!("--initial-branch={bare_initial_branch}");
+    git(root, &["init", "--bare", &initial_branch, "frag.git"]);
+    // Build the file:// URL through the production helper, not a hand-rolled
+    // copy. This fixture previously inlined the URL logic, and that copy still
+    // carried the pre-fix bug std::fs::canonicalize returns a verbatim
+    // `\\?\C:\…` path on Windows, which the naive `\`→`/` + `nth(1)==':'` check
+    // mangled into `file:////?/C:/…` — an unclonable URL. It failed only on the
+    // Windows runner (canonicalize yields no verbatim prefix off Windows), which
+    // is exactly why the inline copy survived when the production function was
+    // fixed. One implementation, exercised on every platform, cannot drift again.
+    let url = gitgrip::core::gripspace::path_to_file_url(&bare);
 
     let w = root.join("seed");
     std::fs::create_dir_all(&w).unwrap();
@@ -103,6 +112,7 @@ repos:
     git(&w, &["add", "-A"]);
     git(&w, &["commit", "-m", "manifest root"]);
     git(&w, &["push", &url, "standards", "extras", "main"]);
+    git(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
 
     url
 }
@@ -129,7 +139,7 @@ fn workspace_dir(parent: &Path) -> std::path::PathBuf {
 #[test]
 fn two_revs_of_one_repo_materialize_as_two_spaces_and_both_compose() {
     let tmp = TempDir::new().unwrap();
-    let url = build_one_repo_two_gripspace_origin(tmp.path());
+    let url = build_one_repo_two_gripspace_origin(tmp.path(), "main");
     let ws_parent = tmp.path().join("ws");
     std::fs::create_dir_all(&ws_parent).unwrap();
 
@@ -184,7 +194,7 @@ fn two_revs_of_one_repo_materialize_as_two_spaces_and_both_compose() {
 #[test]
 fn sync_reuses_both_spaces_instead_of_proliferating() {
     let tmp = TempDir::new().unwrap();
-    let url = build_one_repo_two_gripspace_origin(tmp.path());
+    let url = build_one_repo_two_gripspace_origin(tmp.path(), "main");
     let ws_parent = tmp.path().join("ws");
     std::fs::create_dir_all(&ws_parent).unwrap();
     gr().args(["init", &url])
@@ -217,6 +227,27 @@ fn sync_reuses_both_spaces_instead_of_proliferating() {
     assert!(claude.contains("MARKER-EXTRAS-b17c"));
 }
 
+/// Regression control for the CI environment: a bare repository initialized
+/// with `master` as its default still clones the pushed `main` manifest because
+/// the fixture sets the origin's symbolic HEAD explicitly.
+#[test]
+fn fixture_origin_is_cloneable_when_bare_git_defaults_to_master() {
+    let tmp = TempDir::new().unwrap();
+    let url = build_one_repo_two_gripspace_origin(tmp.path(), "master");
+    let ws_parent = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws_parent).unwrap();
+
+    gr().args(["init", &url])
+        .current_dir(&ws_parent)
+        .assert()
+        .success();
+
+    let ws = workspace_dir(&ws_parent);
+    let claude = std::fs::read_to_string(ws.join("CLAUDE.md"))
+        .expect("main manifest composes after cloning the explicit origin HEAD");
+    assert!(claude.contains("MARKER-LOCAL-c29d"));
+}
+
 /// Discriminating control: the fix must key on url+rev, not "always allocate a
 /// new space". The SAME url at the SAME rev declared twice still collapses to
 /// one space — if this test fails while the others pass, the implementation
@@ -226,8 +257,15 @@ fn same_url_same_rev_twice_still_yields_one_space() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     let bare = root.join("frag.git");
-    git(root, &["init", "--bare", "frag.git"]);
-    let url = format!("file://{}", bare.display());
+    git(
+        root,
+        &["init", "--bare", "--initial-branch=master", "frag.git"],
+    );
+    // Through the production helper: a raw `file://{display}` is `file://C:\…`
+    // on Windows, and gripspace_name() splits on `/` only, so the name never
+    // resolves to "frag" and the dedup assertion sees an empty set. The helper
+    // yields forward-slash `file:///C:/…`. No-op off Windows.
+    let url = gitgrip::core::gripspace::path_to_file_url(&bare);
 
     let w = root.join("seed");
     std::fs::create_dir_all(&w).unwrap();
@@ -262,6 +300,7 @@ repos:
     git(&w, &["add", "-A"]);
     git(&w, &["commit", "-m", "manifest"]);
     git(&w, &["push", &url, "standards", "main"]);
+    git(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
 
     let ws_parent = root.join("ws");
     std::fs::create_dir_all(&ws_parent).unwrap();

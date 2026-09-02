@@ -34,15 +34,18 @@ a cold cache cannot fail the timed path, which means a declared reference is a
 CLAIM the executor must verify positively afterwards. Passing the flag is not
 evidence the alternate exists.
 """
+
 from __future__ import annotations
 
 import dataclasses
 import hashlib
 import os
+import re
 import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from . import gitops
@@ -98,6 +101,8 @@ _CLONE_LOCAL_GIT_ENTRIES = (
     "logs",
     "packed-refs",
 )
+
+_SHA40 = re.compile(r"\A[0-9a-f]{40}\Z")
 
 
 def _alternates_file(clone_root: Path) -> Path:
@@ -212,9 +217,7 @@ def _read_alternate_entries(clone_root: Path) -> set[Path]:
     return _read_alternates_of(clone_root / ".git" / "objects")
 
 
-def verify_cache_provenance(
-    cache_root: Path, *, workspace_root: Path, repo_url: str
-) -> None:
+def verify_cache_provenance(cache_root: Path, *, workspace_root: Path, repo_url: str) -> None:
     """Section 8.2: object sharing is permitted ONLY against the workspace-managed
     cache, seeded from the declared upstream.
 
@@ -345,8 +348,7 @@ def verify_clone_isolation(
     actual_url = gitops.remote_origin_url(clone_root)
     if actual_url != repo_url:
         raise CloneExecutionError(
-            f"clone at {clone_root} has origin {actual_url!r}, not the declared "
-            f"{repo_url!r}"
+            f"clone at {clone_root} has origin {actual_url!r}, not the declared {repo_url!r}"
         )
 
     entries = _read_alternate_entries(clone_root)
@@ -359,9 +361,7 @@ def verify_clone_isolation(
             )
         return
 
-    verify_cache_provenance(
-        reference_base, workspace_root=workspace_root, repo_url=repo_url
-    )
+    verify_cache_provenance(reference_base, workspace_root=workspace_root, repo_url=repo_url)
     expected = {(reference_base / "objects").resolve()}
     if not entries:
         raise CloneExecutionError(
@@ -403,9 +403,7 @@ def _require_workspace_binding(validated: ValidatedPlan, workspace_root: Path) -
         )
 
 
-def _git_clone(
-    repo_url: str, target: Path, *, branch: str, reference: Path | None
-) -> None:
+def _git_clone(repo_url: str, target: Path, *, branch: str, reference: Path | None) -> None:
     command = ["git", "clone", "--quiet"]
     if reference is not None:
         # section 8.2: --dissociate is intentionally omitted on the timed path.
@@ -528,9 +526,7 @@ def execute_clone_operation(
     if reference_base is not None:
         # Before any work: cloning against a cache we would refuse afterwards
         # only wastes the timed path and leaves staging to clean up.
-        verify_cache_provenance(
-            reference_base, workspace_root=workspace_root, repo_url=repo_url
-        )
+        verify_cache_provenance(reference_base, workspace_root=workspace_root, repo_url=repo_url)
 
     reused = dest.exists()
     if reused:
@@ -620,8 +616,7 @@ def _stage_and_publish(
         actual_branch = gitops.current_branch(staging)
         if actual_branch != branch:
             raise CloneExecutionError(
-                f"clone of {repo_url} is on branch {actual_branch!r}, not the declared "
-                f"{branch!r}"
+                f"clone of {repo_url} is on branch {actual_branch!r}, not the declared {branch!r}"
             )
         # Publication is INSIDE the cleanup boundary. It was outside, so an
         # OSError from the rename kept dest correctly absent but left a fully
@@ -630,6 +625,349 @@ def _stage_and_publish(
         # itself (Sentinel, #803 review at bd7afe5). Nothing follows the rename,
         # so on success there is no staging left for the handler to remove.
         os.replace(staging, dest)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+# ---------------------------------------------------------------------------
+# grip#807: lane materialization as an independent reference clone.
+#
+# The S4 plan path above clones a declared URL at a declared branch. A LANE has
+# neither a plan nor a URL in hand: it has a source checkout, a destination, and
+# a branch that may exist ONLY in the source (an unpushed seed). It reuses this
+# file's verifier and staging shape rather than growing a second, weaker clone
+# contract inside gitops.py (grip#807 step 7). The one semantic that differs is
+# the publication race: two agents materialize the SAME destination, so the
+# loser must reuse the winner rather than overwrite it. A per-destination O_EXCL
+# lock is the no-replace primitive; the rename verb is not, because os.rename and
+# os.replace both replace an empty target directory on POSIX, so neither refuses
+# a concurrently created dest on its own. The lock plus an absence check taken
+# while it is held is what makes publication no-replace.
+# ---------------------------------------------------------------------------
+
+
+# Publish-lock waiting bounds. A lane clone publishes in seconds; a loser waits
+# for the winner's dest to appear. Generous enough to cover a slow clone, bounded
+# so a creator that died mid-publish surfaces as an error rather than a hang.
+_LANE_PUBLISH_LOCK_TIMEOUT_S = 120.0
+_LANE_PUBLISH_POLL_S = 0.05
+
+
+def _lane_clone(repo_url: str, target: Path, *, reference: Path | None) -> None:
+    """Clone the canonical URL at its default branch. No ``--branch``: the lane's
+    branch (which may be unpushed) is seeded by a one-shot fetch from the source
+    afterward, so cloning it from the URL would fail for a branch the URL has
+    never seen."""
+    command = ["git", "clone", "--quiet"]
+    if reference is not None:
+        command.extend(["--reference-if-able", str(reference)])
+    command.extend([repo_url, str(target)])
+    proc = subprocess.run(command, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise CloneExecutionError(
+            f"failed to clone lane source {repo_url!r}:\n"
+            f"{proc.stderr.strip() or proc.stdout.strip()}"
+        )
+
+
+def _resolve_origin_url(source_repo_root: Path, url: str) -> str:
+    """A relative FILESYSTEM origin resolves against the source repo's location,
+    which is where git resolves it -- but our clone runs from a staging directory
+    in the lane tree, so the same relative string would resolve against the wrong
+    cwd and fail (Sentinel, grip#807 v1). A scheme URL (https, ssh, git@) or an
+    absolute path is already unambiguous and passes through untouched; a relative
+    path is made absolute against the source before it ever reaches a clone with a
+    different cwd."""
+    if "://" in url or url.startswith("git@") or os.path.isabs(url):
+        return url
+    # A local relative path (e.g. "../foo.git"): resolve it where git would, at
+    # the source repo, not at whatever cwd the clone later runs from.
+    return os.path.abspath(os.path.join(source_repo_root, url))
+
+
+def _publish_lane_atomically(
+    staging: Path,
+    dest: Path,
+    *,
+    workspace_root: Path,
+    repo_url: str,
+    reference_base: Path | None,
+    expected_branch: str,
+    expected_seed: str | None = None,
+) -> bool:
+    """Publish the staged clone under a per-destination lock (grip#807 step 5).
+
+    The rename verb is NOT the no-replace primitive: os.rename and os.replace both
+    replace an empty target directory on POSIX, so neither refuses a concurrently
+    created dest on its own. A per-destination O_EXCL lockfile is the primitive --
+    the lock, not the directory, is the claim. The winner holds the lock across
+    "dest is absent (checked while holding the lock) -> move staging in"; because
+    only a lock holder ever creates dest, no empty dest can appear in that window
+    from another lane creator. A loser fails to acquire, waits for the winner's
+    dest to appear, discards only its own staging, and reuses the winner. Returns
+    True if this creator published, False on reuse.
+    """
+    lock = dest.parent / f".{dest.name}.publish.lock"
+    deadline = time.monotonic() + _LANE_PUBLISH_LOCK_TIMEOUT_S
+    while True:
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            # Another creator holds the publish lock. Wait for its dest to appear.
+            if dest.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+                _reuse_existing_lane(
+                    dest,
+                    workspace_root=workspace_root,
+                    repo_url=repo_url,
+                reference_base=reference_base,
+                expected_branch=expected_branch,
+                expected_seed=expected_seed,
+                )
+                return False
+            if time.monotonic() > deadline:
+                raise CloneExecutionError(
+                    f"timed out after {_LANE_PUBLISH_LOCK_TIMEOUT_S:g}s waiting for the "
+                    f"publish lock {lock} to release -- a previous creator may have died "
+                    "mid-publish. Remove the lock file if no publish is in progress"
+                )
+            time.sleep(_LANE_PUBLISH_POLL_S)
+            continue
+        try:
+            # Lock held. A dest present now is either a prior winner (reuse) or an
+            # externally-created directory (reuse validates and refuses it) -- the
+            # absence check below is what refuses it, since the rename itself would
+            # happily replace an empty directory.
+            if dest.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+                _reuse_existing_lane(
+                    dest,
+                    workspace_root=workspace_root,
+                    repo_url=repo_url,
+                reference_base=reference_base,
+                expected_branch=expected_branch,
+                expected_seed=expected_seed,
+                )
+                return False
+            # dest is absent and we hold the lock: no other lane creator can make
+            # it, so this move lands on a target proven absent under mutual
+            # exclusion. os.rename and os.replace are equivalent here (both replace
+            # an empty dir, both fail on a non-empty one) -- the absence check
+            # above, not the verb, is the guarantee; os.rename is used only because
+            # no overwrite is intended.
+            os.rename(staging, dest)
+            return True
+        finally:
+            os.close(fd)
+            try:
+                os.unlink(lock)
+            except FileNotFoundError:
+                pass
+
+
+def _reuse_existing_lane(
+    dest: Path,
+    *,
+    workspace_root: Path,
+    repo_url: str,
+    reference_base: Path | None,
+    expected_branch: str,
+    expected_seed: str | None = None,
+) -> None:
+    """grip#807 step 6: a healthy lane on the expected branch is reused untouched.
+
+    Isolation, origin, and cache are checked first (the same verifier the staging
+    path runs), because "is this dirty / on which branch" is not a meaningful
+    question about a worktree pointer or a clone of some other repository -- those
+    are answered by refusing. A dirty or locally-committed but otherwise valid
+    lane on the expected branch is left byte-for-byte: materialization never
+    resets, stashes, fetches, or switches."""
+    verify_clone_isolation(
+        dest,
+        workspace_root=workspace_root,
+        repo_url=repo_url,
+        reference_base=reference_base,
+    )
+    state = _working_tree_state(dest)
+    if state == "unreadable":
+        raise CloneExecutionError(
+            f"existing lane at {dest} cannot report its working-tree state -- it is "
+            "damaged. grip#807 blocks a damaged lane rather than repairing it; blocking "
+            "changes none of its bytes"
+        )
+    actual_head = gitops.current_head_sha(dest)
+    if actual_head is None:
+        raise CloneExecutionError(
+            f"existing lane at {dest} has no resolvable HEAD -- reuse requires a lane "
+            "that can be worked in, not merely one whose status command exits 0"
+        )
+    actual_branch = gitops.current_branch(dest)
+    if actual_branch != expected_branch:
+        raise CloneExecutionError(
+            f"existing lane at {dest} is on branch {actual_branch!r}, not the expected "
+            f"{expected_branch!r}. Materialization never switches a lane's branch; move "
+            f"it back with `git -C {dest} checkout {expected_branch}` or remove the lane "
+            "to re-materialize (grip#807 step 6)"
+        )
+    if expected_seed is not None and actual_head != expected_seed:
+        raise CloneExecutionError(
+            f"existing lane at {dest} is at {actual_head!r}, not the requested immutable "
+            f"seed {expected_seed!r}. Materialization never resets, fetches, or switches a "
+            "reused lane; remove it before reopening at a different review head"
+        )
+
+
+def materialize_lane_clone(
+    *,
+    source_repo_root: Path,
+    dest: Path,
+    branch: str,
+    seed_commit: str | None = None,
+    workspace_root: Path,
+    cache_root: Path | None = None,
+) -> bool:
+    """grip#807: materialize a lane repository as an independent reference clone.
+
+    Returns True on first materialization, False when an existing valid lane is
+    reused. Never runs ``git worktree add`` and never accepts a linked worktree
+    as a lane checkout -- two lanes on the same branch must not share refs, HEAD,
+    reflogs, index, locks, config, or working tree.
+    """
+    source_repo_root = Path(source_repo_root)
+    dest = Path(dest)
+    workspace_root = Path(os.fspath(workspace_root))
+
+    # Step 1: bind the canonical URL from the source's origin and validate it. A
+    # relative filesystem origin is resolved against the SOURCE here, because the
+    # clone below runs from a staging cwd where the same relative string points
+    # elsewhere (Sentinel, grip#807 v1).
+    raw_url = gitops.remote_origin_url(source_repo_root)
+    if not raw_url:
+        raise CloneExecutionError(
+            f"lane source {source_repo_root} has no origin remote -- its canonical URL "
+            "cannot be derived (grip#807 step 1)"
+        )
+    repo_url = _resolve_origin_url(source_repo_root, raw_url)
+
+    # An explicit review pin is an immutable object ID, not a source ref or a
+    # local branch spelling. Resolve it before clone/reuse so every following
+    # path carries one bound commit. The branch-only lane API keeps its legacy
+    # selected-branch-or-HEAD behavior when no pin was supplied.
+    if seed_commit is not None:
+        if not _SHA40.match(seed_commit):
+            raise CloneExecutionError(
+                f"explicit lane seed must be a lowercase full 40-hex commit sha, got {seed_commit!r}"
+            )
+        seed = gitops.git(source_repo_root, "rev-parse", "--verify", f"{seed_commit}^{{commit}}")
+        if seed.returncode != 0:
+            raise CloneExecutionError(
+                f"cannot resolve explicit lane seed {seed_commit!r} in {source_repo_root} to a commit:\n"
+                f"{seed.stderr.strip() or seed.stdout.strip()}"
+            )
+        seed_sha = seed.stdout.strip()
+        seed_ref: str | None = None
+    else:
+        seed_sha = None
+        seed_ref = None
+
+    # The workspace-managed bare cache shares immutable object bytes when present.
+    # --reference-if-able degrades silently, so a reference is declared to the
+    # verifier ONLY when the cache actually exists; otherwise the verifier would
+    # (correctly) reject a clone that declares a reference no alternate records.
+    if cache_root is None:
+        cache_root = workspace_root / ".grip" / "cache" / "repos" / f"{source_repo_root.name}.git"
+    reference_base = cache_root if cache_root.exists() else None
+
+    if dest.exists():
+        _reuse_existing_lane(
+            dest,
+            workspace_root=workspace_root,
+            repo_url=repo_url,
+            reference_base=reference_base,
+            expected_branch=branch,
+            expected_seed=seed_sha,
+        )
+        return False
+
+    # Step 2: seed selection binds an IMMUTABLE COMMIT, not a ref name (Atlas,
+    # grip#807 v1). An existing source branch seeds at its exact commit; otherwise
+    # the source's HEAD commit seeds a new branch. Resolving to a SHA in the source
+    # now closes the window in which the source ref could move between selection
+    # and fetch, and makes "which commit did this lane start at" answerable.
+    if seed_sha is None:
+        branch_in_source = (
+            gitops.git(source_repo_root, "show-ref", "--verify", f"refs/heads/{branch}").returncode == 0
+        )
+        seed_ref = f"refs/heads/{branch}" if branch_in_source else "HEAD"
+        seed = gitops.git(source_repo_root, "rev-parse", "--verify", f"{seed_ref}^{{commit}}")
+        if seed.returncode != 0:
+            raise CloneExecutionError(
+                f"cannot resolve lane seed {seed_ref!r} in {source_repo_root} to a commit:\n"
+                f"{seed.stderr.strip() or seed.stdout.strip()}"
+            )
+        seed_sha = seed.stdout.strip()
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".{dest.name}.staging-"))
+    try:
+        _lane_clone(repo_url, staging, reference=reference_base)
+
+        # Step 3: transfer the bound seed COMMIT by a one-shot fetch from the source
+        # path (the commit may be unpushed and absent from the origin URL). A path
+        # fetch adds no persistent remote. Fetch the exact object; local transport
+        # advertises ref tips and the seed is one, so a by-SHA fetch resolves it.
+        fetch = gitops.git(staging, "fetch", "--no-tags", str(source_repo_root), seed_sha)
+        if fetch.returncode != 0:
+            # Some server configs refuse a by-SHA want; fall back to the containing
+            # ref, then still check out the bound SHA below.
+            if seed_commit is None:
+                assert seed_ref is not None
+                fetch = gitops.git(staging, "fetch", "--no-tags", str(source_repo_root), seed_ref)
+                if fetch.returncode != 0:
+                    raise CloneExecutionError(
+                        f"failed to fetch seed {seed_sha} from lane source {source_repo_root}:\n"
+                        f"{fetch.stderr.strip() or fetch.stdout.strip()}"
+                    )
+            else:
+                raise CloneExecutionError(
+                    f"failed to fetch explicit immutable seed {seed_sha} from lane source {source_repo_root}:\n"
+                    f"{fetch.stderr.strip() or fetch.stdout.strip()}"
+                )
+        checkout = gitops.git(staging, "checkout", "-B", branch, seed_sha)
+        if checkout.returncode != 0:
+            raise CloneExecutionError(
+                f"failed to seed lane branch {branch!r} at {seed_sha}:\n"
+                f"{checkout.stderr.strip() or checkout.stdout.strip()}"
+            )
+        # Bind check: HEAD is exactly the commit resolved in the source.
+        head_sha = gitops.current_head_sha(staging)
+        if head_sha != seed_sha:
+            raise CloneExecutionError(
+                f"lane seed check failed: staged HEAD {head_sha} is not the bound seed {seed_sha}"
+            )
+
+        # Step 4: prove the isolation invariants on the staged clone before it is
+        # ever visible at dest -- .git is a local directory, common-dir resolves
+        # inside it, no .git/worktrees, origin is the declared URL, and the only
+        # alternate (if any) is the declared cache.
+        verify_clone_isolation(
+            staging,
+            workspace_root=workspace_root,
+            repo_url=repo_url,
+            reference_base=reference_base,
+        )
+
+        # Step 5: publish under a per-destination lock (no-replace primitive).
+        return _publish_lane_atomically(
+            staging,
+            dest,
+            workspace_root=workspace_root,
+            repo_url=repo_url,
+            reference_base=reference_base,
+            expected_branch=branch,
+            expected_seed=seed_sha,
+        )
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise

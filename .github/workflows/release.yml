@@ -9,8 +9,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
   build:
     name: Build (${{ matrix.target }})
+    needs: ci
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -76,7 +81,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
+    needs: [ci, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -137,7 +142,7 @@ jobs:
 
   publish-crates:
     name: Publish to crates.io
-    needs: build
+    needs: [ci, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -148,4 +153,4 @@ jobs:
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --no-verify --allow-dirty
+        run: cargo publish --locked

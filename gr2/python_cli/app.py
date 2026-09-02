@@ -18,6 +18,7 @@ from . import branch as branch_ops
 from . import commit as commit_ops
 from . import execops, failures, migration, spec_apply, syncops
 from . import pr as pr_ops
+from . import project_review
 from . import push as push_ops
 from .events import EventType, emit_after_outcome
 from .gitops import (
@@ -25,6 +26,7 @@ from .gitops import (
     checkout_branch,
     ensure_lane_checkout,
     fetch_ref,
+    git,
     is_git_repo,
     refresh_existing_branch,
     remote_origin_url,
@@ -99,6 +101,7 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             source_repo_root=source_repo_root,
             target_repo_root=target_repo_root,
             branch=branch_map[repo_name],
+            workspace_root=workspace_root,
         )
         hooks = load_repo_hooks(target_repo_root)
         if not hooks:
@@ -218,8 +221,8 @@ def _repo_hook_context(workspace_root: Path, repo_root: Path) -> HookContext:
 def _resolve_lane_name(workspace_root: Path, owner_unit: str, lane_name: Optional[str]) -> str:
     if lane_name:
         return lane_name
-    current_doc = lane_proto.load_current_lane_doc(workspace_root, owner_unit)
-    return str(current_doc["current"]["lane_name"])
+    current_doc = lane_proto.require_current_lane(workspace_root, owner_unit)
+    return str(current_doc["lane_name"])
 
 
 def _find_pr_group(workspace_root: Path, owner_unit: str, lane_name: str) -> tuple[Path, dict[str, object]]:
@@ -444,6 +447,16 @@ def _exit(code: int) -> None:
         raise typer.Exit(code=code)
 
 
+def _consume_lane_transition(outcome: lane_proto.LaneTransitionOutcome | int) -> lane_proto.LaneTransitionOutcome | None:
+    """Render the state writer's one outcome instead of inferring one in the CLI."""
+    if isinstance(outcome, lane_proto.LaneTransitionOutcome):
+        typer.echo(json.dumps(outcome.as_dict(), indent=2))
+        _exit(outcome.exit_code)
+        return outcome
+    _exit(outcome)
+    return None
+
+
 @sync_app.command("status")
 def sync_status(
     workspace_root: Path,
@@ -623,6 +636,24 @@ def workspace_migrate_gr1(
             typer.echo("\nWorkspace materialized successfully.")
         elif apply and payload.get("apply_status") == "validation_failed":
             typer.echo(f"\nSpec validation failed: {len(payload.get('validation_errors', []))} error(s).")
+
+
+@workspace_app.command("bootstrap-gr1")
+def workspace_bootstrap_gr1(
+    workspace_root: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Compile the canonical gr1 manifest and initialize the gr2 grip store."""
+    workspace_root = workspace_root.resolve()
+    payload = migration.bootstrap_gr1_workspace(workspace_root)
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo("Gr1Bootstrap")
+        for key in ("status", "workspace_root", "manifest_path", "workspace_spec_path", "grip_repo_path"):
+            typer.echo(f"{key} = {payload[key]}")
+        typer.echo(f"repo_count = {payload['repo_count']}")
+        typer.echo(f"unit_count = {payload['unit_count']}")
 
 
 @spec_app.command("show")
@@ -1045,7 +1076,7 @@ def lane_enter(
         notify_channel=notify_channel,
         recall=recall,
     )
-    _exit(lane_proto.enter_lane(ns))
+    outcome = _consume_lane_transition(lane_proto.enter_lane(ns))
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     emit_after_outcome(
         event_type=EventType.LANE_ENTERED,
@@ -1053,7 +1084,7 @@ def lane_enter(
         actor=actor,
         owner_unit=owner_unit,
         payload={
-            "lane_name": lane_name,
+            "lane_name": outcome.current_lane if outcome else lane_name,
             "lane_type": lane_doc.get("type", "feature"),
             "repos": lane_doc.get("repos", []),
         },
@@ -1095,8 +1126,8 @@ def lane_exit(
 ) -> None:
     """Exit the current lane for a unit."""
     workspace_root = workspace_root.resolve()
-    current_doc = lane_proto.load_current_lane_doc(workspace_root, owner_unit)
-    lane_name = current_doc["current"]["lane_name"]
+    current_doc = lane_proto.require_current_lane(workspace_root, owner_unit)
+    lane_name = current_doc["lane_name"]
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     stashed_repos: list[str] = []
     for repo_name in lane_doc.get("repos", []):
@@ -1112,14 +1143,14 @@ def lane_exit(
         notify_channel=notify_channel,
         recall=recall,
     )
-    _exit(lane_proto.exit_lane(ns))
+    outcome = _consume_lane_transition(lane_proto.exit_lane(ns))
     emit_after_outcome(
         event_type=EventType.LANE_EXITED,
         workspace_root=workspace_root,
         actor=actor,
         owner_unit=owner_unit,
         payload={
-            "lane_name": lane_name,
+            "lane_name": outcome.previous_lane if outcome else lane_name,
             "stashed_repos": stashed_repos,
         },
     )
@@ -1203,12 +1234,18 @@ def lane_lease_release(
 
 
 @lease_app.command("show")
-def lane_lease_show(workspace_root: Path, owner_unit: str, lane_name: str) -> None:
+def lane_lease_show(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
     """Show active leases for a lane."""
     ns = SimpleNamespace(
         workspace_root=workspace_root,
         owner_unit=owner_unit,
         lane_name=lane_name,
+        json=json_output,
     )
     _exit(lane_proto.show_lane_leases(ns))
 
@@ -1289,6 +1326,114 @@ def review_checkout_pr(
         typer.echo(json.dumps(payload, indent=2))
 
 
+@review_app.command("open")
+def review_open(
+    workspace_root: Path,
+    owner_unit: str,
+    repo: str,
+    pr_number: int,
+    lane_name: Optional[str] = typer.Option(None, "--lane", help="Override the review lane name"),
+    platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
+    run: Optional[str] = typer.Option(None, "--run", help="After opening, dispatch this command inside the lane (cwd-contained)"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Open an isolated review lane at a PR head over the grip#807 clone seam.
+
+    A wrong head REFUSES (never warns); import resolution is printed so the run
+    cannot silently import a machine-wide install; the review is recorded as the
+    (repo, base pin, review head) triple. ``gr2 review close`` drops the lane.
+    """
+    from . import review as review_mod
+
+    workspace_root = workspace_root.resolve()
+    resolved_lane = lane_name or f"review-{pr_number}"
+    # Portable-component validation before any path is composed from these values
+    # (they build the lane directory that `close` later deletes).
+    lane_proto.validate_lane_path_component(owner_unit, "owner_unit")
+    lane_proto.validate_lane_path_component(repo, "repo")
+    lane_proto.validate_lane_path_component(resolved_lane, "lane_name")
+
+    repo_spec = _workspace_repo_spec(workspace_root, repo)
+    source_repo_root = (workspace_root / str(repo_spec["path"])).resolve()
+    if not source_repo_root.exists():
+        raise SystemExit(
+            f"shared repo missing for review open: {source_repo_root}\n"
+            f"run `gr2 apply {workspace_root} --yes` first"
+        )
+
+    # Bind the expected head from the HOST's own advertisement of the PR head,
+    # BEFORE fetching — so the fetch that brings the bytes down is compared
+    # against an independent authority, not against itself.
+    expected_head = review_mod.host_pr_head_oid(source_repo_root, pr_number)
+
+    # Fetch the PR head into the source as pr/<n>; the core compares the fetched
+    # ref against expected_head and refuses a wrong/tampered fetch before the seam.
+    review_branch = _prepare_review_branch(workspace_root, repo, pr_number, None)
+
+    # Base pin = merge-base(head, base-branch tip). The base branch comes from the
+    # PR itself, so the pin is what the PR is actually measured against.
+    repo_slug = _repo_slug_from_url(remote_origin_url(source_repo_root) or "", repo)
+    base_branch = get_platform_adapter(platform).pr_status(repo_slug, pr_number).ref.base_branch or "main"
+    git(source_repo_root, "fetch", "--quiet", "origin", base_branch)
+    base_tip = git(source_repo_root, "rev-parse", "FETCH_HEAD").stdout.strip()
+    merged = git(source_repo_root, "merge-base", expected_head, base_tip)
+    base_sha = merged.stdout.strip() if merged.returncode == 0 else base_tip
+
+    lane_repo_root = _lane_repo_root(workspace_root, owner_unit, resolved_lane, repo)
+
+    record = review_mod.open_review_lane(
+        source_repo_root=source_repo_root,
+        review_branch=review_branch,
+        expected_head_sha=expected_head,
+        base_sha=base_sha,
+        lane_repo_root=lane_repo_root,
+        workspace_root=workspace_root,
+        echo=typer.echo,
+    )
+
+    if run:
+        import shlex
+
+        review_mod.run_in_review_lane(lane_repo_root, shlex.split(run), echo=typer.echo)
+
+    payload = {
+        "workspace_root": str(workspace_root),
+        "owner_unit": owner_unit,
+        "repo": repo,
+        "pr_number": pr_number,
+        "lane_name": resolved_lane,
+        "lane_repo_root": str(lane_repo_root),
+        "review_record": record.to_dict(),
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+
+
+@review_app.command("close")
+def review_close(
+    workspace_root: Path,
+    owner_unit: str,
+    repo: str,
+    pr_number: int,
+    lane_name: Optional[str] = typer.Option(None, "--lane", help="Override the review lane name"),
+) -> None:
+    """Drop a review lane opened by ``gr2 review open``; the base workspace is untouched."""
+    from . import review as review_mod
+
+    workspace_root = workspace_root.resolve()
+    resolved_lane = lane_name or f"review-{pr_number}"
+    lane_proto.validate_lane_path_component(owner_unit, "owner_unit")
+    lane_proto.validate_lane_path_component(repo, "repo")
+    lane_proto.validate_lane_path_component(resolved_lane, "lane_name")
+    review_lane_root = lane_proto.lane_dir(workspace_root, owner_unit, resolved_lane)
+    lane_repo_root = _lane_repo_root(workspace_root, owner_unit, resolved_lane, repo)
+    review_mod.close_review_lane(
+        lane_repo_root=lane_repo_root,
+        review_lane_root=review_lane_root,
+        echo=typer.echo,
+    )
+
+
 @pr_app.command("create")
 def pr_create(
     workspace_root: Path,
@@ -1327,6 +1472,26 @@ def pr_create(
         typer.echo(json.dumps(payload, indent=2))
     else:
         typer.echo(json.dumps(payload, indent=2))
+
+
+@review_app.command("open-project")
+def review_open_project(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    spec_json: Path = typer.Option(..., "--spec-json", help="Strict ProjectReviewSpec JSON"),
+    sources_json: Path = typer.Option(..., "--sources-json", help="Ephemeral key -> {source, branch} JSON"),
+) -> None:
+    """Open a project review from an immutable spec plus ephemeral transport."""
+    raw = json.loads(spec_json.read_text())
+    pins = tuple(project_review.ProjectReviewPin(**pin) for pin in raw["pins"])
+    spec = project_review.ProjectReviewSpec(raw["schema"], raw["grip_commit"], pins)
+    source_rows = json.loads(sources_json.read_text())
+    sources = {key: (Path(row["source"]), row["branch"]) for key, row in source_rows.items()}
+    outcome = project_review.open_project_review(workspace=workspace_root.resolve(), owner_unit=owner_unit, lane_name=lane_name, spec=spec, sources=sources, allow_local=False)
+    typer.echo(json.dumps(project_review.outcome_payload(outcome), indent=2))
+    if outcome.status != "opened":
+        raise typer.Exit(code=1)
 
 
 @pr_app.command("status")

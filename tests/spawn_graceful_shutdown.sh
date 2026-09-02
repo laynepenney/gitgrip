@@ -1,28 +1,83 @@
 #!/usr/bin/env bash
 # Integration test: gr spawn down sends /exit before killing tmux windows.
 #
-# NOTE: This is a LOCAL-ONLY integration test. It requires tmux, which is
-# not available on GitHub Actions runners. Run manually before merging
-# spawn-related changes:
+# Runs entirely on a PRIVATE tmux server (unset TMUX + a throwaway
+# TMUX_TMPDIR), so nothing this test spawns, downs, or kills can touch the
+# default socket where the live agent fleet runs. See config claude.md,
+# Workspace Etiquette: "The default tmux socket is the live fleet" (two fleet
+# kills in one day, 2026-09-02, from a hardcoded SESSION="synapt" here).
+#
+# NOTE: requires tmux. Run manually before merging spawn-related changes:
 #
 #   cd grip && GR=./target/debug/gr ./tests/spawn_graceful_shutdown.sh
 #
-# Requires: tmux, gr (built), .gitgrip/agents.toml with at least one agent.
+# Requires: tmux, gr (built), a .gitgrip/agents.toml with an explicit
+# session_name and at least one agent (CI copies tests/fixtures/agents.example.toml).
 
 set -euo pipefail
 
+# --- Isolate onto a private tmux server -------------------------------------
+# Every tmux invocation below -- this script's AND the ones gr runs as a
+# subprocess -- inherits TMUX_TMPDIR and lands on this throwaway socket.
+# Unsetting TMUX prevents nesting confusion when run from inside tmux.
+# Proven on this host: a session here is invisible to the default `tmux ls`,
+# and `tmux kill-server` here leaves the default server (the fleet) alive.
+unset TMUX
+TMUX_TMPDIR="$(mktemp -d)"
+export TMUX_TMPDIR
+
 GR="${GR:-./target/debug/gr}"
-SESSION="synapt"
-AGENT="opus"
 LOG=$(mktemp)
 
 cleanup() {
-    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    # kill-server on the PRIVATE socket only; never kill-session on the default.
+    tmux kill-server 2>/dev/null || true
+    rm -rf "$TMUX_TMPDIR"
     rm -f "$LOG"
 }
 trap cleanup EXIT
 
+# --- Resolve the session name from the config gr will use -------------------
+# gr walks up from the cwd for a .gitgrip directory; mirror that so we read the
+# SAME agents.toml gr loads. The session name is read from the config, never a
+# literal -- a literal "synapt" here is what read the live fleet as a fixture.
+find_agents_toml() {
+    local dir
+    dir="$(pwd)"
+    while [ "$dir" != "/" ]; do
+        if [ -f "$dir/.gitgrip/agents.toml" ]; then
+            printf '%s\n' "$dir/.gitgrip/agents.toml"
+            return 0
+        fi
+        dir="$(dirname "$dir")"
+    done
+    return 1
+}
+
+AGENTS_TOML="$(find_agents_toml)" || {
+    echo "FAIL: no .gitgrip/agents.toml found from $(pwd) upward"
+    echo "      (CI copies tests/fixtures/agents.example.toml into .gitgrip/)"
+    exit 1
+}
+
+SESSION="$(grep -E '^[[:space:]]*session_name[[:space:]]*=' "$AGENTS_TOML" \
+    | head -1 | sed -E 's/.*=[[:space:]]*"([^"]*)".*/\1/')"
+if [ -z "$SESSION" ]; then
+    echo "FAIL: $AGENTS_TOML declares no session_name"
+    echo "      Refusing to default to a literal; set session_name explicitly."
+    exit 1
+fi
+
 echo "=== Spawn graceful shutdown test ==="
+echo "  config:  $AGENTS_TOML"
+echo "  session: $SESSION (private socket: $TMUX_TMPDIR)"
+
+# Refuse to start if the target session already exists on THIS server -- a
+# pre-existing session would make the has-session checks below meaningless.
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+    echo "FAIL: session '$SESSION' already exists on the private server"
+    exit 1
+fi
 
 # 1. Launch agents in mock mode
 echo "[1/4] Launching agents..."
