@@ -251,8 +251,13 @@ def create_review_bind_commit(
         fields = [f"100644 blob {_hash_blob(workspace, v)}\t{n}"
                   for n, v in (("remote", remote), ("path", path), ("commit", head), ("base", base))]
         entries.append(f"040000 tree {_mktree(workspace, fields)}\t{key}")
+        # remote-head field hoisted out of the outer f-string's expression: a
+        # nested f-string carrying \t inside {…} is a SyntaxError on Python 3.11
+        # (PEP 701 only lifted this in 3.12+), and gr2 supports >=3.11. Output is
+        # byte-identical, so every content-hash is unchanged.
+        remote_head_field = f"100644 blob {_hash_blob(workspace, observed)}\tremote-head"
         observed_entries.append(
-            f"040000 tree {_mktree(workspace, [f'100644 blob {_hash_blob(workspace, observed)}\tremote-head'])}\t{key}"
+            f"040000 tree {_mktree(workspace, [remote_head_field])}\t{key}"
         )
         title = _norm_text(row.get("title", ""))
         body = _norm_text(row.get("body", ""))
@@ -357,8 +362,11 @@ def verify_review_commit(workspace: Path, commit: str) -> dict[str, object]:
              for n, v in (("remote", fields["remote"]), ("path", fields["path"]),
                           ("commit", fields["commit"]), ("base", fields["base"]))]
         recomputed_entries.append(f"040000 tree {_mktree(workspace, f)}\t{key}")
+        # remote-head field hoisted (see create_review_bind_commit): nested
+        # f-string with \t in the expression is a 3.11 SyntaxError; byte-identical.
+        remote_head_field = f"100644 blob {_hash_blob(workspace, observed)}\tremote-head"
         observed_recomputed.append(
-            f"040000 tree {_mktree(workspace, [f'100644 blob {_hash_blob(workspace, observed)}\tremote-head'])}\t{key}"
+            f"040000 tree {_mktree(workspace, [remote_head_field])}\t{key}"
         )
         tf = [f"100644 blob {_hash_blob(workspace, title_norm)}\ttitle",
               f"100644 blob {_hash_blob(workspace, body_norm)}\tbody"]
