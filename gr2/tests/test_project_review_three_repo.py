@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import tomllib
 import dataclasses
 from pathlib import Path
 
@@ -377,6 +378,46 @@ def test_workspace_identity_and_source_origin_refuse_before_transport(tmp_path: 
     assert not (workspace / "reviews" / "atlas" / "identity").exists()
     assert not (workspace / "reviews" / "atlas" / "source-origin").exists()
     assert lanes.current_lane_file(workspace, "atlas").read_bytes() == current
+
+
+def test_malformed_workspace_spec_refuses_before_transport_or_lane_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace, sources, _home, current = _world(tmp_path)
+    from gr2.python_cli import grip, project_review
+
+    grip.grip_init(workspace)
+    alpha = sources["alpha"]
+    spec = project_review.make_spec(workspace, [project_review.ProjectReviewPin("alpha", f"local:{alpha[0]}", "repos/alpha", alpha[1], alpha[2])])
+    (workspace / ".grip" / "workspace_spec.toml").write_text("[[repos]\nname = \"unterminated\"\n")
+    calls: list[str] = []
+    monkeypatch.setattr(project_review.review, "open_review_lane", lambda **_kwargs: calls.append("clone"))
+
+    outcome = project_review.open_project_review(
+        workspace=workspace, owner_unit="atlas", lane_name="malformed-spec", spec=spec,
+        sources={"alpha": (alpha[0], alpha[2])}, allow_local=True,
+    )
+
+    assert outcome.status == "refused"
+    assert outcome.failures[0].key == "workspace_spec"
+    assert calls == [] and outcome.review_root is None
+    assert not (workspace / "reviews" / "atlas" / "malformed-spec").exists()
+    assert lanes.current_lane_file(workspace, "atlas").read_bytes() == current
+
+
+def test_deleting_malformed_spec_translation_recreates_parser_exception(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace, sources, _home, _current = _world(tmp_path)
+    from gr2.python_cli import grip, project_review
+
+    grip.grip_init(workspace)
+    alpha = sources["alpha"]
+    spec = project_review.make_spec(workspace, [project_review.ProjectReviewPin("alpha", f"local:{alpha[0]}", "repos/alpha", alpha[1], alpha[2])])
+    (workspace / ".grip" / "workspace_spec.toml").write_text("[[repos]\nname = \"unterminated\"\n")
+    monkeypatch.setattr(project_review, "_load_workspace_boundary_doc", lambda path: (project_review.spec_apply.load_workspace_spec_doc(path), None))
+
+    with pytest.raises(tomllib.TOMLDecodeError):
+        project_review.open_project_review(
+            workspace=workspace, owner_unit="atlas", lane_name="translation-deleted", spec=spec,
+            sources={"alpha": (alpha[0], alpha[2])}, allow_local=True,
+        )
 
 
 def test_deleting_workspace_boundary_recreates_unknown_key_clone_side_effect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
