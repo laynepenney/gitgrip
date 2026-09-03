@@ -670,11 +670,18 @@ def workspace_bootstrap_gr1(
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:
-        typer.echo("Gr1Bootstrap")
-        for key in ("status", "workspace_root", "manifest_path", "workspace_spec_path", "grip_repo_path"):
-            typer.echo(f"{key} = {payload[key]}")
-        typer.echo(f"repo_count = {payload['repo_count']}")
-        typer.echo(f"unit_count = {payload['unit_count']}")
+        # Render each payload by its OWN keys. bootstrap, regenerate and rollback
+        # return different schemas (rollback has no manifest_path, regenerate has
+        # no repo_count); a fixed key list raised KeyError after a successful
+        # mutation, exiting 1 on a completed rollback. Print scalars in order;
+        # json-encode nested values so nothing is dropped.
+        typer.echo(str(payload.get("schema", "Gr1Bootstrap")))
+        for key, value in payload.items():
+            if key == "schema":
+                continue
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value)
+            typer.echo(f"{key} = {value}")
 
 
 @spec_app.command("show")

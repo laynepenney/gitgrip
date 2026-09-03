@@ -216,6 +216,10 @@ def regenerate_gr1_workspace(workspace_root: Path, *, expected_spec_sha256: str,
     with _regeneration_lock(lock_path):
         # The compare occurs inside the critical section, so two regenerators
         # cannot both accept the same old bytes and silently overwrite each other.
+        # A lane can become active while a regenerator waits for the lock, so the
+        # active-lane guard is re-checked HERE, after acquisition, not only before
+        # (the seam lets a test activate a lane at exactly this moment).
+        _transaction_phase_hook("lock_acquired")
         _refuse_active_lane_state(workspace_root)
         locked_manifest, locked_manifest_bytes, locked_candidate, locked_compiled = _compiled_gr1_spec(workspace_root)
         locked_agents = gr1_agents_path(workspace_root)
@@ -396,16 +400,15 @@ def rollback_gr1_workspace(
 
 @contextlib.contextmanager
 def _regeneration_lock(lock_path: Path):
-    """Use the shared state lock location without leaving lock dirt behind."""
+    """Hold the shared state lock. The lock FILE is KEPT across releases: flock
+    binds an inode, and a path that is unlinked and later re-created is a NEW
+    inode, so a concurrent waiter holding the old inode is not excluded at all
+    (measured: a third party acquired while a second still held). Keeping the
+    file -- no unlink, no rmdir -- is the mutual exclusion; a stale lock file is
+    not dirt (it lives under state/, excluded from the clean-store judgment)."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lane_proto.exclusive_lock(lock_path):
-        try:
-            yield
-        finally:
-            lock_path.unlink(missing_ok=True)
-            try:
-                lock_path.parent.rmdir()
-            except OSError:
-                pass
+        yield
 
 
 def _require_clean_regeneration_store(grip_dir: Path) -> None:
@@ -421,9 +424,17 @@ def _require_clean_regeneration_store(grip_dir: Path) -> None:
     status = git(grip_dir, "status", "--porcelain", "--untracked-files=all")
     if probe.returncode != 0 or probe.stdout.strip() != "true" or status.returncode != 0:
         raise SystemExit("regeneration requires a valid readable object store")
+    # state/ is the lane control plane, not object-store dirt: inactive lane
+    # files and the regeneration lock file legitimately live there. Active lanes
+    # and leases are refused separately by _refuse_active_lane_state; counting an
+    # inactive lane file (or the held lock) as "dirty" here made a valid
+    # regeneration refuse, and made a second regenerator report "dirty" instead
+    # of waiting on the lock. Exclude the subtree; judge the object store only.
     dirty = [
         line for line in status.stdout.splitlines()
-        if line.startswith("??") and line != "?? workspace_spec.toml"
+        if line.startswith("??")
+        and line != "?? workspace_spec.toml"
+        and not line.startswith("?? state/")
     ]
     if dirty:
         raise SystemExit("regeneration refuses dirty object store outside generated workspace_spec.toml")

@@ -753,6 +753,75 @@ class TestRegenerateGr1Workspace:
         assert not (tmp_path / "forward-failure.json.prepared.json").exists()
         assert not (tmp_path / f"forward-failure.json.old-spec-{expected}.toml").exists()
 
+    def test_inactive_lane_state_is_not_object_store_dirt(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        """An inactive lane file under state/ is the control plane, not store dirt.
+        Regeneration proceeds (active lanes are refused separately); before the
+        state/ exclusion this refused as 'dirty object store'."""
+        spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        current = gr1_workspace / ".grip" / "state" / "current_lane" / "apollo.json"
+        current.parent.mkdir(parents=True)
+        current.write_text(json.dumps({"current": None}))
+        result = regenerate_gr1_workspace(
+            gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json"
+        )
+        assert result["status"] == "regenerated"
+
+    def test_in_lock_active_lane_recheck_refuses(self, gr1_workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A lane can go active while a regenerator waits for the lock, so the
+        active-lane guard is re-checked after acquisition. Activate a lane at the
+        lock_acquired seam: the pre-lock check already passed, so only the in-lock
+        re-check can refuse. Removing that re-check leaves this green."""
+        spec_path, expected = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+        current = gr1_workspace / ".grip" / "state" / "current_lane" / "apollo.json"
+
+        def hook(phase: str) -> None:
+            if phase == "lock_acquired":
+                current.parent.mkdir(parents=True, exist_ok=True)
+                current.write_text(json.dumps({"current": {"lane_name": "review"}}))
+
+        monkeypatch.setattr(migration, "_transaction_phase_hook", hook)
+        with pytest.raises(SystemExit, match="active lanes"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json")
+        assert spec_path.read_bytes() == before  # refused before replacing the spec
+
+    def test_regeneration_lock_file_kept_across_release(self, tmp_path: Path) -> None:
+        """The lock file is KEPT across release (no unlink/rmdir): flock on a path
+        unlinked and re-created binds a new inode and excludes no waiter. Restoring
+        the unlink makes the second acquisition see a different inode."""
+        lock = tmp_path / "state" / "x.lock"
+        with migration._regeneration_lock(lock):
+            assert lock.exists()
+            ino = lock.stat().st_ino
+        assert lock.exists()  # kept, not unlinked
+        with migration._regeneration_lock(lock):
+            assert lock.stat().st_ino == ino  # same inode == real mutual exclusion
+
+    def test_regenerate_and_rollback_render_through_cli_without_keyerror(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        """The non-JSON render hardcoded bootstrap keys, so rollback (no
+        manifest_path) and regenerate (no repo_count) raised KeyError AFTER a
+        successful mutation -- exit 1 on a completed rollback. Render per schema.
+        Exercised through the real CLI verb, one assertion per verb path."""
+        runner = CliRunner()
+        spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        fwd = tmp_path / "forward.json"
+        r = runner.invoke(app, ["workspace", "bootstrap-gr1", str(gr1_workspace),
+                                "--regenerate", "--expected-spec-sha256", expected, "--receipt", str(fwd)])
+        assert r.exit_code == 0, r.output
+        assert "Traceback" not in r.output and "KeyError" not in r.output
+        assert "regenerated" in r.output
+        new_sha = json.loads(fwd.read_text())["new_spec_sha256"]
+        rb = runner.invoke(app, ["workspace", "bootstrap-gr1", str(gr1_workspace),
+                                 "--rollback-receipt", str(fwd),
+                                 "--expected-current-spec-sha256", new_sha,
+                                 "--receipt", str(tmp_path / "rollback.json")])
+        assert rb.exit_code == 0, rb.output
+        assert "Traceback" not in rb.output and "KeyError" not in rb.output
+        assert "rolled_back" in rb.output
+
 
 # ---------------------------------------------------------------------------
 # workspace status (new command)
