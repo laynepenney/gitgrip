@@ -821,3 +821,44 @@ class TestMigrationEndToEnd:
         for unit in spec["units"]:
             assert "repos" in unit
             assert len(unit["repos"]) > 0
+
+
+def test_regeneration_guard_ignores_plumbing_store_head_deletions(tmp_path):
+    """A .grip store is plumbing-only: HEAD is a real commit whose tree is never
+    checked out, so `git status --porcelain` reports every HEAD path as a
+    deletion. That is the store's normal state, not dirt -- the guard used to
+    refuse every store that had ever held a review commit (Stromus m_4a3fdd37).
+    It must judge untracked files only; an untracked file it would clobber still
+    refuses."""
+    grip = tmp_path / "store"
+    grip.mkdir()
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
+
+    def g(*a, inp=None):
+        return subprocess.run(["git", "-C", str(grip), *a], env=env, input=inp,
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    g("init", "-q")
+    # Build a commit by PLUMBING ONLY, exactly like grip.py: hash a blob, mktree,
+    # commit-tree, update-ref. Never `git add`, never check the tree out.
+    blob = g("hash-object", "-w", "--stdin", inp="review commit content\n")
+    tree = g("mktree", inp=f"100644 blob {blob}\treview\n")
+    commit = g("commit-tree", tree, "-m", "grip project review")
+    g("update-ref", "HEAD", commit)
+
+    # The scenario: porcelain reports the HEAD path as a deletion.
+    porcelain = subprocess.run(["git", "-C", str(grip), "status", "--porcelain"],
+                               env=env, capture_output=True, text=True).stdout
+    assert any("review" in line and "D" in line for line in porcelain.splitlines()), porcelain
+
+    # The fix: a clean plumbing store is NOT refused (this raised before the fix).
+    migration._require_clean_regeneration_store(grip)
+    # The allowed generated spec is still fine.
+    (grip / "workspace_spec.toml").write_text("x\n")
+    migration._require_clean_regeneration_store(grip)
+    # A real untracked file still refuses.
+    (grip / "unexpected").write_text("dirt\n")
+    with pytest.raises(SystemExit, match="dirty object store"):
+        migration._require_clean_regeneration_store(grip)

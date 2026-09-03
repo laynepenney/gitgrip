@@ -410,10 +410,21 @@ def _regeneration_lock(lock_path: Path):
 
 def _require_clean_regeneration_store(grip_dir: Path) -> None:
     probe = git(grip_dir, "rev-parse", "--is-inside-work-tree")
-    status = git(grip_dir, "status", "--porcelain")
+    # The .grip store is PLUMBING-ONLY: grip.py writes objects via
+    # hash-object/mktree/commit-tree/update-ref and never checks out HEAD's
+    # tree. So once HEAD is a real commit (e.g. a review commit), every path in
+    # HEAD's tree is absent from the (unused) worktree and `git status
+    # --porcelain` reports it as a deletion. That is the store's NORMAL state,
+    # not dirt -- judging HEAD-vs-worktree here refuses every store that has
+    # ever held a commit. Regeneration only needs to refuse UNTRACKED files it
+    # would clobber, so judge those alone.
+    status = git(grip_dir, "status", "--porcelain", "--untracked-files=all")
     if probe.returncode != 0 or probe.stdout.strip() != "true" or status.returncode != 0:
         raise SystemExit("regeneration requires a valid readable object store")
-    dirty = [line for line in status.stdout.splitlines() if line != "?? workspace_spec.toml"]
+    dirty = [
+        line for line in status.stdout.splitlines()
+        if line.startswith("??") and line != "?? workspace_spec.toml"
+    ]
     if dirty:
         raise SystemExit("regeneration refuses dirty object store outside generated workspace_spec.toml")
 
