@@ -829,14 +829,19 @@ fn kill_process(pid: u32) -> std::io::Result<()> {
 #[cfg(windows)]
 fn kill_process(pid: u32) -> std::io::Result<()> {
     eprintln!("[probe] P4 kill_process(taskkill) enter pid={pid}");
+    // FIX (1): /T terminates the whole descendant tree, not just the child. The
+    // grandchild build process (e.g. `sleep`) otherwise survives `/F` alone and
+    // keeps the child's stdout/stderr pipe open, so the capture reader never sees
+    // EOF and out_thread.join() blocks forever (grip#931 class-3, measured probe 3
+    // P1 hang with P5 sleep_alive=true).
     let status = Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/F"])
+        .args(["/PID", &pid.to_string(), "/F", "/T"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
-    // P5: right after taskkill /PID /F (no /T), is the grandchild `sleep` still
-    // alive? If yes, it holds the child's stdout/stderr pipe open and the
-    // capture reader never sees EOF -> the P1/P2 join cannot return.
+    // P5: after taskkill /F /T, is the grandchild `sleep` still alive? Should now
+    // be false; if any descendant survives (reparented/wrapped), fix (2)'s bounded
+    // join is the invariant backstop.
     let sleep_alive = Command::new("tasklist")
         .args(["/FI", "IMAGENAME eq sleep.exe"])
         .output()
