@@ -500,3 +500,86 @@ def test_app_lane_bind_refuses_materialized_with_exit_2(tmp_path: Path) -> None:
     with pytest.raises(typer.Exit) as ei:
         app_module.lane_bind(workspace, "atlas", "feature", base="a" * 40, json_output=False)
     assert ei.value.exit_code == 2
+
+
+# --------------------------------------------------------------------------- #
+# pr_create_bound_lane (verb #4): pr create pushes from the bound worktree,
+# refusing an empty range (gr2-lane-author-shape ruling)
+# --------------------------------------------------------------------------- #
+def _bound_lane_with_remote(tmp_path: Path, *, empty_range: bool = False):
+    """A bound lane whose worktree has a LOCAL bare remote as origin and a bind
+    receipt written. Returns (workspace, wt, bare, base, head)."""
+    workspace = _workspace(tmp_path)
+    bare = tmp_path / "bare.git"
+    assert _git(tmp_path, "init", "--bare", "-q", str(bare)).returncode == 0
+    wt = _real_worktree(workspace, branch="feat/pr")  # commit A on feat/pr
+    base = _git(wt, "rev-parse", "HEAD").stdout.strip()
+    head = _commit(wt, "g.txt", "work\n", "reviewed change")  # commit B
+    _git(wt, "remote", "add", "origin", str(bare))
+    assert lanes.create_lane(_create_bound(workspace, "bound", wt)) == 0
+    bind_base = head if empty_range else base
+    lanes.bind_bound_lane(workspace, "atlas", "bound", base=bind_base, allow_local=True)
+    return workspace, wt, bare, base, head
+
+
+def test_pr_create_bound_pushes_reviewed_head_from_worktree(tmp_path: Path) -> None:
+    workspace, wt, bare, base, head = _bound_lane_with_remote(tmp_path)
+    receipt = lanes.pr_create_bound_lane(workspace, "atlas", "bound")
+    assert receipt.branch == "feat/pr"
+    assert receipt.local_sha == head and receipt.remote_sha == head
+    # the bare remote now carries the reviewed head on the lane branch
+    remote_head = _git(bare, "rev-parse", "feat/pr").stdout.strip()
+    assert remote_head == head
+
+
+def test_pr_create_bound_refuses_empty_range(tmp_path: Path) -> None:
+    workspace, wt, bare, base, head = _bound_lane_with_remote(tmp_path, empty_range=True)
+    with pytest.raises(SystemExit, match="range is EMPTY"):
+        lanes.pr_create_bound_lane(workspace, "atlas", "bound")
+    # nothing was pushed
+    assert _git(bare, "rev-parse", "feat/pr").returncode != 0
+
+
+def test_pr_create_bound_refuses_without_a_bind_receipt(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    bare = tmp_path / "bare.git"
+    _git(tmp_path, "init", "--bare", "-q", str(bare))
+    wt = _real_worktree(workspace, branch="feat/nobind")
+    _git(wt, "remote", "add", "origin", str(bare))
+    assert lanes.create_lane(_create_bound(workspace, "bound", wt)) == 0
+    with pytest.raises(SystemExit, match="no review receipt"):
+        lanes.pr_create_bound_lane(workspace, "atlas", "bound")
+
+
+def test_pr_create_bound_refuses_head_drift_since_bind(tmp_path: Path) -> None:
+    workspace, wt, bare, base, head = _bound_lane_with_remote(tmp_path)
+    _commit(wt, "h.txt", "post-bind\n", "drift after bind")  # HEAD moves past receipt head
+    with pytest.raises(SystemExit, match="no longer equals the reviewed head"):
+        lanes.pr_create_bound_lane(workspace, "atlas", "bound")
+
+
+def test_pr_create_bound_refuses_a_materialized_lane(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    assert lanes.create_lane(_create(workspace, "feature")) == 0
+    with pytest.raises(SystemExit, match="is not a bound lane"):
+        lanes.pr_create_bound_lane(workspace, "atlas", "feature")
+
+
+# --------------------------------------------------------------------------- #
+# open_project_review refuses a bound lane (verb #4, piece 2)
+# --------------------------------------------------------------------------- #
+def test_open_project_review_refuses_a_bound_lane(tmp_path: Path) -> None:
+    from gr2.python_cli import project_review
+    workspace = _workspace(tmp_path)
+    wt = _real_worktree(workspace, branch="feat/proj")
+    assert lanes.create_lane(_create_bound(workspace, "bound", wt)) == 0
+    # a schema-valid spec; the bound-lane refusal fires before pins are touched
+    spec = project_review.ProjectReviewSpec("gr2-project-review/v1", "0" * 40, ())
+    outcome = project_review.open_project_review(
+        workspace=workspace, owner_unit="atlas", lane_name="bound", spec=spec, sources={},
+    )
+    assert outcome.status == "refused"
+    assert any("BOUND single-repo lane" in f.reason for f in outcome.failures)
+    # Specificity (the gate is bound-only, not a blanket refusal) is covered by
+    # the existing test_project_review_three_repo suite, which runs full project
+    # reviews on materialized/fresh lanes and never hits this refusal.
