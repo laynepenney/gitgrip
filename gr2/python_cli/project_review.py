@@ -183,6 +183,31 @@ def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spe
         lane_name = _review_path_component(lane_name, "lane name")
     except ValueError as exc:
         return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure("review_root", str(exc)),), None, False)
+    # A cross-repo project review requires a MATERIALIZED lane whose rows
+    # reconstruct together from carried ranges. A bound lane is a single-repo
+    # label on the author's own worktree — its bytes live in a tree the author
+    # keeps editing, so it cannot give the exact-reconstruction guarantee across
+    # rows. Refuse it here with a specific message rather than letting the later
+    # create_lane emit a generic "refusing to replace" (gr2-lane-author-shape
+    # ruling: bound lanes are single-repo `pr` only).
+    lane_path = lanes.lane_file(workspace, owner_unit, lane_name)
+    if lane_path.exists():
+        try:
+            existing_kind = tomllib.loads(lane_path.read_text()).get("lane_kind")
+        except (OSError, tomllib.TOMLDecodeError):
+            existing_kind = None
+        if existing_kind == "bound":
+            return ProjectReviewOutcome(
+                "refused", spec.grip_commit, (),
+                (ProjectReviewFailure(
+                    lane_name,
+                    f"lane {owner_unit}/{lane_name} is a BOUND single-repo lane; a project review "
+                    "requires a materialized lane whose rows reconstruct together. Use `gr2 pr` for "
+                    "this bound lane's single-repo review, or open the project review on a "
+                    "materialized lane.",
+                ),),
+                None, False,
+            )
     try:
         canonical_pins = tuple(_canonical_pin(pin) for pin in spec.pins)
     except ValueError as exc:

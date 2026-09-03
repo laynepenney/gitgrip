@@ -35,6 +35,7 @@ from gr2.prototypes.jsonl_store import (
 )
 from gr2.python_cli import gitops
 from gr2.python_cli import review as _review
+from gr2.python_cli import push as _push
 
 LANE_SCHEMA_VERSION = 1
 SCRATCHPAD_SCHEMA_VERSION = 1
@@ -1041,6 +1042,65 @@ def bind_bound_lane(
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
     receipt_path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
     return record
+
+
+def pr_create_bound_lane(
+    workspace_root: Path, owner_unit: str, lane_name: str, *, remote: str | None = None,
+    set_upstream: bool = True,
+) -> "_push.PushReceipt":
+    """`pr create` for a BOUND lane: push the reviewed head from the author's own
+    worktree (gr2-lane-author-shape ruling verb #4).
+
+    A bound lane's PR is opened FROM the worktree, not from a materialized clone,
+    so this reuses the ordinary push seam (``push_current_branch``, which verifies
+    the remote ref equals HEAD). It is gated on the bind receipt:
+
+    * the lane must be bound and must have a bind receipt (``gr2 lane bind`` first);
+    * the reviewed range ``base..head`` must be NON-EMPTY — ``base == head`` is
+      refused HERE, at pr create, not at bind: bind records whatever head the
+      author is on, but there is nothing to open a PR for when the range is empty;
+    * the worktree HEAD must still equal the receipt head — if it drifted since
+      bind, the push would carry an unreviewed head, so re-bind first.
+
+    The smallest end-to-end proof pushes to a local bare remote and opens nothing;
+    the platform (gh) path sits behind this same push seam."""
+    lane_doc = load_lane_doc(workspace_root.resolve(), owner_unit, lane_name)
+    if lane_doc.get("lane_kind") != "bound":
+        raise SystemExit(
+            f"pr_create_bound_lane: lane {owner_unit}/{lane_name} is not a bound lane "
+            f"(lane_kind={lane_doc.get('lane_kind')!r}); use the group/adapter pr path"
+        )
+    worktree = Path(lane_doc.get("bound_worktree") or "")
+    if not worktree:
+        raise SystemExit(f"pr create refuses: bound lane {owner_unit}/{lane_name} has no bound_worktree")
+    resolved = worktree.resolve()
+    receipt_path = _review.review_record_path(resolved)
+    if not receipt_path.is_file():
+        raise SystemExit(
+            f"pr create refuses: bound lane {owner_unit}/{lane_name} has no review receipt at "
+            f"{receipt_path}; run `gr2 lane bind` first"
+        )
+    try:
+        receipt = json.loads(receipt_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"pr create refuses: review receipt is unreadable or malformed ({exc})")
+    base, head = receipt.get("base"), receipt.get("head")
+    if base == head:
+        raise SystemExit(
+            f"pr create refuses: the reviewed range is EMPTY (base == head == {head}); there is "
+            "nothing to open a PR for. Commit work, re-bind, then pr create."
+        )
+    current_head = gitops.current_head_sha(resolved)
+    if current_head != head:
+        raise SystemExit(
+            f"pr create refuses: bound worktree HEAD {current_head} no longer equals the reviewed "
+            f"head {head} recorded in the bind receipt; the worktree moved since bind. Re-bind, "
+            "then pr create."
+        )
+    try:
+        return _push.push_current_branch(resolved, remote=remote, set_upstream=set_upstream)
+    except _push.PushError as exc:
+        raise SystemExit(f"pr create refuses: push from the bound worktree failed ({exc})")
 
 
 def enter_lane(args: argparse.Namespace) -> LaneTransitionOutcome:

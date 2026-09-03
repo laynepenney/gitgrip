@@ -1528,6 +1528,22 @@ def pr_create(
     workspace_root = workspace_root.resolve()
     resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, resolved_lane)
+    # A bound lane's PR is opened FROM the author's worktree, not a materialized
+    # clone, so it routes to the push-from-worktree path (verb #4): push the
+    # reviewed head, refusing an empty range. It does not use the group/adapter
+    # flow, which assumes materialized per-repo clones.
+    if lane_doc.get("lane_kind") == "bound":
+        try:
+            receipt = lane_proto.pr_create_bound_lane(workspace_root, owner_unit, resolved_lane)
+        except SystemExit as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2)
+        pushed = {
+            "lane_kind": "bound", "lane": resolved_lane, "remote": receipt.remote,
+            "branch": receipt.branch, "head": receipt.remote_sha,
+        }
+        typer.echo(json.dumps(pushed, indent=2))
+        return
     spec = lane_proto.load_workspace_spec(workspace_root)
     adapter = get_platform_adapter(platform)
     branch_map = dict(lane_doc.get("branch_map", {}))
