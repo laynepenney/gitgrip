@@ -194,6 +194,32 @@ def test_bind_refuses_base_not_on_remote_with_clean_exit(tmp_path):
     assert "Traceback" not in result.output  # clean error text, not a stack trace
 
 
+# --- the plumbing store (.grip/.git) absent, bind must refuse cleanly and
+# name the remediation -- not traceback. create_review_bind_commit calls
+# _validate_grip_repo first thing, which raises GripInitError; _review_call
+# (the CLI glue's one exception boundary) caught GripReviewRefused and
+# GripCorruptError but not GripInitError, so this one raised straight through
+# Typer as a raw Python traceback instead of the same clean nonzero exit every
+# other engine refusal gets.
+
+
+def test_bind_refuses_cleanly_when_the_plumbing_store_is_absent(tmp_path):
+    remote, base, head, work = _fixture_repo(tmp_path)
+    ws = tmp_path / "ws-uninitialized"
+    ws.mkdir()  # a real workspace dir, deliberately never `grip init`-ed
+
+    result = runner.invoke(
+        app,
+        ["review", "bind", str(ws), "--repo", "recall", "--remote", remote,
+         "--base", base, "--head", head, "--ref", "refs/heads/dev",
+         "--path", "recall", "--source", str(work), "--title", TITLE, "--body", BODY],
+    )
+    assert result.exit_code == 2, result.output
+    assert "Traceback" not in result.output  # clean error text, not a stack trace
+    assert "grip init" in result.output  # names the remediation, not just the symptom
+    assert str(ws) in result.output  # names WHERE, not just that something's missing
+
+
 # --- Fathom probe 2: TAMPERED CARRIED RANGE, open-gr must fail loud --------
 
 
