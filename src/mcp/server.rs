@@ -798,8 +798,12 @@ fn kill_process(pid: u32) -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn kill_process(pid: u32) -> std::io::Result<()> {
+    // `/T` terminates the whole descendant tree, not just the direct child. A
+    // grandchild build process (e.g. `sleep`) otherwise survives `/F` alone and
+    // keeps the child's stdout/stderr pipe open, so the capture reader never sees
+    // EOF and the join blocks forever (grip#931 class-3, Windows-only).
     let status = Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/F"])
+        .args(["/PID", &pid.to_string(), "/F", "/T"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
