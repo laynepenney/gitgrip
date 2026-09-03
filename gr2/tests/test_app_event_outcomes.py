@@ -60,7 +60,7 @@ def test_sink_failure_cannot_replace_lane_or_lease_outcome(
 
     if operation == "create":
         app_module.lane_create(
-            tmp_path, "atlas", "feat/test", "app", "dev", "feature", "manual", [], False
+            tmp_path, "atlas", "feat/test", "app", "dev", "feature", "manual", [], False, None
         )
     elif operation == "enter":
         app_module.lane_enter(tmp_path, "atlas", "feat/test", "agent:atlas", False, False, False)
