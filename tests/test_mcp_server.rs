@@ -90,7 +90,9 @@ impl ServerHarness {
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            // PROBE ONLY: inherit (not piped) so server [probe] stderr reaches the
+            // CI log directly and cannot block the server if the pipe fills on Windows.
+            .stderr(Stdio::inherit())
             .spawn()
             .expect("spawn mcp server");
 
