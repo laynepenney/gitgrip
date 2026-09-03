@@ -581,6 +581,12 @@ def _row_ref(workspace: Path, commit: str, key: str) -> str:
     return "refs/heads/dev"
 
 
+def review_row_keys(workspace: Path, commit: str) -> list[str]:
+    """The repository keys bound in a review gr commit, sorted. Cheap: reads the
+    repos/ subtree only (no tree recomputation)."""
+    return sorted(_read_repo_state(workspace, commit).keys())
+
+
 def reconstruct_review_lane(
     workspace: Path, commit: str, key: str, lane_dir: Path
 ) -> dict[str, str]:
