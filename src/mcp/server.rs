@@ -626,6 +626,8 @@ fn run_gitgrip_command(
         .spawn()
         .context("Failed to execute gitgrip subprocess")?;
 
+    let probe_pid = child.id();
+
     let stdout = child
         .stdout
         .take()
@@ -641,17 +643,26 @@ fn run_gitgrip_command(
 
     let cancel_status = start_cancel_controller(child.id(), cancel_flag.clone());
 
+    eprintln!("[probe] P3 child.wait enter pid={probe_pid}");
     let status = child.wait().context("Failed waiting for subprocess")?;
+    eprintln!(
+        "[probe] P3 child.wait exit pid={probe_pid} code={:?}",
+        status.code()
+    );
     cancel_status.done.store(true, Ordering::SeqCst);
     let _ = cancel_status.join.join();
     let cancelled = cancel_status.kill_sent.load(Ordering::SeqCst);
 
+    eprintln!("[probe] P1 out_thread.join enter pid={probe_pid}");
     let (stdout, stdout_truncated) = out_thread
         .join()
         .map_err(|_| anyhow::anyhow!("stdout capture thread panicked"))??;
+    eprintln!("[probe] P1 out_thread.join exit pid={probe_pid}");
+    eprintln!("[probe] P2 err_thread.join enter pid={probe_pid}");
     let (stderr, stderr_truncated) = err_thread
         .join()
         .map_err(|_| anyhow::anyhow!("stderr capture thread panicked"))??;
+    eprintln!("[probe] P2 err_thread.join exit pid={probe_pid}");
 
     let mut stdout = String::from_utf8_lossy(&stdout).to_string();
     let mut stderr = String::from_utf8_lossy(&stderr).to_string();
@@ -787,6 +798,7 @@ fn start_cancel_controller(pid: u32, cancel_flag: Option<Arc<AtomicBool>>) -> Ca
 // cancel path can never corrupt the response stream.
 #[cfg(unix)]
 fn kill_process(pid: u32) -> std::io::Result<()> {
+    eprintln!("[probe] P4 kill_process(kill) enter pid={pid}");
     let pid_s = pid.to_string();
     let status = Command::new("kill")
         .args(["-TERM", &pid_s])
@@ -794,6 +806,7 @@ fn kill_process(pid: u32) -> std::io::Result<()> {
         .stderr(Stdio::null())
         .status()?;
     if status.success() {
+        eprintln!("[probe] P4 kill_process(kill -TERM) return pid={pid} ok=true");
         return Ok(());
     }
 
@@ -802,6 +815,10 @@ fn kill_process(pid: u32) -> std::io::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
+    eprintln!(
+        "[probe] P4 kill_process(kill -KILL) return pid={pid} ok={}",
+        status.success()
+    );
     if status.success() {
         Ok(())
     } else {
@@ -811,11 +828,29 @@ fn kill_process(pid: u32) -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn kill_process(pid: u32) -> std::io::Result<()> {
+    eprintln!("[probe] P4 kill_process(taskkill) enter pid={pid}");
     let status = Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/F"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
+    // P5: right after taskkill /PID /F (no /T), is the grandchild `sleep` still
+    // alive? If yes, it holds the child's stdout/stderr pipe open and the
+    // capture reader never sees EOF -> the P1/P2 join cannot return.
+    let sleep_alive = Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq sleep.exe"])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .to_lowercase()
+                .contains("sleep")
+        })
+        .unwrap_or(false);
+    eprintln!("[probe] P5 tasklist sleep_alive={sleep_alive} after_taskkill pid={pid}");
+    eprintln!(
+        "[probe] P4 kill_process(taskkill) return pid={pid} ok={}",
+        status.success()
+    );
     if status.success() {
         Ok(())
     } else {
