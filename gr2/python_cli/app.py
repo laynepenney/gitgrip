@@ -1518,33 +1518,88 @@ def _review_call(fn, *args, **kwargs):
         raise typer.Exit(code=2)
 
 
+_ROW_REQUIRED = ("key", "remote", "base", "head")
+# Every field of a rows-json entry is a string; a JSON number/bool/null/object
+# in any of them must refuse cleanly, not traceback downstream on a string op.
+_ROW_STRING_FIELDS = ("key", "remote", "base", "head", "path", "ref", "title", "body", "source")
+
+
+def _normalize_review_row(raw: object) -> dict:
+    """Fill a rows-json entry to the shape create_review_bind_commit expects:
+    key/remote/base/head required; path defaults to key, ref to refs/heads/dev,
+    title/body to empty, source resolved to an absolute path when present."""
+    if not isinstance(raw, dict):
+        raise typer.BadParameter(f"each rows-json entry must be a JSON object, got {type(raw).__name__}")
+    # Type BEFORE presence: a number in a string field is a wrong-type error, not
+    # a missing one, and must be named before the string ops downstream see it.
+    for f in _ROW_STRING_FIELDS:
+        if f in raw and not isinstance(raw[f], str):
+            raise typer.BadParameter(
+                f"rows-json entry {raw.get('key', '?')!r} field {f!r} must be a string, "
+                f"got {type(raw[f]).__name__}"
+            )
+    missing = [f for f in _ROW_REQUIRED if not raw.get(f)]
+    if missing:
+        raise typer.BadParameter(f"rows-json entry {raw.get('key', '?')!r} is missing {', '.join(missing)}")
+    row = {
+        "key": raw["key"], "remote": raw["remote"], "base": raw["base"], "head": raw["head"],
+        "path": raw.get("path") or raw["key"], "ref": raw.get("ref", "refs/heads/dev"),
+        "title": raw.get("title", ""), "body": raw.get("body", ""),
+    }
+    if raw.get("source"):
+        row["source"] = str(Path(raw["source"]).resolve())
+    return row
+
+
 @review_app.command("bind")
 def review_bind(
     workspace_root: Path,
-    key: str = typer.Option(..., "--repo", help="Repository key for the bound row"),
-    remote: str = typer.Option(..., "--remote", help="Remote URL or path of the row"),
-    base: str = typer.Option(..., "--base", help="Base SHA (must be the live remote head of --ref)"),
-    head: str = typer.Option(..., "--head", help="Reviewed head SHA (the pre-push head under review)"),
+    key: Optional[str] = typer.Option(None, "--repo", help="Repository key for a single bound row"),
+    remote: Optional[str] = typer.Option(None, "--remote", help="Remote URL or path of the row"),
+    base: Optional[str] = typer.Option(None, "--base", help="Base SHA (must be the live remote head of --ref)"),
+    head: Optional[str] = typer.Option(None, "--head", help="Reviewed head SHA (the pre-push head under review)"),
     ref: str = typer.Option("refs/heads/dev", "--ref", help="Target ref whose live head must equal --base"),
     path: Optional[str] = typer.Option(None, "--path", help="Workspace path for the row (defaults to --repo)"),
     source: Optional[Path] = typer.Option(None, "--source", help="Author clone holding the pre-push head; required to carry the range so open-gr can reconstruct"),
     title: str = typer.Option("", "--title", help="Platform title text (NORM-hashed into the object)"),
     body: str = typer.Option("", "--body", help="Platform body text (NORM-hashed into the object)"),
-    ratified: Optional[str] = typer.Option(None, "--ratified", help="Named ratify receipt id: the sanctioned fix-forward when --head is already on the remote"),
+    rows_json: Optional[Path] = typer.Option(None, "--rows-json", help="A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body/source); binds ALL rows into ONE gr commit. Exclusive with the single-row flags."),
+    ratified: Optional[str] = typer.Option(None, "--ratified", help="Named ratify receipt id: the sanctioned fix-forward when a --head is already on the remote"),
 ) -> None:
-    """Bind a review gr commit for one repository row and print ``gr:<commit>``.
+    """Bind a review gr commit for one or more repository rows; print ``gr:<commit>``.
 
-    Reads the live remote head of --ref and refuses before writing if --base is
-    not that head (behind-must-be-0) or if --head is already on the remote
-    without --ratified. That printed id is the whole artifact.
+    One row from --repo/--remote/--base/--head, or many from --rows-json (all in
+    ONE commit). For every row, reads the live remote head of its ref and refuses
+    before writing if base is not that head (behind-must-be-0) or if head is
+    already on the remote without --ratified. That printed id is the whole artifact.
     """
-    row = {
-        "key": key, "remote": remote, "path": path or key,
-        "head": head, "base": base, "ref": ref, "title": title, "body": body,
-    }
-    if source is not None:
-        row["source"] = str(source.resolve())
-    commit = _review_call(grip.create_review_bind_commit, workspace_root.resolve(), [row], ratified=ratified)
+    single = any(v is not None for v in (key, remote, base, head))
+    if rows_json is not None:
+        if single:
+            raise typer.BadParameter("--rows-json is exclusive with --repo/--remote/--base/--head")
+        try:
+            text = rows_json.read_text()
+        except OSError as exc:
+            raise typer.BadParameter(f"--rows-json {rows_json}: {exc.strerror or exc}")
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise typer.BadParameter(f"--rows-json {rows_json}: invalid JSON ({exc})")
+        if not isinstance(raw, list) or not raw:
+            raise typer.BadParameter("--rows-json must be a non-empty JSON list of row objects")
+        rows = [_normalize_review_row(r) for r in raw]
+    else:
+        missing = [f"--{n}" for n, v in (("repo", key), ("remote", remote), ("base", base), ("head", head)) if not v]
+        if missing:
+            raise typer.BadParameter(f"{', '.join(missing)} required without --rows-json")
+        row = {
+            "key": key, "remote": remote, "path": path or key,
+            "head": head, "base": base, "ref": ref, "title": title, "body": body,
+        }
+        if source is not None:
+            row["source"] = str(source.resolve())
+        rows = [row]
+    commit = _review_call(grip.create_review_bind_commit, workspace_root.resolve(), rows, ratified=ratified)
     typer.echo(f"gr:{commit}")
 
 
