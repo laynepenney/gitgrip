@@ -642,18 +642,46 @@ def workspace_migrate_gr1(
 def workspace_bootstrap_gr1(
     workspace_root: Path,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    regenerate: bool = typer.Option(False, "--regenerate", help="Atomically regenerate an existing generated spec"),
+    expected_spec_sha256: Optional[str] = typer.Option(None, "--expected-spec-sha256"),
+    receipt: Optional[Path] = typer.Option(None, "--receipt"),
+    rollback_receipt: Optional[Path] = typer.Option(None, "--rollback-receipt"),
+    expected_current_spec_sha256: Optional[str] = typer.Option(None, "--expected-current-spec-sha256"),
 ) -> None:
     """Compile the canonical gr1 manifest and initialize the gr2 grip store."""
     workspace_root = workspace_root.resolve()
-    payload = migration.bootstrap_gr1_workspace(workspace_root)
+    if rollback_receipt is not None:
+        if regenerate or expected_spec_sha256 is not None:
+            raise typer.BadParameter("--rollback-receipt is mutually exclusive with regeneration inputs")
+        if expected_current_spec_sha256 is None or receipt is None:
+            raise typer.BadParameter("--rollback-receipt requires --expected-current-spec-sha256 and --receipt")
+        payload = migration.rollback_gr1_workspace(
+            workspace_root,
+            rollback_receipt_path=rollback_receipt,
+            expected_current_spec_sha256=expected_current_spec_sha256,
+            receipt_path=receipt,
+        )
+    elif regenerate:
+        if expected_spec_sha256 is None or receipt is None:
+            raise typer.BadParameter("--regenerate requires --expected-spec-sha256 and --receipt")
+        payload = migration.regenerate_gr1_workspace(workspace_root, expected_spec_sha256=expected_spec_sha256, receipt_path=receipt)
+    else:
+        payload = migration.bootstrap_gr1_workspace(workspace_root)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:
-        typer.echo("Gr1Bootstrap")
-        for key in ("status", "workspace_root", "manifest_path", "workspace_spec_path", "grip_repo_path"):
-            typer.echo(f"{key} = {payload[key]}")
-        typer.echo(f"repo_count = {payload['repo_count']}")
-        typer.echo(f"unit_count = {payload['unit_count']}")
+        # Render each payload by its OWN keys. bootstrap, regenerate and rollback
+        # return different schemas (rollback has no manifest_path, regenerate has
+        # no repo_count); a fixed key list raised KeyError after a successful
+        # mutation, exiting 1 on a completed rollback. Print scalars in order;
+        # json-encode nested values so nothing is dropped.
+        typer.echo(str(payload.get("schema", "Gr1Bootstrap")))
+        for key, value in payload.items():
+            if key == "schema":
+                continue
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value)
+            typer.echo(f"{key} = {value}")
 
 
 @spec_app.command("show")
