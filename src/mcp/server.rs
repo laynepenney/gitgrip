@@ -7,14 +7,18 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const DEFAULT_MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 const MAX_CAPTURE_ENV: &str = "GITGRIP_MCP_MAX_CAPTURE_BYTES";
 const CAPTURE_TRUNCATED_MSG: &str = "\n[output truncated: exceeded capture limit]";
+const CAPTURE_INCOMPLETE_MSG: &str =
+    "\n[output incomplete: capture reader did not finish; a process outside the child tree held the pipe]";
+const DEFAULT_CHILD_TIMEOUT_SECS: u64 = 600;
+const CHILD_TIMEOUT_ENV: &str = "GITGRIP_MCP_CHILD_TIMEOUT_SECS";
 
 #[derive(Debug, Deserialize)]
 struct RpcRequest {
@@ -55,6 +59,7 @@ struct GenerateContextArgs {
 struct CommandOutput {
     success: bool,
     cancelled: bool,
+    timed_out: bool,
     status_code: Option<i32>,
     stdout: String,
     stderr: String,
@@ -599,49 +604,141 @@ fn parse_tool_args<T: for<'de> Deserialize<'de>>(value: Value) -> anyhow::Result
     serde_json::from_value(value).context("Invalid tool arguments")
 }
 
+// Serializes Command::spawn (+ the immediately-following pipe take) across worker
+// threads. On Windows a piped child's stdout/stderr write handles are inheritable
+// during CreateProcess, so two children spawned concurrently can each inherit the
+// other's pipe handle — a sibling then holds the pipe open and the other child's
+// wait/reader never resolves (grip#931 class-3, the non-cancelled concurrent child
+// hung at child.wait, measured on Windows). Holding this lock ONLY across spawn +
+// take closes that window without serializing command execution.
+fn spawn_lock() -> &'static Mutex<()> {
+    static SPAWN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    SPAWN_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+// Wall-clock ceiling for one subprocess (and, separately, for the reader join). A
+// hang becomes a TYPED timeout instead of an unbounded deadlock, so a future hang
+// is measurable from the client side. Generous default; tune with CHILD_TIMEOUT_ENV.
+fn child_wait_timeout() -> Duration {
+    std::env::var(CHILD_TIMEOUT_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(DEFAULT_CHILD_TIMEOUT_SECS))
+}
+
+enum WaitOutcome {
+    Exited(std::process::ExitStatus),
+    TimedOut,
+}
+
+// Bounded replacement for Child::wait: polls try_wait until the child exits or
+// `timeout` elapses. OS-agnostic; the 20ms poll bounds latency, not correctness.
+fn wait_with_timeout(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> io::Result<WaitOutcome> {
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(WaitOutcome::Exited(status));
+        }
+        if start.elapsed() >= timeout {
+            return Ok(WaitOutcome::TimedOut);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+type CaptureResult = anyhow::Result<(Vec<u8>, bool)>;
+
+// Spawn a capture reader that delivers its result over a channel, so the caller can
+// join it with a TIMEOUT (recv_timeout) rather than an unbounded thread join.
+fn spawn_capture<R: Read + Send + 'static>(stream: R, max: usize) -> mpsc::Receiver<CaptureResult> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(capture_stream(stream, max));
+    });
+    rx
+}
+
+// Bounded reader join. Returns (bytes, truncated, incomplete). `incomplete` = the
+// reader did not finish within `timeout` (a process OUTSIDE the child's tree held
+// the pipe open, so killing the child cannot release it). We ABANDON the thread
+// rather than deadlock and return whatever arrived (empty on a fully hung pipe).
+fn recv_capture(rx: &mpsc::Receiver<CaptureResult>, timeout: Duration) -> (Vec<u8>, bool, bool) {
+    match rx.recv_timeout(timeout) {
+        Ok(Ok((bytes, truncated))) => (bytes, truncated, false),
+        Ok(Err(_)) | Err(_) => (Vec::new(), false, true),
+    }
+}
+
 fn run_gitgrip_command(
     args: &[String],
     cancel_flag: Option<Arc<AtomicBool>>,
 ) -> anyhow::Result<CommandOutput> {
     let exe = std::env::current_exe().context("Failed to locate current gitgrip executable")?;
-    let mut child = Command::new(exe)
-        .args(args)
-        .env("NO_COLOR", "1")
-        .env("CLICOLOR", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("Failed to execute gitgrip subprocess")?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .context("Failed to capture subprocess stdout")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("Failed to capture subprocess stderr")?;
+    // Hold the spawn lock across spawn + pipe take only (see spawn_lock), then
+    // release so execution stays concurrent. stdin is null so the child never
+    // inherits the parent's stdin/console handles.
+    let (mut child, stdout, stderr) = {
+        let _spawn_guard = spawn_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let mut child = Command::new(exe)
+            .args(args)
+            .env("NO_COLOR", "1")
+            .env("CLICOLOR", "0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to execute gitgrip subprocess")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("Failed to capture subprocess stdout")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("Failed to capture subprocess stderr")?;
+        (child, stdout, stderr)
+    };
 
     let max_capture = max_capture_bytes();
-    let out_thread = thread::spawn(move || capture_stream(stdout, max_capture));
-    let err_thread = thread::spawn(move || capture_stream(stderr, max_capture));
+    let out_rx = spawn_capture(stdout, max_capture);
+    let err_rx = spawn_capture(stderr, max_capture);
 
     let cancel_status = start_cancel_controller(child.id(), cancel_flag.clone());
 
-    let status = child.wait().context("Failed waiting for subprocess")?;
+    // Bounded wait: a hung child becomes a typed timeout instead of a deadlock.
+    let timeout = child_wait_timeout();
+    let mut timed_out = false;
+    let status =
+        match wait_with_timeout(&mut child, timeout).context("Failed waiting for subprocess")? {
+            WaitOutcome::Exited(status) => Some(status),
+            WaitOutcome::TimedOut => {
+                timed_out = true;
+                let _ = kill_process(child.id());
+                // Reap with a short bound so a still-hung wait cannot re-deadlock here.
+                match wait_with_timeout(&mut child, Duration::from_secs(5)) {
+                    Ok(WaitOutcome::Exited(status)) => Some(status),
+                    _ => None,
+                }
+            }
+        };
     cancel_status.done.store(true, Ordering::SeqCst);
     let _ = cancel_status.join.join();
     let cancelled = cancel_status.kill_sent.load(Ordering::SeqCst);
 
-    let (stdout, stdout_truncated) = out_thread
-        .join()
-        .map_err(|_| anyhow::anyhow!("stdout capture thread panicked"))??;
-    let (stderr, stderr_truncated) = err_thread
-        .join()
-        .map_err(|_| anyhow::anyhow!("stderr capture thread panicked"))??;
+    // Bounded reader joins: kill/T on the child cannot release a pipe held by a
+    // sibling OUTSIDE its tree, so the reader could hang even after the child is
+    // gone. Abandon it after the bound; the capture is then partial.
+    let (out_bytes, stdout_truncated, out_incomplete) = recv_capture(&out_rx, timeout);
+    let (err_bytes, stderr_truncated, err_incomplete) = recv_capture(&err_rx, timeout);
+    let reader_incomplete = out_incomplete || err_incomplete;
 
-    let mut stdout = String::from_utf8_lossy(&stdout).to_string();
-    let mut stderr = String::from_utf8_lossy(&stderr).to_string();
+    let mut stdout = String::from_utf8_lossy(&out_bytes).to_string();
+    let mut stderr = String::from_utf8_lossy(&err_bytes).to_string();
 
     if stdout_truncated {
         stdout.push_str(CAPTURE_TRUNCATED_MSG);
@@ -649,11 +746,20 @@ fn run_gitgrip_command(
     if stderr_truncated {
         stderr.push_str(CAPTURE_TRUNCATED_MSG);
     }
+    if reader_incomplete {
+        stderr.push_str(CAPTURE_INCOMPLETE_MSG);
+    }
+
+    let success = !timed_out
+        && !reader_incomplete
+        && status.map(|s| s.success()).unwrap_or(false)
+        && !cancelled;
 
     Ok(CommandOutput {
-        success: status.success() && !cancelled,
+        success,
         cancelled,
-        status_code: status.code(),
+        timed_out: timed_out || reader_incomplete,
+        status_code: status.and_then(|s| s.code()),
         stdout,
         stderr,
     })
@@ -664,23 +770,30 @@ fn run_context_command(
     cancel_flag: Option<Arc<AtomicBool>>,
 ) -> anyhow::Result<ContextCommandOutput> {
     let exe = std::env::current_exe().context("Failed to locate current gitgrip executable")?;
-    let mut child = Command::new(exe)
-        .args(args)
-        .env("NO_COLOR", "1")
-        .env("CLICOLOR", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("Failed to execute gitgrip subprocess")?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .context("Failed to capture subprocess stdout")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("Failed to capture subprocess stderr")?;
+    // Same spawn-serialization + null-stdin root fix as run_gitgrip_command: the
+    // handle-inheritance race is process-global, so every piped-child spawn must
+    // take the lock or a concurrent context spawn can still cross-inherit.
+    let (mut child, stdout, stderr) = {
+        let _spawn_guard = spawn_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let mut child = Command::new(exe)
+            .args(args)
+            .env("NO_COLOR", "1")
+            .env("CLICOLOR", "0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to execute gitgrip subprocess")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("Failed to capture subprocess stdout")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("Failed to capture subprocess stderr")?;
+        (child, stdout, stderr)
+    };
 
     let max_capture = max_capture_bytes();
     let err_thread = thread::spawn(move || capture_stream(stderr, max_capture));
@@ -691,7 +804,23 @@ fn run_context_command(
 
     let cancel_status = start_cancel_controller(child.id(), cancel_flag);
 
-    let status = child.wait().context("Failed waiting for subprocess")?;
+    // Bounded wait (backstop; the spawn-lock root fix prevents the concurrent-spawn
+    // hang). Reader joins below stay unbounded: ratified step-2 scope bounds
+    // run_context's WAIT, and the root fix already keeps a sibling off this path.
+    let mut timed_out = false;
+    let status = match wait_with_timeout(&mut child, child_wait_timeout())
+        .context("Failed waiting for subprocess")?
+    {
+        WaitOutcome::Exited(status) => Some(status),
+        WaitOutcome::TimedOut => {
+            timed_out = true;
+            let _ = kill_process(child.id());
+            match wait_with_timeout(&mut child, Duration::from_secs(5)) {
+                Ok(WaitOutcome::Exited(status)) => Some(status),
+                _ => None,
+            }
+        }
+    };
     cancel_status.done.store(true, Ordering::SeqCst);
     let _ = cancel_status.join.join();
     let cancelled = cancel_status.kill_sent.load(Ordering::SeqCst);
@@ -708,10 +837,12 @@ fn run_context_command(
         stderr.push_str(CAPTURE_TRUNCATED_MSG);
     }
 
+    let succeeded = !timed_out && status.map(|s| s.success()).unwrap_or(false) && !cancelled;
+
     let context_json = match context_json {
         Ok(value) => Some(value),
         Err(err) => {
-            if status.success() && !cancelled {
+            if succeeded {
                 return Err(anyhow::anyhow!(
                     "agent context produced non-JSON output: {err}"
                 ));
@@ -721,9 +852,9 @@ fn run_context_command(
     };
 
     Ok(ContextCommandOutput {
-        success: status.success() && !cancelled && context_json.is_some(),
+        success: succeeded && context_json.is_some(),
         cancelled,
-        status_code: status.code(),
+        status_code: status.and_then(|s| s.code()),
         context_json,
         stderr,
     })
@@ -849,7 +980,13 @@ fn capture_stream<R: Read>(mut reader: R, max_bytes: usize) -> anyhow::Result<(V
 }
 
 fn command_failure(label: &str, out: &CommandOutput) -> String {
-    let mut message = if out.cancelled {
+    let mut message = if out.timed_out {
+        format!(
+            "gitgrip {label} did not exit within {}s (raise {}); process tree killed, output may be partial",
+            child_wait_timeout().as_secs(),
+            CHILD_TIMEOUT_ENV
+        )
+    } else if out.cancelled {
         format!("gitgrip {label} cancelled")
     } else {
         format!(
@@ -1400,5 +1537,139 @@ mod tests {
         handle_cancel_notification(json!({ "requestId": 123 }), &map);
 
         assert!(flag.load(Ordering::SeqCst));
+    }
+
+    // --- grip#931 step 2: bounded wait + bounded reader join + spawn lock ---
+
+    fn sleeper_cmd() -> Command {
+        #[cfg(unix)]
+        {
+            let mut c = Command::new("sleep");
+            c.arg("30");
+            c
+        }
+        #[cfg(windows)]
+        {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "ping", "-n", "31", "127.0.0.1"]);
+            c
+        }
+    }
+
+    fn quick_cmd() -> Command {
+        #[cfg(unix)]
+        {
+            Command::new("true")
+        }
+        #[cfg(windows)]
+        {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "exit", "0"]);
+            c
+        }
+    }
+
+    #[test]
+    fn wait_with_timeout_times_out_promptly_and_child_can_be_reaped() {
+        let mut child = sleeper_cmd()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sleeper");
+        let start = Instant::now();
+        let outcome = wait_with_timeout(&mut child, Duration::from_millis(200)).expect("wait ok");
+        assert!(
+            matches!(outcome, WaitOutcome::TimedOut),
+            "long-running child must report TimedOut"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "wait returned at the bound, not after the child; elapsed={:?}",
+            start.elapsed()
+        );
+        let _ = child.kill();
+        let reap = wait_with_timeout(&mut child, Duration::from_secs(5)).expect("reap ok");
+        assert!(
+            matches!(reap, WaitOutcome::Exited(_)),
+            "killed child must reap as Exited"
+        );
+    }
+
+    #[test]
+    fn wait_with_timeout_reports_exit_for_quick_child() {
+        let mut child = quick_cmd()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn quick");
+        match wait_with_timeout(&mut child, Duration::from_secs(10)).expect("wait ok") {
+            WaitOutcome::Exited(status) => assert!(status.success(), "quick child exits success"),
+            WaitOutcome::TimedOut => panic!("quick child must not time out"),
+        }
+    }
+
+    #[test]
+    fn recv_capture_reports_incomplete_when_reader_never_finishes() {
+        // A sender that never sends models a reader hung on a pipe held by a
+        // process outside the child's tree.
+        let (_tx, rx) = mpsc::channel::<CaptureResult>();
+        let start = Instant::now();
+        let (bytes, truncated, incomplete) = recv_capture(&rx, Duration::from_millis(150));
+        assert!(
+            incomplete,
+            "a reader that never delivers must read as incomplete"
+        );
+        assert!(
+            bytes.is_empty() && !truncated,
+            "partial capture is empty here"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "recv_capture returns at its bound, not never"
+        );
+    }
+
+    #[test]
+    fn recv_capture_delivers_available_bytes() {
+        let (tx, rx) = mpsc::channel::<CaptureResult>();
+        tx.send(Ok((b"hello".to_vec(), false))).unwrap();
+        let (bytes, truncated, incomplete) = recv_capture(&rx, Duration::from_secs(5));
+        assert_eq!(bytes, b"hello");
+        assert!(!truncated && !incomplete);
+    }
+
+    #[test]
+    fn command_failure_reports_typed_timeout_naming_the_env() {
+        let out = CommandOutput {
+            success: false,
+            cancelled: false,
+            timed_out: true,
+            status_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+        let msg = command_failure("agent_build", &out);
+        assert!(
+            msg.contains("did not exit within")
+                && msg.contains("process tree killed")
+                && msg.contains(CHILD_TIMEOUT_ENV),
+            "timeout must surface as a typed, client-visible error naming the env knob; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn spawn_lock_is_a_shared_singleton_and_does_not_deadlock() {
+        let a = spawn_lock() as *const Mutex<()>;
+        let b = spawn_lock() as *const Mutex<()>;
+        assert_eq!(a, b, "spawn_lock must return one shared mutex");
+        {
+            let _g = spawn_lock().lock().unwrap_or_else(|e| e.into_inner());
+        }
+        let handle = thread::spawn(|| {
+            let _g = spawn_lock().lock().unwrap_or_else(|e| e.into_inner());
+        });
+        handle.join().expect("second acquirer completes");
     }
 }
