@@ -296,8 +296,15 @@ pub fn run_mcp_server() -> anyhow::Result<()> {
 
     loop {
         while let Ok(done) = worker_rx.try_recv() {
+            let probe_key = done.request_key.clone();
             cancellation_map.remove(&done.request_key);
-            write_frame(&mut writer, &done.response)?;
+            eprintln!("[probe] B drain.recv key={probe_key} -> write_frame");
+            let probe_wf = write_frame(&mut writer, &done.response);
+            eprintln!(
+                "[probe] B drain.write_frame key={probe_key} ok={}",
+                probe_wf.is_ok()
+            );
+            probe_wf?;
         }
 
         if reader_done && cancellation_map.is_empty() {
@@ -334,10 +341,16 @@ pub fn run_mcp_server() -> anyhow::Result<()> {
                     let params = request.params;
                     thread::spawn(move || {
                         let response = handle_tool_call(id, params, Some(cancel_flag));
-                        let _ = tx.send(WorkerResponse {
+                        let probe_key = request_key.clone();
+                        let probe_is_error = response.get("error").is_some();
+                        let probe_send = tx.send(WorkerResponse {
                             request_key,
                             response,
                         });
+                        eprintln!(
+                            "[probe] A worker.send key={probe_key} resp_is_error={probe_is_error} send_ok={}",
+                            probe_send.is_ok()
+                        );
                     });
                     continue;
                 }
@@ -1185,9 +1198,14 @@ fn jsonrpc_error_value(code: i64, message: &str) -> Value {
 
 fn write_frame<W: Write>(writer: &mut W, message: &Value) -> anyhow::Result<()> {
     let body = serde_json::to_vec(message)?;
-    writer.write_all(&body)?;
+    eprintln!("[probe] C write_frame body_len={}", body.len());
+    let probe_body = writer.write_all(&body);
+    eprintln!("[probe] C write_frame write_body_ok={}", probe_body.is_ok());
+    probe_body?;
     writer.write_all(b"\n")?;
-    writer.flush()?;
+    let probe_flush = writer.flush();
+    eprintln!("[probe] C write_frame flush_ok={}", probe_flush.is_ok());
+    probe_flush?;
     Ok(())
 }
 

@@ -163,15 +163,21 @@ jobs:
       # it is a test; if "Build tests" hangs, it is the toolchain.
       # The second invocation reuses the first's artifacts, so this costs a
       # dependency check, not a rebuild.
+      # PROBE ONLY (grip#931 class-3 write-path diagnostic): bound to the single
+      # mcp-server binary so the 15-min leg cannot cancel mid-run before the
+      # [probe] stderr lines land. Revert to --all-features when the probe closes.
       - name: Build tests
-        run: cargo test --all-features --no-run
+        run: cargo test --all-features --no-run --test test_mcp_server
         env:
           RUSTFLAGS: '-C link-arg=advapi32.lib -C link-arg=/STACK:8388608'
 
       - name: Run tests
         # --no-fail-fast: see the matrix job's note. On Windows especially, one
         # run must surface every failing binary rather than stopping at the first.
-        run: cargo test --all-features --no-fail-fast
+        # --nocapture so the write-path [probe] lines are not swallowed on a pass;
+        # --test-threads=1 so the three servers' [probe] streams do not interleave
+        # on the shared stderr fd (each test spawns its own mcp-server child).
+        run: cargo test --all-features --no-fail-fast --test test_mcp_server -- --nocapture --test-threads=1
         env:
           RUSTFLAGS: '-C link-arg=advapi32.lib -C link-arg=/STACK:8388608'
 
