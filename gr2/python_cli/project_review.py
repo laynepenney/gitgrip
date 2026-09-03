@@ -93,12 +93,14 @@ def _canonical_repo_identity(value: str, *, allow_local: bool) -> str:
     does. A bare local path remains marked local for isolated fixtures.
 
     ``allow_local`` is threaded to ``canonical_source_identity`` on EVERY path,
-    including the two ``local:`` sub-cases: it is the boundary invariant this
-    function exists to enforce, and a value carrying the literal ``local:``
-    prefix must not bypass it. With ``allow_local=False`` a filesystem identity
-    is refused with the same ``ReviewError`` as a bare non-GitHub origin, because
-    the refusal is delegated to ``canonical_source_identity`` rather than
-    re-implemented here.
+    including the two ``local:`` sub-cases, so the literal ``local:`` prefix
+    cannot bypass the FILESYSTEM-identity refusal: with ``allow_local=False`` a
+    filesystem identity is refused with the same ``ReviewError`` as a bare
+    non-GitHub origin, because the refusal is delegated to
+    ``canonical_source_identity`` rather than re-implemented here. A ``local:``
+    checkout whose origin is a portable ``https://github.com/<owner>/<repo>``
+    still canonicalizes to that GitHub identity regardless of the flag — the
+    refusal is of a non-portable filesystem identity, not of the prefix itself.
     """
     if value.startswith("local:"):
         local = Path(value.removeprefix("local:"))
