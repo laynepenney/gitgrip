@@ -9,7 +9,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import Literal
 
 from gr2.prototypes import lane_workspace_prototype as lanes
-from . import grip, review
+from . import grip, review, spec_apply
 from .gitops import git
 
 _SHA40 = re.compile(r"\A[0-9a-f]{40}\Z")
@@ -85,6 +85,85 @@ def _review_path_component(value: str, field: str) -> str:
     return value
 
 
+def _canonical_repo_identity(value: str, *, allow_local: bool) -> str:
+    """Canonicalize a pin/spec identity without treating a clone path as truth.
+
+    Local paths are test-only transport. When one names a checkout, its origin
+    supplies the repository identity just as production HTTPS/SSH transport
+    does. A bare local path remains marked local for isolated fixtures.
+
+    ``allow_local`` is threaded to ``canonical_source_identity`` on EVERY path,
+    including the two ``local:`` sub-cases: it is the boundary invariant this
+    function exists to enforce, and a value carrying the literal ``local:``
+    prefix must not bypass it. With ``allow_local=False`` a filesystem identity
+    is refused with the same ``ReviewError`` as a bare non-GitHub origin, because
+    the refusal is delegated to ``canonical_source_identity`` rather than
+    re-implemented here.
+    """
+    if value.startswith("local:"):
+        local = Path(value.removeprefix("local:"))
+        origin = review.gitops.remote_origin_url(local) if local.is_dir() else None
+        if origin:
+            return review.canonical_source_identity(origin, allow_local=allow_local)
+        return review.canonical_source_identity(str(local), allow_local=allow_local)
+    return review.canonical_source_identity(value, allow_local=allow_local)
+
+
+def _validate_workspace_repository_boundary(
+    *, workspace: Path, pins: tuple[ProjectReviewPin, ...], sources: dict[str, tuple[Path, str]], allow_local: bool
+) -> ProjectReviewFailure | None:
+    """Bind every review pin and ephemeral source to the compiled workspace.
+
+    This is deliberately before pin-object checks, clone destinations, or lane
+    transition. A project review may only materialize repositories the compiled
+    workspace itself authorizes.
+    """
+    try:
+        workspace_doc = spec_apply.load_workspace_spec_doc(workspace)
+    except SystemExit as exc:
+        return ProjectReviewFailure("workspace_spec", str(exc))
+    entries: dict[str, str] = {}
+    for row in workspace_doc.get("repos", []):
+        if not isinstance(row, dict):
+            return ProjectReviewFailure("workspace_spec", "compiled workspace repo entry is not a mapping")
+        key = str(row.get("name", ""))
+        url = str(row.get("url", ""))
+        try:
+            entries[key] = _canonical_repo_identity(url, allow_local=allow_local)
+        except Exception as exc:
+            return ProjectReviewFailure("workspace_spec", f"invalid compiled repository {key!r}: {exc}")
+    for pin in pins:
+        expected = entries.get(pin.key)
+        if expected is None:
+            return ProjectReviewFailure(pin.key, f"unknown workspace repository key {pin.key!r}")
+        try:
+            pin_identity = _canonical_repo_identity(pin.repo, allow_local=allow_local)
+        except Exception as exc:
+            return ProjectReviewFailure(pin.key, f"invalid pin repository identity: {exc}")
+        if pin_identity != expected:
+            return ProjectReviewFailure(
+                pin.key,
+                f"workspace repository identity mismatch: pin {pin_identity!r}, compiled {expected!r}",
+            )
+        source_branch = sources.get(pin.key)
+        if source_branch is None:
+            continue
+        source, _branch = source_branch
+        origin = review.gitops.remote_origin_url(source)
+        if not origin:
+            return ProjectReviewFailure(pin.key, f"selected source {source} has no origin for identity validation")
+        try:
+            source_identity = _canonical_repo_identity(origin, allow_local=allow_local)
+        except Exception as exc:
+            return ProjectReviewFailure(pin.key, f"invalid selected source origin: {exc}")
+        if source_identity != pin_identity:
+            return ProjectReviewFailure(
+                pin.key,
+                f"selected source identity mismatch: source {source_identity!r}, pin {pin_identity!r}",
+            )
+    return None
+
+
 def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spec: ProjectReviewSpec, sources: dict[str, tuple[Path, str]], allow_local: bool = False) -> ProjectReviewOutcome:
     """Preflight every immutable pin, then materialize all members before enter."""
     if spec.schema != "gr2-project-review/v1":
@@ -105,6 +184,11 @@ def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spe
         for field, expected, observed in (("key", pin.key, row["key"]), ("repo", pin.repo, row["repo"]), ("path", pin.path, _normalized_path(row["path"])), ("base", pin.base, row["base"]), ("head", pin.head, row["head"])):
             if expected != observed:
                 return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure(pin.key, f"gr commit mismatch for {field}: expected {expected!r}, observed {observed!r}"),), None, False)
+    boundary_failure = _validate_workspace_repository_boundary(
+        workspace=workspace, pins=canonical_pins, sources=sources, allow_local=allow_local
+    )
+    if boundary_failure is not None:
+        return ProjectReviewOutcome("refused", spec.grip_commit, (), (boundary_failure,), None, False)
     for pin in canonical_pins:
         source_branch = sources.get(pin.key)
         if source_branch is None:
