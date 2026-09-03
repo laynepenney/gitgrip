@@ -91,13 +91,21 @@ def _canonical_repo_identity(value: str, *, allow_local: bool) -> str:
     Local paths are test-only transport. When one names a checkout, its origin
     supplies the repository identity just as production HTTPS/SSH transport
     does. A bare local path remains marked local for isolated fixtures.
+
+    ``allow_local`` is threaded to ``canonical_source_identity`` on EVERY path,
+    including the two ``local:`` sub-cases: it is the boundary invariant this
+    function exists to enforce, and a value carrying the literal ``local:``
+    prefix must not bypass it. With ``allow_local=False`` a filesystem identity
+    is refused with the same ``ReviewError`` as a bare non-GitHub origin, because
+    the refusal is delegated to ``canonical_source_identity`` rather than
+    re-implemented here.
     """
     if value.startswith("local:"):
         local = Path(value.removeprefix("local:"))
         origin = review.gitops.remote_origin_url(local) if local.is_dir() else None
         if origin:
-            return review.canonical_source_identity(origin, allow_local=True)
-        return f"local:{local.resolve()}"
+            return review.canonical_source_identity(origin, allow_local=allow_local)
+        return review.canonical_source_identity(str(local), allow_local=allow_local)
     return review.canonical_source_identity(value, allow_local=allow_local)
 
 

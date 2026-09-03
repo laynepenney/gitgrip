@@ -416,3 +416,34 @@ def test_deleting_identity_boundary_recreates_clone_side_effect(tmp_path: Path, 
 
     assert outcome.status == "opened"
     assert (workspace / "reviews" / "atlas" / "identity-deleted" / "repos" / "alpha" / ".git").is_dir()
+
+
+def test_canonical_repo_identity_local_prefix_honors_allow_local_false(tmp_path: Path) -> None:
+    """R1 (Fathom) BLOCK on v1: the ``local:`` branch of ``_canonical_repo_identity``
+    ignored ``allow_local`` in BOTH sub-cases, so a production review
+    (allow_local=False) accepted a local: pin at the very boundary this commit
+    exists to enforce. Both sub-cases must refuse with the same ReviewError as a
+    plain non-GitHub origin; reverting the fix (hardcoded allow_local=True on the
+    origin branch, bare ``local:<path>`` return on the no-origin branch) reds this.
+    """
+    from gr2.python_cli import project_review, review
+
+    # sub-case 1: a local: value with no resolvable origin (bare path).
+    bare = tmp_path / "not-a-checkout"
+    bare.mkdir()
+    with pytest.raises(review.ReviewError):
+        project_review._canonical_repo_identity(f"local:{bare}", allow_local=False)
+
+    # sub-case 2: a real checkout whose own origin is itself a local filesystem
+    # path (this is exactly what _source builds) -- the origin branch must not
+    # hardcode allow_local=True.
+    checkout, _base, _head = _source(tmp_path, "svc")
+    assert _git(checkout, "remote", "get-url", "origin").startswith(str(tmp_path))
+    with pytest.raises(review.ReviewError):
+        project_review._canonical_repo_identity(f"local:{checkout}", allow_local=False)
+
+    # controls: allow_local=True still accepts both, byte-identical to pre-fix.
+    assert project_review._canonical_repo_identity(f"local:{bare}", allow_local=True) == f"local:{bare.resolve()}"
+    assert project_review._canonical_repo_identity(f"local:{checkout}", allow_local=True).startswith("local:")
+    # control: a GitHub-shaped local: origin canonicalizes regardless of the flag.
+    assert project_review._canonical_repo_identity("https://github.com/o/r", allow_local=False) == "https://github.com/o/r"
