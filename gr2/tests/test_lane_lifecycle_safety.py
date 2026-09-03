@@ -178,3 +178,150 @@ def test_blocked_plan_reports_nonzero_and_damaged_audit_keeps_healthy_rows(tmp_p
     assert "healthy\tok" in report
     assert "damaged\tneeds-attention" in report
     assert "missing-docs-root" in report
+
+
+# --------------------------------------------------------------------------- #
+# lane_kind + --bind (gr2-lane-author-shape ruling, 2026-09-03)
+# --------------------------------------------------------------------------- #
+import subprocess
+
+
+def _git(path: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=str(path), capture_output=True, text=True)
+
+
+def _real_worktree(tmp_path: Path, name: str = "wt", branch: str = "feat/x") -> Path:
+    wt = tmp_path / name
+    wt.mkdir()
+    assert _git(wt, "init", "-q").returncode == 0
+    _git(wt, "config", "user.email", "t@t.invalid")
+    _git(wt, "config", "user.name", "t")
+    (wt / "f.txt").write_text("hi\n")
+    _git(wt, "add", ".")
+    assert _git(wt, "commit", "-qm", "init").returncode == 0
+    assert _git(wt, "checkout", "-qb", branch).returncode == 0
+    return wt
+
+
+def _create_bound(workspace: Path, name: str, bind: Path, *, repos: str = "app") -> argparse.Namespace:
+    return argparse.Namespace(
+        workspace_root=workspace, owner_unit="atlas", lane_name=name, type="feature",
+        repos=repos, branch="app=main", source="test", default_commands=[], bind=str(bind),
+    )
+
+
+def _two_repo_workspace(tmp_path: Path) -> Path:
+    workspace = tmp_path / "workspace2"
+    (workspace / ".grip").mkdir(parents=True)
+    (workspace / ".grip" / "workspace_spec.toml").write_text(
+        '''schema_version = 1
+workspace_name = "m0"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "https://example.invalid/app.git"
+
+[[repos]]
+name = "lib"
+path = "repos/lib"
+url = "https://example.invalid/lib.git"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["app", "lib"]
+'''
+    )
+    return workspace
+
+
+def test_materialized_lane_records_lane_kind_materialized(tmp_path: Path) -> None:
+    # Every lane document carries lane_kind so a reader never infers it; the
+    # ordinary create path is "materialized" and owns a repos/ subdir.
+    workspace = _workspace(tmp_path)
+    assert lanes.create_lane(_create(workspace, "feature")) == 0
+    doc = lanes.tomllib.loads(lanes.lane_file(workspace, "atlas", "feature").read_text())
+    assert doc["lane_kind"] == "materialized"
+    assert "bound_worktree" not in doc
+    assert (lanes.lane_dir(workspace, "atlas", "feature") / "repos").is_dir()
+
+
+def test_create_bound_lane_writes_bound_receipt_and_no_clone(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    wt = _real_worktree(tmp_path, branch="feat/bind-me")
+    assert lanes.create_lane(_create_bound(workspace, "bound", wt)) == 0
+    lane_dir = lanes.lane_dir(workspace, "atlas", "bound")
+    doc = lanes.tomllib.loads(lanes.lane_file(workspace, "atlas", "bound").read_text())
+    assert doc["lane_kind"] == "bound"
+    assert doc["bound_worktree"] == str(wt.resolve())
+    # branch comes from the worktree's current branch, not the --branch arg
+    assert doc["branch_map"] == {"app": "feat/bind-me"}
+    # a bound lane owns no clone: no repos/ subdir was created
+    assert not (lane_dir / "repos").exists()
+    assert (lane_dir / "context").is_dir()
+
+
+def test_create_bound_lane_refuses_dirty_tree(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    wt = _real_worktree(tmp_path, branch="feat/dirty")
+    (wt / "f.txt").write_text("uncommitted change\n")  # make the tree dirty
+    with pytest.raises(SystemExit, match="dirty tree"):
+        lanes.create_lane(_create_bound(workspace, "bound", wt))
+    # refused before any lane tree was created
+    assert not lanes.lane_dir(workspace, "atlas", "bound").exists()
+
+
+def test_create_bound_lane_refuses_detached_head(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    wt = _real_worktree(tmp_path, branch="feat/detach")
+    head = _git(wt, "rev-parse", "HEAD").stdout.strip()
+    _git(wt, "checkout", "-q", head)  # detach
+    with pytest.raises(SystemExit, match="detached HEAD"):
+        lanes.create_lane(_create_bound(workspace, "bound", wt))
+    assert not lanes.lane_dir(workspace, "atlas", "bound").exists()
+
+
+def test_create_bound_lane_refuses_non_git_path(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    plain = tmp_path / "notgit"
+    plain.mkdir()
+    with pytest.raises(SystemExit, match="not a git work tree"):
+        lanes.create_lane(_create_bound(workspace, "bound", plain))
+
+
+def test_create_bound_lane_refuses_multi_repo(tmp_path: Path) -> None:
+    workspace = _two_repo_workspace(tmp_path)
+    wt = _real_worktree(tmp_path, branch="feat/multi")
+    with pytest.raises(SystemExit, match="single-repo only"):
+        lanes.create_lane(_create_bound(workspace, "bound", wt, repos="app,lib"))
+    assert not lanes.lane_dir(workspace, "atlas", "bound").exists()
+
+
+def test_app_lane_create_bind_skips_materialization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # End-to-end wiring: `lane create --bind` writes a bound lane.toml AND does
+    # not materialize a clone (the ~95s/1.78GB tax the ruling exists to avoid).
+    workspace = _workspace(tmp_path)
+    (workspace / ".grip" / "events").mkdir(parents=True, exist_ok=True)
+    wt = _real_worktree(tmp_path, branch="feat/app-bind")
+    materialized: list[str] = []
+    monkeypatch.setattr(app_module, "_materialize_lane_repos", lambda *a, **k: materialized.append("called"))
+    monkeypatch.setattr(app_module, "emit_after_outcome", lambda **k: None)
+    app_module.lane_create(
+        workspace, "atlas", "bound", repos="app", branch=None,
+        lane_type="feature", source="manual", command=[], manual_hooks=False, bind=wt,
+    )
+    doc = lanes.tomllib.loads(lanes.lane_file(workspace, "atlas", "bound").read_text())
+    assert doc["lane_kind"] == "bound"
+    assert doc["bound_worktree"] == str(wt.resolve())
+    assert materialized == []  # no clone was materialized for a bound lane
+
+
+def test_app_lane_create_requires_branch_without_bind(tmp_path: Path) -> None:
+    import typer
+    workspace = _workspace(tmp_path)
+    with pytest.raises(typer.BadParameter, match="branch is required"):
+        app_module.lane_create(
+            workspace, "atlas", "m", repos="app", branch=None,
+            lane_type="feature", source="manual", command=[], manual_hooks=False, bind=None,
+        )

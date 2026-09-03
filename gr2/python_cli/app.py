@@ -1008,36 +1008,47 @@ def lane_create(
     owner_unit: str,
     lane_name: str,
     repos: str = typer.Option(..., help="Comma-separated repo names"),
-    branch: str = typer.Option(..., help="Default branch or repo=branch mappings"),
+    branch: Optional[str] = typer.Option(None, help="Default branch or repo=branch mappings (required unless --bind; ignored with --bind, where the branch is read from the bound worktree)"),
     lane_type: str = typer.Option("feature", "--type", help="Lane type"),
     source: str = typer.Option("manual", help="Creation source label"),
     command: list[str] = typer.Option(None, "--command", help="Default command for the lane"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual during lane materialization"),
+    bind: Optional[Path] = typer.Option(None, "--bind", help="Bind the lane to an EXISTING clean, non-detached single-repo worktree instead of materializing a fresh clone (gr2-lane-author-shape ruling). The receipt is stamped lane_kind=bound."),
 ) -> None:
     """Create a lane."""
     workspace_root = workspace_root.resolve()
+    if bind is None and not branch:
+        raise typer.BadParameter("--branch is required unless --bind is given")
     ns = SimpleNamespace(
         workspace_root=workspace_root,
         owner_unit=owner_unit,
         lane_name=lane_name,
         repos=repos,
-        branch=branch,
+        branch=branch or "",
         type=lane_type,
         source=source,
         default_commands=command or [],
+        bind=str(bind) if bind is not None else None,
     )
     _exit(lane_proto.create_lane(ns))
-    _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks)
+    # A bound lane owns no clone: skip materialization. The branch_map for the
+    # event comes from the lane document create_lane just wrote (derived from the
+    # bound worktree), not from the --branch arg, which --bind ignores.
+    if bind is None:
+        _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks)
     repo_list = [r.strip() for r in repos.split(",")]
-    branch_parts = branch.split(",")
-    branch_map = {}
-    for part in branch_parts:
-        if "=" in part:
-            k, v = part.split("=", 1)
-            branch_map[k.strip()] = v.strip()
-        else:
-            for r in repo_list:
-                branch_map[r] = part.strip()
+    if bind is not None:
+        doc = tomllib.loads(lane_proto.lane_file(workspace_root, owner_unit, lane_name).read_text())
+        branch_map = doc.get("branch_map", {})
+    else:
+        branch_map = {}
+        for part in (branch or "").split(","):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                branch_map[k.strip()] = v.strip()
+            else:
+                for r in repo_list:
+                    branch_map[r] = part.strip()
     emit_after_outcome(
         event_type=EventType.LANE_CREATED,
         workspace_root=workspace_root,
