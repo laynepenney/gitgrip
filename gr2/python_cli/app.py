@@ -1544,6 +1544,13 @@ def _review_call(fn, *args, **kwargs):
     except grip.GripCorruptError as exc:
         typer.echo(f"corrupt: {exc}", err=True)
         raise typer.Exit(code=2)
+    except grip.GripInitError as exc:
+        # The engine's own message already names what's missing and where
+        # (workspace path included); add the remediation verb rather than
+        # re-deriving the diagnosis, since _validate_grip_repo already did
+        # the naming precisely.
+        typer.echo(f"not_initialized: {exc} Run `gr2 grip init` to create it.", err=True)
+        raise typer.Exit(code=2)
 
 
 _ROW_REQUIRED = ("key", "remote", "base", "head")
