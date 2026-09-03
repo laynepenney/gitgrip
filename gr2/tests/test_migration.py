@@ -711,6 +711,7 @@ class TestRegenerateGr1Workspace:
         assert forward_receipt.exists()
         assert not (tmp_path / "rollback.json").exists()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL crash simulation is POSIX-only; signal.SIGKILL is absent on Windows")
     @pytest.mark.parametrize("phase", ["marker_durable", "spec_replaced", "receipt_durable", "marker_cleared"])
     def test_sigkill_at_every_forward_phase_leaves_recoverable_or_actionable_state(self, gr1_workspace: Path, tmp_path: Path, phase: str) -> None:
         spec_path, expected = self._prepared(gr1_workspace)
