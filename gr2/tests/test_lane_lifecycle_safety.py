@@ -190,9 +190,11 @@ def _git(path: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=str(path), capture_output=True, text=True)
 
 
-def _real_worktree(tmp_path: Path, name: str = "wt", branch: str = "feat/x") -> Path:
-    wt = tmp_path / name
-    wt.mkdir()
+def _real_worktree(parent: Path, name: str = "wt", branch: str = "feat/x") -> Path:
+    # The worktree is created UNDER `parent` so a bound lane whose worktree must
+    # live inside workspace_root can pass containment; pass the workspace here.
+    wt = parent / name
+    wt.mkdir(parents=True)
     assert _git(wt, "init", "-q").returncode == 0
     _git(wt, "config", "user.email", "t@t.invalid")
     _git(wt, "config", "user.name", "t")
@@ -249,7 +251,7 @@ def test_materialized_lane_records_lane_kind_materialized(tmp_path: Path) -> Non
 
 def test_create_bound_lane_writes_bound_receipt_and_no_clone(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
-    wt = _real_worktree(tmp_path, branch="feat/bind-me")
+    wt = _real_worktree(workspace, branch="feat/bind-me")
     assert lanes.create_lane(_create_bound(workspace, "bound", wt)) == 0
     lane_dir = lanes.lane_dir(workspace, "atlas", "bound")
     doc = lanes.tomllib.loads(lanes.lane_file(workspace, "atlas", "bound").read_text())
@@ -262,19 +264,53 @@ def test_create_bound_lane_writes_bound_receipt_and_no_clone(tmp_path: Path) -> 
     assert (lane_dir / "context").is_dir()
 
 
+def test_create_bound_lane_records_worktree_head_as_bound_head(tmp_path: Path) -> None:
+    # Note 1: create records the worktree HEAD as bound_head — the drift baseline
+    # a review bind on this lane re-checks against.
+    workspace = _workspace(tmp_path)
+    wt = _real_worktree(workspace, branch="feat/head")
+    expected_head = _git(wt, "rev-parse", "HEAD").stdout.strip()
+    assert lanes.create_lane(_create_bound(workspace, "bound", wt)) == 0
+    doc = lanes.tomllib.loads(lanes.lane_file(workspace, "atlas", "bound").read_text())
+    assert doc["bound_head"] == expected_head
+
+
+def test_create_bound_lane_refuses_worktree_outside_workspace(tmp_path: Path) -> None:
+    # Note 2: containment — a worktree OUTSIDE workspace_root is refused, even a
+    # clean valid git checkout. The path check runs first, so the message is the
+    # containment refusal, not a git-state one.
+    workspace = _workspace(tmp_path)
+    outside = _real_worktree(tmp_path / "elsewhere", branch="feat/outside")
+    with pytest.raises(SystemExit, match="not under the workspace root"):
+        lanes.create_lane(_create_bound(workspace, "bound", outside))
+    assert not lanes.lane_dir(workspace, "atlas", "bound").exists()
+
+
 def test_create_bound_lane_refuses_dirty_tree(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
-    wt = _real_worktree(tmp_path, branch="feat/dirty")
-    (wt / "f.txt").write_text("uncommitted change\n")  # make the tree dirty
+    wt = _real_worktree(workspace, branch="feat/dirty")
+    (wt / "f.txt").write_text("uncommitted change\n")  # make the tree dirty (tracked)
     with pytest.raises(SystemExit, match="dirty tree"):
         lanes.create_lane(_create_bound(workspace, "bound", wt))
     # refused before any lane tree was created
     assert not lanes.lane_dir(workspace, "atlas", "bound").exists()
 
 
+def test_create_bound_lane_refuses_untracked_file_as_dirty(tmp_path: Path) -> None:
+    # Note 3: an UNTRACKED file (e.g. a build artifact) counts as dirty and
+    # refuses the bind — otherwise the recorded head would not reconstruct the
+    # bytes the author is actually sitting on.
+    workspace = _workspace(tmp_path)
+    wt = _real_worktree(workspace, branch="feat/untracked")
+    (wt / "build.o").write_text("artifact\n")  # untracked, not staged
+    with pytest.raises(SystemExit, match="dirty tree"):
+        lanes.create_lane(_create_bound(workspace, "bound", wt))
+    assert not lanes.lane_dir(workspace, "atlas", "bound").exists()
+
+
 def test_create_bound_lane_refuses_detached_head(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
-    wt = _real_worktree(tmp_path, branch="feat/detach")
+    wt = _real_worktree(workspace, branch="feat/detach")
     head = _git(wt, "rev-parse", "HEAD").stdout.strip()
     _git(wt, "checkout", "-q", head)  # detach
     with pytest.raises(SystemExit, match="detached HEAD"):
@@ -284,7 +320,7 @@ def test_create_bound_lane_refuses_detached_head(tmp_path: Path) -> None:
 
 def test_create_bound_lane_refuses_non_git_path(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
-    plain = tmp_path / "notgit"
+    plain = workspace / "notgit"  # under workspace so containment passes; is-git fails
     plain.mkdir()
     with pytest.raises(SystemExit, match="not a git work tree"):
         lanes.create_lane(_create_bound(workspace, "bound", plain))
@@ -292,7 +328,7 @@ def test_create_bound_lane_refuses_non_git_path(tmp_path: Path) -> None:
 
 def test_create_bound_lane_refuses_multi_repo(tmp_path: Path) -> None:
     workspace = _two_repo_workspace(tmp_path)
-    wt = _real_worktree(tmp_path, branch="feat/multi")
+    wt = _real_worktree(workspace, branch="feat/multi")
     with pytest.raises(SystemExit, match="single-repo only"):
         lanes.create_lane(_create_bound(workspace, "bound", wt, repos="app,lib"))
     assert not lanes.lane_dir(workspace, "atlas", "bound").exists()
@@ -303,10 +339,11 @@ def test_app_lane_create_bind_skips_materialization(tmp_path: Path, monkeypatch:
     # not materialize a clone (the ~95s/1.78GB tax the ruling exists to avoid).
     workspace = _workspace(tmp_path)
     (workspace / ".grip" / "events").mkdir(parents=True, exist_ok=True)
-    wt = _real_worktree(tmp_path, branch="feat/app-bind")
+    wt = _real_worktree(workspace, branch="feat/app-bind")
     materialized: list[str] = []
+    payloads: list[dict] = []
     monkeypatch.setattr(app_module, "_materialize_lane_repos", lambda *a, **k: materialized.append("called"))
-    monkeypatch.setattr(app_module, "emit_after_outcome", lambda **k: None)
+    monkeypatch.setattr(app_module, "emit_after_outcome", lambda **k: payloads.append(k["payload"]))
     app_module.lane_create(
         workspace, "atlas", "bound", repos="app", branch=None,
         lane_type="feature", source="manual", command=[], manual_hooks=False, bind=wt,
@@ -315,6 +352,24 @@ def test_app_lane_create_bind_skips_materialization(tmp_path: Path, monkeypatch:
     assert doc["lane_kind"] == "bound"
     assert doc["bound_worktree"] == str(wt.resolve())
     assert materialized == []  # no clone was materialized for a bound lane
+    # Note 5: the lane.created event payload carries lane_kind + bound_worktree,
+    # so a consumer distinguishes bound from materialized without a second read.
+    assert payloads and payloads[0]["lane_kind"] == "bound"
+    assert payloads[0]["bound_worktree"] == str(wt.resolve())
+
+
+def test_app_lane_create_materialized_event_payload_has_lane_kind(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = _workspace(tmp_path)
+    (workspace / ".grip" / "events").mkdir(parents=True, exist_ok=True)
+    payloads: list[dict] = []
+    monkeypatch.setattr(app_module, "_materialize_lane_repos", lambda *a, **k: None)
+    monkeypatch.setattr(app_module, "emit_after_outcome", lambda **k: payloads.append(k["payload"]))
+    app_module.lane_create(
+        workspace, "atlas", "mat", repos="app", branch="app=main",
+        lane_type="feature", source="manual", command=[], manual_hooks=False, bind=None,
+    )
+    assert payloads and payloads[0]["lane_kind"] == "materialized"
+    assert "bound_worktree" not in payloads[0]
 
 
 def test_app_lane_create_requires_branch_without_bind(tmp_path: Path) -> None:
@@ -325,3 +380,123 @@ def test_app_lane_create_requires_branch_without_bind(tmp_path: Path) -> None:
             workspace, "atlas", "m", repos="app", branch=None,
             lane_type="feature", source="manual", command=[], manual_hooks=False, bind=None,
         )
+
+
+# --------------------------------------------------------------------------- #
+# bind_bound_lane (verb #2): review bind on a bound lane, sourced live from the
+# worktree, refusing on drift (gr2-lane-author-shape ruling)
+# --------------------------------------------------------------------------- #
+import json as _json
+
+
+def _commit(wt: Path, fname: str, text: str, msg: str) -> str:
+    (wt / fname).write_text(text)
+    _git(wt, "add", ".")
+    assert _git(wt, "commit", "-qm", msg).returncode == 0
+    return _git(wt, "rev-parse", "HEAD").stdout.strip()
+
+
+def _bound_lane(tmp_path: Path):
+    """A workspace + a clean bound lane on a real worktree with two commits."""
+    workspace = _workspace(tmp_path)
+    wt = _real_worktree(workspace, branch="feat/bind")  # commit A on feat/bind
+    base = _git(wt, "rev-parse", "HEAD").stdout.strip()
+    head = _commit(wt, "g.txt", "work\n", "the reviewed change")  # commit B
+    assert lanes.create_lane(_create_bound(workspace, "bound", wt)) == 0
+    return workspace, wt, base, head
+
+
+def test_bind_bound_lane_writes_a_bound_receipt_from_the_worktree(tmp_path: Path) -> None:
+    # The test worktree has no GitHub origin, so allow_local=True is required to
+    # bind a local: identity (see the allow_local witnesses below).
+    workspace, wt, base, head = _bound_lane(tmp_path)
+    record = lanes.bind_bound_lane(workspace, "atlas", "bound", base=base, allow_local=True)
+    assert record.lane_kind == "bound"
+    assert record.head == head
+    assert record.base == base
+    assert record.repo.startswith("local:")  # no GitHub origin -> local identity under --allow-local
+    # the receipt is written into the worktree's OWN .git (same helper as materialized)
+    receipt = wt / ".git" / "grip-review.json"
+    assert receipt.is_file()
+    data = _json.loads(receipt.read_text())
+    assert data == {"repo": record.repo, "base": base, "head": head, "lane_kind": "bound"}
+
+
+def test_bind_bound_lane_refuses_non_hex_base(tmp_path: Path) -> None:
+    # Item 1: a base that is not a 40-hex sha never reaches the receipt.
+    workspace, wt, base, head = _bound_lane(tmp_path)
+    with pytest.raises(SystemExit, match="not a full 40-hex commit"):
+        lanes.bind_bound_lane(workspace, "atlas", "bound", base="nonsense", allow_local=True)
+    assert not (wt / ".git" / "grip-review.json").exists()
+
+
+def test_bind_bound_lane_refuses_well_formed_but_nonexistent_base(tmp_path: Path) -> None:
+    # Item 1: a 40-hex string that is not a commit (or not an ancestor of head) is
+    # refused by the merge-base --is-ancestor check.
+    workspace, wt, base, head = _bound_lane(tmp_path)
+    with pytest.raises(SystemExit, match="not an ancestor"):
+        lanes.bind_bound_lane(workspace, "atlas", "bound", base="f" * 40, allow_local=True)
+    assert not (wt / ".git" / "grip-review.json").exists()
+
+
+def test_bind_bound_lane_refuses_no_origin_without_allow_local(tmp_path: Path) -> None:
+    # Item 2: default allow_local=False refuses a worktree with no GitHub origin.
+    workspace, wt, base, head = _bound_lane(tmp_path)
+    with pytest.raises(SystemExit, match="no portable GitHub origin"):
+        lanes.bind_bound_lane(workspace, "atlas", "bound", base=base)  # allow_local defaults False
+    assert not (wt / ".git" / "grip-review.json").exists()
+
+
+def test_bind_bound_lane_binds_github_origin_without_allow_local(tmp_path: Path) -> None:
+    # Item 2: a worktree WITH a portable GitHub origin binds to that identity even
+    # with allow_local=False (the default), and the identity is the canonical one.
+    workspace, wt, base, head = _bound_lane(tmp_path)
+    _git(wt, "remote", "add", "origin", "git@github.com:synapt-dev/grip.git")
+    record = lanes.bind_bound_lane(workspace, "atlas", "bound", base=base)  # default False
+    assert record.repo == "https://github.com/synapt-dev/grip"
+
+
+def test_bind_bound_lane_refuses_on_head_drift(tmp_path: Path) -> None:
+    workspace, wt, base, head = _bound_lane(tmp_path)
+    _commit(wt, "h.txt", "more\n", "drift commit")  # HEAD moves off the recorded head
+    with pytest.raises(SystemExit, match="DRIFT"):
+        lanes.bind_bound_lane(workspace, "atlas", "bound", base=base)
+    # no receipt was written
+    assert not (wt / ".git" / "grip-review.json").exists()
+
+
+def test_bind_bound_lane_refuses_on_dirty_tree(tmp_path: Path) -> None:
+    workspace, wt, base, head = _bound_lane(tmp_path)
+    (wt / "g.txt").write_text("uncommitted edit\n")  # dirty, HEAD unchanged
+    with pytest.raises(SystemExit, match="DRIFT"):
+        lanes.bind_bound_lane(workspace, "atlas", "bound", base=base)
+    assert not (wt / ".git" / "grip-review.json").exists()
+
+
+def test_bind_bound_lane_refuses_a_materialized_lane(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    assert lanes.create_lane(_create(workspace, "feature")) == 0  # materialized
+    with pytest.raises(SystemExit, match="is not a bound lane"):
+        lanes.bind_bound_lane(workspace, "atlas", "feature", base="a" * 40)
+
+
+def test_app_lane_bind_verb_is_registered_and_binds(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # The CLI verb is runtime-registered (walk the built registry, not decorators)
+    by_name = {c.name: c for c in app_module.lane_app.registered_commands}
+    assert "bind" in by_name and callable(by_name["bind"].callback)
+    # ...and end-to-end it writes the bound receipt from the worktree.
+    workspace, wt, base, head = _bound_lane(tmp_path)
+    capsys.readouterr()
+    app_module.lane_bind(workspace, "atlas", "bound", base=base, allow_local=True, json_output=True)
+    out = _json.loads(capsys.readouterr().out)
+    assert out == {"repo": out["repo"], "base": base, "head": head, "lane_kind": "bound"}
+    assert (wt / ".git" / "grip-review.json").is_file()
+
+
+def test_app_lane_bind_refuses_materialized_with_exit_2(tmp_path: Path) -> None:
+    import typer
+    workspace = _workspace(tmp_path)
+    assert lanes.create_lane(_create(workspace, "feature")) == 0
+    with pytest.raises(typer.Exit) as ei:
+        app_module.lane_bind(workspace, "atlas", "feature", base="a" * 40, json_output=False)
+    assert ei.value.exit_code == 2
