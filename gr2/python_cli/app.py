@@ -16,7 +16,7 @@ from gr2.prototypes import repo_maintenance_prototype as repo_proto
 from . import add as add_ops
 from . import branch as branch_ops
 from . import commit as commit_ops
-from . import execops, failures, migration, spec_apply, syncops
+from . import execops, failures, grip, migration, spec_apply, syncops
 from . import pr as pr_ops
 from . import project_review
 from . import push as push_ops
@@ -1491,6 +1491,124 @@ def review_open_project(
     outcome = project_review.open_project_review(workspace=workspace_root.resolve(), owner_unit=owner_unit, lane_name=lane_name, spec=spec, sources=sources, allow_local=False)
     typer.echo(json.dumps(project_review.outcome_payload(outcome), indent=2))
     if outcome.status != "opened":
+        raise typer.Exit(code=1)
+
+
+def _strip_gr_prefix(commit: str) -> str:
+    """A review commit is addressed as ``gr:<sha>``; accept a bare sha too."""
+    return commit[3:] if commit.startswith("gr:") else commit
+
+
+def _review_call(fn, *args, **kwargs):
+    """Run an engine review function, converting a refusal or corruption into a
+    clean nonzero exit (code 2) with real error text on stderr — never a
+    traceback. The thin CLI is glue over the engine, and glue is exactly where a
+    caught exception can turn into a silent success; this makes the loud engine
+    failure surface loudly, not swallowed and not as a Python stack trace."""
+    try:
+        return fn(*args, **kwargs)
+    except grip.GripReviewRefused as exc:
+        typer.echo(
+            f"refused: {exc.refusal}: expected {exc.expected!r}, observed {exc.observed!r}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    except grip.GripCorruptError as exc:
+        typer.echo(f"corrupt: {exc}", err=True)
+        raise typer.Exit(code=2)
+
+
+@review_app.command("bind")
+def review_bind(
+    workspace_root: Path,
+    key: str = typer.Option(..., "--repo", help="Repository key for the bound row"),
+    remote: str = typer.Option(..., "--remote", help="Remote URL or path of the row"),
+    base: str = typer.Option(..., "--base", help="Base SHA (must be the live remote head of --ref)"),
+    head: str = typer.Option(..., "--head", help="Reviewed head SHA (the pre-push head under review)"),
+    ref: str = typer.Option("refs/heads/dev", "--ref", help="Target ref whose live head must equal --base"),
+    path: Optional[str] = typer.Option(None, "--path", help="Workspace path for the row (defaults to --repo)"),
+    source: Optional[Path] = typer.Option(None, "--source", help="Author clone holding the pre-push head; required to carry the range so open-gr can reconstruct"),
+    title: str = typer.Option("", "--title", help="Platform title text (NORM-hashed into the object)"),
+    body: str = typer.Option("", "--body", help="Platform body text (NORM-hashed into the object)"),
+    ratified: Optional[str] = typer.Option(None, "--ratified", help="Named ratify receipt id: the sanctioned fix-forward when --head is already on the remote"),
+) -> None:
+    """Bind a review gr commit for one repository row and print ``gr:<commit>``.
+
+    Reads the live remote head of --ref and refuses before writing if --base is
+    not that head (behind-must-be-0) or if --head is already on the remote
+    without --ratified. That printed id is the whole artifact.
+    """
+    row = {
+        "key": key, "remote": remote, "path": path or key,
+        "head": head, "base": base, "ref": ref, "title": title, "body": body,
+    }
+    if source is not None:
+        row["source"] = str(source.resolve())
+    commit = _review_call(grip.create_review_bind_commit, workspace_root.resolve(), [row], ratified=ratified)
+    typer.echo(f"gr:{commit}")
+
+
+@review_app.command("open-gr")
+def review_open_gr(
+    workspace_root: Path,
+    commit: str = typer.Argument(..., help="The review bind commit, as gr:<sha> or a bare sha"),
+    key: Optional[str] = typer.Option(None, "--repo", help="Repository key to materialize; omit to materialize every bound row into <lane-dir>/<key>"),
+    lane_dir: Path = typer.Option(..., "--lane-dir", help="Directory to materialize into (the row's clone for one --repo, or a parent holding one subdir per row)"),
+    enter: bool = typer.Option(False, "--enter", help="Materialize the reconstruction (the only open mode)"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Open a review lane by reconstruction: clone the recorded remote, check out
+    the bound base, ``git am`` the carried range, and assert the resulting tree
+    equals the bound head-tree. A tree mismatch refuses. With no --repo, every
+    bound row is reconstructed into its own subdirectory of --lane-dir."""
+    if not enter:
+        raise typer.BadParameter("--enter is required (reconstruction is the only open mode)")
+    sha = _strip_gr_prefix(commit)
+    root = lane_dir.resolve()
+    if key is None:
+        keys = _review_call(grip.review_row_keys, workspace_root.resolve(), sha)
+        if not keys:
+            typer.echo("refused: no_rows: the gr commit binds no repository rows", err=True)
+            raise typer.Exit(code=2)
+        results = {
+            row_key: _review_call(
+                grip.reconstruct_review_lane, workspace_root.resolve(), sha, row_key, root / row_key
+            )
+            for row_key in keys
+        }
+        if json_output:
+            typer.echo(json.dumps(results, indent=2))
+        else:
+            for row_key, res in results.items():
+                match = res["bound_head_tree"] == res["reconstructed_tree"]
+                typer.echo(f"{row_key}: lane={res['lane']} tree_match={match}")
+        return
+    result = _review_call(
+        grip.reconstruct_review_lane, workspace_root.resolve(), sha, key, root
+    )
+    if json_output:
+        typer.echo(json.dumps(result, indent=2))
+    else:
+        typer.echo(f"lane: {result['lane']}")
+        typer.echo(f"bound_head: {result['bound_head']}")
+        typer.echo(f"reconstructed_head: {result['reconstructed_head']}")
+        typer.echo(f"tree_match: {result['bound_head_tree'] == result['reconstructed_tree']}")
+
+
+@review_app.command("verify")
+def review_verify(
+    workspace_root: Path,
+    commit: str = typer.Argument(..., help="The review bind commit, as gr:<sha> or a bare sha"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Recompute the review gr commit tree from its own objects; a mismatch is
+    corruption, not drift."""
+    result = _review_call(grip.verify_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit))
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, default=str))
+    else:
+        typer.echo(f"tree_matches: {result['tree_matches']}")
+    if not result.get("tree_matches"):
         raise typer.Exit(code=1)
 
 
