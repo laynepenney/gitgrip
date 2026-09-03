@@ -1037,9 +1037,16 @@ def lane_create(
     if bind is None:
         _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks)
     repo_list = [r.strip() for r in repos.split(",")]
+    # The event payload carries lane_kind (and bound_worktree for a bound lane)
+    # so an event-stream consumer can tell a bound lane from a materialized one
+    # without a second read of lane.toml.
+    lane_kind = "materialized"
+    bound_worktree_payload: Optional[str] = None
     if bind is not None:
         doc = tomllib.loads(lane_proto.lane_file(workspace_root, owner_unit, lane_name).read_text())
         branch_map = doc.get("branch_map", {})
+        lane_kind = doc.get("lane_kind", "bound")
+        bound_worktree_payload = doc.get("bound_worktree")
     else:
         branch_map = {}
         for part in (branch or "").split(","):
@@ -1049,17 +1056,21 @@ def lane_create(
             else:
                 for r in repo_list:
                     branch_map[r] = part.strip()
+    payload: dict[str, object] = {
+        "lane_name": lane_name,
+        "lane_type": lane_type,
+        "lane_kind": lane_kind,
+        "repos": repo_list,
+        "branch_map": branch_map,
+    }
+    if bound_worktree_payload is not None:
+        payload["bound_worktree"] = bound_worktree_payload
     emit_after_outcome(
         event_type=EventType.LANE_CREATED,
         workspace_root=workspace_root,
         actor=source,
         owner_unit=owner_unit,
-        payload={
-            "lane_name": lane_name,
-            "lane_type": lane_type,
-            "repos": repo_list,
-            "branch_map": branch_map,
-        },
+        payload=payload,
     )
 
 
@@ -1208,6 +1219,36 @@ def lane_current(
         json=json_output,
     )
     _exit(lane_proto.current_lane(ns))
+
+
+@lane_app.command("bind")
+def lane_bind(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    base: str = typer.Option(..., "--base", help="Base SHA the reviewed range is measured from: a full 40-hex commit that is an ancestor of the worktree head (automatic derivation from the lane branch's upstream is a follow-up)"),
+    allow_local: bool = typer.Option(False, "--allow-local", help="Allow a non-portable local: identity for a worktree with no GitHub origin (test/local use)"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Bind a review receipt for a BOUND lane, sourced live from its worktree.
+
+    Re-checks the bound worktree is a clean, non-detached git checkout whose HEAD
+    has NOT drifted from the head recorded at create, then writes the
+    (repo, base, head, lane_kind=bound) receipt into the worktree's own .git. A
+    moved HEAD, a dirty tree, or a base that is not an ancestor commit of head
+    refuses. Only for lanes created with ``lane create --bind``.
+    """
+    try:
+        record = lane_proto.bind_bound_lane(
+            workspace_root.resolve(), owner_unit, lane_name, base=base, allow_local=allow_local
+        )
+    except SystemExit as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2)
+    if json_output:
+        typer.echo(json.dumps(record.to_dict(), indent=2))
+    else:
+        typer.echo(f"bound review receipt: repo={record.repo} base={record.base} head={record.head}")
 
 
 @lease_app.command("acquire")

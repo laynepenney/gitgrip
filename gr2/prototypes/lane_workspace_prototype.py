@@ -34,6 +34,7 @@ from gr2.prototypes.jsonl_store import (
     warn_unreadable,
 )
 from gr2.python_cli import gitops
+from gr2.python_cli import review as _review
 
 LANE_SCHEMA_VERSION = 1
 SCRATCHPAD_SCHEMA_VERSION = 1
@@ -90,9 +91,12 @@ class LaneMetadata:
     # "materialized" lane holds an isolated clone pinned at a head; a "bound"
     # lane is a label on the author's own existing worktree (single-repo only),
     # honest under the clean-tree/HEAD guard bind re-checks. bound_worktree is
-    # the resolved worktree path, present only for bound lanes.
+    # the resolved worktree path, present only for bound lanes. bound_head is the
+    # worktree HEAD recorded at create time — the drift baseline a review bind on a
+    # bound lane re-checks against (a moved HEAD or a dirty tree refuses).
     lane_kind: str = "materialized"
     bound_worktree: str | None = None
+    bound_head: str | None = None
 
     def as_toml(self) -> str:
         document: dict[str, object] = {
@@ -114,6 +118,8 @@ class LaneMetadata:
         }
         if self.bound_worktree is not None:
             document["bound_worktree"] = self.bound_worktree
+        if self.bound_head is not None:
+            document["bound_head"] = self.bound_head
         if self.pr_associations:
             document["pr_associations"] = [{"ref": ref} for ref in self.pr_associations]
         if self.handoff_source:
@@ -801,7 +807,7 @@ def parse_branch_arg(raw: str, repos: list[str]) -> dict[str, str]:
     return branch_map
 
 
-def _validate_bound_worktree(bind_path: Path) -> tuple[str, str]:
+def _validate_bound_worktree(bind_path: Path, workspace_root: Path) -> tuple[str, str]:
     """Validate a worktree an author wants a bound lane to LABEL, returning
     ``(head_sha, branch)``.
 
@@ -812,12 +818,19 @@ def _validate_bound_worktree(bind_path: Path) -> tuple[str, str]:
     hard refusal (``SystemExit``); a bound lane is never created over a tree that
     could make its recorded head fail to reconstruct the reviewed bytes.
 
-    NOTE (hardening, deferred with rationale): the ruling also names "a path
-    outside the author's own gripspace" as a create-time refusal. That check
-    needs the owner-unit -> gripspace-root mapping, which is identity-layer
-    (premium boundary); it is intentionally NOT implemented in this OSS function.
-    Tracked on the ruling's hardening list."""
+    Containment: the resolved worktree must live UNDER ``workspace_root`` (a plain
+    filesystem containment, same shape as ``close_review_lane``'s strict-descendant
+    gate). This is the ruling's "a path outside the author's own gripspace"
+    refusal, implemented as a path check rather than via identity resolution — so
+    it needs no owner-unit -> gripspace mapping and stays clear of the premium
+    boundary."""
     resolved = bind_path.resolve()
+    root = workspace_root.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise SystemExit(
+            f"--bind path {resolved} is not under the workspace root {root}: a bound lane may "
+            "only label a worktree inside the author's own workspace"
+        )
     if not resolved.is_dir():
         raise SystemExit(f"--bind path is not a directory: {resolved}")
     if not gitops.is_git_repo(resolved):
@@ -831,8 +844,8 @@ def _validate_bound_worktree(bind_path: Path) -> tuple[str, str]:
     if gitops.repo_dirty(resolved):
         raise SystemExit(
             f"--bind refuses a dirty tree at {resolved}: a bound lane's receipt records the "
-            "worktree HEAD, and uncommitted changes would make the recorded head fail to "
-            "reconstruct the reviewed bytes. Commit or stash first."
+            "worktree HEAD, and uncommitted changes (tracked OR untracked) would make the "
+            "recorded head fail to reconstruct the reviewed bytes. Commit or stash first."
         )
     head = gitops.current_head_sha(resolved)
     if not head:
@@ -860,6 +873,7 @@ def create_lane(args: argparse.Namespace) -> int:
     bind = getattr(args, "bind", None)
     lane_kind = "materialized"
     bound_worktree: str | None = None
+    bound_head: str | None = None
     if bind is not None:
         # Single-repo check comes BEFORE branch parsing: a bound lane's branch is
         # derived from the worktree, not the --branch arg, so parse_branch_arg
@@ -870,9 +884,12 @@ def create_lane(args: argparse.Namespace) -> int:
                 "a bound lane is single-repo only (gr2-lane-author-shape ruling): pass exactly "
                 f"one repo to --repos, got {repos or '[]'}"
             )
-        _head, branch = _validate_bound_worktree(Path(bind))
+        head, branch = _validate_bound_worktree(Path(bind), workspace_root)
         lane_kind = "bound"
         bound_worktree = str(Path(bind).resolve())
+        # Record the worktree HEAD at create: the drift baseline a review bind on
+        # this bound lane re-checks against (moved HEAD or dirty tree refuses).
+        bound_head = head
         branch_map = {repos[0]: branch}
     else:
         branch_map = parse_branch_arg(args.branch, repos)
@@ -902,6 +919,7 @@ def create_lane(args: argparse.Namespace) -> int:
         handoff_source=None,
         lane_kind=lane_kind,
         bound_worktree=bound_worktree,
+        bound_head=bound_head,
     )
     lane_root = lane_dir(workspace_root, args.owner_unit, args.lane_name)
     metadata_path = lane_file(workspace_root, args.owner_unit, args.lane_name)
@@ -932,6 +950,97 @@ def create_lane(args: argparse.Namespace) -> int:
         atomic_replace_text(metadata_path, expected)
     print(metadata_path)
     return 0
+
+
+def bind_bound_lane(
+    workspace_root: Path, owner_unit: str, lane_name: str, *, base: str, allow_local: bool = False
+) -> "_review.ReviewRecord":
+    """Bind a review receipt for a BOUND lane, sourced LIVE from the author's
+    worktree (gr2-lane-author-shape ruling verb #2).
+
+    A bound lane has no materialized clone and no carried range: its reviewed
+    bytes are the author's own worktree, so reconstruction is "read the local
+    tree". This re-checks, at bind time, the same invariants create imposed —
+    the worktree is a clean, non-detached git checkout — AND that HEAD has not
+    DRIFTED from the head recorded at create (``bound_head``). A moved HEAD or a
+    dirty tree (tracked OR untracked) is a hard refusal: the receipt promises the
+    recorded head reconstructs the reviewed bytes, and drift breaks that promise.
+
+    On success it writes the ``(repo, base, head, lane_kind="bound")`` receipt to
+    the worktree's own ``.git/grip-review.json`` (the same path helper a
+    materialized lane uses) and returns the record.
+
+    ``base`` is the pin the reviewed range is measured from. It MUST be a full
+    40-hex commit that is an ANCESTOR of the worktree head — a non-hex string, a
+    well-formed-but-nonexistent sha (``ffff…``), or a commit head does not descend
+    from is refused, so a nonsense base can never reach the receipt. Deriving base
+    automatically from the lane branch's upstream is a follow-up (the open
+    receipt-contract question flagged to review); the drift mechanism does not
+    depend on how base is chosen.
+
+    ``allow_local`` gates a non-portable ``local:<path>`` identity for a worktree
+    with no GitHub origin. It defaults False (a review identity must be a portable
+    GitHub source); pass it only for a local test worktree."""
+    lane_doc = load_lane_doc(workspace_root.resolve(), owner_unit, lane_name)
+    if lane_doc.get("lane_kind") != "bound":
+        raise SystemExit(
+            f"bind_bound_lane: lane {owner_unit}/{lane_name} is not a bound lane "
+            f"(lane_kind={lane_doc.get('lane_kind')!r}); use the materialized review path"
+        )
+    worktree = Path(lane_doc.get("bound_worktree") or "")
+    recorded_head = lane_doc.get("bound_head")
+    if not worktree or not recorded_head:
+        raise SystemExit(
+            f"bind_bound_lane: bound lane {owner_unit}/{lane_name} is missing "
+            "bound_worktree or bound_head; it was not created by lane create --bind"
+        )
+    resolved = worktree.resolve()
+    if not gitops.is_git_repo(resolved):
+        raise SystemExit(f"bind refuses: bound worktree {resolved} is no longer a git work tree")
+    if not gitops.current_branch(resolved):
+        raise SystemExit(f"bind refuses: bound worktree {resolved} is in detached HEAD")
+    if gitops.repo_dirty(resolved):
+        raise SystemExit(
+            f"bind refuses (DRIFT): bound worktree {resolved} is dirty (tracked OR untracked "
+            "changes); the recorded head would not reconstruct the reviewed bytes. Commit or "
+            "stash, then re-bind."
+        )
+    current_head = gitops.current_head_sha(resolved)
+    if current_head != recorded_head:
+        raise SystemExit(
+            f"bind refuses (DRIFT): bound worktree {resolved} HEAD is {current_head}, not the "
+            f"head recorded at create ({recorded_head}); the lane has moved. Re-create the bound "
+            "lane at the new head, or reset the worktree to the recorded head."
+        )
+    # base must be a real ancestor of head, not just a well-formed sha: a 40-hex
+    # string that is not a commit (ffff...), or a commit head does not descend
+    # from, would put a base into the receipt that does not bound the reviewed
+    # range. The hex check refuses non-sha strings before git sees them; the
+    # merge-base --is-ancestor check refuses a well-formed-but-wrong base.
+    if len(base) != 40 or any(c not in "0123456789abcdef" for c in base):
+        raise SystemExit(
+            f"bind refuses: base {base!r} is not a full 40-hex commit sha"
+        )
+    if gitops.git(resolved, "merge-base", "--is-ancestor", base, current_head).returncode != 0:
+        raise SystemExit(
+            f"bind refuses: base {base} is not an ancestor of the worktree head {current_head} "
+            "(not a commit, or head does not descend from it); it cannot bound the reviewed range"
+        )
+    origin = gitops.remote_origin_url(resolved)
+    try:
+        repo_identity = _review.canonical_source_identity(origin or str(resolved), allow_local=allow_local)
+    except _review.ReviewError as exc:
+        raise SystemExit(
+            f"bind refuses: bound worktree {resolved} has no portable GitHub origin "
+            f"({exc}); pass --allow-local to bind a non-portable local: identity"
+        ) from exc
+    record = _review.ReviewRecord(
+        repo=repo_identity, base=base, head=current_head, lane_kind="bound"
+    )
+    receipt_path = _review.review_record_path(resolved)
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
+    return record
 
 
 def enter_lane(args: argparse.Namespace) -> LaneTransitionOutcome:
