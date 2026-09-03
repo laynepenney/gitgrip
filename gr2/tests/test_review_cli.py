@@ -15,8 +15,10 @@ verify-on-tampered is probe 1/2 (verify recomputes, does not trust the record).
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -255,3 +257,138 @@ def test_verify_flags_structural_corruption_nonzero(tmp_path):
     assert verified.exit_code != 0, verified.output   # structural drift is never green
     assert "Traceback" not in verified.output
     assert '"tree_matches": false' in verified.stdout
+
+
+# --- multi-row bind from the CLI (the R2 fruit: N rows in ONE commit) -------
+# `gr2 review bind --rows-json` is what lets the CLI express what previously
+# only grip.create_review_bind_commit could. Exclusive with the single-row
+# flags; an incomplete single-row invocation is a clean usage refusal.
+
+
+def test_bind_rows_json_binds_all_rows_in_one_commit(tmp_path):
+    r1, b1, h1, w1 = _fixture_repo(tmp_path, "one")
+    r2, b2, h2, w2 = _fixture_repo(tmp_path, "two")
+    ws = _grip_ws(tmp_path)
+    rows = tmp_path / "rows.json"
+    rows.write_text(json.dumps([
+        {"key": "one", "remote": r1, "base": b1, "head": h1, "source": str(w1),
+         "title": "feat: one", "body": "b1"},
+        {"key": "two", "remote": r2, "base": b2, "head": h2, "source": str(w2),
+         "title": "feat: two", "body": "b2"},
+    ]))
+
+    out = runner.invoke(app, ["review", "bind", str(ws), "--rows-json", str(rows)])
+    assert out.exit_code == 0, out.output
+    commit = out.stdout.strip()[3:]  # strip gr:
+    assert grip.review_row_keys(ws, commit) == ["one", "two"]  # ONE commit, two rows
+
+    lane = tmp_path / "lane"
+    opened = runner.invoke(
+        app, ["review", "open-gr", str(ws), f"gr:{commit}", "--lane-dir", str(lane), "--enter"],
+    )
+    assert opened.exit_code == 0, opened.output
+    assert opened.stdout.count("tree_match=True") == 2
+    assert (lane / "one" / "f.txt").read_text() == "head under review\n"
+    assert (lane / "two" / "f.txt").read_text() == "head under review\n"
+
+
+def test_bind_rejects_rows_json_together_with_single_row_flags(tmp_path):
+    r1, b1, h1, w1 = _fixture_repo(tmp_path, "one")
+    ws = _grip_ws(tmp_path)
+    rows = tmp_path / "rows.json"
+    rows.write_text(json.dumps([{"key": "one", "remote": r1, "base": b1, "head": h1}]))
+    out = runner.invoke(
+        app, ["review", "bind", str(ws), "--rows-json", str(rows), "--repo", "one"],
+    )
+    assert out.exit_code != 0                       # usage refusal, not a bind
+    assert "exclusive" in out.output.lower()
+    assert "Traceback" not in out.output
+
+
+def test_bind_rejects_incomplete_single_row(tmp_path):
+    r1, b1, h1, w1 = _fixture_repo(tmp_path, "one")
+    ws = _grip_ws(tmp_path)
+    # --head missing, no --rows-json.
+    out = runner.invoke(
+        app, ["review", "bind", str(ws), "--repo", "one", "--remote", r1, "--base", b1],
+    )
+    assert out.exit_code != 0
+    assert "--head" in out.output
+    assert "Traceback" not in out.output
+
+
+def test_bind_rows_json_rejects_empty_list(tmp_path):
+    ws = _grip_ws(tmp_path)
+    rows = tmp_path / "rows.json"
+    rows.write_text("[]")
+    out = runner.invoke(app, ["review", "bind", str(ws), "--rows-json", str(rows)])
+    assert out.exit_code != 0
+    assert "Traceback" not in out.output
+
+
+# --- rows-json glue through the REAL entry point (Stromus R2, m_8b084d88) ----
+# CliRunner catches these as exit 1 with empty output, hiding the traceback the
+# glue used to raise. Run them through `python -m gr2.python_cli.app` so a raw
+# traceback would be visible: each must be a clean BadParameter (exit != 0, no
+# "Traceback").
+
+
+def _run_bind_real(ws: Path, rows_json: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-m", "gr2.python_cli.app", "review", "bind",
+         str(ws), "--rows-json", str(rows_json)],
+        capture_output=True, text=True,
+    )
+
+
+def test_bind_rows_json_malformed_json_is_clean_error(tmp_path):
+    ws = _grip_ws(tmp_path)
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json {{{")
+    r = _run_bind_real(ws, bad)
+    assert r.returncode != 0
+    assert "Traceback" not in (r.stdout + r.stderr)
+    assert "invalid JSON" in (r.stdout + r.stderr)
+
+
+def test_bind_rows_json_missing_file_is_clean_error(tmp_path):
+    ws = _grip_ws(tmp_path)
+    r = _run_bind_real(ws, tmp_path / "does-not-exist.json")
+    assert r.returncode != 0
+    assert "Traceback" not in (r.stdout + r.stderr)
+
+
+def test_bind_rows_json_non_dict_entry_is_clean_error(tmp_path):
+    ws = _grip_ws(tmp_path)
+    f = tmp_path / "strentry.json"
+    f.write_text(json.dumps(["i am a string, not an object"]))
+    r = _run_bind_real(ws, f)
+    assert r.returncode != 0
+    assert "Traceback" not in (r.stdout + r.stderr)
+    assert "must be a JSON object" in (r.stdout + r.stderr)
+
+
+# --- Fathom R1 (m_eb5f6948): a JSON number in a string field must refuse, not
+# traceback. _normalize_review_row checked presence, never type; a truthy int
+# passed the presence gate and hit a string op downstream. Type-check every
+# string field. Witnessed through the real entry point (int head, int remote).
+
+
+def test_bind_rows_json_int_head_is_clean_error(tmp_path):
+    ws = _grip_ws(tmp_path)
+    f = tmp_path / "inthead.json"
+    f.write_text(json.dumps([{"key": "one", "remote": "/x/y.git", "base": "aa", "head": 456}]))
+    r = _run_bind_real(ws, f)
+    assert r.returncode != 0
+    assert "Traceback" not in (r.stdout + r.stderr)
+    assert "must be a string" in (r.stdout + r.stderr)
+
+
+def test_bind_rows_json_int_remote_is_clean_error(tmp_path):
+    ws = _grip_ws(tmp_path)
+    f = tmp_path / "intremote.json"
+    f.write_text(json.dumps([{"key": "one", "remote": 123, "base": "aa", "head": "bb"}]))
+    r = _run_bind_real(ws, f)
+    assert r.returncode != 0
+    assert "Traceback" not in (r.stdout + r.stderr)
+    assert "must be a string" in (r.stdout + r.stderr)
