@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const DEFAULT_MAX_CAPTURE_BYTES: usize = 1024 * 1024;
@@ -55,6 +55,7 @@ struct GenerateContextArgs {
 struct CommandOutput {
     success: bool,
     cancelled: bool,
+    timed_out: bool,
     status_code: Option<i32>,
     stdout: String,
     stderr: String,
@@ -612,30 +613,90 @@ fn parse_tool_args<T: for<'de> Deserialize<'de>>(value: Value) -> anyhow::Result
     serde_json::from_value(value).context("Invalid tool arguments")
 }
 
+const DEFAULT_CHILD_TIMEOUT_SECS: u64 = 600;
+const CHILD_TIMEOUT_ENV: &str = "GITGRIP_MCP_CHILD_TIMEOUT_SECS";
+
+// FIX (2, spawn serialization): on Windows a piped child's stdout/stderr write
+// handles are inheritable during CreateProcess, so two children spawned
+// concurrently from two worker threads can each inherit the OTHER's pipe handle.
+// The sibling then holds a pipe open and the other child's wait/reader never
+// resolves — measured on Windows as the NON-cancelled concurrent child hanging at
+// child.wait (grip#931 class-3, run 33752861151). Holding this lock ONLY across
+// spawn + the immediately-following pipe `.take()` closes the inheritance window
+// without serializing command EXECUTION (the lock is released before wait/capture).
+fn spawn_lock() -> &'static Mutex<()> {
+    static SPAWN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    SPAWN_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+// Wall-clock ceiling for one subprocess. A hang becomes a TYPED timeout (the tree
+// is killed and the response says "did not exit within N s, killed") instead of an
+// unbounded deadlock, so a future hang is measurable from the client side. Generous
+// default so it never truncates legitimate work; tune with CHILD_TIMEOUT_ENV.
+fn child_wait_timeout() -> Duration {
+    std::env::var(CHILD_TIMEOUT_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(DEFAULT_CHILD_TIMEOUT_SECS))
+}
+
+enum WaitOutcome {
+    Exited(std::process::ExitStatus),
+    TimedOut,
+}
+
+// Bounded replacement for Child::wait: polls try_wait until the child exits or
+// `timeout` elapses. OS-agnostic; the 20ms poll bounds latency, not correctness.
+fn wait_with_timeout(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> io::Result<WaitOutcome> {
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(WaitOutcome::Exited(status));
+        }
+        if start.elapsed() >= timeout {
+            return Ok(WaitOutcome::TimedOut);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn run_gitgrip_command(
     args: &[String],
     cancel_flag: Option<Arc<AtomicBool>>,
 ) -> anyhow::Result<CommandOutput> {
     let exe = std::env::current_exe().context("Failed to locate current gitgrip executable")?;
-    let mut child = Command::new(exe)
-        .args(args)
-        .env("NO_COLOR", "1")
-        .env("CLICOLOR", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("Failed to execute gitgrip subprocess")?;
+    // Hold the spawn lock across spawn + pipe take only (see spawn_lock docs), then
+    // release so command execution stays concurrent. stdin is null so the child
+    // never inherits the parent's stdin/console handles.
+    let (mut child, stdout, stderr) = {
+        let _spawn_guard = spawn_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let mut child = Command::new(exe)
+            .args(args)
+            .env("NO_COLOR", "1")
+            .env("CLICOLOR", "0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to execute gitgrip subprocess")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("Failed to capture subprocess stdout")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("Failed to capture subprocess stderr")?;
+        (child, stdout, stderr)
+    };
 
     let probe_pid = child.id();
-
-    let stdout = child
-        .stdout
-        .take()
-        .context("Failed to capture subprocess stdout")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("Failed to capture subprocess stderr")?;
+    let arg_tag = args.join(" ");
 
     let max_capture = max_capture_bytes();
     let out_thread = thread::spawn(move || capture_stream(stdout, max_capture));
@@ -643,26 +704,47 @@ fn run_gitgrip_command(
 
     let cancel_status = start_cancel_controller(child.id(), cancel_flag.clone());
 
-    eprintln!("[probe] P3 child.wait enter pid={probe_pid}");
-    let status = child.wait().context("Failed waiting for subprocess")?;
-    eprintln!(
-        "[probe] P3 child.wait exit pid={probe_pid} code={:?}",
-        status.code()
-    );
+    eprintln!("[probe] P3 child.wait enter pid={probe_pid} args=[{arg_tag}]");
+    // FIX (2, bounded wait): a hung child becomes a typed timeout instead of an
+    // unbounded child.wait deadlock. On timeout we kill the whole tree and report it.
+    let outcome = wait_with_timeout(&mut child, child_wait_timeout())
+        .context("Failed waiting for subprocess")?;
+    let (status, timed_out) = match outcome {
+        WaitOutcome::Exited(status) => {
+            eprintln!(
+                "[probe] P3 child.wait exit pid={probe_pid} args=[{arg_tag}] code={:?}",
+                status.code()
+            );
+            (Some(status), false)
+        }
+        WaitOutcome::TimedOut => {
+            eprintln!(
+                "[probe] P3 child.wait TIMEOUT pid={probe_pid} args=[{arg_tag}] -> kill tree"
+            );
+            let _ = kill_process(probe_pid);
+            // After the kill the tree should terminate; reap with a short bound so a
+            // still-hung wait cannot re-deadlock here.
+            let status = match wait_with_timeout(&mut child, Duration::from_secs(5)) {
+                Ok(WaitOutcome::Exited(status)) => Some(status),
+                _ => None,
+            };
+            (status, true)
+        }
+    };
     cancel_status.done.store(true, Ordering::SeqCst);
     let _ = cancel_status.join.join();
     let cancelled = cancel_status.kill_sent.load(Ordering::SeqCst);
 
-    eprintln!("[probe] P1 out_thread.join enter pid={probe_pid}");
+    eprintln!("[probe] P1 out_thread.join enter pid={probe_pid} args=[{arg_tag}]");
     let (stdout, stdout_truncated) = out_thread
         .join()
         .map_err(|_| anyhow::anyhow!("stdout capture thread panicked"))??;
-    eprintln!("[probe] P1 out_thread.join exit pid={probe_pid}");
-    eprintln!("[probe] P2 err_thread.join enter pid={probe_pid}");
+    eprintln!("[probe] P1 out_thread.join exit pid={probe_pid} args=[{arg_tag}]");
+    eprintln!("[probe] P2 err_thread.join enter pid={probe_pid} args=[{arg_tag}]");
     let (stderr, stderr_truncated) = err_thread
         .join()
         .map_err(|_| anyhow::anyhow!("stderr capture thread panicked"))??;
-    eprintln!("[probe] P2 err_thread.join exit pid={probe_pid}");
+    eprintln!("[probe] P2 err_thread.join exit pid={probe_pid} args=[{arg_tag}]");
 
     let mut stdout = String::from_utf8_lossy(&stdout).to_string();
     let mut stderr = String::from_utf8_lossy(&stderr).to_string();
@@ -674,10 +756,13 @@ fn run_gitgrip_command(
         stderr.push_str(CAPTURE_TRUNCATED_MSG);
     }
 
+    let success = !timed_out && status.map(|s| s.success()).unwrap_or(false) && !cancelled;
+
     Ok(CommandOutput {
-        success: status.success() && !cancelled,
+        success,
         cancelled,
-        status_code: status.code(),
+        timed_out,
+        status_code: status.and_then(|s| s.code()),
         stdout,
         stderr,
     })
@@ -688,23 +773,30 @@ fn run_context_command(
     cancel_flag: Option<Arc<AtomicBool>>,
 ) -> anyhow::Result<ContextCommandOutput> {
     let exe = std::env::current_exe().context("Failed to locate current gitgrip executable")?;
-    let mut child = Command::new(exe)
-        .args(args)
-        .env("NO_COLOR", "1")
-        .env("CLICOLOR", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("Failed to execute gitgrip subprocess")?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .context("Failed to capture subprocess stdout")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("Failed to capture subprocess stderr")?;
+    // Same spawn-serialization + null-stdin root fix as run_gitgrip_command: the
+    // handle-inheritance race is process-global, so every piped-child spawn must
+    // take the lock or a concurrent context spawn can still cross-inherit.
+    let (mut child, stdout, stderr) = {
+        let _spawn_guard = spawn_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let mut child = Command::new(exe)
+            .args(args)
+            .env("NO_COLOR", "1")
+            .env("CLICOLOR", "0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to execute gitgrip subprocess")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("Failed to capture subprocess stdout")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("Failed to capture subprocess stderr")?;
+        (child, stdout, stderr)
+    };
 
     let max_capture = max_capture_bytes();
     let err_thread = thread::spawn(move || capture_stream(stderr, max_capture));
@@ -898,7 +990,12 @@ fn capture_stream<R: Read>(mut reader: R, max_bytes: usize) -> anyhow::Result<(V
 }
 
 fn command_failure(label: &str, out: &CommandOutput) -> String {
-    let mut message = if out.cancelled {
+    let mut message = if out.timed_out {
+        format!(
+            "gitgrip {label} did not exit within {}s; process tree killed",
+            child_wait_timeout().as_secs()
+        )
+    } else if out.cancelled {
         format!("gitgrip {label} cancelled")
     } else {
         format!(
@@ -1454,5 +1551,109 @@ mod tests {
         handle_cancel_notification(json!({ "requestId": 123 }), &map);
 
         assert!(flag.load(Ordering::SeqCst));
+    }
+
+    // --- grip#931 step 2: bounded wait + spawn serialization witnesses ---
+
+    fn sleeper_cmd() -> Command {
+        #[cfg(unix)]
+        {
+            let mut c = Command::new("sleep");
+            c.arg("30");
+            c
+        }
+        #[cfg(windows)]
+        {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "ping", "-n", "31", "127.0.0.1"]);
+            c
+        }
+    }
+
+    fn quick_cmd() -> Command {
+        #[cfg(unix)]
+        {
+            Command::new("true")
+        }
+        #[cfg(windows)]
+        {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "exit", "0"]);
+            c
+        }
+    }
+
+    #[test]
+    fn wait_with_timeout_times_out_promptly_and_child_can_be_reaped() {
+        let mut child = sleeper_cmd()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sleeper");
+        let start = Instant::now();
+        let outcome = wait_with_timeout(&mut child, Duration::from_millis(200)).expect("wait ok");
+        assert!(
+            matches!(outcome, WaitOutcome::TimedOut),
+            "long-running child must report TimedOut, not exit"
+        );
+        // The timeout fires on OUR clock, not the child's 30s lifetime.
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "wait returned promptly at the bound, elapsed={:?}",
+            start.elapsed()
+        );
+        // After kill the child reaps within the reap bound (no re-deadlock).
+        let _ = child.kill();
+        let reap = wait_with_timeout(&mut child, Duration::from_secs(5)).expect("reap ok");
+        assert!(
+            matches!(reap, WaitOutcome::Exited(_)),
+            "killed child must reap as Exited"
+        );
+    }
+
+    #[test]
+    fn wait_with_timeout_reports_exit_for_quick_child() {
+        let mut child = quick_cmd()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn quick");
+        match wait_with_timeout(&mut child, Duration::from_secs(10)).expect("wait ok") {
+            WaitOutcome::Exited(status) => assert!(status.success(), "quick child exits success"),
+            WaitOutcome::TimedOut => panic!("quick child must not time out"),
+        }
+    }
+
+    #[test]
+    fn command_failure_reports_typed_timeout() {
+        let out = CommandOutput {
+            success: false,
+            cancelled: false,
+            timed_out: true,
+            status_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+        let msg = command_failure("agent_build", &out);
+        assert!(
+            msg.contains("did not exit within") && msg.contains("process tree killed"),
+            "timeout must surface as a typed, client-visible error; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn spawn_lock_is_a_shared_singleton_and_does_not_deadlock() {
+        let a = spawn_lock() as *const Mutex<()>;
+        let b = spawn_lock() as *const Mutex<()>;
+        assert_eq!(a, b, "spawn_lock must return one shared mutex");
+        {
+            let _g = spawn_lock().lock().unwrap_or_else(|e| e.into_inner());
+        }
+        let handle = thread::spawn(|| {
+            let _g = spawn_lock().lock().unwrap_or_else(|e| e.into_inner());
+        });
+        handle.join().expect("second acquirer completes");
     }
 }
