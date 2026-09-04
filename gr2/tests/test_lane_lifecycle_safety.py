@@ -664,3 +664,14 @@ def test_bind_bound_lane_refuses_when_no_fork_base_and_no_base(tmp_path: Path) -
     with pytest.raises(SystemExit, match="no recorded fork base"):
         lanes.bind_bound_lane(workspace, "atlas", "bound", allow_local=True)
     assert not (wt / ".git" / "grip-review.json").exists()
+
+
+def test_create_lane_refuses_a_malformed_fork_base_sha(tmp_path: Path) -> None:
+    # Witness for the create-time 40-hex validation: a fork_base sha that is not a
+    # 40-hex commit is refused at create, never stored. Removing that check lets
+    # the create succeed and reds this.
+    workspace = _workspace(tmp_path)
+    ns = _create(workspace, "feature")
+    ns.fork_base = {"app": {"branch": "main", "sha": "not-a-40-hex-sha"}}
+    with pytest.raises(SystemExit, match="40-hex"):
+        lanes.create_lane(ns)
