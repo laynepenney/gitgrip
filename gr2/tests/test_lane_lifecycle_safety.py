@@ -601,3 +601,66 @@ def test_open_project_review_refuses_a_bound_lane(tmp_path: Path) -> None:
     # Specificity (the gate is bound-only, not a blanket refusal) is covered by
     # the existing test_project_review_three_repo suite, which runs full project
     # reviews on materialized/fresh lanes and never hits this refusal.
+
+
+# --------------------------------------------------------------------------- #
+# bind base from the recorded fork base (fork-base ruling): --base omitted reads
+# the lane's recorded fork base, an explicit --base wins, no-fork-base refuses.
+# --------------------------------------------------------------------------- #
+def _bound_lane_with_fork_base(tmp_path: Path):
+    """A bound lane with three commits I -> A -> B and fork_base recorded at A.
+
+    Two distinct ancestors of head B (I and A) let the override test show an
+    explicit base winning over the recorded one.
+    """
+    workspace = _workspace(tmp_path)
+    wt = _real_worktree(workspace, branch="feat/bind")  # HEAD = init commit I
+    initial = _git(wt, "rev-parse", "HEAD").stdout.strip()
+    fork = _commit(wt, "a.txt", "fork point\n", "A: fork point")   # commit A
+    head = _commit(wt, "b.txt", "reviewed\n", "B: reviewed change")  # commit B
+    # fork_base records the DEEPER ancestor I, not A. HEAD^ is A, so fork_base (I)
+    # != HEAD^ (A): the omitted-base test then distinguishes reading-the-record
+    # from a HEAD^ recompute (a HEAD^ mutation reds it).
+    ns = argparse.Namespace(
+        workspace_root=workspace, owner_unit="atlas", lane_name="bound", type="feature",
+        repos="app", branch="app=main", source="test", default_commands=[], bind=str(wt),
+        fork_base={"app": {"branch": "feat/bind", "sha": initial}},
+    )
+    assert lanes.create_lane(ns) == 0
+    return workspace, wt, initial, fork, head
+
+
+def test_bind_bound_lane_reads_recorded_fork_base_when_base_omitted(tmp_path: Path) -> None:
+    # --base omitted: the receipt base is the RECORDED fork base (commit I), and I
+    # != HEAD^ (A), so this is non-vacuous — a HEAD^ recompute would record A and
+    # red this. The value comes from the record, never from HEAD^.
+    workspace, wt, initial, fork, head = _bound_lane_with_fork_base(tmp_path)
+    head_parent = _git(wt, "rev-parse", "HEAD^").stdout.strip()
+    assert initial != head_parent  # the recorded fork base is NOT HEAD^
+    record = lanes.bind_bound_lane(workspace, "atlas", "bound", allow_local=True)
+    assert record.base == initial
+    assert record.base != head_parent
+    assert record.head == head
+    data = _json.loads((wt / ".git" / "grip-review.json").read_text())
+    assert data["base"] == initial  # the recorded fork base is what lands in the receipt
+
+
+def test_bind_bound_lane_explicit_base_overrides_recorded_fork_base(tmp_path: Path) -> None:
+    # An explicit --base wins over the recorded fork base and is what lands in the
+    # receipt: fork_base records I, but binding with base=A records A.
+    workspace, wt, initial, fork, head = _bound_lane_with_fork_base(tmp_path)
+    assert initial != fork  # the two ancestors are distinct
+    record = lanes.bind_bound_lane(workspace, "atlas", "bound", base=fork, allow_local=True)
+    assert record.base == fork
+    assert record.base != initial
+    data = _json.loads((wt / ".git" / "grip-review.json").read_text())
+    assert data["base"] == fork
+
+
+def test_bind_bound_lane_refuses_when_no_fork_base_and_no_base(tmp_path: Path) -> None:
+    # A lane with no recorded fork base and no --base refuses with the unknown
+    # message — the review base is never HEAD^.
+    workspace, wt, base, head = _bound_lane(tmp_path)  # created without fork_base
+    with pytest.raises(SystemExit, match="no recorded fork base"):
+        lanes.bind_bound_lane(workspace, "atlas", "bound", allow_local=True)
+    assert not (wt / ".git" / "grip-review.json").exists()
