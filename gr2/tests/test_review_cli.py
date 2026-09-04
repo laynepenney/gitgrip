@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -27,6 +28,17 @@ from gr2.python_cli import grip
 from gr2.python_cli.app import app
 
 runner = CliRunner()
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """CLI usage/error panels are Rich-rendered: under forced color (CI) Rich
+    interleaves ANSI escapes through the styled text, so a flag name like
+    ``--head`` is not a literal substring of the raw output even though it is
+    plainly visible. Strip the escapes before asserting on the message content.
+    """
+    return _ANSI_RE.sub("", text)
 
 TITLE = "feat: prove the review gr tree\n"
 BODY = "body line\n"
@@ -334,12 +346,15 @@ def test_bind_rejects_rows_json_together_with_single_row_flags(tmp_path):
 def test_bind_rejects_incomplete_single_row(tmp_path):
     r1, b1, h1, w1 = _fixture_repo(tmp_path, "one")
     ws = _grip_ws(tmp_path)
-    # --head missing, no --rows-json.
+    # --head missing, no --rows-json. Pin a wide width so the required-flags
+    # message never wraps mid-flag, and strip ANSI so forced color (CI) does not
+    # break the substring.
     out = runner.invoke(
         app, ["review", "bind", str(ws), "--repo", "one", "--remote", r1, "--base", b1],
+        env={"COLUMNS": "200"},
     )
     assert out.exit_code != 0
-    assert "--head" in out.output
+    assert "--head" in _plain(out.output)
     assert "Traceback" not in out.output
 
 
