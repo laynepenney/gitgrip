@@ -2069,6 +2069,11 @@ repos:
 
     #[test]
     fn test_deep_merge_inherits_clone_strategy_from_gripspace() {
+        // CloneStrategy now has one variant (Clone -- worktree was removed), so this
+        // proves the Option-level inheritance (local None -> gripspace's Some(..) wins),
+        // not enum-discrimination. The distinct-values "local wins over gripspace" precedence for
+        // deep_merge_repo_config is covered by test_deep_merge_repo_config_local_agent_wins, whose
+        // field (agent, a String) still has two values to distinguish -- clone_strategy no longer does.
         let mut local = crate::core::manifest::RepoConfig {
             url: Some("git@github.com:user/local.git".to_string()),
             remote: None,
@@ -2100,57 +2105,12 @@ repos:
             reference: false,
             groups: Vec::new(),
             agent: None,
-            clone_strategy: Some(crate::core::manifest::CloneStrategy::Worktree),
+            clone_strategy: Some(crate::core::manifest::CloneStrategy::Clone),
         };
 
         deep_merge_repo_config(&mut local, &gripspace);
 
         // clone_strategy inherited from gripspace when local is None
-        assert_eq!(
-            local.clone_strategy,
-            Some(crate::core::manifest::CloneStrategy::Worktree)
-        );
-    }
-
-    #[test]
-    fn test_deep_merge_local_clone_strategy_wins() {
-        let mut local = crate::core::manifest::RepoConfig {
-            url: Some("git@github.com:user/local.git".to_string()),
-            remote: None,
-            path: "./repo".to_string(),
-            revision: None,
-            target: None,
-            sync_remote: None,
-            push_remote: None,
-            copyfile: None,
-            linkfile: None,
-            platform: None,
-            reference: false,
-            groups: Vec::new(),
-            agent: None,
-            clone_strategy: Some(crate::core::manifest::CloneStrategy::Clone),
-        };
-
-        let gripspace = crate::core::manifest::RepoConfig {
-            url: Some("https://github.com/user/gs.git".to_string()),
-            remote: None,
-            path: "./repo".to_string(),
-            revision: None,
-            target: None,
-            sync_remote: None,
-            push_remote: None,
-            copyfile: None,
-            linkfile: None,
-            platform: None,
-            reference: false,
-            groups: Vec::new(),
-            agent: None,
-            clone_strategy: Some(crate::core::manifest::CloneStrategy::Worktree),
-        };
-
-        deep_merge_repo_config(&mut local, &gripspace);
-
-        // Local clone_strategy wins when set
         assert_eq!(
             local.clone_strategy,
             Some(crate::core::manifest::CloneStrategy::Clone)
