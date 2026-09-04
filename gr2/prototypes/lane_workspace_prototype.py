@@ -18,6 +18,7 @@ import dataclasses
 import fcntl
 import json
 import os
+import re
 import shlex
 import sys
 import tempfile
@@ -98,6 +99,14 @@ class LaneMetadata:
     lane_kind: str = "materialized"
     bound_worktree: str | None = None
     bound_head: str | None = None
+    # fork-base ruling (2026-09-04): the per-repo coordinate the lane
+    # forked from on its integration branch, recorded ONCE at create and never
+    # recomputed. Each entry is {branch: <integration branch, e.g. dev>, sha: <its
+    # tip when the lane was cut>}. The reproduction paths (workspace snapshot,
+    # review bind) read `base` from here; a lane with no entry reads base as
+    # unknown (explicit), never HEAD^. Recorded, not derived: the caller that knows
+    # the integration tip (materialization) supplies it; create_lane only stores it.
+    fork_base: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
 
     def as_toml(self) -> str:
         document: dict[str, object] = {
@@ -121,6 +130,11 @@ class LaneMetadata:
             document["bound_worktree"] = self.bound_worktree
         if self.bound_head is not None:
             document["bound_head"] = self.bound_head
+        if self.fork_base:
+            document["fork_base"] = {
+                repo: {"branch": entry["branch"], "sha": entry["sha"]}
+                for repo, entry in sorted(self.fork_base.items())
+            }
         if self.pr_associations:
             document["pr_associations"] = [{"ref": ref} for ref in self.pr_associations]
         if self.handoff_source:
@@ -915,6 +929,21 @@ def create_lane(args: argparse.Namespace) -> int:
     else:
         branch_map = parse_branch_arg(args.branch, repos)
 
+    # fork-base ruling: record what the caller supplies, do not derive.
+    # Each entry names a repo IN the lane and carries a 40-hex integration-branch tip.
+    raw_fork_base = getattr(args, "fork_base", None) or {}
+    fork_base: dict[str, dict[str, str]] = {}
+    for repo, entry in raw_fork_base.items():
+        if repo not in repos:
+            raise SystemExit(f"fork_base references repo outside lane: {repo}")
+        branch = str(entry.get("branch", "")).strip()
+        sha = str(entry.get("sha", "")).strip()
+        if not branch:
+            raise SystemExit(f"fork_base for {repo} has no branch")
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise SystemExit(f"fork_base sha for {repo} must be a 40-hex commit, got: {sha!r}")
+        fork_base[repo] = {"branch": branch, "sha": sha}
+
     metadata = LaneMetadata(
         schema_version=LANE_SCHEMA_VERSION,
         lane_name=args.lane_name,
@@ -946,6 +975,7 @@ def create_lane(args: argparse.Namespace) -> int:
         lane_kind=lane_kind,
         bound_worktree=bound_worktree,
         bound_head=bound_head,
+        fork_base=fork_base,
     )
     lane_root = lane_dir(workspace_root, args.owner_unit, args.lane_name)
     metadata_path = lane_file(workspace_root, args.owner_unit, args.lane_name)
