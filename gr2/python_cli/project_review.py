@@ -56,6 +56,25 @@ def make_spec(workspace: Path, pins: list[ProjectReviewPin]) -> ProjectReviewSpe
     return ProjectReviewSpec("gr2-project-review/v1", commit, ordered)
 
 
+def pins_from_lane(workspace_root: Path, owner_unit: str, lane_name: str) -> list[ProjectReviewPin]:
+    """Build project-review pins for a materialized lane, reading each repo's base
+    from the RECORDED fork base (the fork-base ruling), never from HEAD^.
+
+    A review is measured from the point the lane forked from its integration
+    branch; that coordinate is recorded at lane create and read here through the
+    same resolver the workspace snapshot uses. A lane with no recorded fork base is
+    refused by that resolver (unknown, never HEAD^), so a review can never be bound
+    against a base the lane did not actually fork from.
+    """
+    from . import workspace_snapshot as ws_snap
+
+    rows = ws_snap.resolve_lane_repos(Path(workspace_root).resolve(), owner_unit, lane_name)
+    return [
+        ProjectReviewPin(key=r["key"], repo=r["remote"], path=r["path"], base=r["base"], head=r["commit"])
+        for r in rows
+    ]
+
+
 def _normalized_path(value: str) -> str:
     path = PurePosixPath(value)
     if not value or path.is_absolute() or ".." in path.parts or str(path) in {".", ""}:
