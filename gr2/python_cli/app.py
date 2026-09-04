@@ -592,6 +592,31 @@ def workspace_status_cmd(
         typer.echo(migration.render_status(payload))
 
 
+@workspace_app.command("convert-clone")
+def workspace_convert_clone_cmd(
+    path: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Convert a linked git worktree at PATH into an own clone, in place.
+
+    Refuses a dirty tree, a symlinked .git, or a path that is not a linked
+    worktree at all -- gr does not support worktree-backed repos.
+    """
+    try:
+        receipt = repo_proto.convert_worktree_to_clone(path.resolve())
+    except repo_proto.ConvertCloneError as exc:
+        typer.echo(f"convert-clone refused: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if json_output:
+        typer.echo(json.dumps(receipt, indent=2))
+    else:
+        typer.echo(f"Converted {receipt['path']} from a linked worktree to an own clone.")
+        typer.echo(f"  branch: {receipt['branch']}")
+        typer.echo(f"  head:   {receipt['head_sha']}")
+        typer.echo(f"  was linked to: {receipt['old_common_dir']}")
+
+
 @workspace_app.command("detect-gr1")
 def workspace_detect_gr1(
     workspace_root: Path,
