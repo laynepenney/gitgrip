@@ -818,10 +818,52 @@ def commit_cmd(
     repo_path: Path | None = typer.Option(
         None,
         "--repo-path",
-        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo)",
+        help="Repo to operate on (defaults to cwd; single-repo)",
+    ),
+    workspace_root: Path | None = typer.Option(
+        None,
+        "--workspace-root",
+        help="Lane-aware: commit each repo of a lane in this workspace (requires --owner-unit)",
+    ),
+    owner_unit: str | None = typer.Option(
+        None,
+        "--owner-unit",
+        help="Lane-aware: the unit whose lane to commit across",
+    ),
+    lane_name: str | None = typer.Option(
+        None,
+        "--lane",
+        help="Lane-aware: lane name (defaults to the unit's current lane)",
     ),
 ) -> None:
-    """Create or amend one commit from the staged index."""
+    """Create or amend a commit from the staged index.
+
+    Single-repo by default (cwd or --repo-path). With --workspace-root and
+    --owner-unit, commits each repo of a materialized lane under one message
+    (bound lanes stay single-repo).
+    """
+    lane_mode = workspace_root is not None and owner_unit is not None
+    if lane_mode and repo_path is not None:
+        typer.echo("Error: --repo-path is single-repo; do not combine it with --workspace-root/--owner-unit", err=True)
+        raise typer.Exit(code=1)
+    if lane_mode:
+        try:
+            report = commit_ops.commit_lane(
+                workspace_root, owner_unit, message, lane_name=lane_name, amend=amend
+            )
+        except commit_ops.CommitError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        for row in report.results:
+            if row.status == "committed":
+                typer.echo(f"{row.repo}: committed {row.commit_sha}")
+            elif row.status == "skipped_empty":
+                typer.echo(f"{row.repo}: skipped (empty index)")
+            else:
+                typer.echo(f"{row.repo}: FAILED — {row.error}")
+        if report.any_failed:
+            raise typer.Exit(code=1)
+        return
     target = (repo_path or Path.cwd()).resolve()
     try:
         receipt = commit_ops.create_commit(target, message, amend=amend)
