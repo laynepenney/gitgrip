@@ -178,21 +178,26 @@ pub struct RemoteConfig {
 }
 
 /// Clone strategy for a repository
+///
+/// `worktree` was removed 2026-09-04: it was accepted by validation and then
+/// silently ignored by sync (both strategies
+/// fell through to clone_repo(), never implemented) -- worse than absent, since a
+/// manifest declaring it read as configured while doing nothing. Declaring
+/// `clone_strategy: worktree` now fails to deserialize (ManifestError::ParseError)
+/// on every repo, not only reference repos.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum CloneStrategy {
-    /// Standalone git clone (default — best isolation, no shared .git state)
+    /// Standalone git clone (the only supported strategy — best isolation, no
+    /// shared .git state)
     #[default]
     Clone,
-    /// Git worktree off the gripspace root repo (opt-in, experimental)
-    Worktree,
 }
 
 impl std::fmt::Display for CloneStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CloneStrategy::Clone => write!(f, "clone"),
-            CloneStrategy::Worktree => write!(f, "worktree"),
         }
     }
 }
@@ -881,18 +886,6 @@ impl Manifest {
             return Err(ManifestError::PathTraversal(format!(
                 "Repository '{}' path escapes workspace boundary: {}",
                 name, repo.path
-            )));
-        }
-
-        // Reference repos must use clone strategy — reject worktree
-        if repo.reference
-            && repo
-                .clone_strategy
-                .is_some_and(|s| s == CloneStrategy::Worktree)
-        {
-            return Err(ManifestError::ValidationError(format!(
-                "Repository '{}' is a reference repo and cannot use clone_strategy 'worktree'",
-                name
             )));
         }
 
@@ -1739,30 +1732,26 @@ repos:
     }
 
     #[test]
-    fn test_clone_strategy_per_repo_override() {
+    fn test_clone_strategy_worktree_rejected_on_ordinary_repo() {
+        // CloneStrategy::Worktree was accepted by validation for ordinary repos
+        // and then silently ignored by sync (both strategies fell through to
+        // clone_repo()) -- worse than absent, since a manifest declaring it read as configured while
+        // doing nothing. The variant is deleted below; an unknown "worktree" value now
+        // fails to deserialize at all, refusing it unconditionally rather than only for
+        // reference repos.
         let yaml = r#"
 repos:
-  cloned:
-    url: git@github.com:user/a.git
-    path: a
-  worktree:
-    url: git@github.com:user/b.git
-    path: b
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
     clone_strategy: worktree
 "#;
-        let manifest = Manifest::parse(yaml).unwrap();
-        assert_eq!(
-            manifest.effective_clone_strategy(&manifest.repos["cloned"]),
-            CloneStrategy::Clone
-        );
-        assert_eq!(
-            manifest.effective_clone_strategy(&manifest.repos["worktree"]),
-            CloneStrategy::Worktree
-        );
+        let result = Manifest::parse(yaml);
+        assert!(matches!(result, Err(ManifestError::ParseError(_))));
     }
 
     #[test]
-    fn test_clone_strategy_global_override() {
+    fn test_clone_strategy_worktree_rejected_as_global_default() {
         let yaml = r#"
 repos:
   myrepo:
@@ -1771,29 +1760,34 @@ repos:
 settings:
   clone_strategy: worktree
 "#;
-        let manifest = Manifest::parse(yaml).unwrap();
-        assert_eq!(manifest.settings.clone_strategy, CloneStrategy::Worktree);
-        assert_eq!(
-            manifest.effective_clone_strategy(&manifest.repos["myrepo"]),
-            CloneStrategy::Worktree
-        );
+        let result = Manifest::parse(yaml);
+        assert!(matches!(result, Err(ManifestError::ParseError(_))));
     }
 
     #[test]
-    fn test_reference_repo_always_clone() {
+    fn test_clone_strategy_per_repo_override_still_resolves_clone() {
+        // With a single-variant enum, "override" no longer selects a different
+        // strategy -- it proves the Option<CloneStrategy> inheritance path (unset
+        // -> global default) still resolves correctly now that worktree is gone.
         let yaml = r#"
 repos:
-  refonly:
-    url: https://github.com/other/repo.git
-    path: reference/repo
-    reference: true
-    clone_strategy: worktree
-settings:
-  clone_strategy: worktree
+  cloned:
+    url: git@github.com:user/a.git
+    path: a
+  explicit:
+    url: git@github.com:user/b.git
+    path: b
+    clone_strategy: clone
 "#;
-        // Validation must reject worktree on reference repos
-        let result = Manifest::parse(yaml);
-        assert!(matches!(result, Err(ManifestError::ValidationError(_))));
+        let manifest = Manifest::parse(yaml).unwrap();
+        assert_eq!(
+            manifest.effective_clone_strategy(&manifest.repos["cloned"]),
+            CloneStrategy::Clone
+        );
+        assert_eq!(
+            manifest.effective_clone_strategy(&manifest.repos["explicit"]),
+            CloneStrategy::Clone
+        );
     }
 
     #[test]
@@ -1804,11 +1798,8 @@ repos:
     url: https://github.com/other/repo.git
     path: reference/repo
     reference: true
-settings:
-  clone_strategy: worktree
 "#;
         let manifest = Manifest::parse(yaml).unwrap();
-        // Even though global default is worktree, reference repos resolve to clone
         assert_eq!(
             manifest.effective_clone_strategy(&manifest.repos["refonly"]),
             CloneStrategy::Clone
