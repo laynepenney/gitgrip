@@ -1664,21 +1664,70 @@ def pr_create(
 @review_app.command("open-project")
 def review_open_project(
     workspace_root: Path,
-    owner_unit: str,
-    lane_name: str,
-    spec_json: Path = typer.Option(..., "--spec-json", help="Strict ProjectReviewSpec JSON"),
-    sources_json: Path = typer.Option(..., "--sources-json", help="Ephemeral key -> {source, branch} JSON"),
+    commit: str = typer.Argument(..., help="The project-review-KIND gr commit (gr:<sha> or bare sha)"),
+    owner_unit: str = typer.Argument(..., help="Owner unit whose lane the review enters"),
+    lane_name: str = typer.Argument(..., help="Review lane name to materialize into and enter"),
+    enter: bool = typer.Option(False, "--enter", help="Materialize the pinned heads and enter the review lane (the only open mode)"),
+    sources_json: Optional[Path] = typer.Option(None, "--sources-json", help="Ephemeral key -> {source, branch} JSON for pre-push heads; OMIT to resolve each source from the pin's recorded remote"),
+    prior_cwd: Optional[Path] = typer.Option(None, "--prior-cwd", help="Directory to restore on `review exit-gr` (defaults to the current directory)"),
+    allow_local: bool = typer.Option(False, "--allow-local", help="Permit filesystem repository identities (fixtures/tests)"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Open a project review from an immutable spec plus ephemeral transport."""
-    raw = json.loads(spec_json.read_text())
-    pins = tuple(project_review.ProjectReviewPin(**pin) for pin in raw["pins"])
-    spec = project_review.ProjectReviewSpec(raw["schema"], raw["grip_commit"], pins)
-    source_rows = json.loads(sources_json.read_text())
-    sources = {key: (Path(row["source"]), row["branch"]) for key, row in source_rows.items()}
-    outcome = project_review.open_project_review(workspace=workspace_root.resolve(), owner_unit=owner_unit, lane_name=lane_name, spec=spec, sources=sources, allow_local=False)
-    typer.echo(json.dumps(project_review.outcome_payload(outcome), indent=2))
+    """MATERIALIZE a project review from a project-review-KIND gr commit and enter it.
+
+    Clones each pinned head from its RECORDED REMOTE (or from --sources-json for a
+    pre-push head not yet published), enters the review lane, and writes a receipt so
+    `review exit-gr` restores the prior lane and cwd. Contrast `review open-gr`, which
+    RECONSTRUCTS a review-BIND commit by `git am` over a carried range and asserts the
+    tree equals the bound head-tree. A commit of the wrong kind is refused, naming the
+    kind it found.
+    """
+    if not enter:
+        raise typer.BadParameter("--enter is required (materialization is the only open mode)")
+    from . import open_gr_review
+    sha = _strip_gr_prefix(commit)
+    sources = None
+    if sources_json is not None:
+        source_rows = json.loads(sources_json.read_text())
+        sources = {key: (Path(row["source"]), row["branch"]) for key, row in source_rows.items()}
+    outcome = _review_call(
+        open_gr_review.open_gr_enter,
+        workspace_root.resolve(), owner_unit, lane_name, sha, sources,
+        prior_cwd=(prior_cwd.resolve() if prior_cwd is not None else Path.cwd()),
+        allow_local=allow_local,
+    )
+    if json_output:
+        typer.echo(json.dumps(project_review.outcome_payload(outcome), indent=2))
+    else:
+        typer.echo(f"status={outcome.status} lane={lane_name} review_root={outcome.review_root}")
     if outcome.status != "opened":
         raise typer.Exit(code=1)
+
+
+@review_app.command("exit-gr")
+def review_exit_gr(
+    workspace_root: Path,
+    owner_unit: str = typer.Argument(..., help="Owner unit whose review lane to exit"),
+    review_root: Path = typer.Argument(..., help="The review lane root written by `open-project --enter` (holds .grip-open-gr.json)"),
+    actor: str = typer.Option("agent:cli", "--actor", help="Actor recorded for the lane exit"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Exit a MATERIALIZED project review opened by `open-project --enter`: pop the
+    review lane and restore the prior lane, returning the prior cwd from the receipt.
+    This is the project-tier exit; `review close` drops a single-repo `review open` lane.
+    """
+    from . import open_gr_review
+    result = open_gr_review.exit_gr_review(
+        workspace_root.resolve(), owner_unit, review_root.resolve(), actor=actor
+    )
+    if json_output:
+        typer.echo(json.dumps({
+            "restored_lane": result.restored_lane,
+            "restored_cwd": result.restored_cwd,
+            "gr_commit": result.gr_commit,
+        }, indent=2))
+    else:
+        typer.echo(f"restored_lane={result.restored_lane} restored_cwd={result.restored_cwd}")
 
 
 def _strip_gr_prefix(commit: str) -> str:
@@ -1806,10 +1855,12 @@ def review_open_gr(
     enter: bool = typer.Option(False, "--enter", help="Materialize the reconstruction (the only open mode)"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Open a review lane by reconstruction: clone the recorded remote, check out
-    the bound base, ``git am`` the carried range, and assert the resulting tree
-    equals the bound head-tree. A tree mismatch refuses. With no --repo, every
-    bound row is reconstructed into its own subdirectory of --lane-dir."""
+    """RECONSTRUCT a review lane from a review-BIND commit: clone the recorded remote,
+    check out the bound base, ``git am`` the carried range, and assert the resulting
+    tree equals the bound head-tree. A tree mismatch refuses. With no --repo, every
+    bound row is reconstructed into its own subdirectory of --lane-dir. Contrast
+    `review open-project`, which MATERIALIZES a project-review-KIND commit's pinned
+    heads from their recorded remotes and enters the review lane."""
     if not enter:
         raise typer.BadParameter("--enter is required (reconstruction is the only open mode)")
     sha = _strip_gr_prefix(commit)

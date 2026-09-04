@@ -9,7 +9,10 @@ from pathlib import Path
 
 import pytest
 
+import typer
+
 from gr2.prototypes import lane_workspace_prototype as lanes
+from gr2.python_cli import app as gr2_app
 from gr2.python_cli import grip, open_gr_review, project_review
 
 
@@ -198,3 +201,70 @@ def test_open_gr_enter_refuses_a_pin_head_missing_from_its_repo(tmp_path: Path) 
     assert outcome.status == "refused"
     assert not (workspace / "reviews" / "atlas" / "review-m1" / "repos").exists()
     assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "home"
+
+
+# ---- Part 2: the CLI materialize verb (review open-project) routes through open_gr_enter ----
+
+def _review_help(command_name: str) -> str:
+    cmd = next(c for c in gr2_app.review_app.registered_commands if c.name == command_name)
+    return (cmd.help or (cmd.callback.__doc__ or "")).strip()
+
+
+def test_review_open_project_cli_materializes_from_recorded_remote_then_exits(tmp_path: Path) -> None:
+    # One CLI invocation materializes the project-review-KIND commit's pinned heads
+    # from their recorded remotes and enters the review lane; exit-gr restores.
+    workspace, sources, prior_cwd = _world(tmp_path)
+    gr_commit, _unused = _review_kind_commit(workspace, sources)
+
+    gr2_app.review_open_project(
+        workspace, gr_commit, "atlas", "review-m1",
+        enter=True, sources_json=None, prior_cwd=prior_cwd, allow_local=True, json_output=False,
+    )
+    review_root = workspace / "reviews" / "atlas" / "review-m1"
+    for name in sources:
+        assert (review_root / "repos" / name / ".git").is_dir()
+        assert _git(review_root / "repos" / name, "rev-parse", "HEAD") == sources[name][2]
+    assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "review-m1"
+
+    gr2_app.review_exit_gr(workspace, "atlas", review_root, actor="agent:atlas", json_output=False)
+    assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "home"
+
+
+def test_review_open_project_cli_refuses_non_review_kind_naming_the_kind(tmp_path: Path, capsys) -> None:
+    # Control: a workspace-KIND commit is refused, and the refusal names the kind found.
+    workspace, sources, prior_cwd = _world(tmp_path)
+    wrong = grip.create_workspace_commit(workspace, [
+        {"key": name, "remote": f"https://example.invalid/{name}.git", "path": f"repos/{name}",
+         "commit": src[2], "base": src[1]}
+        for name, src in sources.items()
+    ])
+    with pytest.raises(typer.Exit) as exc:
+        gr2_app.review_open_project(
+            workspace, wrong, "atlas", "review-m1",
+            enter=True, sources_json=None, prior_cwd=prior_cwd, allow_local=True, json_output=False,
+        )
+    assert exc.value.exit_code == 2
+    err = capsys.readouterr().err
+    assert "gr2-workspace/v1" in err and "project review" in err
+    assert not (workspace / "reviews" / "atlas" / "review-m1").exists()
+    assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "home"
+
+
+def test_review_open_project_requires_enter(tmp_path: Path) -> None:
+    workspace, sources, prior_cwd = _world(tmp_path)
+    gr_commit, _unused = _review_kind_commit(workspace, sources)
+    with pytest.raises(typer.BadParameter):
+        gr2_app.review_open_project(
+            workspace, gr_commit, "atlas", "review-m1",
+            enter=False, sources_json=None, prior_cwd=prior_cwd, allow_local=True, json_output=False,
+        )
+
+
+def test_both_review_verbs_help_names_commit_kind_and_path() -> None:
+    op = _review_help("open-project")
+    og = _review_help("open-gr")
+    assert "MATERIALIZE" in op and "project-review-KIND" in op
+    assert "RECONSTRUCT" in og and "review-BIND" in og
+    # each verb points at the other so the fork is legible from --help alone
+    assert "open-gr" in op and "open-project" in og
+    assert "exit-gr" in _review_help("exit-gr").lower() or "exit" in _review_help("exit-gr").lower()

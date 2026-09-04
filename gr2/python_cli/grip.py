@@ -78,8 +78,13 @@ def create_project_review_commit(workspace: Path, pins: list[dict[str, str]]) ->
 
 def read_project_review_commit(workspace: Path, commit: str) -> list[dict[str, str]]:
     """Strictly decode the minimal reviewed repository fields."""
-    if _grip_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _PROJECT_REVIEW_SCHEMA:
-        raise GripCorruptError("not a gr2 project review commit")
+    actual_schema = _grip_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip()
+    if actual_schema != _PROJECT_REVIEW_SCHEMA:
+        raise GripCorruptError(
+            f"not a gr2 project review commit: found kind {actual_schema or '<none>'!r}, "
+            f"expected {_PROJECT_REVIEW_SCHEMA!r} (a project-review-KIND commit; use `review open-gr` "
+            f"for a review-BIND commit)"
+        )
     rows = _read_repo_state(workspace, commit)
     decoded: list[dict[str, str]] = []
     for key, fields in sorted(rows.items()):
