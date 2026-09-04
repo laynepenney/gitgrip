@@ -126,7 +126,7 @@ def _acquire_worker(
 
 def _active_edit_count(workspace_root: Path) -> int:
     count = 0
-    for path in workspace_root.glob("agents/*/lanes/*/leases.json"):
+    for path in workspace_root.glob(".grip/state/lanes/*/*/leases.json"):
         for lease in json.loads(path.read_text()):
             count += lease.get("mode") == "edit"
     return count

@@ -139,7 +139,7 @@ def exec_status_payload(
     selected_repos = _selected_repos(lane_doc, repos)
     rows: list[dict[str, object]] = []
     for repo in selected_repos:
-        cwd = workspace_root / "agents" / owner_unit / "lanes" / lane_name / "repos" / repo
+        cwd = lane_proto.lane_dir(workspace_root, owner_unit, lane_name) / "repos" / repo
         rows.append(
             {
                 "lane": lane_name,

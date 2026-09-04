@@ -18,6 +18,7 @@ from unittest.mock import patch, MagicMock
 
 from gr2.python_cli.events import EventEmitError, EventType, _outbox_path
 from gr2.python_cli.execops import run_exec, ExecResult, run_exec_parallel
+from gr2.prototypes.lane_workspace_prototype import lane_dir as _real_lane_dir
 
 
 class ExecTestBase(unittest.TestCase):
@@ -31,7 +32,7 @@ class ExecTestBase(unittest.TestCase):
         self.lane_name = "test-lane"
         self.actor = "agent:test"
 
-        lane_base = self.workspace / "agents" / self.owner_unit / "lanes" / self.lane_name
+        lane_base = self.workspace / ".grip" / "state" / "lanes" / self.owner_unit / self.lane_name
         self.repos = ["repo-a", "repo-b", "repo-c"]
         for repo in self.repos:
             repo_dir = lane_base / "repos" / repo
@@ -84,6 +85,9 @@ class ExecTestBase(unittest.TestCase):
         mock.find_unit_spec.return_value = {}
         mock.now_utc.return_value = "2026-04-17T00:00:00Z"
         mock.emit_lane_event.return_value = None
+        # execops derives each repo cwd from lane_proto.lane_dir;
+        # delegate to the real helper so the mock cannot drift from the layout.
+        mock.lane_dir.side_effect = _real_lane_dir
         return mock
 
 
@@ -223,8 +227,8 @@ class TestExecRunParallel(ExecTestBase):
         results = run_exec_parallel(
             command=["echo", "hello"],
             repo_rows=[
-                {"repo": "repo-a", "cwd": str(self.workspace / "agents" / self.owner_unit / "lanes" / self.lane_name / "repos" / "repo-a")},
-                {"repo": "repo-b", "cwd": str(self.workspace / "agents" / self.owner_unit / "lanes" / self.lane_name / "repos" / "repo-b")},
+                {"repo": "repo-a", "cwd": str(self.workspace / ".grip" / "state" / "lanes" / self.owner_unit / self.lane_name / "repos" / "repo-a")},
+                {"repo": "repo-b", "cwd": str(self.workspace / ".grip" / "state" / "lanes" / self.owner_unit / self.lane_name / "repos" / "repo-b")},
             ],
             max_workers=2,
         )
@@ -237,8 +241,8 @@ class TestExecRunParallel(ExecTestBase):
         results = run_exec_parallel(
             command=["echo", "hello"],
             repo_rows=[
-                {"repo": "repo-c", "cwd": str(self.workspace / "agents" / self.owner_unit / "lanes" / self.lane_name / "repos" / "repo-c")},
-                {"repo": "repo-a", "cwd": str(self.workspace / "agents" / self.owner_unit / "lanes" / self.lane_name / "repos" / "repo-a")},
+                {"repo": "repo-c", "cwd": str(self.workspace / ".grip" / "state" / "lanes" / self.owner_unit / self.lane_name / "repos" / "repo-c")},
+                {"repo": "repo-a", "cwd": str(self.workspace / ".grip" / "state" / "lanes" / self.owner_unit / self.lane_name / "repos" / "repo-a")},
             ],
             max_workers=2,
         )

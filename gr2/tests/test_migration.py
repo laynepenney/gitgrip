@@ -543,7 +543,7 @@ class TestRegenerateGr1Workspace:
         assert spec_path.read_bytes() == before
 
         current.write_text(json.dumps({"current": None}))
-        leases = gr1_workspace / "agents" / "apollo" / "lanes" / "review" / "leases.json"
+        leases = gr1_workspace / ".grip" / "state" / "lanes" / "apollo" / "review" / "leases.json"
         leases.parent.mkdir(parents=True)
         leases.write_text(json.dumps([{"actor": "apollo"}]))
         with pytest.raises(SystemExit, match="active lane leases"):
@@ -932,3 +932,91 @@ def test_regeneration_guard_ignores_plumbing_store_head_deletions(tmp_path):
     (grip / "unexpected").write_text("dirt\n")
     with pytest.raises(SystemExit, match="dirty object store"):
         migration._require_clean_regeneration_store(grip)
+
+
+# --- lane-state migration (agents/<unit>/lanes -> .grip/state/lanes) ---
+
+from gr2.python_cli.migration import migrate_lane_state
+
+
+def _legacy_lane(workspace: Path, unit: str, lane: str, *, repos=("app",)) -> Path:
+    """Build a legacy lane tree with a lane.toml, leases, and a repo."""
+    lane_dir = workspace / "agents" / unit / "lanes" / lane
+    (lane_dir).mkdir(parents=True)
+    (lane_dir / "lane.toml").write_text(f'lane_name = "{lane}"\nowner_unit = "{unit}"\n')
+    (lane_dir / "leases.json").write_text("[]")
+    for repo in repos:
+        rd = lane_dir / "repos" / repo
+        rd.mkdir(parents=True)
+        (rd / "README.md").write_text("x\n")
+    return lane_dir
+
+
+class TestMigrateLaneState:
+    def test_moves_legacy_tree_and_receipt_names_it(self, tmp_path: Path) -> None:
+        src = _legacy_lane(tmp_path, "atlas", "feature")
+        src_files = sorted(p.relative_to(src).as_posix() for p in src.rglob("*") if p.is_file())
+        receipt = tmp_path / "migrate-receipt.json"
+
+        payload = migrate_lane_state(tmp_path, receipt_path=receipt)
+
+        dest = tmp_path / ".grip" / "state" / "lanes" / "atlas" / "feature"
+        assert dest.is_dir()
+        assert sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file()) == src_files
+        assert not (tmp_path / "agents" / "atlas" / "lanes" / "feature").exists()
+        assert payload["count"] == 1
+        row = payload["moved"][0]
+        assert row["unit"] == "atlas" and row["lane"] == "feature"
+        assert row["dest"] == ".grip/state/lanes/atlas/feature"
+        assert row["files"] == len(src_files)
+        # Receipt is the durable record of what moved.
+        assert json.loads(receipt.read_text())["moved"][0]["source"] == "agents/atlas/lanes/feature"
+
+    def test_zero_move_when_no_legacy_tree(self, tmp_path: Path) -> None:
+        receipt = tmp_path / "empty-receipt.json"
+        payload = migrate_lane_state(tmp_path, receipt_path=receipt)
+        assert payload["count"] == 0 and payload["moved"] == []
+        assert receipt.is_file()
+
+    def test_refuses_active_lease_and_moves_nothing(self, tmp_path: Path) -> None:
+        src = _legacy_lane(tmp_path, "atlas", "feature")
+        (src / "leases.json").write_text(json.dumps([{"actor": "atlas", "mode": "edit"}]))
+        receipt = tmp_path / "receipt.json"
+        with pytest.raises(SystemExit, match="active lane leases"):
+            migrate_lane_state(tmp_path, receipt_path=receipt)
+        assert src.exists()  # nothing moved
+        assert not receipt.exists()  # no receipt for a refused migration
+
+    def test_refuses_active_current_lane_pointer(self, tmp_path: Path) -> None:
+        _legacy_lane(tmp_path, "atlas", "feature")
+        current = tmp_path / ".grip" / "state" / "current_lane" / "atlas.json"
+        current.parent.mkdir(parents=True)
+        current.write_text(json.dumps({"current": {"lane_name": "feature"}}))
+        with pytest.raises(SystemExit, match="active lanes"):
+            migrate_lane_state(tmp_path, receipt_path=tmp_path / "r.json")
+
+    def test_refuses_existing_destination_and_moves_nothing(self, tmp_path: Path) -> None:
+        # Two lanes in legacy; one already present at the new path. Two-pass must
+        # refuse BEFORE moving either, so the clean lane is not half-migrated.
+        _legacy_lane(tmp_path, "atlas", "already")
+        clean = _legacy_lane(tmp_path, "atlas", "clean")
+        (tmp_path / ".grip" / "state" / "lanes" / "atlas" / "already").mkdir(parents=True)
+        with pytest.raises(SystemExit, match="refuses to overwrite existing destinations"):
+            migrate_lane_state(tmp_path, receipt_path=tmp_path / "r.json")
+        assert clean.exists()  # the clean lane was NOT moved
+
+    def test_idempotent_across_two_runs_with_fresh_receipts(self, tmp_path: Path) -> None:
+        _legacy_lane(tmp_path, "atlas", "feature")
+        first = migrate_lane_state(tmp_path, receipt_path=tmp_path / "r1.json")
+        assert first["count"] == 1
+        second = migrate_lane_state(tmp_path, receipt_path=tmp_path / "r2.json")
+        assert second["count"] == 0
+
+    def test_cli_migrate_lane_state(self, tmp_path: Path) -> None:
+        _legacy_lane(tmp_path, "atlas", "feature")
+        receipt = tmp_path / "cli-receipt.json"
+        result = CliRunner().invoke(app, ["workspace", "migrate-lane-state", str(tmp_path), "--receipt", str(receipt), "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["count"] == 1
+        assert (tmp_path / ".grip" / "state" / "lanes" / "atlas" / "feature").is_dir()

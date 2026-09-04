@@ -50,6 +50,24 @@ def _enter_process(workspace: str, name: str, ready, start) -> None:
     ))
 
 
+def test_created_lane_lands_under_grip_state_lanes_not_the_agents_root(tmp_path: Path) -> None:
+    """Lane state lives at .grip/state/lanes/<unit>/<lane>/, and the
+    old workspace-root agents/<unit>/lanes/ pollution is never created.
+
+    Literal path assertions (not lane_state_root()) so the test pins the layout
+    itself rather than mirroring whatever the helper currently returns.
+    """
+    workspace = _workspace(tmp_path)
+    assert lanes.create_lane(_create(workspace, "feature")) == 0
+
+    lane_toml = workspace / ".grip" / "state" / "lanes" / "atlas" / "feature" / "lane.toml"
+    assert lane_toml.is_file()
+    assert lanes.lane_file(workspace, "atlas", "feature") == lane_toml
+
+    # The legacy lane tree at the workspace root must never appear.
+    assert not (workspace / "agents" / "atlas" / "lanes").exists()
+
+
 def test_create_is_exact_idempotent_and_conflicting_create_preserves_bytes(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     args = _create(workspace, "feature")

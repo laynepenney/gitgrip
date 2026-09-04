@@ -108,7 +108,7 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             continue
         ctx = HookContext(
             workspace_root=workspace_root,
-            unit_root=workspace_root / "agents" / owner_unit,
+            unit_root=lane_proto.lane_state_root(workspace_root) / owner_unit,
             lane_root=lane_root,
             repo_root=target_repo_root,
             repo_name=repo_name,
@@ -142,7 +142,7 @@ def _run_lane_stage(workspace_root: Path, owner_unit: str, lane_name: str, stage
             continue
         ctx = HookContext(
             workspace_root=workspace_root,
-            unit_root=workspace_root / "agents" / owner_unit,
+            unit_root=lane_proto.lane_state_root(workspace_root) / owner_unit,
             lane_root=lane_root,
             repo_root=repo_root,
             repo_name=repo_name,
@@ -636,6 +636,24 @@ def workspace_migrate_gr1(
             typer.echo("\nWorkspace materialized successfully.")
         elif apply and payload.get("apply_status") == "validation_failed":
             typer.echo(f"\nSpec validation failed: {len(payload.get('validation_errors', []))} error(s).")
+
+
+@workspace_app.command("migrate-lane-state")
+def workspace_migrate_lane_state(
+    workspace_root: Path,
+    receipt: Path = typer.Option(..., "--receipt", help="New receipt path naming every lane tree the migration moved"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Move legacy agents/<unit>/lanes/<lane>/ trees to .grip/state/lanes/<unit>/<lane>/ once, with a receipt."""
+    workspace_root = workspace_root.resolve()
+    payload = migration.migrate_lane_state(workspace_root, receipt_path=receipt)
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        count = payload["count"]
+        typer.echo(f"Migrated {count} lane tree(s) to .grip/state/lanes/; receipt at {receipt}")
+        for row in payload["moved"]:
+            typer.echo(f"  {row['source']} -> {row['dest']} ({row['files']} file(s))")
 
 
 @workspace_app.command("bootstrap-gr1")
