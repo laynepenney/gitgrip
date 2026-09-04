@@ -90,6 +90,57 @@ def read_project_review_commit(workspace: Path, commit: str) -> list[dict[str, s
 
 
 # ---------------------------------------------------------------------------
+# kind=workspace: a lane's resolved repository state captured as one gr commit.
+# Same section-5 shape as the review kind, different .grip/kind. Records the
+# resolved head each repo checks out plus the base it builds on; the commit is
+# the reproduction coordinate for the workspace at snapshot time.
+# ---------------------------------------------------------------------------
+
+_WORKSPACE_SCHEMA = "gr2-workspace/v1"
+
+
+def create_workspace_commit(workspace: Path, repos: list[dict[str, str]]) -> str:
+    """Encode a kind=workspace gr commit through the sole object seam."""
+    _validate_grip_repo(workspace)
+    if not repos:
+        raise GripCorruptError("workspace commit requires at least one repository")
+    entries: list[str] = []
+    seen: set[str] = set()
+    for repo in sorted(repos, key=lambda item: item["key"]):
+        key = repo.get("key", "")
+        if not key or key in seen or any(ch in key for ch in "/\\"):
+            raise GripCorruptError(f"invalid or duplicate workspace repo key: {key!r}")
+        seen.add(key)
+        fields: list[str] = []
+        for name, value in (("remote", repo.get("remote", "")), ("path", repo.get("path", "")), ("commit", repo.get("commit", "")), ("base", repo.get("base", ""))):
+            if not value or (name in {"commit", "base"} and not _SHA40.match(value)):
+                raise GripCorruptError(f"invalid workspace {name} for {key}")
+            fields.append(f"100644 blob {_hash_blob(workspace, value)}\t{name}")
+        entries.append(f"040000 tree {_mktree(workspace, fields)}\t{key}")
+    repos_tree = _mktree(workspace, entries)
+    meta_tree = _mktree(workspace, [f"100644 blob {_hash_blob(workspace, _WORKSPACE_SCHEMA)}\tschema", f"100644 blob {_hash_blob(workspace, 'workspace')}\tkind"])
+    root_tree = _mktree(workspace, [f"040000 tree {meta_tree}\t.grip", f"040000 tree {repos_tree}\trepos"])
+    commit = _commit_tree(workspace, root_tree, parent=_current_head(workspace), message="grip workspace snapshot")
+    _grip_git(workspace, "update-ref", "HEAD", commit)
+    return commit
+
+
+def read_workspace_commit(workspace: Path, commit: str) -> list[dict[str, str]]:
+    """Strictly decode a kind=workspace gr commit's resolved repository fields."""
+    if _grip_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _WORKSPACE_SCHEMA:
+        raise GripCorruptError("not a gr2 workspace commit")
+    if _grip_git(workspace, "show", f"{commit}:.grip/kind").stdout.strip() != "workspace":
+        raise GripCorruptError("gr2 workspace commit has the wrong kind")
+    rows = _read_repo_state(workspace, commit)
+    decoded: list[dict[str, str]] = []
+    for key, fields in sorted(rows.items()):
+        if set(fields) != {"remote", "path", "commit", "base"} or not _SHA40.match(fields["commit"]) or not _SHA40.match(fields["base"]):
+            raise GripCorruptError(f"invalid workspace repository tree: {key}")
+        decoded.append({"key": key, "remote": fields["remote"], "path": fields["path"], "commit": fields["commit"], "base": fields["base"]})
+    return decoded
+
+
+# ---------------------------------------------------------------------------
 # Milestone 1.2 — the gate on gr2: review bind + verify
 #
 # A review gr commit is a project-review commit plus two subtrees: observed/
