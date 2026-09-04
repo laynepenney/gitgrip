@@ -9,6 +9,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,16 @@ from gr2.python_cli.migration import (
     render_workspace_spec,
     workspace_status,
 )
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI so a flag name in a Rich-rendered usage/error panel is a
+    literal substring under forced color (CI) as well as plain (local).
+    """
+    return _ANSI_RE.sub("", text)
 
 
 # ---------------------------------------------------------------------------
@@ -594,9 +605,10 @@ class TestRegenerateGr1Workspace:
         result = CliRunner().invoke(
             app,
             ["workspace", "bootstrap-gr1", str(gr1_workspace), "--regenerate", "--expected-spec-sha256", expected],
+            env={"COLUMNS": "200"},
         )
         assert result.exit_code != 0
-        assert "--receipt" in result.output
+        assert "--receipt" in _plain(result.output)
 
     def test_receipt_bound_round_trip_restores_exact_old_bytes(self, gr1_workspace: Path, tmp_path: Path) -> None:
         spec_path, expected = self._prepared(gr1_workspace)
