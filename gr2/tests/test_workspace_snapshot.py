@@ -1,5 +1,9 @@
 """kind=workspace gr commit: a materialized lane's resolved heads captured as
-one gr commit and read back (R2 Milestone 1, section-5 workspace kind)."""
+one gr commit and read back (R2 Milestone 1, section-5 workspace kind).
+
+Base is the RECORDED fork base, never derived from HEAD^: the lane
+records where its work forked from its integration branch at create time, and the
+snapshot reads that coordinate. A lane with no recorded fork base is refused."""
 
 from __future__ import annotations
 
@@ -19,7 +23,13 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
     return subprocess.run(["git", *args], cwd=repo, check=check, capture_output=True, text=True)
 
 
-def _init_repo(path: Path) -> Path:
+def _source_repo(path: Path) -> tuple[Path, str]:
+    """A source repo with integration branch 'main' at a known tip.
+
+    Models the integration branch a lane forks from: its tip is resolvable BEFORE
+    the lane's own clone is materialized, which is why the fork base can be
+    recorded at lane create. Returns (path, tip_sha).
+    """
     path.mkdir(parents=True)
     _git(path, "init", "-b", "main")
     _git(path, "config", "user.name", "Test")
@@ -27,7 +37,7 @@ def _init_repo(path: Path) -> Path:
     (path / "tracked.txt").write_text("initial\n")
     _git(path, "add", ".")
     _git(path, "commit", "-m", "initial")
-    return path
+    return path, _git(path, "rev-parse", "HEAD").stdout.strip()
 
 
 def _workspace(tmp_path: Path, repos: list[str]) -> Path:
@@ -49,32 +59,51 @@ def _workspace(tmp_path: Path, repos: list[str]) -> Path:
     return ws
 
 
-def _materialized_lane(tmp_path: Path, repos: list[str], lane: str = "feature") -> Path:
+def _materialized_lane(
+    tmp_path: Path, repos: list[str], lane: str = "feature", *, fork_base: bool = True
+) -> Path:
+    """A materialized lane whose repos are clones of a source integration branch.
+
+    When ``fork_base`` is True the lane records, per repo, the source tip it forked
+    from (the coordinate the snapshot reads as base). When False the lane carries no
+    fork base — a pre-field lane the snapshot must refuse.
+    """
     ws = _workspace(tmp_path, repos)
+    tips: dict[str, str] = {}
+    for r in repos:
+        _, tips[r] = _source_repo(tmp_path / "src" / r)
     branch = ",".join(f"{r}=main" for r in repos)
-    assert lanes.create_lane(argparse.Namespace(
+    ns = argparse.Namespace(
         workspace_root=ws, owner_unit="atlas", lane_name=lane, type="feature",
         repos=",".join(repos), branch=branch, source="test", default_commands=[],
-    )) == 0
+    )
+    if fork_base:
+        ns.fork_base = {r: {"branch": "main", "sha": tips[r]} for r in repos}
+    assert lanes.create_lane(ns) == 0
     lane_root = lanes.lane_dir(ws, "atlas", lane)
     for r in repos:
-        _init_repo(lane_root / "repos" / r)
+        _git(lane_root / "repos", "clone", "-q", str(tmp_path / "src" / r), r)
+        repo = lane_root / "repos" / r
+        _git(repo, "config", "user.name", "Test")
+        _git(repo, "config", "user.email", "test@example.com")
     return ws
 
 
-def _commit_lane_change(ws: Path, repos: list[str], lane: str = "feature") -> None:
+def _commit_lane_change(ws: Path, repos: list[str], lane: str = "feature", times: int = 1) -> None:
     lane_root = lanes.lane_dir(ws, "atlas", lane)
-    for r in repos:
-        (lane_root / "repos" / r / "new.txt").write_text("x\n")
-        _git(lane_root / "repos" / r, "add", "new.txt")
-    report = commit_ops.commit_lane(ws, "atlas", "lane work", lane_name=lane)
-    assert not report.any_failed and report.any_committed
+    for n in range(times):
+        for r in repos:
+            (lane_root / "repos" / r / f"new{n}.txt").write_text(f"x{n}\n")
+            _git(lane_root / "repos" / r, "add", f"new{n}.txt")
+        report = commit_ops.commit_lane(ws, "atlas", f"lane work {n}", lane_name=lane)
+        assert not report.any_failed and report.any_committed
 
 
 def test_snapshot_lane_round_trips_resolved_heads(tmp_path: Path) -> None:
     ws = _materialized_lane(tmp_path, ["a", "b"])
     _commit_lane_change(ws, ["a", "b"])
     lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    doc = lanes.load_lane_doc(ws, "atlas", "feature")
 
     commit = ws_snap.snapshot_lane(ws, "atlas", "feature")
     rows = {r["key"]: r for r in ws_snap.read_snapshot(ws, commit)}
@@ -83,13 +112,60 @@ def test_snapshot_lane_round_trips_resolved_heads(tmp_path: Path) -> None:
     for r in ("a", "b"):
         repo = lane_root / "repos" / r
         head = _git(repo, "rev-parse", "HEAD").stdout.strip()
-        base = _git(repo, "rev-parse", "HEAD^").stdout.strip()
         assert rows[r]["commit"] == head
-        assert rows[r]["base"] == base
+        assert rows[r]["base"] == doc["fork_base"][r]["sha"]  # the recorded fork base
         assert rows[r]["remote"] == f"https://example.invalid/{r}.git"
         assert rows[r]["path"] == f"repos/{r}"
     # The read-back kind is strictly workspace.
     assert _git(ws / ".grip", "show", f"{commit}:.grip/kind").stdout.strip() == "workspace"
+
+
+def test_snapshot_base_is_the_recorded_fork_base_not_head_parent(tmp_path: Path) -> None:
+    # Fork-base proof: with TWO lane commits, HEAD^ is the first lane commit while
+    # the fork base is where the lane began — they differ. base must be the recorded
+    # fork base, never HEAD^. A mutation that recomputes base from HEAD^ reds this.
+    ws = _materialized_lane(tmp_path, ["a", "b"])
+    _commit_lane_change(ws, ["a", "b"], times=2)
+    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    doc = lanes.load_lane_doc(ws, "atlas", "feature")
+
+    commit = ws_snap.snapshot_lane(ws, "atlas", "feature")
+    rows = {r["key"]: r for r in ws_snap.read_snapshot(ws, commit)}
+    for r in ("a", "b"):
+        repo = lane_root / "repos" / r
+        head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        head_parent = _git(repo, "rev-parse", "HEAD^").stdout.strip()
+        recorded = doc["fork_base"][r]["sha"]
+        assert recorded != head_parent  # fixture sanity: two commits, so they differ
+        assert rows[r]["commit"] == head
+        assert rows[r]["base"] == recorded
+        assert rows[r]["base"] != head_parent
+
+
+def test_snapshot_refuses_a_lane_with_no_recorded_fork_base(tmp_path: Path) -> None:
+    # A pre-field lane reads base as unknown and is REFUSED — never HEAD^.
+    ws = _materialized_lane(tmp_path, ["a", "b"], fork_base=False)
+    _commit_lane_change(ws, ["a", "b"])
+    doc = lanes.load_lane_doc(ws, "atlas", "feature")
+    assert "fork_base" not in doc  # genuinely pre-field
+    with pytest.raises(ws_snap.WorkspaceSnapshotError, match="no recorded fork base"):
+        ws_snap.snapshot_lane(ws, "atlas", "feature")
+
+
+def test_snapshot_refuses_a_fork_base_not_ancestor_of_head(tmp_path: Path) -> None:
+    # A recorded fork base must be a real commit AND an ancestor of HEAD, or it is
+    # not a coordinate HEAD builds on. A bogus 40-hex sha is refused, not recorded.
+    ws = _materialized_lane(tmp_path, ["a", "b"], fork_base=False)
+    _commit_lane_change(ws, ["a", "b"])
+    lane_file = lanes.lane_file(ws, "atlas", "feature")
+    bogus = "f" * 40
+    lane_file.write_text(
+        lane_file.read_text()
+        + f'\n[fork_base.a]\nbranch = "main"\nsha = "{bogus}"\n'
+        + f'[fork_base.b]\nbranch = "main"\nsha = "{bogus}"\n'
+    )
+    with pytest.raises(ws_snap.WorkspaceSnapshotError, match="not a commit in this repo"):
+        ws_snap.snapshot_lane(ws, "atlas", "feature")
 
 
 def test_read_workspace_commit_reports_every_repo_in_the_tree(tmp_path: Path) -> None:

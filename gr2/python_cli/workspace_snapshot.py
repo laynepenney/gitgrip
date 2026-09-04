@@ -22,18 +22,35 @@ class WorkspaceSnapshotError(Exception):
     pass
 
 
-def _resolve_head(repo_root: Path, key: str) -> tuple[str, str]:
-    """(commit, base) for one lane repo: HEAD and the parent it builds on."""
+def _resolve_head(repo_root: Path, key: str, fork_base_sha: str | None) -> tuple[str, str]:
+    """(commit, base) for one lane repo.
+
+    `commit` is HEAD. `base` is the RECORDED fork base, never derived
+    from HEAD^: a lane with N commits must record where its work began, and HEAD^
+    is only the (N-1)th commit. A lane with no recorded fork base reads base as
+    unknown and is REFUSED here — the reproduction path never substitutes HEAD^ or
+    a live merge-base for a coordinate it does not actually know.
+    """
     head = git(repo_root, "rev-parse", "--verify", "HEAD")
     if head.returncode != 0 or not head.stdout.strip():
         raise WorkspaceSnapshotError(f"repo {key} has no HEAD to snapshot")
     commit = head.stdout.strip()
-    parent = git(repo_root, "rev-parse", "--verify", "HEAD^")
-    if parent.returncode != 0 or not parent.stdout.strip():
+    if not fork_base_sha:
         raise WorkspaceSnapshotError(
-            f"repo {key} has no base commit (root-only); nothing to build the snapshot base on"
+            f"repo {key} has no recorded fork base; base is unknown. Recreate the lane "
+            "with a recorded fork base; the snapshot will not substitute HEAD^."
         )
-    return commit, parent.stdout.strip()
+    # The recorded fork base must be a real commit in this repo and an ancestor of
+    # HEAD — otherwise it is not a coordinate HEAD actually builds on.
+    if git(repo_root, "rev-parse", "--verify", "--quiet", f"{fork_base_sha}^{{commit}}").returncode != 0:
+        raise WorkspaceSnapshotError(
+            f"repo {key} recorded fork base {fork_base_sha} is not a commit in this repo"
+        )
+    if git(repo_root, "merge-base", "--is-ancestor", fork_base_sha, commit).returncode != 0:
+        raise WorkspaceSnapshotError(
+            f"repo {key} recorded fork base {fork_base_sha} is not an ancestor of HEAD {commit}"
+        )
+    return commit, fork_base_sha
 
 
 def resolve_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str) -> list[dict[str, str]]:
@@ -43,6 +60,7 @@ def resolve_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str) ->
     """
     workspace_root = Path(workspace_root).resolve()
     doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+    fork_base = doc.get("fork_base", {})
     spec = lane_proto.load_workspace_spec(workspace_root)
     spec_by_name = {r.get("name"): r for r in spec.get("repos", [])}
     lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
@@ -59,7 +77,7 @@ def resolve_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str) ->
         repo_spec = spec_by_name.get(key)
         if not repo_spec:
             raise WorkspaceSnapshotError(f"repo {key} is not in the workspace spec")
-        commit, base = _resolve_head(repo_root, key)
+        commit, base = _resolve_head(repo_root, key, fork_base.get(key, {}).get("sha"))
         resolved.append({
             "key": key,
             "remote": str(repo_spec.get("url", "")),
