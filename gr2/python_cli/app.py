@@ -1311,7 +1311,7 @@ def lane_bind(
     workspace_root: Path,
     owner_unit: str,
     lane_name: str,
-    base: str = typer.Option(..., "--base", help="Base SHA the reviewed range is measured from: a full 40-hex commit that is an ancestor of the worktree head (automatic derivation from the lane branch's upstream is a follow-up)"),
+    base: Optional[str] = typer.Option(None, "--base", help="Base SHA the reviewed range is measured from: a full 40-hex commit that is an ancestor of the worktree head. Omit to read the lane's recorded fork base; an explicit --base wins. A lane with no recorded fork base and no --base refuses."),
     allow_local: bool = typer.Option(False, "--allow-local", help="Allow a non-portable local: identity for a worktree with no GitHub origin (test/local use)"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
@@ -1321,8 +1321,11 @@ def lane_bind(
     has NOT drifted from the head recorded at create, then writes the
     (repo, base, head, lane_kind=bound) receipt into the worktree's own .git. A
     moved HEAD, a dirty tree, or a base that is not an ancestor commit of head
-    refuses. Only for lanes created with ``lane create --bind``.
+    refuses. When --base is omitted the base is the lane's recorded fork base (the
+    review base is never HEAD^); an explicit --base wins. Only for lanes created
+    with ``lane create --bind``.
     """
+    base_source = "explicit --base" if base is not None else "lane fork base"
     try:
         record = lane_proto.bind_bound_lane(
             workspace_root.resolve(), owner_unit, lane_name, base=base, allow_local=allow_local
@@ -1333,7 +1336,10 @@ def lane_bind(
     if json_output:
         typer.echo(json.dumps(record.to_dict(), indent=2))
     else:
-        typer.echo(f"bound review receipt: repo={record.repo} base={record.base} head={record.head}")
+        typer.echo(
+            f"bound review receipt: repo={record.repo} base={record.base} "
+            f"head={record.head} (base from {base_source})"
+        )
 
 
 @lease_app.command("acquire")

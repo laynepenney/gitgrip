@@ -1009,7 +1009,7 @@ def create_lane(args: argparse.Namespace) -> int:
 
 
 def bind_bound_lane(
-    workspace_root: Path, owner_unit: str, lane_name: str, *, base: str, allow_local: bool = False
+    workspace_root: Path, owner_unit: str, lane_name: str, *, base: str | None = None, allow_local: bool = False
 ) -> "_review.ReviewRecord":
     """Bind a review receipt for a BOUND lane, sourced LIVE from the author's
     worktree (gr2-lane-author-shape ruling verb #2).
@@ -1043,6 +1043,21 @@ def bind_bound_lane(
             f"bind_bound_lane: lane {owner_unit}/{lane_name} is not a bound lane "
             f"(lane_kind={lane_doc.get('lane_kind')!r}); use the materialized review path"
         )
+    # Base resolution (fork-base ruling): an explicit base wins; when omitted, read
+    # the recorded fork base for this bound lane's single repo. A lane with neither
+    # is refused with the unknown message — the review base is never HEAD^.
+    if base is None:
+        fork_base = lane_doc.get("fork_base", {})
+        repos = lane_doc.get("repos", [])
+        entry = fork_base.get(repos[0]) if repos else None
+        recorded = (entry or {}).get("sha")
+        if not recorded:
+            raise SystemExit(
+                f"bind refuses: lane {owner_unit}/{lane_name} has no recorded fork base and no "
+                "--base was given; the review base is unknown (it is never HEAD^). Recreate the "
+                "lane with a fork base, or pass --base explicitly."
+            )
+        base = recorded
     worktree = Path(lane_doc.get("bound_worktree") or "")
     recorded_head = lane_doc.get("bound_head")
     if not worktree or not recorded_head:

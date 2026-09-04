@@ -271,3 +271,32 @@ def test_write_grip_commit_with_kind_workspace_is_readable(tmp_path: Path) -> No
     assert set(rows) == {"a", "b"}
     for r in ("a", "b"):
         assert rows[r]["remote"] == f"https://example.invalid/{r}.git"
+def test_snapshot_refuses_a_real_fork_base_that_is_not_an_ancestor_of_head(tmp_path: Path) -> None:
+    # Witness for the ANCESTOR check specifically: a real in-repo commit (rev-parse
+    # --verify passes) that is NOT an ancestor of HEAD. The not-a-commit check
+    # cannot pre-empt this (a bogus ffff..40 is caught by that earlier check
+    # instead), so only the ancestor check can refuse this — removing it reds this.
+    ws = _materialized_lane(tmp_path, ["a", "b"], fork_base=False)
+    _commit_lane_change(ws, ["a", "b"])
+    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    repo_a = lane_root / "repos" / "a"
+    # A real commit that DESCENDS from HEAD (a child): a reachable object, but not
+    # an ancestor of HEAD.
+    _git(repo_a, "checkout", "-b", "side")
+    (repo_a / "side.txt").write_text("side\n")
+    _git(repo_a, "add", "side.txt")
+    _git(repo_a, "commit", "-m", "side commit")
+    side = _git(repo_a, "rev-parse", "HEAD").stdout.strip()
+    _git(repo_a, "checkout", "-")  # back to the lane branch; HEAD is side's parent
+    # b gets a VALID ancestor fork base, so a's ancestor check is the sole
+    # discriminator: with it removed the snapshot succeeds (DID NOT RAISE), not a
+    # different repo's unknown-refusal.
+    b_base = _git(lane_root / "repos" / "b", "rev-parse", "HEAD^").stdout.strip()
+    lane_file = lanes.lane_file(ws, "atlas", "feature")
+    lane_file.write_text(
+        lane_file.read_text()
+        + f'\n[fork_base.a]\nbranch = "main"\nsha = "{side}"\n'
+        + f'[fork_base.b]\nbranch = "main"\nsha = "{b_base}"\n'
+    )
+    with pytest.raises(ws_snap.WorkspaceSnapshotError, match="not an ancestor"):
+        ws_snap.snapshot_lane(ws, "atlas", "feature")
