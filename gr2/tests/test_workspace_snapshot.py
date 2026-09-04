@@ -113,6 +113,9 @@ def test_snapshot_refuses_a_dirty_repo(tmp_path: Path) -> None:
 
 def test_read_workspace_commit_rejects_a_non_workspace_kind(tmp_path: Path) -> None:
     # Control: the review kind is a different kind; read_workspace_commit refuses it.
+    # NOTE: the review kind ALSO carries a different schema, so this case is caught
+    # by the schema gate before the kind gate ever runs — see the wrong-kind witness
+    # below, which isolates the kind gate specifically.
     ws = _materialized_lane(tmp_path, ["a", "b"])
     _commit_lane_change(ws, ["a", "b"])
     lane_root = lanes.lane_dir(ws, "atlas", "feature")
@@ -125,3 +128,70 @@ def test_read_workspace_commit_rejects_a_non_workspace_kind(tmp_path: Path) -> N
     review_commit = grip.create_project_review_commit(ws, pins)
     with pytest.raises(grip.GripCorruptError):
         ws_snap.read_snapshot(ws, review_commit)
+
+
+def _repo_fields(ws: Path, repos: list[str], lane: str = "feature") -> list[dict[str, str]]:
+    """Section-5 field dicts (remote/path/commit/base) drawn from a real lane."""
+    lane_root = lanes.lane_dir(ws, "atlas", lane)
+    return [
+        {"key": r, "remote": f"https://example.invalid/{r}.git", "path": f"repos/{r}",
+         "commit": _git(lane_root / "repos" / r, "rev-parse", "HEAD").stdout.strip(),
+         "base": _git(lane_root / "repos" / r, "rev-parse", "HEAD^").stdout.strip()}
+        for r in repos
+    ]
+
+
+def _write_grip_commit_with_kind(ws: Path, repos: list[dict[str, str]], kind: str) -> str:
+    """Build a gr commit through the SAME _mktree/_hash_blob seam create_workspace_commit
+    uses, but with the workspace SCHEMA and a parameterized kind blob.
+
+    kind="workspace" is a valid snapshot; any other kind produces a tree whose ONLY
+    defect is the kind field — the schema gate passes, so read_workspace_commit's kind
+    gate is the sole thing that can reject it. This is the witness the review-kind
+    control above cannot be (its schema differs, so the schema gate fires first).
+    """
+    entries: list[str] = []
+    for repo in sorted(repos, key=lambda item: item["key"]):
+        fields = [
+            f"100644 blob {grip._hash_blob(ws, repo[name])}\t{name}"
+            for name in ("remote", "path", "commit", "base")
+        ]
+        entries.append(f"040000 tree {grip._mktree(ws, fields)}\t{repo['key']}")
+    repos_tree = grip._mktree(ws, entries)
+    meta_tree = grip._mktree(ws, [
+        f"100644 blob {grip._hash_blob(ws, grip._WORKSPACE_SCHEMA)}\tschema",
+        f"100644 blob {grip._hash_blob(ws, kind)}\tkind",
+    ])
+    root_tree = grip._mktree(ws, [f"040000 tree {meta_tree}\t.grip", f"040000 tree {repos_tree}\trepos"])
+    commit = grip._commit_tree(ws, root_tree, parent=grip._current_head(ws), message="test kind fixture")
+    grip._grip_git(ws, "update-ref", "HEAD", commit)
+    return commit
+
+
+def test_read_workspace_commit_rejects_correct_schema_wrong_kind(tmp_path: Path) -> None:
+    # WITNESS for the kind gate (grip.read_workspace_commit lines 132-133): a tree
+    # with the correct workspace schema but kind="review". Deleting the kind gate
+    # reds this test; the review-kind control above stays green regardless, so
+    # without this witness the kind gate does nothing measurable.
+    ws = _materialized_lane(tmp_path, ["a", "b"])
+    _commit_lane_change(ws, ["a", "b"])
+    fields = _repo_fields(ws, ["a", "b"])
+
+    wrong = _write_grip_commit_with_kind(ws, fields, "review")
+    with pytest.raises(grip.GripCorruptError, match="wrong kind"):
+        ws_snap.read_snapshot(ws, wrong)
+
+
+def test_write_grip_commit_with_kind_workspace_is_readable(tmp_path: Path) -> None:
+    # Positive control proving the builder is otherwise sound: the SAME builder with
+    # kind="workspace" round-trips. This is what makes the wrong-kind witness above
+    # non-vacuous — the rejection there is the kind field, not a malformed tree.
+    ws = _materialized_lane(tmp_path, ["a", "b"])
+    _commit_lane_change(ws, ["a", "b"])
+    fields = _repo_fields(ws, ["a", "b"])
+
+    good = _write_grip_commit_with_kind(ws, fields, "workspace")
+    rows = {r["key"]: r for r in ws_snap.read_snapshot(ws, good)}
+    assert set(rows) == {"a", "b"}
+    for r in ("a", "b"):
+        assert rows[r]["remote"] == f"https://example.invalid/{r}.git"
