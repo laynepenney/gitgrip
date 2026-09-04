@@ -140,15 +140,14 @@ def _spec_issue_to_sync(issue: ValidationIssue) -> SyncIssue:
 
 
 def _iter_lane_docs(workspace_root: Path) -> list[tuple[str, str, dict[str, object]]]:
-    lanes_root = workspace_root / "agents"
+    lanes_root = lane_proto.lane_state_root(workspace_root)
     docs: list[tuple[str, str, dict[str, object]]] = []
     if not lanes_root.exists():
         return docs
     for owner_dir in sorted(lanes_root.iterdir()):
-        lane_parent = owner_dir / "lanes"
-        if not lane_parent.is_dir():
+        if not owner_dir.is_dir():
             continue
-        for lane_dir in sorted(lane_parent.iterdir()):
+        for lane_dir in sorted(owner_dir.iterdir()):
             lane_toml = lane_dir / "lane.toml"
             if not lane_toml.exists():
                 continue
@@ -389,7 +388,7 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
                     subject=f"{owner_unit}/{lane_name}",
                     message=f"failed to load lane metadata: {lane_doc['_load_error']}",
                     blocks=True,
-                    path=str(workspace_root / "agents" / owner_unit / "lanes" / lane_name / "lane.toml"),
+                    path=str(lane_proto.lane_file(workspace_root, owner_unit, lane_name)),
                 )
             )
             continue
@@ -409,7 +408,7 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
                     subject=f"{owner_unit}/{lane_name}",
                     message=f"lane has active leases that block sync mutation: {owner_unit}/{lane_name}",
                     blocks=True,
-                    path=str(workspace_root / "agents" / owner_unit / "lanes" / lane_name),
+                    path=str(lane_proto.lane_dir(workspace_root, owner_unit, lane_name)),
                     details={
                         "leases": [
                             {"actor": lease["actor"], "mode": lease["mode"], "acquired_at": lease["acquired_at"]}

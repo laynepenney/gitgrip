@@ -379,8 +379,26 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def lane_state_root(workspace_root: Path) -> Path:
+    """The one home for workspace lane state.
+
+    Lane state is grip plumbing: it lives beside the rest of the lane control
+    plane under ``.grip/state/`` -- the same tree that already holds
+    ``current_lane``, ``lane_transitions``, ``lane_creation`` and the lease
+    locks. The old ``workspace_root/agents/`` root was pollution at the
+    workspace top level; every path that reaches into lane state funnels
+    through here so the layout has a single point of truth.
+
+    Deliberately NOT ``.grip/lanes``:
+    the boundary test (``test_oss_gr2_has_no_external_lane_envelope_reader``)
+    reserves the ``.grip/lanes`` fragment; records go beside the control plane
+    at ``.grip/state/lanes`` instead.
+    """
+    return workspace_root / ".grip" / "state" / "lanes"
+
+
 def lane_dir(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
-    return workspace_root / "agents" / owner_unit / "lanes" / lane_name
+    return lane_state_root(workspace_root) / owner_unit / lane_name
 
 
 def lane_file(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
@@ -700,14 +718,16 @@ def mutate_workspace_edit_lease(
 
 
 def iter_lane_files(workspace_root: Path, owner_unit: str | None = None) -> list[Path]:
-    agents_root = workspace_root / "agents"
+    state_root = lane_state_root(workspace_root)
+    if not state_root.exists():
+        return []
     if owner_unit:
-        lane_roots = [agents_root / owner_unit / "lanes"]
+        unit_roots = [state_root / owner_unit]
     else:
-        lane_roots = [path / "lanes" for path in agents_root.iterdir() if path.is_dir()]
+        unit_roots = [path for path in state_root.iterdir() if path.is_dir()]
 
     files: list[Path] = []
-    for root in lane_roots:
+    for root in unit_roots:
         if not root.exists():
             continue
         files.extend(sorted(root.glob("*/lane.toml")))
@@ -907,7 +927,12 @@ def create_lane(args: argparse.Namespace) -> int:
         shared_context_roots=["config", ".grip/context/shared"],
         private_context_roots=[
             f"agents/{args.owner_unit}/home/context",
-            f"agents/{args.owner_unit}/lanes/{args.lane_name}/context",
+            str(
+                lane_dir(workspace_root, args.owner_unit, args.lane_name).relative_to(
+                    workspace_root
+                )
+                / "context"
+            ),
         ],
         exec_defaults={
             "parallelism": "workspace-default",
@@ -1506,7 +1531,12 @@ def create_continuation_lane(args: argparse.Namespace) -> int:
         shared_context_roots=source.get("context", {}).get("shared_roots", []),
         private_context_roots=[
             f"agents/{args.target_unit}/home/context",
-            f"agents/{args.target_unit}/lanes/{args.target_lane_name}/context",
+            str(
+                lane_dir(
+                    workspace_root, args.target_unit, args.target_lane_name
+                ).relative_to(workspace_root)
+                / "context"
+            ),
         ],
         exec_defaults=source.get("exec_defaults", {}),
         creation_source="lane-handoff",
@@ -1567,11 +1597,11 @@ def plan_handoff(args: argparse.Namespace) -> int:
                     "lane_name": args.source_lane_name,
                     "repo": repo,
                     "cwd": str(
-                        workspace_root
-                        / "agents"
-                        / args.source_owner_unit
-                        / "lanes"
-                        / args.source_lane_name
+                        lane_dir(
+                            workspace_root,
+                            args.source_owner_unit,
+                            args.source_lane_name,
+                        )
                         / "repos"
                         / repo
                     ),
@@ -1599,11 +1629,11 @@ def plan_handoff(args: argparse.Namespace) -> int:
                     "lane_name": target_lane_name,
                     "repo": repo,
                     "cwd": str(
-                        workspace_root
-                        / "agents"
-                        / args.target_unit
-                        / "lanes"
-                        / target_lane_name
+                        lane_dir(
+                            workspace_root,
+                            args.target_unit,
+                            target_lane_name,
+                        )
                         / "repos"
                         / repo
                     ),
@@ -1895,11 +1925,7 @@ def plan_exec(args: argparse.Namespace) -> int:
                 "repo": repo,
                 "branch": lane_doc["branch_map"].get(repo),
                 "cwd": str(
-                    workspace_root
-                    / "agents"
-                    / args.owner_unit
-                    / "lanes"
-                    / args.lane_name
+                    lane_dir(workspace_root, args.owner_unit, args.lane_name)
                     / "repos"
                     / repo
                 ),

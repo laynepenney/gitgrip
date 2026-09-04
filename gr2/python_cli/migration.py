@@ -290,6 +290,117 @@ def regenerate_gr1_workspace(workspace_root: Path, *, expected_spec_sha256: str,
         return payload
 
 
+def _iter_legacy_lane_dirs(workspace_root: Path) -> list[tuple[str, str, Path]]:
+    """Legacy lane trees: ``workspace_root/agents/<unit>/lanes/<lane>/``.
+
+    The unit HOME (``agents/<unit>/home/``) is deliberately NOT enumerated --
+    it is unit identity, not lane state, and stays where the workspace spec
+    places it. Only the ``lanes/`` subtree moves.
+    """
+    legacy_root = workspace_root / "agents"
+    out: list[tuple[str, str, Path]] = []
+    if not legacy_root.is_dir():
+        return out
+    for unit_dir in sorted(legacy_root.iterdir()):
+        lanes_parent = unit_dir / "lanes"
+        if not lanes_parent.is_dir():
+            continue
+        for lane in sorted(lanes_parent.iterdir()):
+            if lane.is_dir():
+                out.append((unit_dir.name, lane.name, lane))
+    return out
+
+
+def _refuse_active_legacy_lane_state(workspace_root: Path) -> None:
+    """Refuse migration while a lane is entered or holds a live lease.
+
+    ``_refuse_active_lane_state`` reads the NEW ``.grip/state/lanes`` path;
+    migration runs BEFORE the move, so the live state is still at the OLD path
+    and must be judged there. current_lane pointers already live at their final
+    ``.grip/state/current_lane`` home (never moved), so that half is shared.
+    """
+    current_root = workspace_root / ".grip" / "state" / "current_lane"
+    if current_root.is_dir():
+        for current_path in current_root.glob("*.json"):
+            _refuse_symlink(current_path, f"{current_path.relative_to(workspace_root)}")
+            try:
+                current = json.loads(current_path.read_text())
+            except (OSError, json.JSONDecodeError) as exc:
+                raise SystemExit(f"lane-state migration cannot read lane state: {current_path}: {exc}") from exc
+            if current.get("current"):
+                raise SystemExit("lane-state migration refuses active lanes")
+    for leases_path in (workspace_root / "agents").glob("*/lanes/*/leases.json"):
+        _refuse_symlink(leases_path, f"{leases_path.relative_to(workspace_root)}")
+        try:
+            leases = json.loads(leases_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"lane-state migration cannot read lane leases: {leases_path}: {exc}") from exc
+        if leases:
+            raise SystemExit("lane-state migration refuses active lane leases")
+
+
+def migrate_lane_state(workspace_root: Path, *, receipt_path: Path) -> dict[str, object]:
+    """Carry legacy ``agents/<unit>/lanes/<lane>/`` trees to
+    ``.grip/state/lanes/<unit>/<lane>/`` ONCE, recording a receipt that names
+    every tree moved (unit, lane, file count) so what the move relocates is
+    explicit -- the receipt is the record of what would be lost if the new home
+    were ever cleared (the ``.grip`` overlay-reset durability follow-on).
+
+    Two-pass and no-clobber: every destination is checked BEFORE anything moves,
+    so a lane already present at the new path refuses the whole migration rather
+    than leaving a half-moved workspace. Idempotent across runs: once the legacy
+    trees are gone a fresh-receipt re-run is a zero-move no-op.
+    """
+    workspace_root = workspace_root.resolve()
+    _require_new_receipt_target(receipt_path)
+    _refuse_active_legacy_lane_state(workspace_root)
+
+    dest_root = lane_proto.lane_state_root(workspace_root)
+    legacy = _iter_legacy_lane_dirs(workspace_root)
+
+    plan: list[tuple[str, str, Path, Path]] = []
+    conflicts: list[str] = []
+    for unit, lane, src in legacy:
+        _refuse_symlink(src, f"agents/{unit}/lanes/{lane}")
+        dest = dest_root / unit / lane
+        if dest.exists():
+            conflicts.append(str(dest.relative_to(workspace_root)))
+        else:
+            plan.append((unit, lane, src, dest))
+    if conflicts:
+        raise SystemExit(
+            "lane-state migration refuses to overwrite existing destinations "
+            f"(both layouts hold these lanes, reconcile by hand): {conflicts}"
+        )
+
+    moved: list[dict[str, object]] = []
+    for unit, lane, src, dest in plan:
+        file_count = sum(1 for p in src.rglob("*") if p.is_file())
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dest))
+        moved.append(
+            {
+                "unit": unit,
+                "lane": lane,
+                "source": f"agents/{unit}/lanes/{lane}",
+                "dest": str(dest.relative_to(workspace_root)),
+                "files": file_count,
+            }
+        )
+
+    payload: dict[str, object] = {
+        "schema": "gr2-lane-state-migration/v1",
+        "status": "migrated",
+        "workspace_root": str(workspace_root),
+        "from": "agents/<unit>/lanes/<lane>",
+        "to": ".grip/state/lanes/<unit>/<lane>",
+        "moved": moved,
+        "count": len(moved),
+    }
+    _write_new_receipt(receipt_path, payload)
+    return payload
+
+
 def _prepared_marker_path(receipt_path: Path) -> Path:
     return receipt_path.parent / f"{receipt_path.name}.prepared.json"
 
@@ -450,7 +561,7 @@ def _store_status(grip_dir: Path) -> list[str]:
 def _lane_snapshot(workspace_root: Path) -> dict[str, object]:
     """Bind empty/inactive lane state, rather than merely assuming it remains so."""
     rows: list[dict[str, str]] = []
-    for root, pattern in ((workspace_root / ".grip" / "state" / "current_lane", "*.json"), (workspace_root / "agents", "*/lanes/*/leases.json")):
+    for root, pattern in ((workspace_root / ".grip" / "state" / "current_lane", "*.json"), (lane_proto.lane_state_root(workspace_root), "*/*/leases.json")):
         if not root.exists():
             continue
         for path in sorted(root.glob(pattern)):
@@ -472,7 +583,7 @@ def _refuse_active_lane_state(workspace_root: Path) -> None:
                 raise SystemExit(f"regeneration cannot read lane state: {current_path}: {exc}") from exc
             if current.get("current"):
                 raise SystemExit("regeneration refuses active lanes")
-    for leases_path in (workspace_root / "agents").glob("*/lanes/*/leases.json"):
+    for leases_path in lane_proto.lane_state_root(workspace_root).glob("*/*/leases.json"):
         _refuse_symlink(leases_path, f"{leases_path.relative_to(workspace_root)}")
         try:
             leases = json.loads(leases_path.read_text())
