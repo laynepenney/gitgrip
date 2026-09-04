@@ -16,10 +16,12 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import shutil
 import stat
 import subprocess
 import sys
 import tomllib
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -257,6 +259,142 @@ def is_linked_worktree(path: Path) -> bool:
     if stat.S_ISLNK(mode):
         return False
     return not stat.S_ISDIR(mode)
+
+
+class ConvertCloneError(Exception):
+    """Raised when a linked-worktree-to-clone conversion is refused."""
+
+
+def _lstat_summary(git_path: Path) -> dict[str, object]:
+    try:
+        mode = git_path.lstat().st_mode
+    except FileNotFoundError:
+        return {"exists": False}
+    return {
+        "exists": True,
+        "is_dir": stat.S_ISDIR(mode),
+        "is_symlink": stat.S_ISLNK(mode),
+        "is_regular_file": stat.S_ISREG(mode),
+    }
+
+
+def convert_worktree_to_clone(path: Path) -> dict[str, object]:
+    """Convert a linked worktree into an own clone, in place.
+
+    Six steps, proven once by hand against a scratch fixture before this
+    function existed:
+
+    1. Refuse anything that is not GENUINELY a linked worktree -- a symlinked
+       ``.git`` is a different isolation violation (see
+       ``is_git_dir_symlink``) with a different fix (remove the symlink and
+       re-clone, not convert), and an own clone needs no conversion.
+    2. Refuse a dirty tree (tracked or untracked changes) BEFORE any mutation.
+    3. Resolve ``--git-common-dir`` to find the canonical repo this worktree
+       is linked to.
+    4. Clone fresh from the canonical repo over ``file://`` into a staging
+       path, and check out the same branch there.
+    5. Verify the staging clone's isolation (a real ``.git`` directory, no
+       nested ``.git/worktrees``, HEAD matching the original exactly) BEFORE
+       touching the original worktree at all.
+    6. Only then: ``git worktree remove`` the original (removing it from the
+       canonical repo's registry, not merely hiding it), ``git worktree
+       prune``, and move the verified staging clone into the original path.
+
+    Returns a receipt: old common-dir, branch, head sha, and .git lstat
+    before and after -- the witness that the conversion actually happened,
+    at the same path, not just that no error was raised.
+    """
+    path = path.resolve()
+    git_path = path / ".git"
+
+    if is_git_dir_symlink(path):
+        raise ConvertCloneError(
+            f"{path}: .git is a symlink into another clone's git state, not a "
+            "linked worktree -- remove the symlink and re-clone instead"
+        )
+
+    if not is_linked_worktree(path):
+        raise ConvertCloneError(f"{path}: not a linked worktree -- nothing to convert")
+
+    before = _lstat_summary(git_path)
+
+    status = run_git(path, "status", "--porcelain")
+    if status.stdout.strip():
+        raise ConvertCloneError(f"{path}: working tree is dirty, refusing to convert")
+
+    common_dir_proc = run_git(path, "rev-parse", "--git-common-dir")
+    if common_dir_proc.returncode != 0:
+        raise ConvertCloneError(
+            f"{path}: could not resolve --git-common-dir: {common_dir_proc.stderr.strip()}"
+        )
+    common_dir = Path(common_dir_proc.stdout.strip())
+    if not common_dir.is_absolute():
+        common_dir = (path / common_dir).resolve()
+    canonical_repo_root = common_dir.parent
+
+    branch_proc = run_git(path, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = branch_proc.stdout.strip()
+    if branch_proc.returncode != 0 or branch == "HEAD":
+        raise ConvertCloneError(f"{path}: on a detached HEAD, refusing to convert")
+
+    head_sha = run_git(path, "rev-parse", "HEAD").stdout.strip()
+
+    staging_path = path.parent / f".convert-staging-{path.name}"
+    if staging_path.exists():
+        raise ConvertCloneError(f"{staging_path}: staging path already exists")
+
+    clone_proc = subprocess.run(
+        ["git", "clone", "-q", f"file://{canonical_repo_root}", str(staging_path)],
+        cwd=path.parent,
+        capture_output=True,
+        text=True,
+    )
+    if clone_proc.returncode != 0:
+        raise ConvertCloneError(
+            f"clone from {canonical_repo_root} failed: {clone_proc.stderr.strip()}"
+        )
+
+    checkout_proc = run_git(staging_path, "checkout", "-q", branch)
+    if checkout_proc.returncode != 0:
+        shutil.rmtree(staging_path)
+        raise ConvertCloneError(
+            f"checkout of {branch} in the staging clone failed: {checkout_proc.stderr.strip()}"
+        )
+
+    staging_git = staging_path / ".git"
+    staging_summary = _lstat_summary(staging_git)
+    if not staging_summary["is_dir"]:
+        shutil.rmtree(staging_path)
+        raise ConvertCloneError("staging clone's .git is not a directory -- refusing to proceed")
+    if (staging_git / "worktrees").exists():
+        shutil.rmtree(staging_path)
+        raise ConvertCloneError("staging clone hosts linked worktrees -- refusing to proceed")
+    staging_head = run_git(staging_path, "rev-parse", "HEAD").stdout.strip()
+    if staging_head != head_sha:
+        shutil.rmtree(staging_path)
+        raise ConvertCloneError(
+            f"staging clone HEAD {staging_head} != original {head_sha} -- refusing to proceed"
+        )
+
+    remove_proc = run_git(canonical_repo_root, "worktree", "remove", "--force", str(path))
+    if remove_proc.returncode != 0:
+        shutil.rmtree(staging_path)
+        raise ConvertCloneError(f"git worktree remove failed: {remove_proc.stderr.strip()}")
+    run_git(canonical_repo_root, "worktree", "prune")
+
+    shutil.move(str(staging_path), str(path))
+
+    after = _lstat_summary(path / ".git")
+
+    return {
+        "converted_at": datetime.now(UTC).isoformat(),
+        "path": str(path),
+        "old_common_dir": str(common_dir),
+        "branch": branch,
+        "head_sha": head_sha,
+        "before_git_lstat": before,
+        "after_git_lstat": after,
+    }
 
 
 def inspect_repo(path: Path) -> RepoStatus:

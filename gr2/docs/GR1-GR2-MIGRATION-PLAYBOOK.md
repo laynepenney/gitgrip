@@ -67,12 +67,35 @@ Before starting a workspace migration:
 - repos are synced
 - there is no unreviewed destructive workspace change in flight
 - identity behavior is not required to complete the migration
+- no repo in the workspace is a linked git worktree (see below)
 
 Recommended operator checks:
 
 1. verify current `gr` status is clean enough to reason about
 2. identify the workspace owner and migration window
 3. capture current `gr1` layout and expected repo set
+
+#### Linked worktrees must be converted first
+
+`gr2` never materializes a repo as a linked worktree (`gr2 workspace status` /
+`gr2 repo status` flag one as `block_linked_worktree` or `block_git_dir_symlink`
+if it finds one) -- only own clones are supported. A `gr1` workspace predating
+that rule may have desk-level repos that were hand-linked with `git worktree
+add` outside any `gr` verb; those will not migrate cleanly.
+
+For each repo path the precondition check flags:
+
+```bash
+gr2 workspace convert-clone <repo_path>
+```
+
+This converts the linked worktree into an own clone in place -- resolves the
+canonical repo it was linked to, refuses on a dirty tree or a symlinked
+`.git`, clones fresh and verifies the clone's isolation before touching
+anything, then removes the worktree registration and moves the verified
+clone into the original path. Confirm the result: `git worktree list` on the
+canonical repo no longer carries the converted path, and the converted path's
+own `git status`/`git log` function normally. Only then proceed to Stage 1.
 
 ### Stage 1: Detect and Snapshot
 
