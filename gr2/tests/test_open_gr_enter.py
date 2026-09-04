@@ -140,6 +140,46 @@ def test_open_gr_enter_refuses_a_non_review_kind_commit(tmp_path: Path) -> None:
     assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "home"
 
 
+def test_open_gr_enter_resolves_sources_from_the_recorded_remote(tmp_path: Path) -> None:
+    # Step 6: no hand-passed transport map. open-gr resolves each source from the
+    # pin's RECORDED REMOTE (pin.repo), clones the pinned head, and opens the same
+    # exact review. This is the production shape -- the review-kind commit is the
+    # only input.
+    workspace, sources, prior_cwd = _world(tmp_path)
+    gr_commit, _unused_srcmap = _review_kind_commit(workspace, sources)
+
+    outcome = open_gr_review.open_gr_enter(
+        workspace, "atlas", "review-m1", gr_commit, None,  # sources resolved from pins
+        prior_cwd=prior_cwd, allow_local=True, staging_dir=tmp_path / "staging",
+    )
+    assert outcome.status == "opened"
+    for name in sources:
+        assert (outcome.review_root / "repos" / name / ".git").is_dir()
+        # each materialized head equals the pinned head, reached via the recorded remote
+        assert _git(outcome.review_root / "repos" / name, "rev-parse", "HEAD") == sources[name][2]
+    assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "review-m1"
+
+
+def test_resolve_sources_from_pins_refuses_a_remote_missing_the_head(tmp_path: Path) -> None:
+    # Control: a recorded remote that does not carry the pinned head is refused at
+    # resolve time, BEFORE any review lane opens; the agent stays in home.
+    workspace, sources, prior_cwd = _world(tmp_path)
+    pins = []
+    for name, src in sources.items():
+        head = src[2] if name != "beta" else "b" * 40  # beta's head is not on its remote
+        pins.append(project_review.ProjectReviewPin(
+            key=name, repo=f"local:{src[0]}", path=f"repos/{name}", base=src[1], head=head))
+    gr_commit = project_review.make_spec(workspace, pins).grip_commit
+
+    with pytest.raises(open_gr_review.OpenGrReviewError, match="does not carry head"):
+        open_gr_review.open_gr_enter(
+            workspace, "atlas", "review-m1", gr_commit, None,
+            prior_cwd=prior_cwd, allow_local=True, staging_dir=tmp_path / "staging",
+        )
+    assert not (workspace / "reviews" / "atlas" / "review-m1").exists()
+    assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "home"
+
+
 def test_open_gr_enter_refuses_a_pin_head_missing_from_its_repo(tmp_path: Path) -> None:
     # Control 2: a pin whose head is not a commit in its source is refused BEFORE
     # any materialization (open_project_review preflights every pin).
