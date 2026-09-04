@@ -17,7 +17,8 @@ from pathlib import Path
 
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 
-from . import grip, project_review
+from . import grip, project_review, review
+from .gitops import git
 
 
 class OpenGrReviewError(Exception):
@@ -25,6 +26,68 @@ class OpenGrReviewError(Exception):
 
 
 _RECEIPT_NAME = ".grip-open-gr.json"
+
+
+def _pin_transport_location(pin_repo: str) -> str:
+    """The clone LOCATION named by a pin's recorded remote.
+
+    A ``local:`` fixture prefix names a filesystem path; every other identity
+    (HTTPS/SSH) is its own clone URL. For a ``local:`` checkout we clone from its
+    ORIGIN (not the checkout itself), mirroring ``_canonical_repo_identity`` so
+    the resolved source's origin canonicalizes to the SAME identity the pin
+    carries -- otherwise ``_validate_workspace_repository_boundary`` refuses the
+    resolved source as an identity mismatch. This is transport only; that
+    boundary check remains the authority regardless of what we clone from.
+    """
+    if pin_repo.startswith("local:"):
+        local = Path(pin_repo.removeprefix("local:"))
+        origin = review.gitops.remote_origin_url(local) if local.is_dir() else None
+        return origin or str(local)
+    return pin_repo
+
+
+def resolve_sources_from_pins(
+    pins: list[project_review.ProjectReviewPin] | tuple[project_review.ProjectReviewPin, ...],
+    staging_dir: Path | str,
+    *,
+    allow_local: bool = False,
+) -> dict[str, tuple[Path, str]]:
+    """Build the source transport map from each pin's RECORDED REMOTE.
+
+    For each pin, clone ``pin.repo`` into ``staging_dir/<key>`` and confirm the
+    pin's base AND head are commits there. The returned ``review_branch`` is the
+    head sha itself: ``git rev-parse --verify <sha>^{commit}`` resolves a sha to
+    itself, and ``open_review_lane`` only requires a ref that resolves to
+    ``expected_head_sha`` -- so no synthetic branch is minted.
+
+    A recorded remote that does not carry the pinned head is refused HERE, before
+    any review lane opens -- the recorded-remote analogue of the transport map's
+    "missing source" refusal. This is the production shape: ``open-gr`` resolves
+    what to review from the review-kind commit alone, with no hand-passed
+    author-clone map.
+    """
+    staging_dir = Path(staging_dir)
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    srcmap: dict[str, tuple[Path, str]] = {}
+    for pin in pins:
+        location = _pin_transport_location(pin.repo)
+        dest = staging_dir / pin.key
+        if dest.exists():
+            raise OpenGrReviewError(f"open-gr staging destination already exists: {dest}")
+        cloned = git(staging_dir, "clone", "--quiet", "--no-checkout", location, str(dest))
+        if cloned.returncode != 0:
+            raise OpenGrReviewError(
+                f"cannot resolve source for {pin.key!r} from recorded remote {location!r}: "
+                f"{cloned.stderr.strip()}"
+            )
+        for label, sha in (("base", pin.base), ("head", pin.head)):
+            if git(dest, "cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
+                raise OpenGrReviewError(
+                    f"recorded remote for {pin.key!r} does not carry {label} {sha}: the pinned "
+                    f"head must be published to the pinned remote for a remote-resolved open-gr"
+                )
+        srcmap[pin.key] = (dest, pin.head)
+    return srcmap
 
 
 def open_gr_receipt_path(review_root: Path) -> Path:
@@ -45,16 +108,21 @@ def open_gr_enter(
     owner_unit: str,
     lane_name: str,
     gr_commit: str,
-    sources: dict[str, tuple[Path, str]],
+    sources: dict[str, tuple[Path, str]] | None = None,
     *,
     prior_cwd: Path | str,
     allow_local: bool = False,
+    staging_dir: Path | str | None = None,
 ) -> project_review.ProjectReviewOutcome:
     """Open a multi-repo review from a review-KIND gr commit and enter its lane.
 
     Refuses a non-review-kind commit (``read_project_review_commit`` rejects a
-    wrong schema) BEFORE any materialization. Delegates materialization + lane
-    enter to ``open_project_review`` (which refuses a missing pin before it clones
+    wrong schema) BEFORE any materialization. When ``sources`` is None the source
+    transport map is RESOLVED from each pin's recorded remote (the production
+    shape: the review-kind commit is the only input, no hand-passed author-clone
+    map); a caller may still pass an explicit map (author clones for a pre-push
+    head not yet on the remote). Delegates materialization + lane enter to
+    ``open_project_review`` (which refuses a missing pin before it clones
     anything). On success writes the project-tier receipt naming the gr commit,
     the per-repo base/head, the prior lane, and the prior cwd for exit-restore.
     """
@@ -68,6 +136,12 @@ def open_gr_enter(
         for r in rows
     ]
     spec = project_review.ProjectReviewSpec("gr2-project-review/v1", gr_commit, tuple(pins))
+
+    if sources is None:
+        staging = Path(staging_dir) if staging_dir is not None else (
+            workspace / ".grip" / "open-gr-staging" / lane_name
+        )
+        sources = resolve_sources_from_pins(pins, staging, allow_local=allow_local)
 
     prior_lane = _current_lane_name(workspace, owner_unit)
     outcome = project_review.open_project_review(
