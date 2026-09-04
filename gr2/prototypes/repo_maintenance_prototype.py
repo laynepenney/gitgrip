@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import stat
 import subprocess
 import sys
 import tomllib
@@ -70,6 +71,7 @@ class RepoStatus:
     ahead: int
     behind: int
     detached: bool
+    linked_worktree: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -216,6 +218,27 @@ def run_git(repo_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def is_linked_worktree(path: Path) -> bool:
+    """A repo path IS a linked worktree, not an own clone.
+
+    Deliberately does not consult ``git rev-parse --is-inside-work-tree`` --
+    that answers TRUE inside a linked worktree just as it does inside a real
+    clone (the same trap ``clone_exec.py``'s ``verify_clone_isolation``
+    docstring names for gr2's lane-clone path), so it can't distinguish the
+    two. A plain clone's ``.git`` is a directory; ``git worktree add``
+    replaces it with a text file (``gitdir: <path>``). lstat, not
+    ``Path.is_dir()``, which follows a symlink -- a ``.git`` that is itself a
+    symlink into another clone is a different problem, but it must not read
+    as a healthy directory here either.
+    """
+    git_path = path / ".git"
+    try:
+        mode = git_path.lstat().st_mode
+    except FileNotFoundError:
+        return False
+    return not stat.S_ISDIR(mode)
+
+
 def inspect_repo(path: Path) -> RepoStatus:
     if not path.exists():
         return RepoStatus(
@@ -229,6 +252,8 @@ def inspect_repo(path: Path) -> RepoStatus:
             detached=False,
         )
 
+    linked_worktree = is_linked_worktree(path)
+
     git_check = run_git(path, "rev-parse", "--is-inside-work-tree")
     if git_check.returncode != 0 or git_check.stdout.strip() != "true":
         return RepoStatus(
@@ -240,6 +265,7 @@ def inspect_repo(path: Path) -> RepoStatus:
             ahead=0,
             behind=0,
             detached=False,
+            linked_worktree=linked_worktree,
         )
 
     branch_proc = run_git(path, "symbolic-ref", "--quiet", "--short", "HEAD")
@@ -270,6 +296,7 @@ def inspect_repo(path: Path) -> RepoStatus:
         ahead=ahead,
         behind=behind,
         detached=detached,
+        linked_worktree=linked_worktree,
     )
 
 
@@ -282,6 +309,17 @@ def classify(target: RepoTarget, status: RepoStatus, policy: RepoPolicy) -> Plan
             target,
             "block_path_conflict",
             "target path exists but is not a git repo",
+            status,
+            policy,
+        )
+
+    if status.linked_worktree:
+        return PlannedAction(
+            target,
+            "block_linked_worktree",
+            "repo path is a linked git worktree, not an own clone -- "
+            "gr does not support worktree-backed repos; convert it to a "
+            "standalone clone",
             status,
             policy,
         )
@@ -400,6 +438,8 @@ def render_table(actions: list[PlannedAction]) -> str:
             state_bits.append(f"behind={item.status.behind}")
         if item.status.detached:
             state_bits.append("detached")
+        if item.status.linked_worktree:
+            state_bits.append("linked_worktree")
         if not state_bits:
             state_bits.append("clean")
 
