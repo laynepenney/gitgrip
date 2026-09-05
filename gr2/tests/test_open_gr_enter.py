@@ -579,6 +579,67 @@ def test_review_open_project_requires_enter(tmp_path: Path) -> None:
         )
 
 
+def test_derived_and_hand_authored_transports_yield_the_same_review_identity(tmp_path: Path) -> None:
+    # Step 6 derivation vs the older hand-authored --sources-json escape hatch: the
+    # transport must not change WHICH heads get reviewed. Opening the SAME review-kind
+    # gr commit both ways -- once with a hand-passed source map (clones normally/full),
+    # once with sources=None (resolved from the pins through the shared mirror,
+    # blobless+sparse) -- produces receipts whose IDENTITY is byte-for-byte equal.
+    # The transport-DESCRIPTIVE fields differ BY DESIGN and are asserted to differ so a
+    # later change cannot quietly "fix" them equal: lane_kind (materialized vs
+    # review-ephemeral) and the per-repo {mirror, fetched_tip} a reviewer uses to tell a
+    # mirror-backed ephemeral open from a full clone. The receipt carries NO timestamp,
+    # so identity equality is exact, not timestamp-tolerant. The refusal mutant -- a pin
+    # whose head the mirror lacks refuses BEFORE any lane opens, never falling back to
+    # the desk or a full clone -- is test_resolve_sources_from_pins_refuses_a_remote_
+    # missing_the_head above (:178).
+    import json
+
+    workspace, sources, prior_cwd = _world(tmp_path)
+    gr_commit, srcmap = _review_kind_commit(workspace, sources)
+
+    hand = open_gr_review.open_gr_enter(
+        workspace, "atlas", "review-hand", gr_commit, srcmap, prior_cwd=prior_cwd, allow_local=True,
+    )
+    assert hand.status == "opened"
+    r_hand = json.loads(open_gr_review.open_gr_receipt_path(hand.review_root).read_text())
+    open_gr_review.exit_gr_review(workspace, "atlas", hand.review_root, actor="agent:atlas")
+
+    derived = open_gr_review.open_gr_enter(
+        workspace, "atlas", "review-derived", gr_commit, None,  # resolved from the pins
+        prior_cwd=prior_cwd, allow_local=True, staging_dir=tmp_path / "staging",
+    )
+    assert derived.status == "opened"
+    r_der = json.loads(open_gr_review.open_gr_receipt_path(derived.review_root).read_text())
+
+    # identity: the SAME review, regardless of transport
+    def identity(r: dict) -> dict:
+        return {
+            "gr_commit": r["gr_commit"],
+            "owner_unit": r["owner_unit"],
+            "prior_lane": r["prior_lane"],
+            "prior_cwd": r["prior_cwd"],
+            "repos": sorted((x["key"], x["base"], x["head"]) for x in r["repos"]),
+        }
+
+    assert identity(r_hand) == identity(r_der)
+    # no timestamp field anywhere -> identity equality is exact, not tolerance-based
+    assert not any(k for k in r_hand if "time" in k or "stamp" in k or "date" in k)
+    assert not any(k for k in r_der if "time" in k or "stamp" in k or "date" in k)
+
+    # transport-descriptive fields differ BY DESIGN -- pin the difference so nobody
+    # later collapses them equal
+    assert r_hand["lane_kind"] == "materialized"
+    assert r_der["lane_kind"] == "review-ephemeral"
+    hand_by_key = {x["key"]: x for x in r_hand["repos"]}
+    der_by_key = {x["key"]: x for x in r_der["repos"]}
+    for name in sources:
+        # hand-authored full clone records no mirror provenance
+        assert "mirror" not in hand_by_key[name] and "fetched_tip" not in hand_by_key[name]
+        # derived-from-mirror records both, so a reviewer can spot a stale mirror
+        assert "mirror" in der_by_key[name] and "fetched_tip" in der_by_key[name]
+
+
 def test_both_review_verbs_help_names_commit_kind_and_path() -> None:
     op = _review_help("open-project")
     og = _review_help("open-gr")
