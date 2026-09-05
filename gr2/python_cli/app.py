@@ -1100,7 +1100,14 @@ def lane_create(
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual during lane materialization"),
     bind: Optional[Path] = typer.Option(None, "--bind", help="Bind the lane to an EXISTING clean, non-detached single-repo worktree instead of materializing a fresh clone (gr2-lane-author-shape ruling). The receipt is stamped lane_kind=bound."),
 ) -> None:
-    """Create a lane."""
+    """Create a lane and materialize its repos.
+
+    A materialized lane clones each repo and records the fork base (the point it
+    forked from its integration branch) — the base a review measures from. Once you
+    have committed work in the lane, `review create-project <workspace> <owner>
+    <lane>` pins each repo at that fork base .. head and prints the gr:<sha> for
+    `review open-project`. A `--bind` lane owns no clone and is single-repo.
+    """
     workspace_root = workspace_root.resolve()
     if bind is None and not branch:
         raise typer.BadParameter("--branch is required unless --bind is given")
@@ -1672,9 +1679,9 @@ def review_create_project(
     ``gr:<sha>`` that `review open-project` consumes.
 
     This is the producer half of "one gr commit opens one exact multi-repo review":
-    each repo of the lane is pinned at its RECORDED fork base .. current head (the
-    fork-base ruling, never HEAD^), so the review measures exactly what the lane
-    changed. Then open it:
+    each repo of the materialized lane (see `lane create`, which records the fork
+    base) is pinned at its RECORDED fork base .. current head (the fork-base ruling,
+    never HEAD^), so the review measures exactly what the lane changed. Then open it:
 
         gr2 review open-project <workspace> gr:<sha> <owner> <review-lane> --enter
 
