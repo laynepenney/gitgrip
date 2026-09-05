@@ -16,6 +16,7 @@ import yaml
 from . import grip
 from .gitops import git
 from gr2.prototypes import lane_workspace_prototype as lane_proto
+from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
 
 def _transaction_phase_hook(_phase: str) -> None:
@@ -930,6 +931,21 @@ def workspace_status(workspace_root: Path) -> dict[str, object]:
         result["gr2_unit_count"] = len(units)
         result["gr2_spec_path"] = str(gr2_spec_path)
 
+        # gr does not support worktree-backed repos (design/worktree-refactor
+        # ruling). `repo status` already flags a hand-made linked worktree
+        # per-repo; this reuses the SAME check (repo_maintenance_prototype's
+        # is_linked_worktree, via derive_targets so shared repos and per-unit
+        # repos are both covered) so `workspace status` reports it too --
+        # the playbook has always claimed both commands do this, and until
+        # now only one actually did.
+        parsed_spec = repo_proto.read_workspace_spec(gr2_spec_path)
+        linked_worktrees = [
+            str(target.path)
+            for target in repo_proto.derive_targets(workspace_root, parsed_spec)
+            if target.path.exists() and repo_proto.is_linked_worktree(target.path)
+        ]
+        result["linked_worktrees"] = linked_worktrees
+
     return result
 
 
@@ -947,6 +963,13 @@ def render_status(payload: dict[str, object]) -> str:
         lines.append("coexistence = true (both .gitgrip and .grip present)")
     if payload.get("migration_snapshot"):
         lines.append("migration_snapshot = true (.grip/migrations/gr1/ present)")
+    linked = payload.get("linked_worktrees") or []
+    if linked:
+        lines.append(
+            "linked_worktrees = " + ", ".join(linked)
+            + " -- gr does not support worktree-backed repos; "
+            "run `gr2 workspace convert-clone <path>` on each"
+        )
     if not payload["gr1"] and not payload["gr2"]:
         lines.append("No workspace detected. Run `gr2 workspace init` or `gr2 workspace migrate-gr1`.")
     return "\n".join(lines)
