@@ -215,6 +215,148 @@ def test_open_gr_enter_refuses_a_pin_head_missing_from_its_repo(tmp_path: Path) 
     assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "home"
 
 
+def _prepush_world(tmp_path: Path):
+    """A one-repo world whose review head is committed LOCALLY but NOT pushed to the
+    repo's origin (a pre-push / gated head). Returns (workspace, source, base, head,
+    prior_cwd). The origin (recorded remote) carries base but not head, exactly like a
+    gated review branch that the freeze asserts is ABSENT on the remote."""
+    root = tmp_path
+    origin = root / "alpha.git"
+    _git(root, "init", "--bare", "-b", "main", str(origin))
+    source = root / "alpha"
+    _git(root, "clone", "-q", str(origin), str(source))
+    _git(source, "config", "user.email", "t@example.invalid")
+    _git(source, "config", "user.name", "t")
+    (source / "README.md").write_text("alpha base\n")
+    _git(source, "add", ".")
+    _git(source, "commit", "-q", "-m", "base")
+    _git(source, "push", "-q", "origin", "main")
+    base = _git(source, "rev-parse", "main")
+    # the review head: committed locally, NEVER pushed -> origin does not carry it
+    (source / "review.txt").write_text("alpha review\n")
+    _git(source, "add", ".")
+    _git(source, "commit", "-q", "-m", "review")
+    head = _git(source, "rev-parse", "HEAD")
+
+    workspace = root / "workspace"
+    (workspace / ".grip").mkdir(parents=True)
+    (workspace / ".grip" / "workspace_spec.toml").write_text(
+        'schema_version = 1\nworkspace_name = "m1"\n\n'
+        f'[[repos]]\nname = "alpha"\npath = "sources/alpha"\nurl = "{str(origin)}"\n'
+        '\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["alpha"]\n'
+    )
+    grip.grip_init(workspace)
+    prior_cwd = root / "home"
+    prior_cwd.mkdir()
+    lanes.create_lane(argparse.Namespace(
+        workspace_root=workspace, owner_unit="atlas", lane_name="home", type="feature",
+        repos="alpha", branch="main", source="test", default_commands=[],
+    ))
+    lanes.enter_lane(argparse.Namespace(
+        workspace_root=workspace, owner_unit="atlas", lane_name="home",
+        actor="agent:atlas", notify_channel=False, recall=False,
+    ))
+    return workspace, source, base, head, prior_cwd
+
+
+def _prepush_gr_commit(workspace: Path, source: Path, base: str, head: str) -> str:
+    pin = project_review.ProjectReviewPin(
+        key="alpha", repo=f"local:{source}", path="repos/alpha", base=base, head=head)
+    return project_review.make_spec(workspace, [pin]).grip_commit
+
+
+def test_local_source_materializes_a_pre_push_head_via_the_sparse_path(tmp_path: Path) -> None:
+    # A pre-push head is absent on the recorded remote (a gated review head is never on
+    # the remote), so the mirror
+    # seeded from the remote lacks it. Naming a LOCAL clone that holds it tops the
+    # mirror up and the SAME blobless ephemeral path runs -- NOT a full --sources-json
+    # clone. Measured on recall: 595M full -> 32M blobless+sparse.
+    workspace, source, base, head, prior_cwd = _prepush_world(tmp_path)
+    gr_commit = _prepush_gr_commit(workspace, source, base, head)
+
+    outcome = open_gr_review.open_gr_enter(
+        workspace, "atlas", "review-m1", gr_commit, None,  # sources None -> ephemeral
+        prior_cwd=prior_cwd, allow_local=True, local_sources={"alpha": source},
+    )
+    assert outcome.status == "opened", outcome
+    lane_repo = outcome.review_root / "repos" / "alpha"
+    assert _git(lane_repo, "rev-parse", "HEAD") == head  # the pre-push head materialized
+    # the ephemeral path ran: a blobless partial clone, not a full copy.
+    assert _git(lane_repo, "config", "remote.origin.partialclonefilter") == "blob:none"
+    import json
+    receipt = json.loads(open_gr_review.open_gr_receipt_path(outcome.review_root).read_text())
+    assert receipt["lane_kind"] == "review-ephemeral"
+
+
+def test_local_source_ephemeral_review_tree_is_removed_on_exit(tmp_path: Path) -> None:
+    # The pre-push fix makes the review ephemeral, and exit-gr removes an ephemeral
+    # tree (rm -rf) -- so the fix also retires the "exit-gr leaves the full tree on
+    # disk" finding, which was a symptom of the NON-ephemeral --sources-json fallback.
+    workspace, source, base, head, prior_cwd = _prepush_world(tmp_path)
+    gr_commit = _prepush_gr_commit(workspace, source, base, head)
+    outcome = open_gr_review.open_gr_enter(
+        workspace, "atlas", "review-m1", gr_commit, None,
+        prior_cwd=prior_cwd, allow_local=True, local_sources={"alpha": source},
+    )
+    assert outcome.status == "opened"
+    review_root = outcome.review_root
+    assert review_root.exists()
+    open_gr_review.exit_gr_review(workspace, "atlas", review_root, actor="agent:atlas")
+    assert not review_root.exists()  # disposable ephemeral tree cleaned up
+    assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "home"
+
+
+def test_pre_push_head_without_a_local_source_still_refuses(tmp_path: Path) -> None:
+    # Control: without --local-source, a pre-push head is still refused at resolve
+    # time (the remote does not carry it), and the agent stays in home. The fix adds
+    # a path; it does not weaken the refusal when no local source is named.
+    workspace, source, base, head, prior_cwd = _prepush_world(tmp_path)
+    gr_commit = _prepush_gr_commit(workspace, source, base, head)
+    with pytest.raises(open_gr_review.OpenGrReviewError, match="does not carry head"):
+        open_gr_review.open_gr_enter(
+            workspace, "atlas", "review-m1", gr_commit, None,
+            prior_cwd=prior_cwd, allow_local=True,  # no local_sources
+        )
+    assert not (workspace / "reviews" / "atlas" / "review-m1").exists()
+    assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "home"
+
+
+def test_local_source_topup_does_not_clobber_mirror_refs_heads(tmp_path: Path) -> None:
+    # The top-up writes the pinned head ONLY into refs/localsrc/<key>/, NEVER into the
+    # mirror's own refs/heads/*: a desk clone's stale branch tips must not become the
+    # shared mirror's branches. This defends the namespacing (a refspec that wrote into
+    # refs/heads/* would pass the other tests but corrupt the shared cache).
+    workspace, source, base, head, prior_cwd = _prepush_world(tmp_path)
+    assert base != head  # fixture sanity: the local branch tip differs from the remote
+    gr_commit = _prepush_gr_commit(workspace, source, base, head)
+    open_gr_review.open_gr_enter(
+        workspace, "atlas", "review-m1", gr_commit, None,
+        prior_cwd=prior_cwd, allow_local=True, local_sources={"alpha": source},
+    )
+    mirror = open_gr_review.review_cache_root() / "alpha.git"
+    # the mirror's own main is UNTOUCHED -- still the remote's sha (base), not the
+    # local desk clone's tip (head).
+    assert _git(mirror, "rev-parse", "refs/heads/main") == base
+    # the head is present, anchored under the namespaced ref (scoped to the head sha).
+    assert _git(mirror, "rev-parse", "refs/localsrc/alpha/head") == head
+
+
+def test_local_source_nonexistent_path_raises_naming_the_path(tmp_path: Path) -> None:
+    # A bad --local-source path must FAIL naming the path, not silently swallow the
+    # fetch error and fall through to the generic "publish the head" refusal (which
+    # would wrongly blame the remote for a local-source typo).
+    workspace, source, base, head, prior_cwd = _prepush_world(tmp_path)
+    gr_commit = _prepush_gr_commit(workspace, source, base, head)
+    bad = tmp_path / "no-such-clone-here"
+    with pytest.raises(open_gr_review.OpenGrReviewError, match="no-such-clone-here"):
+        open_gr_review.open_gr_enter(
+            workspace, "atlas", "review-m1", gr_commit, None,
+            prior_cwd=prior_cwd, allow_local=True, local_sources={"alpha": bad},
+        )
+    assert not (workspace / "reviews" / "atlas" / "review-m1").exists()
+    assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "home"
+
+
 # ---- Part 2: the CLI materialize verb (review open-project) routes through open_gr_enter ----
 
 def _review_help(command_name: str) -> str:
@@ -230,7 +372,7 @@ def test_review_open_project_cli_materializes_from_recorded_remote_then_exits(tm
 
     gr2_app.review_open_project(
         workspace, gr_commit, "atlas", "review-m1",
-        enter=True, sources_json=None, prior_cwd=prior_cwd, allow_local=True, json_output=False,
+        enter=True, sources_json=None, local_source=None, prior_cwd=prior_cwd, allow_local=True, json_output=False,
     )
     review_root = workspace / "reviews" / "atlas" / "review-m1"
     for name in sources:
@@ -240,6 +382,38 @@ def test_review_open_project_cli_materializes_from_recorded_remote_then_exits(tm
 
     gr2_app.review_exit_gr(workspace, "atlas", review_root, actor="agent:atlas", json_output=False)
     assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "home"
+
+
+def test_review_open_project_cli_local_source_materializes_a_pre_push_head(tmp_path: Path) -> None:
+    # `open-project --local-source alpha=<path>` materializes a pre-push
+    # head via the blobless ephemeral path (no hand-authored --sources-json, no full
+    # clone). This retires the hand-authored-sources.json CLI exit point.
+    workspace, source, base, head, prior_cwd = _prepush_world(tmp_path)
+    gr_commit = _prepush_gr_commit(workspace, source, base, head)
+
+    gr2_app.review_open_project(
+        workspace, gr_commit, "atlas", "review-m1",
+        enter=True, sources_json=None, local_source=[f"alpha={source}"],
+        prior_cwd=prior_cwd, allow_local=True, json_output=False,
+    )
+    review_root = workspace / "reviews" / "atlas" / "review-m1"
+    lane_repo = review_root / "repos" / "alpha"
+    assert _git(lane_repo, "rev-parse", "HEAD") == head
+    assert _git(lane_repo, "config", "remote.origin.partialclonefilter") == "blob:none"
+    assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "review-m1"
+
+
+def test_review_open_project_cli_rejects_sources_json_with_local_source(tmp_path: Path) -> None:
+    # The two source modes are mutually exclusive (full vs sparse); naming both is a
+    # usage error, not a silent precedence.
+    workspace, source, base, head, prior_cwd = _prepush_world(tmp_path)
+    gr_commit = _prepush_gr_commit(workspace, source, base, head)
+    with pytest.raises(typer.BadParameter):
+        gr2_app.review_open_project(
+            workspace, gr_commit, "atlas", "review-m1",
+            enter=True, sources_json=Path("x.json"), local_source=[f"alpha={source}"],
+            prior_cwd=prior_cwd, allow_local=True, json_output=False,
+        )
 
 
 def test_review_open_project_cli_refuses_non_review_kind_naming_the_kind(tmp_path: Path, capsys) -> None:
@@ -253,7 +427,7 @@ def test_review_open_project_cli_refuses_non_review_kind_naming_the_kind(tmp_pat
     with pytest.raises(typer.Exit) as exc:
         gr2_app.review_open_project(
             workspace, wrong, "atlas", "review-m1",
-            enter=True, sources_json=None, prior_cwd=prior_cwd, allow_local=True, json_output=False,
+            enter=True, sources_json=None, local_source=None, prior_cwd=prior_cwd, allow_local=True, json_output=False,
         )
     assert exc.value.exit_code == 2
     err = capsys.readouterr().err
@@ -268,7 +442,7 @@ def test_review_open_project_requires_enter(tmp_path: Path) -> None:
     with pytest.raises(typer.BadParameter):
         gr2_app.review_open_project(
             workspace, gr_commit, "atlas", "review-m1",
-            enter=False, sources_json=None, prior_cwd=prior_cwd, allow_local=True, json_output=False,
+            enter=False, sources_json=None, local_source=None, prior_cwd=prior_cwd, allow_local=True, json_output=False,
         )
 
 
