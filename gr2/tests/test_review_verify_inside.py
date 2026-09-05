@@ -99,6 +99,109 @@ def _open_single_repo_review(tmp_path: Path, name: str, *, package: bool):
     return workspace, outcome.review_root, head
 
 
+def _open_multi_repo_review(tmp_path: Path, names, declared, *, omit_field=None):
+    """An N-repo review. Each repo in `declared` gets a full [repos.review_test];
+    others get none (skipped by the verifier). `omit_field=(repo, field)` writes that
+    repo's review_test WITHOUT that field (for the missing-field witness). Returns
+    (workspace, review_root, {name: head})."""
+    import argparse
+
+    workspace = tmp_path / "workspace"
+    (workspace / ".grip").mkdir(parents=True)
+    srcs = {n: _source_with_package(tmp_path, n, package=True) for n in names}
+    py = sys.executable
+    blocks = []
+    for n in names:
+        src, _base, _head = srcs[n]
+        url = _git(src, "remote", "get-url", "origin")
+        block = f'[[repos]]\nname = "{n}"\npath = "sources/{n}"\nurl = "{url}"\n'
+        if n in declared:
+            fields = {
+                "command": f'["{py}", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-o", "addopts="]',
+                "interpreter": f'"{py}"',
+                "import_module": f'"{n}_pkg"',
+            }
+            if omit_field and omit_field[0] == n:
+                fields.pop(omit_field[1])
+            block += "[repos.review_test]\n" + "".join(f"{k} = {v}\n" for k, v in fields.items())
+        blocks.append(block)
+    (workspace / ".grip" / "workspace_spec.toml").write_text(
+        'schema_version = 1\nworkspace_name = "m1"\n\n'
+        + "\n".join(blocks)
+        + f'\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = {names!r}\n'.replace("'", '"')
+    )
+    grip.grip_init(workspace)
+    prior_cwd = tmp_path / "home"
+    prior_cwd.mkdir()
+    lanes.create_lane(argparse.Namespace(
+        workspace_root=workspace, owner_unit="atlas", lane_name="home", type="feature",
+        repos=names[0], branch="main", source="test", default_commands=[],
+    ))
+    lanes.enter_lane(argparse.Namespace(
+        workspace_root=workspace, owner_unit="atlas", lane_name="home",
+        actor="agent:atlas", notify_channel=False, recall=False,
+    ))
+    pins = [project_review.ProjectReviewPin(
+        key=n, repo=f"local:{srcs[n][0]}", path=f"repos/{n}", base=srcs[n][1], head=srcs[n][2])
+        for n in names]
+    spec = project_review.make_spec(workspace, pins)
+    outcome = open_gr_review.open_gr_enter(
+        workspace, "atlas", "review-m1", spec.grip_commit,
+        {n: (srcs[n][0], f"review/{n}") for n in names}, prior_cwd=prior_cwd, allow_local=True,
+    )
+    assert outcome.status == "opened", outcome
+    return workspace, outcome.review_root, {n: srcs[n][2] for n in names}
+
+
+def test_multi_repo_records_declared_repos_in_receipt_order(tmp_path: Path) -> None:
+    # Mixed case pins both the SKIP and the ORDER: three repos, the middle one
+    # undeclared, so exactly two records land, app before tool, each bound to its own
+    # reviewed head and lane.
+    names = ["app", "lib", "tool"]
+    workspace, review_root, heads = _open_multi_repo_review(tmp_path, names, {"app", "tool"})
+    records = open_gr_review.record_review_verifications(workspace, review_root)
+
+    assert [r["key"] for r in records] == ["app", "tool"]  # lib skipped; order preserved
+    for name in ("app", "tool"):
+        rec = next(r for r in records if r["key"] == name)
+        assert rec["exit_code"] == 0
+        assert rec["head_tested"] == heads[name]
+        lane_dir = review_root / "repos" / name
+        assert Path(rec["cwd"]).resolve() == lane_dir.resolve()
+        assert Path(rec["module_path"]).resolve() == (lane_dir / f"{name}_pkg" / "__init__.py").resolve()
+
+    receipt = json.loads(open_gr_review.open_gr_receipt_path(review_root).read_text())
+    assert [r["key"] for r in receipt["verification"]] == ["app", "tool"]
+
+
+def test_multi_repo_refuses_when_no_repo_declares_a_test(tmp_path: Path) -> None:
+    # A multi-repo verify that verified nothing is a silent pass, not a result.
+    workspace, review_root, _ = _open_single_repo_review(tmp_path, "solo", package=True)
+    with pytest.raises(open_gr_review.OpenGrReviewError, match="nothing to verify"):
+        open_gr_review.record_review_verifications(workspace, review_root)
+
+
+def test_multi_repo_refuses_a_receipt_key_absent_from_the_spec(tmp_path: Path) -> None:
+    # A receipt naming a repo the spec does not carry must RAISE naming that key, not
+    # silently skip it (the verifier would otherwise verify fewer repos than reviewed).
+    workspace, review_root, _ = _open_single_repo_review(tmp_path, "solo", package=True)
+    receipt_path = open_gr_review.open_gr_receipt_path(review_root)
+    receipt = json.loads(receipt_path.read_text())
+    receipt["repos"].append({"key": "ghost", "base": "0" * 40, "head": "1" * 40})
+    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
+    with pytest.raises(open_gr_review.OpenGrReviewError, match="ghost"):
+        open_gr_review.record_review_verifications(workspace, review_root)
+
+
+def test_multi_repo_refuses_a_review_test_missing_a_field(tmp_path: Path) -> None:
+    # A review_test missing a required field must RAISE naming the field, not run a
+    # verification with a hole in it.
+    workspace, review_root, _ = _open_multi_repo_review(
+        tmp_path, ["app"], {"app"}, omit_field=("app", "import_module"))
+    with pytest.raises(open_gr_review.OpenGrReviewError, match="import_module"):
+        open_gr_review.record_review_verifications(workspace, review_root)
+
+
 def test_verification_records_a_green_run_inside_the_lane(tmp_path: Path) -> None:
     # The e2e: open a review lane, run the repo's pytest INSIDE it, read the receipt
     # back. The record must bind exit 0, the reviewed head, a cwd inside the lane, the
