@@ -26,7 +26,25 @@ from gr2.python_cli.platform import (
 )
 from gr2.python_cli.syncops import run_sync
 
-runner = CliRunner()
+def _make_runner() -> CliRunner:
+    """A runner whose ``result.stdout`` is the command's stdout ALONE, on every
+    click version.
+
+    click<8.2 folds stderr into stdout unless ``mix_stderr=False``; click>=8.2
+    removed ``mix_stderr`` and separates the streams by default (passing the kwarg
+    raises ``TypeError``). Without this, ``json.loads(result.stdout)`` reds under
+    click<8.2 whenever the command also writes a stderr warning (e.g. an
+    UNVERIFIABLE merge-parent verdict prepended to the JSON payload) and greens
+    under click>=8.2 — a gate that flips on the ambient click version, not on the
+    code under test. Two agents parse ``--json`` output as data, so the assertion
+    must be pinned to the data channel regardless of the installed click."""
+    try:
+        return CliRunner(mix_stderr=False)
+    except TypeError:
+        return CliRunner()
+
+
+runner = _make_runner()
 
 
 def _merge_receipt(repo: str, number: int, method: MergeMethod) -> MergeReceipt:
@@ -979,6 +997,15 @@ def test_pr_merge_reports_partial_failure_and_preserves_state(tmp_path: Path, mo
     ]
     assert payload["failed"][0]["repo"] == "api"
     assert calls == ["app", "api"]
+
+    # Stream-channel contract, pinned by fruit rather than by the ambient click
+    # version: the UNVERIFIABLE merge-parent warning (app merged with no commit_sha)
+    # goes to STDERR, and stdout carries the JSON payload ALONE. Under click<8.2 with
+    # the default mix_stderr this exact case folded the warning onto stdout, prepended
+    # it to the JSON, and broke json.loads(result.stdout) above. Asserting the split
+    # keeps a future regression to that routing from reading as a version-specific flake.
+    assert "merge parent verification unverifiable" in result.stderr
+    assert "merge parent verification unverifiable" not in result.stdout
 
     stored = json.loads(group_path.read_text())
     assert stored["group_state"] == "partially_merged"
