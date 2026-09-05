@@ -91,6 +91,112 @@ def test_ranges_referencing_an_unknown_key_is_refused(tmp_path: Path) -> None:
         )
 
 
+def _base_remote_range_and_committers(tmp_path: Path):
+    """Like _base_remote_and_range but a TWO-commit pre-push range whose commits have
+    committer dates DIFFERENT from their author dates (as a rebased commit would), and
+    also returns the committer TSV (name<TAB>email<TAB>ISO-date per commit, apply
+    order). The date divergence is what makes the sha-faithful proof real: a plain
+    `git am` or `--committer-date-is-author-date` would NOT reproduce these shas; only
+    re-stamping the carried committer date does. Returns
+    (remote, base, head, head_tree, range_patch, committers_tsv)."""
+    origin = tmp_path / "beta.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    work = tmp_path / "workc"
+    _git(tmp_path, "clone", "-q", str(origin), str(work))
+    _git(work, "config", "user.email", "dev@layne.pro")
+    _git(work, "config", "user.name", "Layne Penney")
+    (work / "f.txt").write_text("base\n")
+    _git(work, "add", ".")
+    _git(work, "commit", "-q", "-m", "base")
+    _git(work, "push", "-q", "origin", "main")
+    base = _git(work, "rev-parse", "HEAD")
+
+    def _commit(msg: str, adate: str, cdate: str) -> None:
+        env = {"GIT_AUTHOR_DATE": adate, "GIT_COMMITTER_DATE": cdate}
+        subprocess.run(["git", "add", "."], cwd=work, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", msg], cwd=work,
+                       check=True, env={**__import__("os").environ, **env})
+
+    (work / "f.txt").write_text("base\nreview change\n")
+    (work / "new.txt").write_text("added by the review\n")
+    _commit("first review commit", "2026-09-01T10:00:00-05:00", "2026-09-04T15:30:00-05:00")
+    (work / "more.txt").write_text("second review file\n")
+    _commit("second review commit", "2026-09-02T09:00:00-05:00", "2026-09-05T11:00:00-05:00")
+
+    head = _git(work, "rev-parse", "HEAD")
+    head_tree = _git(work, "rev-parse", "HEAD^{tree}")
+    range_patch = subprocess.run(
+        ["git", "format-patch", f"{base}..{head}", "--stdout"],
+        cwd=work, text=True, capture_output=True, check=True).stdout
+    committers = subprocess.run(
+        ["git", "log", "--reverse", "--format=%cn%x09%ce%x09%cI", f"{base}..{head}"],
+        cwd=work, text=True, capture_output=True, check=True).stdout
+    return str(origin), base, head, head_tree, range_patch, committers
+
+
+def test_carried_committers_reconstructs_the_exact_pinned_sha(tmp_path: Path) -> None:
+    # Row 2 (committer-date match): with committer metadata carried, reconstruction is
+    # SHA-faithful -- the rebuilt head equals the pinned pre-push head, not merely its
+    # tree. The fixture's committer dates differ from its author dates, so this passes
+    # ONLY because the carried committer date is re-stamped per commit.
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    grip.grip_init(ws)
+    remote, base, head, head_tree, range_patch, committers = _base_remote_range_and_committers(tmp_path)
+
+    commit = grip.create_project_review_commit(
+        ws,
+        [{"key": "beta", "repo": remote, "path": "repos/beta", "base": base, "head": head}],
+        ranges={"beta": range_patch},
+        committers={"beta": committers},
+    )
+    obj_names = grip._grip_git(ws, "ls-tree", "--name-only", f"{commit}:objects/beta").stdout.split()
+    assert "committers" in obj_names  # the objects subtree carries the committer metadata
+
+    lane_dir = tmp_path / "lane" / "beta"
+    result = grip.reconstruct_project_review_lane(ws, commit, "beta", lane_dir)
+    assert result["reconstructed_tree"] == head_tree
+    assert result["reconstructed_head"] == head          # SHA-faithful, not just tree
+    assert result["bound_head"] == head
+    assert (lane_dir / "more.txt").read_text() == "second review file\n"
+
+
+def test_create_refuses_committers_that_do_not_reproduce_the_pinned_head(tmp_path: Path) -> None:
+    # If the carried committer metadata does not reproduce the pinned head sha (e.g. a
+    # wrong committer date), create refuses at build time -- bad metadata cannot be
+    # baked into the commit only to surface as a reconstruction failure at review open.
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    grip.grip_init(ws)
+    remote, base, head, _tree, range_patch, committers = _base_remote_range_and_committers(tmp_path)
+    # corrupt the first commit's committer date
+    rows = committers.splitlines()
+    cn, ce, _cd = rows[0].split("\t")
+    rows[0] = f"{cn}\t{ce}\t2020-01-01T00:00:00+00:00"
+    bad = "\n".join(rows) + "\n"
+    with pytest.raises(grip.GripCorruptError, match="not the pinned head|does not describe"):
+        grip.create_project_review_commit(
+            ws,
+            [{"key": "beta", "repo": remote, "path": "repos/beta", "base": base, "head": head}],
+            ranges={"beta": range_patch},
+            committers={"beta": bad},
+        )
+
+
+def test_committers_for_a_key_without_a_range_is_refused(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    grip.grip_init(ws)
+    remote, base, head, _tree, _range, committers = _base_remote_range_and_committers(tmp_path)
+    with pytest.raises(grip.GripCorruptError, match="without a carried range"):
+        grip.create_project_review_commit(
+            ws,
+            [{"key": "beta", "repo": remote, "path": "repos/beta", "base": base, "head": head}],
+            ranges=None,  # no range carried
+            committers={"beta": committers},
+        )
+
+
 def test_reconstruct_project_review_lane_refuses_a_non_project_commit(tmp_path: Path) -> None:
     # A workspace-KIND commit carries no project-review range; reconstruction must
     # refuse it naming the schema, not blindly try to git am.

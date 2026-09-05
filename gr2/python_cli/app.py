@@ -1713,15 +1713,25 @@ def review_create_project(
     try:
         pins = project_review.pins_from_lane(ws, owner_unit, lane_name)
         ranges: Optional[dict[str, str]] = None
+        committers: Optional[dict[str, str]] = None
         if carry_range:
             ranges = {}
+            committers = {}
             for p in pins:
                 lane_repo = _lane_repo_root(ws, owner_unit, lane_name, p.key)
                 cap = git(lane_repo, "format-patch", f"{p.base}..{p.head}", "--stdout")
                 if cap.returncode != 0 or not cap.stdout.strip():
                     raise ValueError(f"cannot capture range for {p.key} from {lane_repo}: {cap.stderr.strip() or 'empty range'}")
                 ranges[p.key] = cap.stdout
-        spec = project_review.make_spec(ws, pins, ranges=ranges)
+                # Capture each commit's committer identity+date in apply order (oldest
+                # first, the order format-patch/mailsplit use) so reconstruction can
+                # re-stamp and reproduce the pinned head SHA, not merely its tree. The
+                # lane repo holds the pre-push head; the remote does not.
+                cm = git(lane_repo, "log", "--reverse", "--format=%cn%x09%ce%x09%cI", f"{p.base}..{p.head}")
+                if cm.returncode != 0:
+                    raise ValueError(f"cannot capture committer metadata for {p.key} from {lane_repo}: {cm.stderr.strip()}")
+                committers[p.key] = cm.stdout
+        spec = project_review.make_spec(ws, pins, ranges=ranges, committers=committers)
     except (ValueError, ws_snap.WorkspaceSnapshotError) as exc:
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(code=2)

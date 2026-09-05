@@ -50,18 +50,88 @@ _PROJECT_REVIEW_SCHEMA = "gr2-project-review/v1"
 _SHA40 = re.compile(r"\A[0-9a-f]{40}\Z")
 
 
-def _carry_objects_from_range(workspace: Path, remote: str, base: str, range_patch: str) -> dict[str, str]:
+class _RangeApplyError(Exception):
+    """A carried range failed to apply, or its committer metadata did not match the
+    commits it describes. Callers translate this into their own refusal type."""
+
+    def __init__(self, op: str, detail: str):
+        self.op = op
+        self.detail = detail
+        super().__init__(f"{op}: {detail}")
+
+
+def _apply_range_in_lane(lane: Path, range_patch: str, committers: str | None) -> None:
+    """Apply a carried range in ``lane`` (already detached on the recorded base).
+
+    ``committers`` None -> a plain ``git am``: the reconstructed commits are
+    TREE-faithful but the committer identity and date are re-stamped, so the head
+    SHA differs from the pre-push head (row 1's contract). Otherwise ``committers``
+    is a TSV, one line per commit in apply order (oldest first, the order
+    ``format-patch`` and ``mailsplit`` both use): ``name<TAB>email<TAB>ISO-date``.
+    The range is mailsplit and each commit applied under its recorded committer
+    identity AND date (author identity/date already ride in the patch), so the
+    reconstructed head SHA equals the original pre-push head, not merely its tree
+    (row 2's contract). A row count that does not match the commit count is a
+    refusal -- the committer metadata must describe exactly the commits in the range.
+    """
+    import os
+    import tempfile
+
+    def _run(*args: str, env: dict | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-c", "user.name=grip-review", "-c", "user.email=review@grip",
+             "-C", str(lane), *args],
+            capture_output=True, text=True, check=False, env=env,
+        )
+
+    with tempfile.TemporaryDirectory() as td:
+        mbox = Path(td) / "range.patch"
+        mbox.write_text(range_patch)
+        if committers is None:
+            p = _run("am", str(mbox))
+            if p.returncode != 0:
+                raise _RangeApplyError("am", p.stderr.strip()[:160])
+            return
+        rows = [ln for ln in committers.splitlines() if ln.strip()]
+        split_dir = Path(td) / "split"
+        split_dir.mkdir()
+        s = _run("mailsplit", f"-o{split_dir}", str(mbox))
+        if s.returncode != 0:
+            raise _RangeApplyError("mailsplit", s.stderr.strip()[:160])
+        patches = sorted(split_dir.glob("[0-9]*"))
+        if len(patches) != len(rows):
+            raise _RangeApplyError(
+                "committer_count_mismatch",
+                f"{len(rows)} committer row(s) for {len(patches)} commit(s)")
+        for patch, row in zip(patches, rows):
+            parts = row.split("\t")
+            if len(parts) != 3 or not all(parts):
+                raise _RangeApplyError("committer_row_malformed", row[:80])
+            cn, ce, cd = parts
+            env = {**os.environ, "GIT_COMMITTER_NAME": cn,
+                   "GIT_COMMITTER_EMAIL": ce, "GIT_COMMITTER_DATE": cd}
+            p = _run("am", str(patch), env=env)
+            if p.returncode != 0:
+                raise _RangeApplyError("am", p.stderr.strip()[:160])
+
+
+def _carry_objects_from_range(workspace: Path, remote: str, base: str, range_patch: str,
+                              committers: str | None = None, expected_head: str | None = None) -> dict[str, str]:
     """Derive the carried objects for a project-review pin from a frozen RANGE.
 
     The producer of a gate review holds the range.patch (the frozen artifact), not a
     clone of the pre-push head. To record the head-tree the reconstruction will be
     asserted against, apply the range over the base in a throwaway clone: clone the
-    recorded remote, check out the base, `git am` the range, and read the resulting
-    tree and fuller metadata. The range is the source of truth (it is what was frozen,
-    gated, and leak-scanned); the pinned head sha is the freeze's head, informational
-    (the reconstruction re-stamps the committer, so its sha differs until row 2). This
-    mirrors ``_carry_objects``, which reads the same three fields from a source that
-    holds the head; here the head is derived from the range instead."""
+    recorded remote, check out the base, apply the range, and read the resulting tree
+    and fuller metadata. The range is the source of truth (it is what was frozen,
+    gated, and leak-scanned).
+
+    Without ``committers`` the applied commits are TREE-faithful only (the committer is
+    re-stamped, so the derived sha differs from the pinned head). With ``committers``
+    (a TSV, one committer row per commit) the reconstruction is SHA-faithful and the
+    derived head is asserted equal to ``expected_head`` at create time -- so committer
+    metadata that does not describe these commits is refused HERE, not baked into the
+    commit to surface only when a reviewer opens it."""
     import tempfile
     if not range_patch.strip():
         raise GripCorruptError("project review range is empty")
@@ -83,16 +153,26 @@ def _carry_objects_from_range(workspace: Path, remote: str, base: str, range_pat
         if _lg("rev-parse", "--verify", f"{base}^{{commit}}", allow_fail=True).returncode != 0:
             raise GripCorruptError(f"base {base} not reachable on {remote} to derive review head-tree")
         _lg("checkout", "--detach", base)
-        patch_file = Path(td) / "range.patch"
-        patch_file.write_text(range_patch)
-        _lg("am", str(patch_file))
+        try:
+            _apply_range_in_lane(lane, range_patch, committers)
+        except _RangeApplyError as exc:
+            raise GripCorruptError(f"range reconstruction failed ({exc.op}): {exc.detail}") from exc
+        head_sha = _lg("rev-parse", "HEAD").stdout.strip()
         head_tree = _lg("rev-parse", "HEAD^{tree}").stdout.strip()
+        if committers is not None and expected_head is not None and head_sha != expected_head:
+            raise GripCorruptError(
+                f"committer-faithful reconstruction derived {head_sha}, not the pinned head "
+                f"{expected_head}: the carried committer metadata does not describe these commits")
         metadata = _lg("log", "--format=fuller", f"{base}..HEAD").stdout
-    return {"range.patch": range_patch, "metadata": metadata, "head-tree": head_tree}
+    obj = {"range.patch": range_patch, "metadata": metadata, "head-tree": head_tree}
+    if committers is not None:
+        obj["committers"] = committers
+    return obj
 
 
 def create_project_review_commit(
-    workspace: Path, pins: list[dict[str, str]], ranges: dict[str, str] | None = None
+    workspace: Path, pins: list[dict[str, str]], ranges: dict[str, str] | None = None,
+    committers: dict[str, str] | None = None,
 ) -> str:
     """Encode the minimal project-review gr tree through the sole object seam.
 
@@ -102,11 +182,20 @@ def create_project_review_commit(
     ``_carry_objects_from_range``), so ``reconstruct_project_review_lane`` rebuilds
     the head from the commit alone -- no hand ``git am``, no clone that holds the
     head, no head on any remote. This ports the review-BIND carry-the-range model to
-    the project path."""
+    the project path.
+
+    ``committers`` (key -> TSV, one ``name<TAB>email<TAB>ISO-date`` row per commit in
+    apply order) upgrades reconstruction from TREE-faithful to SHA-faithful: with it,
+    each carried key ALSO stores ``objects/<key>/committers`` and the reconstruction
+    re-stamps each commit's committer identity+date so the rebuilt head SHA equals the
+    pinned pre-push head, not merely its tree (the committer-date-match contract). A
+    key present in ``committers`` must also be in ``ranges``; the derived head is
+    asserted equal to the pinned head at create time."""
     _validate_grip_repo(workspace)
     if not pins:
         raise GripCorruptError("project review requires at least one repository pin")
     ranges = ranges or {}
+    committers = committers or {}
     entries: list[str] = []
     objects_entries: list[str] = []
     seen: set[str] = set()
@@ -122,13 +211,19 @@ def create_project_review_commit(
             fields.append(f"100644 blob {_hash_blob(workspace, value)}\t{name}")
         entries.append(f"040000 tree {_mktree(workspace, fields)}\t{key}")
         if key in ranges:
-            obj = _carry_objects_from_range(workspace, pin.get("repo", ""), pin.get("base", ""), ranges[key])
-            obj_fields = [f"100644 blob {_hash_blob(workspace, obj[n])}\t{n}"
-                          for n in ("range.patch", "metadata", "head-tree")]
+            obj = _carry_objects_from_range(
+                workspace, pin.get("repo", ""), pin.get("base", ""), ranges[key],
+                committers=committers.get(key), expected_head=pin.get("head", ""))
+            names = ("range.patch", "metadata", "head-tree") + (("committers",) if "committers" in obj else ())
+            obj_fields = [f"100644 blob {_hash_blob(workspace, obj[n])}\t{n}" for n in names]
             objects_entries.append(f"040000 tree {_mktree(workspace, obj_fields)}\t{key}")
     unknown = set(ranges) - seen
     if unknown:
         raise GripCorruptError(f"ranges reference keys not in the pins: {sorted(unknown)}")
+    committer_only = set(committers) - set(ranges)
+    if committer_only:
+        raise GripCorruptError(
+            f"committer metadata for keys without a carried range: {sorted(committer_only)}")
     repos_tree = _mktree(workspace, entries)
     meta_tree = _mktree(workspace, [f"100644 blob {_hash_blob(workspace, _PROJECT_REVIEW_SCHEMA)}\tschema", f"100644 blob {_hash_blob(workspace, 'review')}\tkind"])
     root_fields = [f"040000 tree {meta_tree}\t.grip", f"040000 tree {repos_tree}\trepos"]
@@ -743,23 +838,31 @@ def reconstruct_review_lane(
 ) -> dict[str, str]:
     """Materialize a bound row's head by reconstruction, decision (a).
 
-    Clone the recorded remote, check out the recorded BASE (the live remote head
-    at bind), ``git am`` the carried range, and assert the resulting tree equals
-    the bound head-tree. The reconstruction never needs the pre-push head object
-    anywhere but the carried range; a tree mismatch is a REFUSAL, raised before
-    ``run`` executes a single check (a check over a tree that is not the reviewed
-    tree is a finding about the wrong bytes). Commit identity is irrelevant here
-    because the assertion is on the TREE, not the head SHA."""
+    Clone the recorded remote, check out the recorded BASE (the live remote head at
+    bind), apply the carried range, and assert the resulting tree equals the bound
+    head-tree. The reconstruction never needs the pre-push head object anywhere but
+    the carried range; a tree mismatch is a REFUSAL, raised before ``run`` executes a
+    single check (a check over a tree that is not the reviewed tree is a finding
+    about the wrong bytes).
+
+    When the commit ALSO carries ``objects/<key>/committers`` (the committer-date-
+    match contract), the range is applied commit-by-commit under each commit's
+    recorded committer identity+date, so the reconstructed head SHA equals the pinned
+    pre-push head, not merely its tree -- and the SHA is asserted equal to the bound
+    head. Without that object (a range-1-era commit) it falls back to a plain
+    ``git am``: tree-faithful, committer re-stamped, so the returned reconstructed_head
+    differs from the bound head by design."""
     if key not in _tree_keys(workspace, commit, "objects"):
         raise GripReviewRefused("row_carries_no_objects", key, "reconstruction needs a carried range")
     repo = _read_repo_state(workspace, commit)[key]
     remote, base, bound_head = repo["remote"], repo["base"], repo["commit"]
     head_tree_expected = _grip_git(workspace, "show", f"{commit}:objects/{key}/head-tree").stdout.strip()
+    committers_proc = _grip_git(workspace, "show", f"{commit}:objects/{key}/committers")
+    committers = committers_proc.stdout if committers_proc.returncode == 0 else None
+    range_text = _grip_git(workspace, "show", f"{commit}:objects/{key}/range.patch").stdout
 
     lane_dir = Path(lane_dir)
     lane_dir.parent.mkdir(parents=True, exist_ok=True)
-    range_file = lane_dir.parent / f".{key}.range.patch"
-    range_file.write_text(_grip_git(workspace, "show", f"{commit}:objects/{key}/range.patch").stdout)
 
     def _lg(*args: str, allow_fail: bool = False) -> subprocess.CompletedProcess[str]:
         proc = subprocess.run(
@@ -780,12 +883,17 @@ def reconstruct_review_lane(
     if _lg("rev-parse", "--verify", f"{base}^{{commit}}", allow_fail=True).returncode != 0:
         raise GripReviewRefused("base_unreachable_on_remote", base, remote)
     _lg("checkout", "--detach", base)
-    _lg("am", str(range_file))
+    try:
+        _apply_range_in_lane(lane_dir, range_text, committers)
+    except _RangeApplyError as exc:
+        raise GripReviewRefused("reconstruct_failed", exc.op, exc.detail) from exc
 
     reconstructed_head = _lg("rev-parse", "HEAD").stdout.strip()
     reconstructed_tree = _lg("rev-parse", "HEAD^{tree}").stdout.strip()
     if reconstructed_tree != head_tree_expected:
         raise GripReviewRefused("tree_mismatch", head_tree_expected, reconstructed_tree)
+    if committers is not None and reconstructed_head != bound_head:
+        raise GripReviewRefused("sha_mismatch", bound_head, reconstructed_head)
     return {
         "lane": str(lane_dir),
         "bound_head": bound_head,
