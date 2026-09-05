@@ -92,53 +92,64 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
     lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
     fork_base: dict[str, dict[str, str]] = {}
 
-    for repo_name in lane_doc.get("repos", []):
-        repo_spec = _workspace_repo_spec(workspace_root, repo_name)
-        source_repo_root = (workspace_root / str(repo_spec["path"])).resolve()
-        if not source_repo_root.exists():
-            raise SystemExit(f"source repo path does not exist for lane materialization: {source_repo_root}")
-        target_repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
-        first_materialize = ensure_lane_checkout(
-            source_repo_root=source_repo_root,
-            target_repo_root=target_repo_root,
-            branch=branch_map[repo_name],
-            workspace_root=workspace_root,
-        )
-        # Record the fork base = the materialization point (the branch the lane forked
-        # from and the sha it started at), so `review create-project` can pin base..head
-        # Collected here, before the hooks `continue` below.
-        head = git(target_repo_root, "rev-parse", "HEAD")
-        head_sha = head.stdout.strip() if head.returncode == 0 else ""
-        if len(head_sha) == 40:
-            fork_base[repo_name] = {"branch": branch_map[repo_name], "sha": head_sha}
-        hooks = load_repo_hooks(target_repo_root)
-        if not hooks:
-            continue
-        ctx = HookContext(
-            workspace_root=workspace_root,
-            unit_root=lane_proto.lane_state_root(workspace_root) / owner_unit,
-            lane_root=lane_root,
-            repo_root=target_repo_root,
-            repo_name=repo_name,
-            lane_owner=owner_unit,
-            lane_subject=repo_name,
-            lane_name=lane_name,
-        )
-        apply_file_projections(hooks, ctx)
-        run_lifecycle_stage(
-            hooks,
-            "on_materialize",
-            ctx,
-            repo_dirty=repo_dirty(target_repo_root),
-            first_materialize=first_materialize,
-            allow_manual=manual_hooks,
-        )
-
-    # Persist the fork base for every repo materialized above. A materialized lane
-    # forks at the point it was cloned; without this the lane doc has no fork_base and
-    # `review create-project` refuses.
-    if fork_base:
-        lane_proto.record_fork_base(workspace_root, owner_unit, lane_name, fork_base)
+    # The fork base of every repo whose checkout exists is persisted in the `finally`
+    # below, INDEPENDENT of the hooks' outcome. A projection whose source is missing
+    # raises HookRuntimeError (exit 1) from `apply_file_projections`; recording only
+    # after the loop meant a blocked hook left a half lane -- lane.toml and the
+    # checkout present, but no fork_base -- and `review create-project` then refused
+    # with "no recorded fork base", the same symptom as a lane that never recorded one
+    # from an unrelated cause. Each repo's base is collected
+    # BEFORE its own hooks run, so the finally captures every materialized repo,
+    # including the one whose hook just blocked, while the exit 1 and its JSON report
+    # still propagate.
+    try:
+        for repo_name in lane_doc.get("repos", []):
+            repo_spec = _workspace_repo_spec(workspace_root, repo_name)
+            source_repo_root = (workspace_root / str(repo_spec["path"])).resolve()
+            if not source_repo_root.exists():
+                raise SystemExit(f"source repo path does not exist for lane materialization: {source_repo_root}")
+            target_repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
+            first_materialize = ensure_lane_checkout(
+                source_repo_root=source_repo_root,
+                target_repo_root=target_repo_root,
+                branch=branch_map[repo_name],
+                workspace_root=workspace_root,
+            )
+            # Record the fork base = the materialization point (the branch the lane forked
+            # from and the sha it started at), so `review create-project` can pin base..head
+            # Collected here, before this repo's hooks run below.
+            head = git(target_repo_root, "rev-parse", "HEAD")
+            head_sha = head.stdout.strip() if head.returncode == 0 else ""
+            if len(head_sha) == 40:
+                fork_base[repo_name] = {"branch": branch_map[repo_name], "sha": head_sha}
+            hooks = load_repo_hooks(target_repo_root)
+            if not hooks:
+                continue
+            ctx = HookContext(
+                workspace_root=workspace_root,
+                unit_root=lane_proto.lane_state_root(workspace_root) / owner_unit,
+                lane_root=lane_root,
+                repo_root=target_repo_root,
+                repo_name=repo_name,
+                lane_owner=owner_unit,
+                lane_subject=repo_name,
+                lane_name=lane_name,
+            )
+            apply_file_projections(hooks, ctx)
+            run_lifecycle_stage(
+                hooks,
+                "on_materialize",
+                ctx,
+                repo_dirty=repo_dirty(target_repo_root),
+                first_materialize=first_materialize,
+                allow_manual=manual_hooks,
+            )
+    finally:
+        # Persist the fork base for every repo materialized above, even if a hook
+        # raised on the way out. Without this a materialized lane can have no
+        # fork_base and `review create-project` refuses.
+        if fork_base:
+            lane_proto.record_fork_base(workspace_root, owner_unit, lane_name, fork_base)
 
 
 def _run_lane_stage(workspace_root: Path, owner_unit: str, lane_name: str, stage: str, *, manual_hooks: bool = False) -> None:
