@@ -68,6 +68,61 @@ def _workspace(tmp_path: Path, repos: list[str]) -> tuple[Path, dict[str, str]]:
     return ws, tips
 
 
+def _workspace_with_blocked_projection(tmp_path: Path) -> tuple[Path, str]:
+    """A one-repo workspace whose repo carries a `.gr2/hooks.toml` link projection
+    whose source does not exist. `lane create` materializes the checkout, then the
+    projection blocks (HookRuntimeError -> exit 1). Returns (ws, materialization sha)."""
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    _git(ws / ".grip", "init", "-q", "-b", "main")
+    _git(ws / ".grip", "config", "user.email", "g@e.invalid")
+    _git(ws / ".grip", "config", "user.name", "g")
+    _git(ws / ".grip", "commit", "-q", "--allow-empty", "-m", "init grip")
+
+    origin = tmp_path / "app.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    src = ws / "repos" / "app"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    _git(tmp_path, "clone", "-q", str(origin), str(src))
+    _git(src, "config", "user.email", "t@e.invalid")
+    _git(src, "config", "user.name", "t")
+    (src / "f.txt").write_text("base\n")
+    (src / ".gr2").mkdir()
+    # a link projection whose source is absent in the materialized checkout -> blocked
+    (src / ".gr2" / "hooks.toml").write_text(
+        '[[files.link]]\nsrc = "does/not/exist.md"\ndest = "PROJECTED.md"\n'
+    )
+    _git(src, "add", ".")
+    _git(src, "commit", "-q", "-m", "base with a blocked projection hook")
+    _git(src, "push", "-q", "origin", "main")
+    tip = _git(src, "rev-parse", "HEAD")
+    (ws / ".grip" / "workspace_spec.toml").write_text(
+        f'schema_version = 1\nworkspace_name = "m"\n'
+        f'[[repos]]\nname = "app"\npath = "repos/app"\nurl = "{origin}"\n'
+        f'[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["app"]\n'
+    )
+    return ws, tip
+
+
+def test_cli_lane_create_records_fork_base_before_a_blocked_hook_exits(tmp_path: Path) -> None:
+    # fork-base-before-hooks: a projection hook that blocks (source missing) exits 1
+    # AFTER the checkout exists. The fork base must still be recorded, so the lane is
+    # not a half lane that `review create-project` refuses for a missing fork base.
+    ws, tip = _workspace_with_blocked_projection(tmp_path)
+    res = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",
+                                      "--repos", "app", "--branch", "main"])
+    # the hook block still surfaces as a non-zero exit (kept, not swallowed)
+    assert res.exit_code == 1, res.output
+    # ...but the fork base was recorded as soon as the checkout existed
+    doc = lanes.load_lane_doc(ws, "atlas", "feature")
+    assert "fork_base" in doc, "a blocked hook must not leave a lane without a fork base"
+    assert doc["fork_base"]["app"]["branch"] == "main"
+    assert doc["fork_base"]["app"]["sha"] == tip
+    # ...and the R2 producer verb succeeds on the recovered lane rather than refusing
+    created = runner.invoke(gr2_app.app, ["review", "create-project", str(ws), "atlas", "feature"])
+    assert created.exit_code == 0, created.output
+
+
 def test_cli_lane_create_records_fork_base_for_each_repo(tmp_path: Path) -> None:
     ws, tips = _workspace(tmp_path, ["app", "lib"])
     res = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",
