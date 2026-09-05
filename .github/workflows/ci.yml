@@ -268,6 +268,15 @@ jobs:
         working-directory: gr2
         run: python -m pytest
 
+      # Runs AFTER pytest on purpose: pytest populates __pycache__, so the
+      # working-tree scan for a .pyc whose source .py is gone has something to
+      # find. The tracked-.pyc half is meaningful on any checkout. The release
+      # feasibility read found two review tests existing ONLY as stale .pyc with
+      # no source; this keeps that class from returning. Default scan-root is the
+      # repo toplevel, so it covers the whole tree regardless of this job's cwd.
+      - name: No source-less .pyc
+        run: ./scripts/check-no-orphan-pyc.sh
+
   # Summary job for branch protection - requires all jobs except Windows to pass.
   # Windows tests run separately (test-windows) and are visible but non-blocking,
   # since they are significantly slower and should not gate PR merges.
