@@ -126,6 +126,23 @@ def test_savings_says_NOT_smaller_when_tree_exceeds_reference(tmp_path: Path) ->
     assert "%" not in savings_line, f"a percent should not print in the not-smaller case: {savings_line!r}"
 
 
+def test_savings_equal_size_boundary_is_not_smaller(tmp_path: Path) -> None:
+    # Sentinel's R1 catch (m_0105755d): the equal-size
+    # boundary (total_kb == full_kb) was untested; -ge -> -gt would survive and print
+    # a false "0.0% smaller" on identical-size trees. Shipped code uses -ge; pin it.
+    # Point --full-ref at the review_root ITSELF, so total_kb == full_kb EXACTLY
+    # (the only point where -ge and -gt differ; a nested fixture would drift and pass
+    # under both). -ge -> NOT smaller; -gt would take the else branch and print
+    # "0.0% smaller", so this pins -ge specifically.
+    rr = _review_root(tmp_path, repo="recall", nbytes=256 * 1024)
+    r = _run("--gr-sha", "abc", "--review-root", str(rr), "--t0", "0", "--t1", "1",
+             "--full-ref", str(rr))
+    assert r.returncode == 0, r.stderr
+    savings_line = next(l for l in r.stdout.splitlines() if "reference" in l)
+    assert "NOT smaller" in savings_line, savings_line
+    assert "%" not in savings_line, f"equal size must not print a percent: {savings_line!r}"
+
+
 def test_refuses_t1_before_t0(tmp_path: Path) -> None:
     rr = _review_root(tmp_path)
     r = _run("--gr-sha", "abc", "--review-root", str(rr), "--t0", "10", "--t1", "5")

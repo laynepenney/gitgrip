@@ -1732,33 +1732,49 @@ def review_open_project(
     owner_unit: str = typer.Argument(..., help="Owner unit whose lane the review enters"),
     lane_name: str = typer.Argument(..., help="Review lane name to materialize into and enter"),
     enter: bool = typer.Option(False, "--enter", help="Materialize the pinned heads and enter the review lane (the only open mode)"),
-    sources_json: Optional[Path] = typer.Option(None, "--sources-json", help="Ephemeral key -> {source, branch} JSON for pre-push heads; OMIT to resolve each source from the pin's recorded remote"),
+    sources_json: Optional[Path] = typer.Option(None, "--sources-json", help="Pre-push key -> {source, branch} JSON; clones NORMALLY (full). Prefer --local-source, which keeps the blobless+sparse path"),
+    local_source: list[str] = typer.Option(None, "--local-source", help="key=PATH: a local clone that holds a pre-push head. Tops the shared mirror up from it so the blobless+sparse ephemeral path runs without the head on the remote. Repeatable"),
     prior_cwd: Optional[Path] = typer.Option(None, "--prior-cwd", help="Directory to restore on `review exit-gr` (defaults to the current directory)"),
     allow_local: bool = typer.Option(False, "--allow-local", help="Permit filesystem repository identities (fixtures/tests)"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """MATERIALIZE a project review from a project-review-KIND gr commit and enter it.
 
-    Clones each pinned head from its RECORDED REMOTE (or from --sources-json for a
-    pre-push head not yet published), enters the review lane, and writes a receipt so
-    `review exit-gr` restores the prior lane and cwd. Contrast `review open-gr`, which
-    RECONSTRUCTS a review-BIND commit by `git am` over a carried range and asserts the
-    tree equals the bound head-tree. A commit of the wrong kind is refused, naming the
-    kind it found.
+    Resolves each pinned head from its RECORDED REMOTE through the shared bare mirror
+    and clones the review lane blobless + sparse (the ephemeral path). For a PRE-PUSH
+    head — a gated review head is absent on the remote by design — pass `--local-source
+    <key>=<path>` naming a local clone that holds it; the mirror is topped up from that
+    clone and the SAME blobless+sparse path runs (no full clone). `--sources-json` is
+    the older escape hatch that clones normally (full) and is kept for compatibility.
+    Writes a receipt so `review exit-gr` restores the prior lane and cwd and removes the
+    disposable ephemeral tree. Contrast `review open-gr`, which RECONSTRUCTS a
+    review-BIND commit by `git am` over a carried range and asserts tree equality. A
+    commit of the wrong kind is refused, naming the kind it found.
     """
     if not enter:
         raise typer.BadParameter("--enter is required (materialization is the only open mode)")
+    if sources_json is not None and local_source:
+        raise typer.BadParameter("--sources-json (full clone) and --local-source (sparse) are mutually exclusive")
     from . import open_gr_review
     sha = _strip_gr_prefix(commit)
     sources = None
     if sources_json is not None:
         source_rows = json.loads(sources_json.read_text())
         sources = {key: (Path(row["source"]), row["branch"]) for key, row in source_rows.items()}
+    local_sources: Optional[dict[str, Path]] = None
+    if local_source:
+        local_sources = {}
+        for item in local_source:
+            if "=" not in item:
+                raise typer.BadParameter(f"--local-source must be key=PATH, got {item!r}")
+            key, _, path = item.partition("=")
+            local_sources[key.strip()] = Path(path.strip())
     outcome = _review_call(
         open_gr_review.open_gr_enter,
         workspace_root.resolve(), owner_unit, lane_name, sha, sources,
         prior_cwd=(prior_cwd.resolve() if prior_cwd is not None else Path.cwd()),
         allow_local=allow_local,
+        local_sources=local_sources,
     )
     if json_output:
         typer.echo(json.dumps(project_review.outcome_payload(outcome), indent=2))

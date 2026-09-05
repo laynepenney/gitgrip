@@ -71,6 +71,7 @@ def resolve_sources_from_pins(
     *,
     allow_local: bool = False,
     cache_root: Path | str | None = None,
+    local_sources: dict[str, Path | str] | None = None,
 ) -> tuple[dict[str, tuple[Path, str]], dict[str, dict[str, str]]]:
     """Resolve each source from its RECORDED REMOTE through a PERSISTENT bare mirror.
 
@@ -110,11 +111,32 @@ def resolve_sources_from_pins(
         # Serve blobless (--filter=blob:none) clones from the mirror, same as
         # review-clone.sh sets on its cache.
         git(mirror, "config", "uploadpack.allowFilter", "true")
+        # A pre-push head is ABSENT from the remote-seeded mirror BY DESIGN (a gated
+        # review head is never on the remote). If the caller names a LOCAL clone that
+        # holds it (the author's own desk has the objects), top the shared mirror up
+        # from that clone -- into a namespaced ref so the mirror's own branch names
+        # are not clobbered -- so the SAME blobless+sparse ephemeral path runs instead
+        # of falling back to a full --sources-json clone (the measured 595M harm).
+        local = local_sources.get(pin.key) if local_sources else None
+        if local is not None and git(mirror, "cat-file", "-e", f"{pin.head}^{{commit}}").returncode != 0:
+            # Fetch ONLY the pinned head (scoped to the sha, not every local branch)
+            # from the local clone, then anchor it under refs/localsrc/<key>/ so the
+            # object survives gc WITHOUT touching the mirror's own refs/heads/* -- a
+            # desk clone's stale branches must never become the shared mirror's
+            # branches. These refs/localsrc/* refs persist until gr2's next
+            # `remote update --prune` on this mirror.
+            fetched = git(mirror, "fetch", "--quiet", str(Path(local)), pin.head)
+            if fetched.returncode != 0:
+                raise OpenGrReviewError(
+                    f"cannot top up review mirror for {pin.key!r} from local source "
+                    f"{local!r}: {fetched.stderr.strip() or fetched.stdout.strip()}"
+                )
+            git(mirror, "update-ref", f"refs/localsrc/{pin.key}/head", pin.head)
         for label, sha in (("base", pin.base), ("head", pin.head)):
             if git(mirror, "cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
                 raise OpenGrReviewError(
-                    f"review mirror for {pin.key!r} does not carry {label} {sha}: the pinned "
-                    f"head must be published to the pinned remote for a remote-resolved open-gr"
+                    f"review mirror for {pin.key!r} does not carry {label} {sha}: publish the "
+                    f"pinned head to the remote, or pass a local source that holds it"
                 )
         tip = git(mirror, "rev-parse", "HEAD")
         srcmap[pin.key] = (mirror, pin.head)
@@ -145,15 +167,20 @@ def open_gr_enter(
     prior_cwd: Path | str,
     allow_local: bool = False,
     staging_dir: Path | str | None = None,
+    local_sources: dict[str, Path | str] | None = None,
 ) -> project_review.ProjectReviewOutcome:
     """Open a multi-repo review from a review-KIND gr commit and enter its lane.
 
     Refuses a non-review-kind commit (``read_project_review_commit`` rejects a
     wrong schema) BEFORE any materialization. When ``sources`` is None the source
-    transport map is RESOLVED from each pin's recorded remote (the production
-    shape: the review-kind commit is the only input, no hand-passed author-clone
-    map); a caller may still pass an explicit map (author clones for a pre-push
-    head not yet on the remote). Delegates materialization + lane enter to
+    transport map is RESOLVED from each pin's recorded remote through the shared
+    mirror and the review lane is blobless + sparse (the production shape). For a
+    PRE-PUSH head (absent on the remote by design for a gated review), pass
+    ``local_sources`` (key -> local clone holding the head): the mirror is topped up
+    from that clone and the SAME blobless + sparse path runs, so ``sources`` stays
+    None and the lane is NOT a full clone. ``sources`` (an explicit author-clone map)
+    is the older escape hatch that clones NORMALLY (full). Delegates materialization
+    + lane enter to
     ``open_project_review`` (which refuses a missing pin before it clones
     anything). On success writes the project-tier receipt naming the gr commit,
     the per-repo base/head, the prior lane, and the prior cwd for exit-restore.
@@ -177,7 +204,7 @@ def open_gr_enter(
     mirror_meta: dict[str, dict[str, str]] = {}
     if sources is None:
         sources, mirror_meta = resolve_sources_from_pins(
-            pins, staging_dir, allow_local=allow_local
+            pins, staging_dir, allow_local=allow_local, local_sources=local_sources
         )
         ephemeral = True
 
