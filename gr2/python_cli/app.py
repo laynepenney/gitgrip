@@ -1687,6 +1687,7 @@ def review_create_project(
     workspace_root: Path,
     owner_unit: str = typer.Argument(..., help="Owner unit whose materialized lane to pin"),
     lane_name: str = typer.Argument(..., help="Materialized lane whose repos to pin at base..head"),
+    carry_range: bool = typer.Option(False, "--carry-range", help="Also record each repo's base..head range INSIDE the gr commit, so a pre-push head reconstructs from the commit alone (self-describing). open-project then rebuilds it blobless+sparse without the head on any remote."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """CREATE a project-review-KIND gr commit from a materialized lane and print the
@@ -1699,6 +1700,11 @@ def review_create_project(
 
         gr2 review open-project <workspace> gr:<sha> <owner> <review-lane> --enter
 
+    With ``--carry-range`` the commit ALSO carries each repo's range (format-patch
+    base..head, captured from the lane), so a reviewer with neither the pre-push head
+    nor the lane can reconstruct it from the commit alone; open-project reconstructs
+    the head and asserts its TREE equals the pinned head's tree.
+
     A lane with no recorded fork base, or a repo not materialized, is refused (never
     silently pinned against a guessed base).
     """
@@ -1706,7 +1712,16 @@ def review_create_project(
     ws = workspace_root.resolve()
     try:
         pins = project_review.pins_from_lane(ws, owner_unit, lane_name)
-        spec = project_review.make_spec(ws, pins)
+        ranges: Optional[dict[str, str]] = None
+        if carry_range:
+            ranges = {}
+            for p in pins:
+                lane_repo = _lane_repo_root(ws, owner_unit, lane_name, p.key)
+                cap = git(lane_repo, "format-patch", f"{p.base}..{p.head}", "--stdout")
+                if cap.returncode != 0 or not cap.stdout.strip():
+                    raise ValueError(f"cannot capture range for {p.key} from {lane_repo}: {cap.stderr.strip() or 'empty range'}")
+                ranges[p.key] = cap.stdout
+        spec = project_review.make_spec(ws, pins, ranges=ranges)
     except (ValueError, ws_snap.WorkspaceSnapshotError) as exc:
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(code=2)
