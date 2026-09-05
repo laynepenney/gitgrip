@@ -196,23 +196,66 @@ def open_gr_enter(
     ]
     spec = project_review.ProjectReviewSpec("gr2-project-review/v1", gr_commit, tuple(pins))
 
-    # When sources are RESOLVED from the recorded remote, each source is the
-    # persistent bare mirror and each review lane is a blobless+sparse
-    # review-EPHEMERAL clone from it (never the work-lane clone seam). An explicit
-    # sources map (pre-push author clones) has no mirror and clones normally.
+    # Carried-range reconstruction (shape (b), self-describing commit): for each pin
+    # that carries a range, reconstruct its head from the commit alone into a scratch
+    # clone (assert TREE == the recorded head-tree), then feed that scratch as the
+    # local source. The reconstructed head is a DIFFERENT sha than the pinned head
+    # (git am re-stamps the committer), so it is what the mirror is topped up with and
+    # what the review lane materializes at, via materialize_heads -- while the gr
+    # commit stays validated against the pinned head. The review lane is still the
+    # blobless+sparse ephemeral clone; only the transient scratch is a full clone.
+    materialize_heads: dict[str, str] = {}
+    reconstructed_heads: dict[str, str] = {}
+    scratch_root: Path | None = None
+    resolve_pins = pins
+    carried = grip.project_review_carried_keys(workspace, gr_commit) if sources is None else set()
     ephemeral = False
     mirror_meta: dict[str, dict[str, str]] = {}
-    if sources is None:
-        sources, mirror_meta = resolve_sources_from_pins(
-            pins, staging_dir, allow_local=allow_local, local_sources=local_sources
-        )
-        ephemeral = True
+    # The scratch clone is created (mkdtemp) and populated (reconstruct) BEFORE
+    # open_project_review runs, so its removal must cover the reconstruction loop
+    # and the source resolution too -- not just the open. A range that fails to
+    # `git am` raises inside reconstruct_project_review_lane; if only the open
+    # were wrapped, that failure would leak the scratch full clone. The finally
+    # spans from mkdtemp through open so every exit path removes it.
+    try:
+        if carried:
+            import tempfile
+            scratch_root = Path(tempfile.mkdtemp(prefix="gr2-reconstruct-"))
+            local_sources = dict(local_sources or {})
+            resolve_pins = []
+            for pin in pins:
+                if pin.key in carried:
+                    res = grip.reconstruct_project_review_lane(
+                        workspace, gr_commit, pin.key, scratch_root / pin.key
+                    )
+                    rh = res["reconstructed_head"]
+                    materialize_heads[pin.key] = rh
+                    reconstructed_heads[pin.key] = rh
+                    local_sources[pin.key] = scratch_root / pin.key
+                    resolve_pins.append(dataclasses.replace(pin, head=rh))
+                else:
+                    resolve_pins.append(pin)
 
-    prior_lane = _current_lane_name(workspace, owner_unit)
-    outcome = project_review.open_project_review(
-        workspace=workspace, owner_unit=owner_unit, lane_name=lane_name,
-        spec=spec, sources=sources, allow_local=allow_local, ephemeral=ephemeral,
-    )
+        # When sources are RESOLVED from the recorded remote, each source is the
+        # persistent bare mirror and each review lane is a blobless+sparse
+        # review-EPHEMERAL clone from it (never the work-lane clone seam). An explicit
+        # sources map (pre-push author clones) has no mirror and clones normally.
+        if sources is None:
+            sources, mirror_meta = resolve_sources_from_pins(
+                resolve_pins, staging_dir, allow_local=allow_local, local_sources=local_sources
+            )
+            ephemeral = True
+
+        prior_lane = _current_lane_name(workspace, owner_unit)
+        outcome = project_review.open_project_review(
+            workspace=workspace, owner_unit=owner_unit, lane_name=lane_name,
+            spec=spec, sources=sources, allow_local=allow_local, ephemeral=ephemeral,
+            materialize_heads=materialize_heads,
+        )
+    finally:
+        if scratch_root is not None:
+            import shutil
+            shutil.rmtree(scratch_root, ignore_errors=True)
     if outcome.status != "opened" or outcome.review_root is None:
         # Refusal / partial propagates unchanged; no receipt, no enter to unwind.
         return outcome
@@ -228,6 +271,11 @@ def open_gr_enter(
         "repos": [
             {
                 "key": r["key"], "base": r["base"], "head": r["head"],
+                # For a carried-range pin the lane materializes the RECONSTRUCTED head
+                # (tree-equal to head, different sha until the committer-date lane);
+                # record it beside the pinned head so that lane has its before/after.
+                **({"reconstructed_head": reconstructed_heads[r["key"]]}
+                   if r["key"] in reconstructed_heads else {}),
                 # A reviewer can tell a stale mirror from a fresh one from these.
                 **({"mirror": mirror_meta[r["key"]]["mirror"],
                     "fetched_tip": mirror_meta[r["key"]]["fetched_tip"]}

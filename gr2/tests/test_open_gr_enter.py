@@ -357,6 +357,120 @@ def test_local_source_nonexistent_path_raises_naming_the_path(tmp_path: Path) ->
     assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "home"
 
 
+def test_carried_range_open_reconstructs_sparse_without_a_local_source(tmp_path: Path) -> None:
+    # Row 1 end to end: a project-review commit that CARRIES the range reconstructs
+    # the pre-push head from the commit alone -- no --local-source, no --sources-json,
+    # no head on any remote. The review lane is still blobless+sparse (materialized at
+    # the reconstructed head, tree-equal to the pinned head); the receipt records both.
+    import json
+    workspace, source, base, head, prior_cwd = _prepush_world(tmp_path)
+    remote = _git(source, "remote", "get-url", "origin")
+    range_patch = subprocess.run(
+        ["git", "format-patch", f"{base}..{head}", "--stdout"],
+        cwd=source, text=True, capture_output=True, check=True).stdout
+    gr_commit = grip.create_project_review_commit(
+        workspace,
+        [{"key": "alpha", "repo": remote, "path": "repos/alpha", "base": base, "head": head}],
+        ranges={"alpha": range_patch},
+    )
+
+    # open with NEITHER sources nor local_sources: the carried range is the only input.
+    outcome = open_gr_review.open_gr_enter(
+        workspace, "atlas", "review-m1", gr_commit, None,
+        prior_cwd=prior_cwd, allow_local=True,
+    )
+    assert outcome.status == "opened", outcome
+    lane_repo = outcome.review_root / "repos" / "alpha"
+    # blobless+sparse ephemeral (not a full clone): the sparse review path was taken,
+    assert _git(lane_repo, "config", "remote.origin.partialclonefilter") == "blob:none"
+    # the reconstructed tree is the range's tree (the review's added file is present).
+    assert (lane_repo / "review.txt").read_text() == "alpha review\n"
+    # receipt records the pinned head AND the reconstructed head (row 2's before/after).
+    receipt = json.loads(open_gr_review.open_gr_receipt_path(outcome.review_root).read_text())
+    row = {r["key"]: r for r in receipt["repos"]}["alpha"]
+    assert row["head"] == head                       # pinned (pre-push) head, unchanged
+    assert row["reconstructed_head"] != head          # git am re-stamps -> different sha
+    # the lane actually checks out the reconstructed head (tree-equal to the pinned one).
+    assert _git(lane_repo, "rev-parse", "HEAD") == row["reconstructed_head"]
+
+
+def _carried_range_gr_commit(workspace: Path, source: Path, base: str, head: str) -> str:
+    remote = _git(source, "remote", "get-url", "origin")
+    range_patch = subprocess.run(
+        ["git", "format-patch", f"{base}..{head}", "--stdout"],
+        cwd=source, text=True, capture_output=True, check=True).stdout
+    return grip.create_project_review_commit(
+        workspace,
+        [{"key": "alpha", "repo": remote, "path": "repos/alpha", "base": base, "head": head}],
+        ranges={"alpha": range_patch},
+    )
+
+
+def _redirect_mkdtemp(monkeypatch, parent: Path) -> list:
+    """Force open_gr_review's scratch reconstruct clone under a test-owned dir and
+    record every path it creates, so a test can assert the scratch was removed. Returns
+    the list the wrapper appends created paths to."""
+    import tempfile
+    parent.mkdir(parents=True, exist_ok=True)
+    created: list[Path] = []
+    real = tempfile.mkdtemp
+
+    def rec(*args, **kwargs):
+        kwargs["dir"] = str(parent)
+        p = real(*args, **kwargs)
+        created.append(Path(p))
+        return p
+
+    monkeypatch.setattr(tempfile, "mkdtemp", rec)
+    return created
+
+
+def test_carried_range_scratch_clone_is_removed_on_the_success_path(tmp_path: Path, monkeypatch) -> None:
+    # The scratch is a FULL clone (per pre-push open, on a host that can be near-full),
+    # so it must not survive the call. Redirect mkdtemp under a dir the test owns, open a
+    # carried-range review, and assert the scratch is gone -- the guard that a future
+    # emptying of the cleanup would break (that mutant passed every OTHER test).
+    workspace, source, base, head, prior_cwd = _prepush_world(tmp_path)
+    gr_commit = _carried_range_gr_commit(workspace, source, base, head)
+    scr = tmp_path / "scratch-parent"
+    created = _redirect_mkdtemp(monkeypatch, scr)
+
+    outcome = open_gr_review.open_gr_enter(
+        workspace, "atlas", "review-m1", gr_commit, None,
+        prior_cwd=prior_cwd, allow_local=True,
+    )
+    assert outcome.status == "opened", outcome
+    assert created, "the carried-range open never created a reconstruct scratch"
+    assert not created[0].exists(), "scratch reconstruct clone was left on disk after open"
+    assert list(scr.glob("gr2-reconstruct-*")) == []  # nothing of ours remains under the parent
+
+
+def test_carried_range_scratch_clone_is_removed_when_reconstruction_fails(tmp_path: Path, monkeypatch) -> None:
+    # The scratch is created (mkdtemp) BEFORE reconstruction runs, and reconstruction can
+    # raise (a range that does not apply -> GripReviewRefused, a base unreachable on the
+    # remote, a tree mismatch). The cleanup must cover THAT exit path too, not only a
+    # clean open -- otherwise a failed reconstruct leaks the full clone. Make reconstruct
+    # raise and assert the scratch is still removed and the error propagates.
+    workspace, source, base, head, prior_cwd = _prepush_world(tmp_path)
+    gr_commit = _carried_range_gr_commit(workspace, source, base, head)
+    scr = tmp_path / "scratch-parent"
+    created = _redirect_mkdtemp(monkeypatch, scr)
+
+    def boom(*args, **kwargs):
+        raise grip.GripReviewRefused("reconstruct_failed", "alpha", "range does not apply")
+
+    monkeypatch.setattr(open_gr_review.grip, "reconstruct_project_review_lane", boom)
+
+    with pytest.raises(grip.GripReviewRefused):
+        open_gr_review.open_gr_enter(
+            workspace, "atlas", "review-m1", gr_commit, None,
+            prior_cwd=prior_cwd, allow_local=True,
+        )
+    assert created, "mkdtemp was not called before the reconstruction failure"
+    assert not created[0].exists(), "scratch clone leaked when reconstruction raised"
+    assert list(scr.glob("gr2-reconstruct-*")) == []
+
+
 # ---- Part 2: the CLI materialize verb (review open-project) routes through open_gr_enter ----
 
 def _review_help(command_name: str) -> str:
@@ -401,6 +515,19 @@ def test_review_open_project_cli_local_source_materializes_a_pre_push_head(tmp_p
     assert _git(lane_repo, "rev-parse", "HEAD") == head
     assert _git(lane_repo, "config", "remote.origin.partialclonefilter") == "blob:none"
     assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "review-m1"
+
+
+def test_review_open_project_cli_rejects_local_source_without_equals(tmp_path: Path) -> None:
+    # Atlas's R1 non-blocking find (folded here): --local-source must be key=PATH; a
+    # value with no "=" is a usage error, not a silent skip or a crash.
+    workspace, source, base, head, prior_cwd = _prepush_world(tmp_path)
+    gr_commit = _prepush_gr_commit(workspace, source, base, head)
+    with pytest.raises(typer.BadParameter):
+        gr2_app.review_open_project(
+            workspace, gr_commit, "atlas", "review-m1",
+            enter=True, sources_json=None, local_source=["alpha-no-equals-sign"],
+            prior_cwd=prior_cwd, allow_local=True, json_output=False,
+        )
 
 
 def test_review_open_project_cli_rejects_sources_json_with_local_source(tmp_path: Path) -> None:

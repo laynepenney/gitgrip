@@ -48,11 +48,15 @@ class ProjectReviewOutcome:
     current_lane_changed: bool
 
 
-def make_spec(workspace: Path, pins: list[ProjectReviewPin]) -> ProjectReviewSpec:
+def make_spec(
+    workspace: Path, pins: list[ProjectReviewPin], ranges: dict[str, str] | None = None
+) -> ProjectReviewSpec:
     ordered = tuple(sorted((_canonical_pin(pin) for pin in pins), key=lambda pin: pin.key))
     if not ordered or len({pin.key for pin in ordered}) != len(ordered):
         raise ValueError("project review pins must be non-empty with unique keys")
-    commit = grip.create_project_review_commit(workspace, [dataclasses.asdict(pin) for pin in ordered])
+    commit = grip.create_project_review_commit(
+        workspace, [{**dataclasses.asdict(pin), "repo": pin.repo} for pin in ordered], ranges=ranges
+    )
     return ProjectReviewSpec("gr2-project-review/v1", commit, ordered)
 
 
@@ -205,12 +209,21 @@ def _stamp_lane_kind(workspace: Path, owner_unit: str, lane_name: str, kind: str
     path.write_text(new)
 
 
-def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spec: ProjectReviewSpec, sources: dict[str, tuple[Path, str]], allow_local: bool = False, ephemeral: bool = False) -> ProjectReviewOutcome:
+def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spec: ProjectReviewSpec, sources: dict[str, tuple[Path, str]], allow_local: bool = False, ephemeral: bool = False, materialize_heads: dict[str, str] | None = None) -> ProjectReviewOutcome:
     """Preflight every immutable pin, then materialize all members before enter.
 
     ``ephemeral`` materializes each member as a blobless+sparse review-ephemeral
     lane from the persistent mirror (``sources[key]`` is the mirror), never through
-    the work-lane clone seam."""
+    the work-lane clone seam.
+
+    ``materialize_heads`` (key -> sha) OVERRIDES which head each member is
+    materialized at, WITHOUT changing what the gr commit is validated against. It is
+    the carried-range reconstruction case: the commit pins the original (pre-push)
+    head, but ``git am`` re-stamps the committer so the reconstructed head is a
+    DIFFERENT sha with the SAME tree; the commit-binding check stays on the pinned
+    head while materialization uses the reconstructed head that actually exists in
+    the topped-up mirror. Absent a key, the pinned head is used (the ordinary case)."""
+    materialize_heads = materialize_heads or {}
     if spec.schema != "gr2-project-review/v1":
         return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure("spec", "unsupported schema"),), None, False)
     try:
@@ -264,7 +277,8 @@ def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spe
         if source_branch is None:
             return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure(pin.key, "missing source transport"),), None, False)
         source, _branch = source_branch
-        for label, sha in (("base", pin.base), ("head", pin.head)):
+        materialize_head = materialize_heads.get(pin.key, pin.head)
+        for label, sha in (("base", pin.base), ("head", materialize_head)):
             if git(source, "cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
                 return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure(pin.key, f"missing {label} pin {sha}"),), None, False)
     review_root = workspace / "reviews" / owner_unit / lane_name
@@ -272,8 +286,9 @@ def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spe
     for pin in canonical_pins:
         source, branch = sources[pin.key]
         repo_name = Path(source).name.removesuffix(".git")
+        materialize_head = materialize_heads.get(pin.key, pin.head)
         try:
-            record = review.open_review_lane(source_repo_root=source, review_branch=branch, expected_head_sha=pin.head, base_sha=pin.base, lane_repo_root=review_root / "repos" / pin.key, workspace_root=workspace, allow_local=allow_local, ephemeral=ephemeral, repo_name=repo_name, echo=lambda _line: None)
+            record = review.open_review_lane(source_repo_root=source, review_branch=branch, expected_head_sha=materialize_head, base_sha=pin.base, lane_repo_root=review_root / "repos" / pin.key, workspace_root=workspace, allow_local=allow_local, ephemeral=ephemeral, repo_name=repo_name, echo=lambda _line: None)
         except Exception as exc:
             return ProjectReviewOutcome("partial", spec.grip_commit, tuple(observed), (ProjectReviewFailure(pin.key, str(exc)),), review_root, False)
         observed.append(record)

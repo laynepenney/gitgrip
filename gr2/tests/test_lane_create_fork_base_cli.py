@@ -91,3 +91,30 @@ def test_cli_created_lane_then_create_project_succeeds(tmp_path: Path) -> None:
     sha = next(l for l in res.output.splitlines() if l.startswith("gr:"))[3:].strip()
     rows = {r["key"]: r for r in grip.read_project_review_commit(ws, sha)}
     assert set(rows) == {"app", "lib"}
+
+
+def test_cli_create_project_carry_range_records_the_range(tmp_path: Path) -> None:
+    # `create-project --carry-range` captures each repo's base..head range from the
+    # lane and records it INSIDE the gr commit (self-describing), so a reviewer with
+    # neither the pre-push head nor the lane can reconstruct it. Without the flag the
+    # commit carries no range.
+    ws, _tips = _workspace(tmp_path, ["app"])
+    assert runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",
+                                       "--repos", "app", "--branch", "main"]).exit_code == 0
+    lane_repo = lanes.lane_dir(ws, "atlas", "feature") / "repos" / "app"
+    (lane_repo / "change.txt").write_text("lane change\n")
+    _git(lane_repo, "config", "user.email", "t@e.invalid")
+    _git(lane_repo, "config", "user.name", "t")
+    _git(lane_repo, "add", ".")
+    _git(lane_repo, "commit", "-q", "-m", "lane change")
+
+    res = runner.invoke(gr2_app.app, ["review", "create-project", str(ws), "atlas", "feature", "--carry-range"])
+    assert res.exit_code == 0, res.output
+    sha = next(l for l in res.output.splitlines() if l.startswith("gr:"))[3:].strip()
+    assert "app" in grip.project_review_carried_keys(ws, sha)
+
+    # the plain (no --carry-range) commit carries no range object.
+    plain = runner.invoke(gr2_app.app, ["review", "create-project", str(ws), "atlas", "feature"])
+    assert plain.exit_code == 0, plain.output
+    plain_sha = next(l for l in plain.output.splitlines() if l.startswith("gr:"))[3:].strip()
+    assert grip.project_review_carried_keys(ws, plain_sha) == set()
