@@ -80,9 +80,11 @@ def resolve_sources_from_pins(
     ``git clone --mirror`` if absent, else ``remote update --prune`` (fetch fresh; a
     stale mirror must never read as current) -- then confirm the pin's base AND head
     are commits IN the mirror. The mirror IS the source handed to the review open:
-    the review lane then clones from it with ``--reference`` (see
-    ``open_project_review``'s ``cache_roots``), so the lane borrows object bytes from
-    the mirror instead of copying a full clone per review (the measured 978M harm).
+    the review lane then clones from it blobless (``--filter=blob:none``) and sparse
+    (see ``review_ephemeral.materialize_review_ephemeral``), so the lane fetches only
+    the blobs and checks out only the paths a review reads instead of copying a full
+    clone per review (the measured 978M harm). The mirror's objects are NOT borrowed
+    via ``--reference``: the review lane is a self-contained clone, disposable on exit.
 
     The returned ``review_branch`` is the head sha itself (a sha resolves to itself
     under ``rev-parse --verify <sha>^{commit}``). A mirror that does not carry the
