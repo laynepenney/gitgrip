@@ -114,6 +114,22 @@ def _remote_branch_sha(repo: Path, remote: str, branch: str) -> str:
     return matches[0]
 
 
+def _refuse_review_ephemeral_repo(repo: Path) -> None:
+    """A review-ephemeral lane is read-only and disposable: refuse a push from it,
+    naming the kind, so a review lane never becomes a work lane."""
+    import json as _json
+    record = Path(repo) / ".git" / "grip-review.json"
+    try:
+        kind = _json.loads(record.read_text()).get("lane_kind")
+    except (OSError, ValueError):
+        return
+    if kind == "review-ephemeral":
+        raise PushError(
+            f"{repo} is a review-ephemeral review lane (read-only, disposable): it "
+            "cannot be pushed. A review lane never becomes a work lane."
+        )
+
+
 def push_current_branch(
     repo: Path,
     *,
@@ -122,6 +138,7 @@ def push_current_branch(
     force_with_lease: bool = False,
 ) -> PushReceipt:
     """Push the current branch and verify that the remote ref equals HEAD."""
+    _refuse_review_ephemeral_repo(repo)
     branch = _current_branch(repo)
     selected_remote = _select_remote(repo, branch, remote)
     local_sha = _head_sha(repo)

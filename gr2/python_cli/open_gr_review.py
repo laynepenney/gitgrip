@@ -46,48 +46,78 @@ def _pin_transport_location(pin_repo: str) -> str:
     return pin_repo
 
 
+def review_cache_root() -> Path:
+    """The persistent per-host review-mirror cache root, SHARED with
+    config/scripts/review-clone.sh so there is one bare mirror per repo on this
+    host, never a second keyed differently. Honors the same
+    ``SYNAPT_REVIEW_CACHE_ROOT`` override the script honors."""
+    import os
+    return Path(os.environ.get("SYNAPT_REVIEW_CACHE_ROOT") or (Path.home() / ".synapt-review-cache"))
+
+
+def _mirror_basename(transport_location: str) -> str:
+    """The repo name the shared cache keys a mirror under: the URL/path basename
+    minus a trailing ``.git`` (e.g. …/recall.git -> recall). This matches
+    review-clone.sh's ``<repo>.git`` for every repo whose review-clone name is its
+    URL basename (all the code repos); ``site`` is the one review-clone name that
+    is NOT its URL basename, and is out of scope for multi-repo code review."""
+    name = transport_location.rstrip("/").rsplit("/", 1)[-1]
+    return name[:-4] if name.endswith(".git") else name
+
+
 def resolve_sources_from_pins(
     pins: list[project_review.ProjectReviewPin] | tuple[project_review.ProjectReviewPin, ...],
-    staging_dir: Path | str,
+    staging_dir: Path | str | None = None,
     *,
     allow_local: bool = False,
-) -> dict[str, tuple[Path, str]]:
-    """Build the source transport map from each pin's RECORDED REMOTE.
+    cache_root: Path | str | None = None,
+) -> tuple[dict[str, tuple[Path, str]], dict[str, dict[str, str]]]:
+    """Resolve each source from its RECORDED REMOTE through a PERSISTENT bare mirror.
 
-    For each pin, clone ``pin.repo`` into ``staging_dir/<key>`` and confirm the
-    pin's base AND head are commits there. The returned ``review_branch`` is the
-    head sha itself: ``git rev-parse --verify <sha>^{commit}`` resolves a sha to
-    itself, and ``open_review_lane`` only requires a ref that resolves to
-    ``expected_head_sha`` -- so no synthetic branch is minted.
+    For each pin, ensure a bare mirror at the SHARED per-host cache
+    (``<cache_root>/<repo>.git``, cache_root defaulting to review-clone.sh's
+    ``~/.synapt-review-cache``) via ``ensure_repo_cache`` -- seed with
+    ``git clone --mirror`` if absent, else ``remote update --prune`` (fetch fresh; a
+    stale mirror must never read as current) -- then confirm the pin's base AND head
+    are commits IN the mirror. The mirror IS the source handed to the review open:
+    the review lane then clones from it with ``--reference`` (see
+    ``open_project_review``'s ``cache_roots``), so the lane borrows object bytes from
+    the mirror instead of copying a full clone per review (the measured 978M harm).
 
-    A recorded remote that does not carry the pinned head is refused HERE, before
-    any review lane opens -- the recorded-remote analogue of the transport map's
-    "missing source" refusal. This is the production shape: ``open-gr`` resolves
-    what to review from the review-kind commit alone, with no hand-passed
-    author-clone map.
+    The returned ``review_branch`` is the head sha itself (a sha resolves to itself
+    under ``rev-parse --verify <sha>^{commit}``). A mirror that does not carry the
+    pinned head is refused HERE, before any review lane opens. Returns
+    ``(srcmap, mirror_meta)`` where ``mirror_meta[key]`` names the mirror path and
+    its fetched tip so a reviewer can tell a stale mirror from a fresh one.
+
+    ``staging_dir`` is accepted for signature compatibility and no longer used:
+    the mirror replaces the per-review staging clone.
     """
-    staging_dir = Path(staging_dir)
-    staging_dir.mkdir(parents=True, exist_ok=True)
+    root = Path(cache_root) if cache_root is not None else review_cache_root()
     srcmap: dict[str, tuple[Path, str]] = {}
+    mirror_meta: dict[str, dict[str, str]] = {}
     for pin in pins:
         location = _pin_transport_location(pin.repo)
-        dest = staging_dir / pin.key
-        if dest.exists():
-            raise OpenGrReviewError(f"open-gr staging destination already exists: {dest}")
-        cloned = git(staging_dir, "clone", "--quiet", "--no-checkout", location, str(dest))
-        if cloned.returncode != 0:
+        mirror = root / f"{_mirror_basename(location)}.git"
+        try:
+            review.gitops.ensure_repo_cache(location, mirror)
+        except SystemExit as exc:
             raise OpenGrReviewError(
-                f"cannot resolve source for {pin.key!r} from recorded remote {location!r}: "
-                f"{cloned.stderr.strip()}"
-            )
+                f"cannot ensure review mirror for {pin.key!r} at {mirror} from {location!r}: {exc}"
+            ) from exc
+        # Serve blobless (--filter=blob:none) clones from the mirror, same as
+        # review-clone.sh sets on its cache.
+        git(mirror, "config", "uploadpack.allowFilter", "true")
         for label, sha in (("base", pin.base), ("head", pin.head)):
-            if git(dest, "cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
+            if git(mirror, "cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
                 raise OpenGrReviewError(
-                    f"recorded remote for {pin.key!r} does not carry {label} {sha}: the pinned "
+                    f"review mirror for {pin.key!r} does not carry {label} {sha}: the pinned "
                     f"head must be published to the pinned remote for a remote-resolved open-gr"
                 )
-        srcmap[pin.key] = (dest, pin.head)
-    return srcmap
+        tip = git(mirror, "rev-parse", "HEAD")
+        srcmap[pin.key] = (mirror, pin.head)
+        mirror_meta[pin.key] = {"mirror": str(mirror), "fetched_tip": tip.stdout.strip()}
+    return srcmap, mirror_meta
 
 
 def open_gr_receipt_path(review_root: Path) -> Path:
@@ -137,16 +167,22 @@ def open_gr_enter(
     ]
     spec = project_review.ProjectReviewSpec("gr2-project-review/v1", gr_commit, tuple(pins))
 
+    # When sources are RESOLVED from the recorded remote, each source is the
+    # persistent bare mirror and each review lane is a blobless+sparse
+    # review-EPHEMERAL clone from it (never the work-lane clone seam). An explicit
+    # sources map (pre-push author clones) has no mirror and clones normally.
+    ephemeral = False
+    mirror_meta: dict[str, dict[str, str]] = {}
     if sources is None:
-        staging = Path(staging_dir) if staging_dir is not None else (
-            workspace / ".grip" / "open-gr-staging" / lane_name
+        sources, mirror_meta = resolve_sources_from_pins(
+            pins, staging_dir, allow_local=allow_local
         )
-        sources = resolve_sources_from_pins(pins, staging, allow_local=allow_local)
+        ephemeral = True
 
     prior_lane = _current_lane_name(workspace, owner_unit)
     outcome = project_review.open_project_review(
         workspace=workspace, owner_unit=owner_unit, lane_name=lane_name,
-        spec=spec, sources=sources, allow_local=allow_local,
+        spec=spec, sources=sources, allow_local=allow_local, ephemeral=ephemeral,
     )
     if outcome.status != "opened" or outcome.review_root is None:
         # Refusal / partial propagates unchanged; no receipt, no enter to unwind.
@@ -156,10 +192,20 @@ def open_gr_enter(
         "gr_commit": gr_commit,
         "owner_unit": owner_unit,
         "lane_name": lane_name,
+        "lane_kind": "review-ephemeral" if ephemeral else "materialized",
         "prior_lane": prior_lane,
         "prior_cwd": str(Path(prior_cwd)),
         "review_root": str(outcome.review_root),
-        "repos": [{"key": r["key"], "base": r["base"], "head": r["head"]} for r in rows],
+        "repos": [
+            {
+                "key": r["key"], "base": r["base"], "head": r["head"],
+                # A reviewer can tell a stale mirror from a fresh one from these.
+                **({"mirror": mirror_meta[r["key"]]["mirror"],
+                    "fetched_tip": mirror_meta[r["key"]]["fetched_tip"]}
+                   if r["key"] in mirror_meta else {}),
+            }
+            for r in rows
+        ],
     }
     open_gr_receipt_path(outcome.review_root).write_text(json.dumps(receipt, indent=2) + "\n")
     return outcome
@@ -195,6 +241,12 @@ def exit_gr_review(
         notify_channel=False, recall=False,
     ))
     restored_lane = _current_lane_name(workspace, owner_unit)
+    # A review-ephemeral review is READ-ONLY and disposable: rm -rf is the ONLY
+    # cleanup (no prune verb that could ever touch a work lane). The mirror
+    # persists; only the disposable review clones are removed.
+    if receipt.get("lane_kind") == "review-ephemeral":
+        import shutil
+        shutil.rmtree(review_root, ignore_errors=True)
     return OpenGrExit(
         restored_lane=restored_lane,
         restored_cwd=receipt["prior_cwd"],
