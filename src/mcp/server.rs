@@ -933,12 +933,38 @@ fn kill_process(pid: u32) -> std::io::Result<()> {
     // grandchild build process (e.g. `sleep`) otherwise survives `/F` alone and
     // keeps the child's stdout/stderr pipe open, so the capture reader never sees
     // EOF and the join blocks forever (grip#931 class-3, Windows-only).
-    let status = Command::new("taskkill")
+    // [taskkill-probe] TEMPORARY instrumentation on this never-merged probe branch:
+    // capture taskkill's exit + stderr (still into pipes, never inherited, so the
+    // JSON stream stays uncorrupted per grip#931) and, ONLY when GR_TASKKILL_PROBE_LOG
+    // is set, append a line for the CI probe job to read. With the env var unset
+    // the behavior is identical to the product's `.status()` path. Do NOT merge.
+    let out = Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/F", "/T"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    if status.success() {
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    if let Ok(log) = std::env::var("GR_TASKKILL_PROBE_LOG") {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+        {
+            let _ = writeln!(
+                f,
+                "[taskkill-probe] pid={} exit={:?} stderr={} stdout={}",
+                pid,
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr)
+                    .trim()
+                    .replace('\n', " | "),
+                String::from_utf8_lossy(&out.stdout)
+                    .trim()
+                    .replace('\n', " | "),
+            );
+        }
+    }
+    if out.status.success() {
         Ok(())
     } else {
         Err(std::io::Error::other("failed to kill process"))

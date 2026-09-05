@@ -177,6 +177,52 @@ jobs:
         env:
           RUSTFLAGS: '-C link-arg=advapi32.lib -C link-arg=/STACK:8388608'
 
+  # [taskkill-probe] TEMPORARY diagnostic job on a never-merged probe branch. It loops
+  # the concurrent-cancel test a bounded number of times on windows-latest with the
+  # taskkill instrumentation enabled, then prints the taskkill exit/stderr log. The
+  # question: does `taskkill /F /T` return non-zero while the target is terminated,
+  # which would make the product's `cancelled` signal (kill_sent) spuriously false.
+  # Read the log, capture the interleaving, prune this branch. Do NOT merge.
+  probe-taskkill:
+    name: Probe taskkill exit oracle
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build test binary
+        run: cargo test --test test_mcp_server --no-run
+        env:
+          RUSTFLAGS: '-C link-arg=advapi32.lib -C link-arg=/STACK:8388608'
+
+      - name: Loop the cancel test with taskkill instrumentation
+        shell: pwsh
+        env:
+          GR_TASKKILL_PROBE_LOG: ${{ github.workspace }}\gr-taskkill-probe.log
+          RUSTFLAGS: '-C link-arg=advapi32.lib -C link-arg=/STACK:8388608'
+        run: |
+          $pass = 0; $fail = 0
+          for ($i = 1; $i -le 30; $i++) {
+            cargo test --test test_mcp_server test_mcp_server_concurrent_calls_with_one_cancelled -- --exact 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { $pass++ } else { $fail++; Write-Host "test FAIL on iteration $i" }
+          }
+          Write-Host "RESULT: $pass passed, $fail failed of 30"
+          Write-Host "=== taskkill probe log ==="
+          if (Test-Path $env:GR_TASKKILL_PROBE_LOG) {
+            Get-Content $env:GR_TASKKILL_PROBE_LOG
+            $lines = Get-Content $env:GR_TASKKILL_PROBE_LOG
+            $nonzero = ($lines | Where-Object { $_ -notmatch 'exit=Some\(0\)' }).Count
+            Write-Host "taskkill invocations logged: $($lines.Count); non-zero/None exits: $nonzero"
+          } else {
+            Write-Host "(no probe log written -- the cancel path never fired taskkill)"
+          }
+
   build:
     name: Build Release
     runs-on: ubuntu-latest
