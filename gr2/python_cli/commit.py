@@ -53,6 +53,23 @@ def _staged_changes_exist(repo: Path) -> bool:
     raise CommitError(detail or f"staged-index probe failed with exit {probe.returncode}")
 
 
+def _refuse_review_ephemeral_repo(repo: Path) -> None:
+    """A review-ephemeral lane repo carries a review record naming its kind. Refuse
+    a commit into it directly (the reviewer's cwd is inside the review lane), so a
+    review lane never becomes a work lane through the single-repo path."""
+    import json as _json
+    record = Path(repo) / ".git" / "grip-review.json"
+    try:
+        kind = _json.loads(record.read_text()).get("lane_kind")
+    except (OSError, ValueError):
+        return
+    if kind == "review-ephemeral":
+        raise CommitError(
+            f"{repo} is a review-ephemeral review lane (read-only, disposable): it "
+            "cannot be committed to. A review lane never becomes a work lane."
+        )
+
+
 def create_commit(repo: Path, message: str, *, amend: bool = False) -> CommitReceipt:
     """Create a commit and return the immutable commit ID observed afterward.
 
@@ -63,6 +80,7 @@ def create_commit(repo: Path, message: str, *, amend: bool = False) -> CommitRec
     """
     if not message:
         raise CommitError("commit message must not be empty")
+    _refuse_review_ephemeral_repo(repo)
     if not amend and not _staged_changes_exist(repo):
         raise NothingToCommitError("no staged changes to commit")
 
@@ -161,6 +179,12 @@ def commit_lane(
         lane_name = lane_proto.require_current_lane(workspace_root, owner_unit)["lane_name"]
     doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     kind = doc.get("lane_kind", "materialized")
+    if kind == "review-ephemeral":
+        raise CommitError(
+            f"lane {owner_unit}/{lane_name} is a review-ephemeral lane (read-only, "
+            "disposable): it cannot be committed to. A review lane never becomes a "
+            "work lane; exit the review and open a work lane to make changes."
+        )
 
     results: list[LaneRepoCommit] = []
     for repo_key, repo_root in _lane_repo_targets(workspace_root, owner_unit, lane_name, doc):

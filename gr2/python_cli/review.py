@@ -50,7 +50,7 @@ _SHA40 = re.compile(r"\A[0-9a-f]{40}\Z")
 # else on disk. ``bound``: derived from an author's own worktree at bind time,
 # honest only under the clean-tree/HEAD-matches guard the bind imposes. The
 # field is REQUIRED on every receipt (gr2-lane-author-shape ruling 2026-09-03).
-LANE_KINDS = ("materialized", "bound")
+LANE_KINDS = ("materialized", "bound", "review-ephemeral")
 
 Echo = Callable[[str], None]
 
@@ -190,6 +190,8 @@ def open_review_lane(
     lane_repo_root: Path,
     workspace_root: Path,
     allow_local: bool = False,
+    ephemeral: bool = False,
+    repo_name: str | None = None,
     echo: Echo = print,
 ) -> ReviewRecord:
     """Materialize the review lane at the expected head and record the triple.
@@ -235,6 +237,43 @@ def open_review_lane(
     # stable across a later reopen. The immutable seed, not this branch spelling,
     # decides which commit is reviewed.
     lane_branch = "grip-review/open"
+    if ephemeral:
+        # A review-ephemeral lane is a blobless+sparse clone from the persistent
+        # mirror -- NEVER the work-lane clone seam (materialize_lane_clone), whose
+        # 8.1/8.2 invariants guard MUTABLE lanes. It is read-only and rm -rf'd on
+        # close, so those invariants exceed its needs; blobless keeps the whole
+        # commit+tree graph the review uses.
+        from . import review_ephemeral
+        if lane_repo_root.exists():
+            existing = gitops.current_head_sha(lane_repo_root)
+            if existing != expected_head_sha:
+                raise ReviewError(
+                    f"an existing review lane at {lane_repo_root} is at {existing!r}, not the "
+                    f"requested head {expected_head_sha}; run `review close` to drop it, then reopen."
+                )
+            first_materialize = False
+        else:
+            review_ephemeral.materialize_review_ephemeral(
+                mirror=source_repo_root, dest=lane_repo_root,
+                head=expected_head_sha, base=base_sha,
+                repo_name=(repo_name or source_repo_root.name.removesuffix(".git")),
+            )
+            first_materialize = True
+        lane_head = gitops.git(lane_repo_root, "rev-parse", "HEAD")
+        if lane_head.returncode != 0 or lane_head.stdout.strip() != expected_head_sha:
+            if first_materialize:
+                shutil.rmtree(lane_repo_root, ignore_errors=True)
+            raise ReviewError(
+                f"review-ephemeral lane is at {lane_head.stdout.strip()!r}, not the expected "
+                f"head {expected_head_sha}; lane discarded"
+            )
+        echo(f"review lane (ephemeral): {lane_repo_root.resolve()}")
+        record = ReviewRecord(repo=repo_identity, base=base_sha, head=expected_head_sha,
+                              lane_kind=review_ephemeral.REVIEW_EPHEMERAL_KIND)
+        path = review_record_path(lane_repo_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
+        return record
     try:
         first_materialize = ensure_lane_checkout(
             source_repo_root=source_repo_root,

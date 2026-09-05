@@ -193,8 +193,24 @@ def _load_workspace_boundary_doc(workspace: Path) -> tuple[dict[str, object] | N
         return None, ProjectReviewFailure("workspace_spec", str(exc))
 
 
-def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spec: ProjectReviewSpec, sources: dict[str, tuple[Path, str]], allow_local: bool = False) -> ProjectReviewOutcome:
-    """Preflight every immutable pin, then materialize all members before enter."""
+def _stamp_lane_kind(workspace: Path, owner_unit: str, lane_name: str, kind: str) -> None:
+    """Rewrite the lane's ``lane_kind`` in place. create_lane writes the default
+    ``materialized``; a review lane overrides it so require_current_lane reports the
+    review kind to every mutating verb."""
+    path = lanes.lane_file(workspace, owner_unit, lane_name)
+    text = path.read_text()
+    new = re.sub(r'(?m)^lane_kind\s*=\s*"[^"]*"\s*$', f'lane_kind = "{kind}"', text)
+    if 'lane_kind' not in new:
+        new = new.rstrip("\n") + f'\nlane_kind = "{kind}"\n'
+    path.write_text(new)
+
+
+def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spec: ProjectReviewSpec, sources: dict[str, tuple[Path, str]], allow_local: bool = False, ephemeral: bool = False) -> ProjectReviewOutcome:
+    """Preflight every immutable pin, then materialize all members before enter.
+
+    ``ephemeral`` materializes each member as a blobless+sparse review-ephemeral
+    lane from the persistent mirror (``sources[key]`` is the mirror), never through
+    the work-lane clone seam."""
     if spec.schema != "gr2-project-review/v1":
         return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure("spec", "unsupported schema"),), None, False)
     try:
@@ -255,13 +271,18 @@ def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spe
     observed: list[review.ReviewRecord] = []
     for pin in canonical_pins:
         source, branch = sources[pin.key]
+        repo_name = Path(source).name.removesuffix(".git")
         try:
-            record = review.open_review_lane(source_repo_root=source, review_branch=branch, expected_head_sha=pin.head, base_sha=pin.base, lane_repo_root=review_root / "repos" / pin.key, workspace_root=workspace, allow_local=allow_local, echo=lambda _line: None)
+            record = review.open_review_lane(source_repo_root=source, review_branch=branch, expected_head_sha=pin.head, base_sha=pin.base, lane_repo_root=review_root / "repos" / pin.key, workspace_root=workspace, allow_local=allow_local, ephemeral=ephemeral, repo_name=repo_name, echo=lambda _line: None)
         except Exception as exc:
             return ProjectReviewOutcome("partial", spec.grip_commit, tuple(observed), (ProjectReviewFailure(pin.key, str(exc)),), review_root, False)
         observed.append(record)
     try:
         lanes.create_lane(argparse.Namespace(workspace_root=workspace, owner_unit=owner_unit, lane_name=lane_name, type="review", repos=",".join(pin.key for pin in canonical_pins), branch="main", source="project-review", default_commands=[]))
+        if ephemeral:
+            # Stamp the lane kind so every mutating verb (commit/push/bind) can
+            # refuse this lane naming the kind: a review lane never becomes a work lane.
+            _stamp_lane_kind(workspace, owner_unit, lane_name, "review-ephemeral")
         lanes.enter_lane(argparse.Namespace(workspace_root=workspace, owner_unit=owner_unit, lane_name=lane_name, actor="project-review", notify_channel=False, recall=False))
     except Exception as exc:
         return ProjectReviewOutcome("partial", spec.grip_commit, tuple(observed), (ProjectReviewFailure("transition", str(exc)),), review_root, False)

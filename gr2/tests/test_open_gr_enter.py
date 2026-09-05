@@ -16,6 +16,18 @@ from gr2.python_cli import app as gr2_app
 from gr2.python_cli import grip, open_gr_review, project_review
 
 
+@pytest.fixture(autouse=True)
+def _isolated_review_cache(tmp_path, monkeypatch):
+    """Each test gets its OWN persistent review-mirror cache. The cache is keyed by
+    repo NAME (globally unique in production: recall/grip/config), but fixture repos
+    reuse alpha/beta/gamma across tests, so without isolation a stale mirror from an
+    earlier test would answer for a later one. Points SYNAPT_REVIEW_CACHE_ROOT (the
+    same override review-clone.sh honors) at a per-test dir; unsets the profile dir
+    so fixtures have no gripspace sparse fallback (whole tree, blobless)."""
+    monkeypatch.setenv("SYNAPT_REVIEW_CACHE_ROOT", str(tmp_path / "review-cache"))
+    monkeypatch.delenv("SYNAPT_REVIEW_PROFILE_DIR", raising=False)
+
+
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, text=True, capture_output=True, check=True).stdout.strip()
 
