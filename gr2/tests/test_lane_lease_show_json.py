@@ -19,11 +19,11 @@ import json
 
 import typer
 from gr2.python_cli.app import lane_app
-from typer.testing import CliRunner
+from tests.conftest import make_cli_runner
 
 app = typer.Typer()
 app.add_typer(lane_app, name="lane")
-runner = CliRunner()
+runner = make_cli_runner()
 
 
 def test_lease_show_does_not_crash_when_no_json_flag(tmp_path):

@@ -4,10 +4,11 @@ import json
 import tomllib
 from pathlib import Path
 
+from gr2.python_cli import app as app_module
 from gr2.python_cli.app import app
-from typer.testing import CliRunner
+from tests.conftest import make_cli_runner
 
-runner = CliRunner()
+runner = make_cli_runner()
 
 
 def _write_topology(
@@ -224,3 +225,50 @@ path = 'repos/product"\\path'
             "repos": [r'product"\\name'],
         }
     ]
+
+
+def test_json_output_survives_a_concurrent_stderr_warning(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Stream-channel contract, pinned by fruit rather than by the ambient click
+    version: if this command's underlying reader ever grows a
+    stderr warning (e.g. an ambiguous or deprecated ``workspace.toml`` field),
+    that warning must land on stderr, not get prepended to the ``--json``
+    payload on stdout. Under click<8.2 with the old bare
+    ``CliRunner()``, ``mix_stderr`` defaulted True and folded a concurrent
+    stderr write into ``result.output`` ahead of the JSON, breaking
+    ``json.loads`` exactly like the original merge-parent-warning incident.
+
+    Forces the shape with a monkeypatch on the real reader
+    (``_declared_workspace_topology``) rather than adding a real warning to
+    production code: the reader's return value is unchanged, so this is a
+    pure stream-routing witness, not a behavior change."""
+    workspace_root = tmp_path / "warning-team"
+    workspace_root.mkdir()
+    _write_topology(workspace_root)
+
+    real_reader = app_module._declared_workspace_topology
+
+    def _reader_that_also_warns(root: Path):
+        app_module.typer.echo("warning: simulated concurrent stderr write", err=True)
+        return real_reader(root)
+
+    monkeypatch.setattr(app_module, "_declared_workspace_topology", _reader_that_also_warns)
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "init-from-topology",
+            str(workspace_root),
+            "--default-unit",
+            "team",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["repo_count"] == 2
+    assert "simulated concurrent stderr write" in result.stderr
+    assert "simulated concurrent stderr write" not in result.stdout

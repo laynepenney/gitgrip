@@ -9,7 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from typer.testing import CliRunner
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -25,26 +24,9 @@ from gr2.python_cli.platform import (
     PRStatus,
 )
 from gr2.python_cli.syncops import run_sync
+from tests.conftest import make_cli_runner
 
-def _make_runner() -> CliRunner:
-    """A runner whose ``result.stdout`` is the command's stdout ALONE, on every
-    click version.
-
-    click<8.2 folds stderr into stdout unless ``mix_stderr=False``; click>=8.2
-    removed ``mix_stderr`` and separates the streams by default (passing the kwarg
-    raises ``TypeError``). Without this, ``json.loads(result.stdout)`` reds under
-    click<8.2 whenever the command also writes a stderr warning (e.g. an
-    UNVERIFIABLE merge-parent verdict prepended to the JSON payload) and greens
-    under click>=8.2 — a gate that flips on the ambient click version, not on the
-    code under test. Two agents parse ``--json`` output as data, so the assertion
-    must be pinned to the data channel regardless of the installed click."""
-    try:
-        return CliRunner(mix_stderr=False)
-    except TypeError:
-        return CliRunner()
-
-
-runner = _make_runner()
+runner = make_cli_runner()
 
 
 def _merge_receipt(repo: str, number: int, method: MergeMethod) -> MergeReceipt:

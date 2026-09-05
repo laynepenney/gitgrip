@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 from typer.testing import CliRunner
+from tests.conftest import make_cli_runner
 
 from gr2.python_cli.app import app
 from gr2.python_cli import migration
@@ -474,7 +475,7 @@ class TestBootstrapGr1:
         assert (grip_dir / "workspace_spec.toml").read_bytes() == expected
 
     def test_cli_reports_the_single_bootstrap_outcome(self, gr1_workspace: Path) -> None:
-        result = CliRunner().invoke(app, ["workspace", "bootstrap-gr1", str(gr1_workspace), "--json"])
+        result = make_cli_runner().invoke(app, ["workspace", "bootstrap-gr1", str(gr1_workspace), "--json"])
 
         assert result.exit_code == 0, result.stdout
         payload = json.loads(result.stdout)
@@ -1104,7 +1105,7 @@ class TestMigrateLaneState:
     def test_cli_migrate_lane_state(self, tmp_path: Path) -> None:
         _legacy_lane(tmp_path, "atlas", "feature")
         receipt = tmp_path / "cli-receipt.json"
-        result = CliRunner().invoke(app, ["workspace", "migrate-lane-state", str(tmp_path), "--receipt", str(receipt), "--json"])
+        result = make_cli_runner().invoke(app, ["workspace", "migrate-lane-state", str(tmp_path), "--receipt", str(receipt), "--json"])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["count"] == 1
