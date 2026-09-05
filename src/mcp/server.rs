@@ -708,7 +708,13 @@ fn run_gitgrip_command(
     let out_rx = spawn_capture(stdout, max_capture);
     let err_rx = spawn_capture(stderr, max_capture);
 
-    let cancel_status = start_cancel_controller(child.id(), cancel_flag.clone());
+    let t0 = Instant::now();
+    timeline_log(&format!(
+        "pid={} event=spawned args={:?}",
+        child.id(),
+        args.last()
+    ));
+    let cancel_status = start_cancel_controller(child.id(), cancel_flag.clone(), t0);
 
     // Bounded wait: a hung child becomes a typed timeout instead of a deadlock.
     let timeout = child_wait_timeout();
@@ -729,6 +735,14 @@ fn run_gitgrip_command(
     cancel_status.done.store(true, Ordering::SeqCst);
     let _ = cancel_status.join.join();
     let cancelled = cancel_status.kill_sent.load(Ordering::SeqCst);
+    timeline_log(&format!(
+        "pid={} event=child_exit status={:?} timed_out={} cancelled={} ms={}",
+        child.id(),
+        status.map(|s| s.code()),
+        timed_out,
+        cancelled,
+        t0.elapsed().as_millis()
+    ));
 
     // Bounded reader joins: kill/T on the child cannot release a pipe held by a
     // sibling OUTSIDE its tree, so the reader could hang even after the child is
@@ -802,7 +816,8 @@ fn run_context_command(
         serde_json::from_reader::<_, Value>(&mut reader)
     });
 
-    let cancel_status = start_cancel_controller(child.id(), cancel_flag);
+    let t0 = Instant::now();
+    let cancel_status = start_cancel_controller(child.id(), cancel_flag, t0);
 
     // Bounded wait (backstop; the spawn-lock root fix prevents the concurrent-spawn
     // hang). Reader joins below stay unbounded: ratified step-2 scope bounds
@@ -866,7 +881,28 @@ struct CancelController {
     join: thread::JoinHandle<()>,
 }
 
-fn start_cancel_controller(pid: u32, cancel_flag: Option<Arc<AtomicBool>>) -> CancelController {
+// [cancel-timeline] TEMPORARY probe instrumentation on a never-merged probe branch.
+// When GR_CANCEL_TIMELINE_LOG is set, append one line tracing the cancel path so the
+// early-exit-before-cancel vs tree-kill-race question is answered by fruit. No-op when
+// the env var is unset; zero behavior change to the product path. Do NOT merge.
+fn timeline_log(line: &str) {
+    if let Ok(path) = std::env::var("GR_CANCEL_TIMELINE_LOG") {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = writeln!(f, "[cancel-timeline] {line}");
+        }
+    }
+}
+
+fn start_cancel_controller(
+    pid: u32,
+    cancel_flag: Option<Arc<AtomicBool>>,
+    t0: Instant,
+) -> CancelController {
     let done = Arc::new(AtomicBool::new(false));
     let kill_sent = Arc::new(AtomicBool::new(false));
 
@@ -879,7 +915,19 @@ fn start_cancel_controller(pid: u32, cancel_flag: Option<Arc<AtomicBool>>) -> Ca
 
         while !done_clone.load(Ordering::SeqCst) {
             if flag.load(Ordering::SeqCst) {
-                if kill_process(pid).is_ok() {
+                timeline_log(&format!(
+                    "pid={} event=flag_observed ms={}",
+                    pid,
+                    t0.elapsed().as_millis()
+                ));
+                let killed = kill_process(pid).is_ok();
+                timeline_log(&format!(
+                    "pid={} event=kill_invoked ok={} ms={}",
+                    pid,
+                    killed,
+                    t0.elapsed().as_millis()
+                ));
+                if killed {
                     kill_clone.store(true, Ordering::SeqCst);
                 }
                 break;
