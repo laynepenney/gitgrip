@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import subprocess
 from pathlib import Path
 
 from gr2.prototypes import lane_workspace_prototype as lane_proto
@@ -286,6 +287,106 @@ def open_gr_enter(
     }
     open_gr_receipt_path(outcome.review_root).write_text(json.dumps(receipt, indent=2) + "\n")
     return outcome
+
+
+def record_review_verification(
+    review_root: Path,
+    key: str,
+    *,
+    command: list[str],
+    interpreter: str,
+    import_module: str,
+) -> dict:
+    """Row 4 (run tests inside): run a repo's test COMMAND inside its materialized
+    review lane and append a verification record to the project-tier receipt, so
+    "the tests ran against the exact reviewed head, in the reviewed checkout, under
+    this interpreter and this package" is FRUIT in the receipt rather than a claim
+    in prose.
+
+    The record binds four things a bare "tests pass" cannot:
+
+    - ``exit_code``: the REAL subprocess return code, so a run that failed (or was
+      never invoked) cannot be recorded as green.
+    - ``head_tested``: the head the lane actually holds for this key -- the
+      reconstructed head for a carried-range pin, else the pinned head -- read from
+      the receipt, so a run against the desk worktree or dev tip cannot pass as the
+      reviewed head.
+    - ``cwd``: the materialized lane dir (``review_root/repos/<key>``), pinning the
+      run to the reviewed checkout.
+    - ``interpreter`` + ``module_path``: which python ran and which package file it
+      imported, MEASURED by a probe under the same ``interpreter`` inside the lane
+      (its real ``sys.executable`` and the imported module's ``__file__``). A stale
+      editable install can silently import a DIFFERENT desk's package; a receipt
+      that cannot say whose code it tested has the same defect one layer up. Pass
+      the interpreter that runs ``command`` so the probe measures the tests' python.
+
+    Returns the appended record. Raises ``OpenGrReviewError`` if there is no open-gr
+    receipt, the key was not materialized by this review, its lane dir is missing,
+    or the interpreter/module probe itself fails.
+    """
+    review_root = Path(review_root)
+    receipt_path = open_gr_receipt_path(review_root)
+    if not receipt_path.exists():
+        raise OpenGrReviewError(
+            f"no open-gr receipt at {receipt_path}; not a review opened by open-gr"
+        )
+    receipt = json.loads(receipt_path.read_text())
+    row = next((r for r in receipt.get("repos", []) if r["key"] == key), None)
+    if row is None:
+        raise OpenGrReviewError(
+            f"key {key!r} is not in the review receipt; cannot verify a repo the "
+            f"review did not materialize"
+        )
+    # The lane holds the reconstructed head for a carried-range pin (tree-equal to
+    # the pinned head, different sha), else the pinned head. Bind to what is on disk.
+    head_tested = row.get("reconstructed_head") or row["head"]
+    lane_dir = review_root / "repos" / key
+    if not lane_dir.is_dir():
+        raise OpenGrReviewError(
+            f"materialized lane dir missing for {key!r}: {lane_dir}"
+        )
+
+    # Run the tests inside the reviewed checkout; capture the REAL exit code. Both
+    # this run and the probe below take the SAME `lane_dir` cwd variable, so the cwd
+    # the probe MEASURES is the cwd the tests ran under.
+    exit_code = subprocess.run(command, cwd=lane_dir).returncode
+
+    # Probe, under the SAME interpreter and cwd, for the python, the package file, and
+    # the working directory that actually resolve here. `cwd` is recorded from the
+    # probe's own os.getcwd() -- MEASURED, not str(lane_dir) -- so the receipt reports
+    # where the command ran rather than copying the intended path from the request; and
+    # module_path exposes (not hides) a stale editable install that reaches outside the
+    # lane.
+    probe = subprocess.run(
+        [
+            interpreter,
+            "-c",
+            "import sys, os, importlib; "
+            f"m = importlib.import_module({import_module!r}); "
+            "print(sys.executable); print(m.__file__); print(os.getcwd())",
+        ],
+        cwd=lane_dir,
+        text=True,
+        capture_output=True,
+    )
+    if probe.returncode != 0:
+        raise OpenGrReviewError(
+            f"interpreter/module probe for {import_module!r} under {interpreter} "
+            f"failed (exit {probe.returncode}): {probe.stderr.strip()}"
+        )
+    probe_lines = probe.stdout.splitlines()
+    record = {
+        "key": key,
+        "command": list(command),
+        "exit_code": exit_code,
+        "head_tested": head_tested,
+        "cwd": probe_lines[2] if len(probe_lines) > 2 else "",
+        "interpreter": probe_lines[0] if probe_lines else "",
+        "module_path": probe_lines[1] if len(probe_lines) > 1 else "",
+    }
+    receipt.setdefault("verification", []).append(record)
+    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
+    return record
 
 
 @dataclasses.dataclass(frozen=True)
