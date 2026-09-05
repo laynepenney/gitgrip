@@ -143,9 +143,11 @@ jobs:
     # the 6-hour default. This leg hung three times on 2026-07-27 (91 min, then
     # 26, then 26 again) and every diagnosis was blocked on never seeing where it
     # stopped -- a hang is worse than a failure precisely because it is
-    # indistinguishable from "still running". 15 against a ~8 min baseline is
-    # generous enough not to fire on a cold cache. See grip#821.
-    timeout-minutes: 15
+    # indistinguishable from "still running". See grip#821.
+    # Raised 15->30 on 2026-09-05: 15 was set against a ~8 min WARM baseline, but a
+    # COLD-cache run cancelled the 1.4.0 promotion at 15m05s with every step green
+    # (runner luck, not a hang). 30 keeps the hang guard well clear of a cold run.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
