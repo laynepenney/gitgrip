@@ -90,6 +90,7 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     branch_map = dict(lane_doc.get("branch_map", {}))
     lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+    fork_base: dict[str, dict[str, str]] = {}
 
     for repo_name in lane_doc.get("repos", []):
         repo_spec = _workspace_repo_spec(workspace_root, repo_name)
@@ -103,6 +104,13 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             branch=branch_map[repo_name],
             workspace_root=workspace_root,
         )
+        # Record the fork base = the materialization point (the branch the lane forked
+        # from and the sha it started at), so `review create-project` can pin base..head
+        # Collected here, before the hooks `continue` below.
+        head = git(target_repo_root, "rev-parse", "HEAD")
+        head_sha = head.stdout.strip() if head.returncode == 0 else ""
+        if len(head_sha) == 40:
+            fork_base[repo_name] = {"branch": branch_map[repo_name], "sha": head_sha}
         hooks = load_repo_hooks(target_repo_root)
         if not hooks:
             continue
@@ -125,6 +133,12 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             first_materialize=first_materialize,
             allow_manual=manual_hooks,
         )
+
+    # Persist the fork base for every repo materialized above. A materialized lane
+    # forks at the point it was cloned; without this the lane doc has no fork_base and
+    # `review create-project` refuses.
+    if fork_base:
+        lane_proto.record_fork_base(workspace_root, owner_unit, lane_name, fork_base)
 
 
 def _run_lane_stage(workspace_root: Path, owner_unit: str, lane_name: str, stage: str, *, manual_hooks: bool = False) -> None:

@@ -522,6 +522,39 @@ def load_lane_doc(workspace_root: Path, owner_unit: str, lane_name: str) -> dict
     return tomllib.loads(path.read_text())
 
 
+def record_fork_base(
+    workspace_root: Path, owner_unit: str, lane_name: str, fork_base: dict[str, dict[str, str]]
+) -> None:
+    """Record the fork base (the materialization point) into an existing lane doc.
+
+    ``create_lane`` records ONLY the fork base the caller supplies (the fork-base
+    ruling: record, do not derive). The CLI `lane create` clones each repo at its
+    branch AFTER the doc is written, so the materialization point — the branch the
+    lane forked from and the sha it started at — is not known until then; this writes
+    it back. Without it a CLI-created lane has no fork base and `review create-project`
+    refuses — the multi-repo review producer failing its own fruit test for a stranger.
+
+    ``fork_base`` maps repo -> {"branch": <name>, "sha": <40-hex>}. Each repo must be in
+    the lane; a non-hex sha or empty branch is refused, matching create_lane's checks.
+    """
+    path = lane_file(workspace_root, owner_unit, lane_name)
+    document = load_lane_doc(workspace_root, owner_unit, lane_name)
+    repos_in_lane = set(document.get("repos", []))
+    validated: dict[str, dict[str, str]] = {}
+    for repo, entry in fork_base.items():
+        if repo not in repos_in_lane:
+            raise SystemExit(f"fork_base references repo outside lane: {repo}")
+        branch = str(entry.get("branch", "")).strip()
+        sha = str(entry.get("sha", "")).strip()
+        if not branch:
+            raise SystemExit(f"fork_base for {repo} has no branch")
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise SystemExit(f"fork_base sha for {repo} must be a 40-hex commit, got: {sha!r}")
+        validated[repo] = {"branch": branch, "sha": sha}
+    document["fork_base"] = {repo: validated[repo] for repo in sorted(validated)}
+    atomic_replace_text(path, serialize_toml(document))
+
+
 def load_shared_scratchpad_doc(workspace_root: Path, name: str) -> dict:
     path = shared_scratchpad_file(workspace_root, name)
     if not path.exists():
