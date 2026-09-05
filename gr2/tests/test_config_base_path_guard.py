@@ -18,11 +18,11 @@ import json
 
 import typer
 from gr2.python_cli.grip_cli import config_cli_app
-from typer.testing import CliRunner
+from tests.conftest import make_cli_runner
 
 app = typer.Typer()
 app.add_typer(config_cli_app, name="config")
-runner = CliRunner()
+runner = make_cli_runner()
 
 
 # The discriminator is result.exception TYPE, not exit_code: CliRunner sets

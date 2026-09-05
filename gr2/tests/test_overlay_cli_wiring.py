@@ -14,11 +14,11 @@ import subprocess
 from pathlib import Path
 
 import tomli_w
-from typer.testing import CliRunner
+from tests.conftest import make_cli_runner
 
 from gr2_overlay.cli import overlay_app
 
-runner = CliRunner()
+runner = make_cli_runner()
 
 
 def _init_bare_git_repo(path: Path) -> Path:

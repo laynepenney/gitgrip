@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 import typer
-from typer.testing import CliRunner
+from tests.conftest import make_cli_runner
 
 from python_cli.gitops import git
 from python_cli.grip_cli import config_cli_app, grip_app
@@ -22,7 +22,7 @@ app = typer.Typer()
 app.add_typer(grip_app, name="grip")
 app.add_typer(config_cli_app, name="config")
 
-runner = CliRunner()
+runner = make_cli_runner()
 
 SAMPLE_TOML = """\
 [spawn]
