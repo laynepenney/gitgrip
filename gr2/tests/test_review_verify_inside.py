@@ -451,3 +451,185 @@ def test_verification_refuses_a_key_the_review_did_not_materialize(tmp_path: Pat
             interpreter=sys.executable,
             import_module="solo_pkg",
         )
+
+
+def _source_installable_with_extra(root: Path, name: str) -> tuple[Path, str, str]:
+    """Like _source_installable, but the review head's pyproject declares a TEST extra
+    whose dependency is a SECOND local package (referenced by a file:// URL so it
+    installs offline in CI -- no PyPI fetch). This is the shape a real repo uses to put
+    its test deps (pytest + what the tests import) behind `.[test]`; here the extra's
+    lone dep stands in for that so the proof is hermetic. Returns (source, base, head)."""
+    # the dependency package, built once, referenced by absolute file:// URL
+    dep = root / f"{name}_extradep"
+    dep_pkg = dep / f"{name}_extradep_pkg"
+    dep_pkg.mkdir(parents=True)
+    (dep_pkg / "__init__.py").write_text("OK = True\n")
+    (dep / "pyproject.toml").write_text(
+        "[build-system]\nrequires = [\"setuptools>=61\"]\nbuild-backend = \"setuptools.build_meta\"\n"
+        f'[project]\nname = "{name}extradep"\nversion = "0.0.0"\n'
+        f'[tool.setuptools]\npackages = ["{name}_extradep_pkg"]\n'
+    )
+    dep_uri = dep.resolve().as_uri()
+
+    origin = root / f"{name}.git"
+    _git(root, "init", "--bare", "-b", "main", str(origin))
+    source = root / name
+    _git(root, "clone", "-q", str(origin), str(source))
+    _git(source, "config", "user.email", "t@example.invalid")
+    _git(source, "config", "user.name", "t")
+    (source / "README.md").write_text(f"{name} base\n")
+    _git(source, "add", ".")
+    _git(source, "commit", "-q", "-m", "base")
+    _git(source, "push", "-q", "origin", "main")
+    base = _git(source, "rev-parse", "main")
+    _git(source, "checkout", "-q", "-b", f"review/{name}")
+    pkg = source / f"{name}_pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text('WHERE = "lane"\n')
+    (source / "pyproject.toml").write_text(
+        "[build-system]\nrequires = [\"setuptools>=61\"]\nbuild-backend = \"setuptools.build_meta\"\n"
+        f'[project]\nname = "{name}-lane-pkg"\nversion = "0.0.0"\n'
+        f'[project.optional-dependencies]\ntest = ["{name}extradep @ {dep_uri}"]\n'
+        f'[tool.setuptools]\npackages = ["{name}_pkg"]\n'
+    )
+    _git(source, "add", ".")
+    _git(source, "commit", "-q", "-m", "review with an installable package + test extra")
+    _git(source, "push", "-q", "origin", f"review/{name}")
+    head = _git(source, "rev-parse", f"review/{name}")
+    _git(source, "checkout", "-q", "main")
+    return source, base, head
+
+
+def _open_extra_repo_review(tmp_path: Path, name: str):
+    import argparse
+    workspace = tmp_path / "workspace"
+    (workspace / ".grip").mkdir(parents=True)
+    src, base, head = _source_installable_with_extra(tmp_path, name)
+    url = _git(src, "remote", "get-url", "origin")
+    (workspace / ".grip" / "workspace_spec.toml").write_text(
+        f'schema_version = 1\nworkspace_name = "m1"\n\n'
+        f'[[repos]]\nname = "{name}"\npath = "sources/{name}"\nurl = "{url}"\n'
+        f'\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["{name}"]\n'
+    )
+    grip.grip_init(workspace)
+    prior_cwd = tmp_path / "home"
+    prior_cwd.mkdir()
+    lanes.create_lane(argparse.Namespace(
+        workspace_root=workspace, owner_unit="atlas", lane_name="home", type="feature",
+        repos=name, branch="main", source="test", default_commands=[]))
+    lanes.enter_lane(argparse.Namespace(
+        workspace_root=workspace, owner_unit="atlas", lane_name="home",
+        actor="agent:atlas", notify_channel=False, recall=False))
+    pins = [project_review.ProjectReviewPin(
+        key=name, repo=f"local:{src}", path=f"repos/{name}", base=base, head=head)]
+    spec = project_review.make_spec(workspace, pins)
+    outcome = open_gr_review.open_gr_enter(
+        workspace, "atlas", "review-m1", spec.grip_commit,
+        {name: (src, f"review/{name}")}, prior_cwd=prior_cwd, allow_local=True)
+    assert outcome.status == "opened", outcome
+    return workspace, outcome.review_root, head
+
+
+# the command every extras test runs: it needs the EXTRA's dependency to import, so it
+# passes only when the declared extra was installed into the lane venv.
+_EXTRA_CMD = ["python", "-c", "import solo_extradep_pkg; import solo_pkg; import sys; sys.exit(0)"]
+
+
+def test_declared_extras_install_the_test_deps_into_the_lane_venv(tmp_path: Path) -> None:
+    # The deferred lane-venv item: a fresh venv has pip but not the repo's test deps, so
+    # a command that imports one records non-zero. Declaring the extra in
+    # [repos.review_test] installs it into the lane venv (pip install -e ".[test]"), so
+    # the command now records exit 0 -- the dep is present under the lane's own python.
+    _, review_root, head = _open_extra_repo_review(tmp_path, "solo")
+    record = open_gr_review.record_review_verification(
+        review_root, "solo",
+        command=_EXTRA_CMD,
+        interpreter=sys.executable,  # bootstrap; provisioning overrides to the lane venv
+        import_module="solo_pkg",
+        provision_venv=True,
+        extras=["test"],
+    )
+    assert record["exit_code"] == 0            # the extra's dep imported -> command passed
+    assert record["provisioned"] is True
+    assert record["head_tested"] == head
+
+
+def test_without_the_extra_the_dep_is_absent_and_the_command_records_nonzero(tmp_path: Path) -> None:
+    # The guarantee, as its own regression: the SAME command in the SAME provisioned lane
+    # WITHOUT the extra records non-zero -- the dep is not installed, so it cannot pass.
+    # This is what makes the extras field load-bearing rather than decorative: drop it
+    # and the run fails honestly instead of silently passing on a missing dependency.
+    _, review_root, _head = _open_extra_repo_review(tmp_path, "solo")
+    record = open_gr_review.record_review_verification(
+        review_root, "solo",
+        command=_EXTRA_CMD,
+        interpreter=sys.executable,
+        import_module="solo_pkg",
+        provision_venv=True,
+        extras=None,  # no extra -> the test dep never enters the venv
+    )
+    assert record["exit_code"] != 0            # ImportError on the missing dep
+    assert record["provisioned"] is True       # the venv WAS provisioned; only the dep is absent
+
+
+def _open_extra_repo_review_with_spec_test(tmp_path: Path, name: str, *, extras_in_spec: bool):
+    """Like _open_extra_repo_review but ALSO writes a full [repos.review_test] block
+    into the workspace spec (command/interpreter/import_module/provision_venv), so the
+    review runs through record_review_verifications -- the multi-repo entry that READS
+    the toml -- exercising the extras field-read path. `extras_in_spec` toggles the
+    `extras = ["test"]` line, which is the only difference between the pass and the
+    field-witness mutant."""
+    import argparse
+    workspace = tmp_path / "workspace"
+    (workspace / ".grip").mkdir(parents=True)
+    src, base, head = _source_installable_with_extra(tmp_path, name)
+    url = _git(src, "remote", "get-url", "origin")
+    review_test = (
+        "[repos.review_test]\n"
+        'command = ["python", "-c", "import ' + name + '_extradep_pkg; import '
+        + name + '_pkg; import sys; sys.exit(0)"]\n'
+        'interpreter = "python3"\n'
+        f'import_module = "{name}_pkg"\n'
+        "provision_venv = true\n"
+        + ('extras = ["test"]\n' if extras_in_spec else "")
+    )
+    (workspace / ".grip" / "workspace_spec.toml").write_text(
+        f'schema_version = 1\nworkspace_name = "m1"\n\n'
+        f'[[repos]]\nname = "{name}"\npath = "sources/{name}"\nurl = "{url}"\n'
+        f'{review_test}'
+        f'\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["{name}"]\n'
+    )
+    grip.grip_init(workspace)
+    prior_cwd = tmp_path / "home"
+    prior_cwd.mkdir()
+    lanes.create_lane(argparse.Namespace(
+        workspace_root=workspace, owner_unit="atlas", lane_name="home", type="feature",
+        repos=name, branch="main", source="test", default_commands=[]))
+    lanes.enter_lane(argparse.Namespace(
+        workspace_root=workspace, owner_unit="atlas", lane_name="home",
+        actor="agent:atlas", notify_channel=False, recall=False))
+    pins = [project_review.ProjectReviewPin(
+        key=name, repo=f"local:{src}", path=f"repos/{name}", base=base, head=head)]
+    spec = project_review.make_spec(workspace, pins)
+    outcome = open_gr_review.open_gr_enter(
+        workspace, "atlas", "review-m1", spec.grip_commit,
+        {name: (src, f"review/{name}")}, prior_cwd=prior_cwd, allow_local=True)
+    assert outcome.status == "opened", outcome
+    return workspace, outcome.review_root, head
+
+
+def test_extras_field_in_the_spec_installs_the_dep_through_the_multi_repo_verify(tmp_path: Path) -> None:
+    # Witness for the [repos.review_test] extras FIELD itself (not the kwarg): the review
+    # runs through record_review_verifications, which reads `extras` from the toml and
+    # passes it on. With `extras = ["test"]` in the spec the dep is installed and the
+    # command records exit 0. Setting the field-read plumbing to extras=None (or dropping
+    # the line) reds this test -- the direct-call tests above cannot, since they never
+    # touch the toml.
+    workspace, review_root, head = _open_extra_repo_review_with_spec_test(
+        tmp_path, "solo", extras_in_spec=True)
+    records = open_gr_review.record_review_verifications(workspace, review_root)
+    assert len(records) == 1
+    assert records[0]["key"] == "solo"
+    assert records[0]["exit_code"] == 0      # the extra from the toml reached provision
+    assert records[0]["provisioned"] is True
+    assert records[0]["head_tested"] == head

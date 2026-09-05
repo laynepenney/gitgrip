@@ -290,13 +290,25 @@ def open_gr_enter(
     return outcome
 
 
-def provision_lane_venv(lane_dir: Path, bootstrap_python: str) -> tuple[str, str]:
+def provision_lane_venv(
+    lane_dir: Path, bootstrap_python: str, extras: list[str] | None = None
+) -> tuple[str, str]:
     """Create a fresh ``.venv`` INSIDE the reviewed lane and install the repo into it
     from its ``pyproject`` (editable), so verification runs under the LANE's OWN
     interpreter rather than the desk's. ``bootstrap_python`` only builds the venv; the
     RETURNED python is the one that then runs the tests, and its editable install makes
     ``import <pkg>`` resolve to the lane checkout. Returns (venv_python, venv_bin_dir).
-    Raises ``OpenGrReviewError`` if venv creation or the editable install fails."""
+
+    ``extras`` names the repo's own optional-dependency extras to install alongside the
+    editable package (``pip install -e ".[e1,e2]"``) -- the mechanism that puts a repo's
+    declared TEST dependencies (``pytest`` and what the tests import) into the lane venv,
+    so ``python -m pytest`` records a real exit 0 instead of failing on a missing
+    dependency. A fresh venv has pip but nothing else; without the extras a declared
+    ``pytest`` command records non-zero, which is the deferred gap this closes. The
+    extras come from the repo's OWN pyproject, so they resolve from wherever the repo
+    already declares them (a local path reference resolves offline).
+
+    Raises ``OpenGrReviewError`` if venv creation or the install fails."""
     lane_dir = Path(lane_dir)
     venv_dir = lane_dir / ".venv"
     bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
@@ -309,13 +321,18 @@ def provision_lane_venv(lane_dir: Path, bootstrap_python: str) -> tuple[str, str
         raise OpenGrReviewError(
             f"lane venv creation failed in {lane_dir}: {create.stderr.strip()}"
         )
+    # One editable install; when extras are declared they ride the SAME install so the
+    # test deps land in the venv, not the desk. A stray extra name pip cannot resolve
+    # fails the install loudly rather than silently leaving the dep absent.
+    target = "." if not extras else f".[{','.join(extras)}]"
     install = subprocess.run(
-        [str(venv_python), "-m", "pip", "install", "-e", "."],
+        [str(venv_python), "-m", "pip", "install", "-e", target],
         cwd=lane_dir, text=True, capture_output=True,
     )
     if install.returncode != 0:
         raise OpenGrReviewError(
-            f"lane venv editable install failed in {lane_dir}: {install.stderr.strip()[-500:]}"
+            f"lane venv editable install ({target}) failed in {lane_dir}: "
+            f"{install.stderr.strip()[-500:]}"
         )
     return str(venv_python), str(bin_dir)
 
@@ -328,6 +345,7 @@ def record_review_verification(
     interpreter: str,
     import_module: str,
     provision_venv: bool = False,
+    extras: list[str] | None = None,
 ) -> dict:
     """Row 4 (run tests inside): run a repo's test COMMAND inside its materialized
     review lane and append a verification record to the project-tier receipt, so
@@ -385,7 +403,7 @@ def record_review_verification(
     # run with the venv's bin on PATH so its `python`/tools resolve to the lane venv too.
     run_env = None
     if provision_venv:
-        venv_python, venv_bin = provision_lane_venv(lane_dir, interpreter)
+        venv_python, venv_bin = provision_lane_venv(lane_dir, interpreter, extras=extras)
         interpreter = venv_python
         run_env = {
             **os.environ,
@@ -505,6 +523,7 @@ def record_review_verifications(workspace: Path, review_root: Path) -> list[dict
                 interpreter=review_test["interpreter"],
                 import_module=review_test["import_module"],
                 provision_venv=bool(review_test.get("provision_venv", False)),
+                extras=list(review_test["extras"]) if review_test.get("extras") else None,
             )
         )
     if not records:
