@@ -416,8 +416,14 @@ def _redirect_mkdtemp(monkeypatch, parent: Path) -> list:
     real = tempfile.mkdtemp
 
     def rec(*args, **kwargs):
-        kwargs["dir"] = str(parent)
-        p = real(*args, **kwargs)
+        # Only redirect open_gr_review's reconstruct scratch (prefix "gr2-reconstruct-");
+        # pass every other mkdtemp through untouched, including the positional
+        # mkdtemp(None, None, None) that tempfile.TemporaryDirectory issues inside the
+        # reconstruction itself -- forcing dir on that call collides with its positional dir.
+        prefix = kwargs.get("prefix") or (args[1] if len(args) > 1 else None)
+        if prefix != "gr2-reconstruct-":
+            return real(*args, **kwargs)
+        p = real(prefix="gr2-reconstruct-", dir=str(parent))
         created.append(Path(p))
         return p
 

@@ -118,3 +118,31 @@ def test_cli_create_project_carry_range_records_the_range(tmp_path: Path) -> Non
     assert plain.exit_code == 0, plain.output
     plain_sha = next(l for l in plain.output.splitlines() if l.startswith("gr:"))[3:].strip()
     assert grip.project_review_carried_keys(ws, plain_sha) == set()
+
+
+def test_cli_carry_range_reconstructs_the_exact_pinned_sha(tmp_path: Path) -> None:
+    # Row 2 through the CLI producer: `create-project --carry-range` also captures each
+    # commit's committer identity+date, so reconstruction is SHA-faithful -- the rebuilt
+    # head equals the pinned pre-push head, not merely its tree. (Range-1 behavior, with
+    # the committer re-stamped, would give a different sha.)
+    ws, _tips = _workspace(tmp_path, ["app"])
+    assert runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",
+                                       "--repos", "app", "--branch", "main"]).exit_code == 0
+    lane_repo = lanes.lane_dir(ws, "atlas", "feature") / "repos" / "app"
+    _git(lane_repo, "config", "user.email", "dev@layne.pro")
+    _git(lane_repo, "config", "user.name", "Layne Penney")
+    (lane_repo / "change.txt").write_text("lane change\n")
+    _git(lane_repo, "add", ".")
+    _git(lane_repo, "commit", "-q", "-m", "lane change")
+    pinned_head = _git(lane_repo, "rev-parse", "HEAD")
+
+    res = runner.invoke(gr2_app.app, ["review", "create-project", str(ws), "atlas", "feature", "--carry-range"])
+    assert res.exit_code == 0, res.output
+    sha = next(l for l in res.output.splitlines() if l.startswith("gr:"))[3:].strip()
+    # the objects subtree carries committer metadata, and the pin's remote holds base.
+    obj_names = grip._grip_git(ws, "ls-tree", "--name-only", f"{sha}:objects/app").stdout.split()
+    assert "committers" in obj_names
+
+    result = grip.reconstruct_project_review_lane(ws, sha, "app", tmp_path / "recon" / "app")
+    assert result["reconstructed_head"] == pinned_head  # SHA-faithful, not merely tree-equal
+    assert result["bound_head"] == pinned_head

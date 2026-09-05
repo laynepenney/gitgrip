@@ -49,13 +49,15 @@ class ProjectReviewOutcome:
 
 
 def make_spec(
-    workspace: Path, pins: list[ProjectReviewPin], ranges: dict[str, str] | None = None
+    workspace: Path, pins: list[ProjectReviewPin], ranges: dict[str, str] | None = None,
+    committers: dict[str, str] | None = None,
 ) -> ProjectReviewSpec:
     ordered = tuple(sorted((_canonical_pin(pin) for pin in pins), key=lambda pin: pin.key))
     if not ordered or len({pin.key for pin in ordered}) != len(ordered):
         raise ValueError("project review pins must be non-empty with unique keys")
     commit = grip.create_project_review_commit(
-        workspace, [{**dataclasses.asdict(pin), "repo": pin.repo} for pin in ordered], ranges=ranges
+        workspace, [{**dataclasses.asdict(pin), "repo": pin.repo} for pin in ordered],
+        ranges=ranges, committers=committers,
     )
     return ProjectReviewSpec("gr2-project-review/v1", commit, ordered)
 
