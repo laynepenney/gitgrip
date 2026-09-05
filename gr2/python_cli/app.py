@@ -1661,10 +1661,53 @@ def pr_create(
         typer.echo(json.dumps(payload, indent=2))
 
 
+@review_app.command("create-project")
+def review_create_project(
+    workspace_root: Path,
+    owner_unit: str = typer.Argument(..., help="Owner unit whose materialized lane to pin"),
+    lane_name: str = typer.Argument(..., help="Materialized lane whose repos to pin at base..head"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """CREATE a project-review-KIND gr commit from a materialized lane and print the
+    ``gr:<sha>`` that `review open-project` consumes.
+
+    This is the producer half of "one gr commit opens one exact multi-repo review":
+    each repo of the lane is pinned at its RECORDED fork base .. current head (the
+    fork-base ruling, never HEAD^), so the review measures exactly what the lane
+    changed. Then open it:
+
+        gr2 review open-project <workspace> gr:<sha> <owner> <review-lane> --enter
+
+    A lane with no recorded fork base, or a repo not materialized, is refused (never
+    silently pinned against a guessed base).
+    """
+    from . import workspace_snapshot as ws_snap
+    ws = workspace_root.resolve()
+    try:
+        pins = project_review.pins_from_lane(ws, owner_unit, lane_name)
+        spec = project_review.make_spec(ws, pins)
+    except (ValueError, ws_snap.WorkspaceSnapshotError) as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(code=2)
+    if json_output:
+        typer.echo(json.dumps({
+            "gr_commit": f"gr:{spec.grip_commit}",
+            "sha": spec.grip_commit,
+            "pins": [
+                {"key": p.key, "repo": p.repo, "path": p.path, "base": p.base, "head": p.head}
+                for p in spec.pins
+            ],
+        }, indent=2))
+    else:
+        typer.echo(f"gr:{spec.grip_commit}")
+        for p in spec.pins:
+            typer.echo(f"  {p.key}: {p.base[:12]}..{p.head[:12]} {p.repo}")
+
+
 @review_app.command("open-project")
 def review_open_project(
     workspace_root: Path,
-    commit: str = typer.Argument(..., help="The project-review-KIND gr commit (gr:<sha> or bare sha)"),
+    commit: str = typer.Argument(..., help="The project-review-KIND gr commit (gr:<sha> or bare sha); create one with `review create-project`"),
     owner_unit: str = typer.Argument(..., help="Owner unit whose lane the review enters"),
     lane_name: str = typer.Argument(..., help="Review lane name to materialize into and enter"),
     enter: bool = typer.Option(False, "--enter", help="Materialize the pinned heads and enter the review lane (the only open mode)"),
