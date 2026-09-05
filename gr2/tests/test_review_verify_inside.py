@@ -153,6 +153,104 @@ def _open_multi_repo_review(tmp_path: Path, names, declared, *, omit_field=None)
     return workspace, outcome.review_root, {n: srcs[n][2] for n in names}
 
 
+def _source_installable(root: Path, name: str) -> tuple[Path, str, str]:
+    """A source repo whose review head carries an INSTALLABLE package (pyproject +
+    setuptools) so `pip install -e .` works and the package imports under the lane's
+    own venv. Returns (source, base_sha, head_sha)."""
+    origin = root / f"{name}.git"
+    _git(root, "init", "--bare", "-b", "main", str(origin))
+    source = root / name
+    _git(root, "clone", "-q", str(origin), str(source))
+    _git(source, "config", "user.email", "t@example.invalid")
+    _git(source, "config", "user.name", "t")
+    (source / "README.md").write_text(f"{name} base\n")
+    _git(source, "add", ".")
+    _git(source, "commit", "-q", "-m", "base")
+    _git(source, "push", "-q", "origin", "main")
+    base = _git(source, "rev-parse", "main")
+    _git(source, "checkout", "-q", "-b", f"review/{name}")
+    pkg = source / f"{name}_pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text('WHERE = "lane"\n')
+    (source / "pyproject.toml").write_text(
+        "[build-system]\nrequires = [\"setuptools>=61\"]\nbuild-backend = \"setuptools.build_meta\"\n"
+        f'[project]\nname = "{name}-lane-pkg"\nversion = "0.0.0"\n'
+        f'[tool.setuptools]\npackages = ["{name}_pkg"]\n'
+    )
+    _git(source, "add", ".")
+    _git(source, "commit", "-q", "-m", "review with installable package")
+    _git(source, "push", "-q", "origin", f"review/{name}")
+    head = _git(source, "rev-parse", f"review/{name}")
+    _git(source, "checkout", "-q", "main")
+    return source, base, head
+
+
+def _open_installable_repo_review(tmp_path: Path, name: str):
+    import argparse
+    workspace = tmp_path / "workspace"
+    (workspace / ".grip").mkdir(parents=True)
+    src, base, head = _source_installable(tmp_path, name)
+    url = _git(src, "remote", "get-url", "origin")
+    (workspace / ".grip" / "workspace_spec.toml").write_text(
+        f'schema_version = 1\nworkspace_name = "m1"\n\n'
+        f'[[repos]]\nname = "{name}"\npath = "sources/{name}"\nurl = "{url}"\n'
+        f'\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["{name}"]\n'
+    )
+    grip.grip_init(workspace)
+    prior_cwd = tmp_path / "home"
+    prior_cwd.mkdir()
+    lanes.create_lane(argparse.Namespace(
+        workspace_root=workspace, owner_unit="atlas", lane_name="home", type="feature",
+        repos=name, branch="main", source="test", default_commands=[]))
+    lanes.enter_lane(argparse.Namespace(
+        workspace_root=workspace, owner_unit="atlas", lane_name="home",
+        actor="agent:atlas", notify_channel=False, recall=False))
+    pins = [project_review.ProjectReviewPin(
+        key=name, repo=f"local:{src}", path=f"repos/{name}", base=base, head=head)]
+    spec = project_review.make_spec(workspace, pins)
+    outcome = open_gr_review.open_gr_enter(
+        workspace, "atlas", "review-m1", spec.grip_commit,
+        {name: (src, f"review/{name}")}, prior_cwd=prior_cwd, allow_local=True)
+    assert outcome.status == "opened", outcome
+    return workspace, outcome.review_root, head
+
+
+def test_provisioned_verification_runs_under_the_lane_venv(tmp_path: Path) -> None:
+    # Lane venv provisioning: with provision_venv, the verification creates the lane's
+    # own .venv from the repo's pyproject and runs the command under it, so BOTH the
+    # recorded interpreter and module_path resolve UNDER the lane -- not the desk's
+    # python whose editable install could import a different tree.
+    _, review_root, head = _open_installable_repo_review(tmp_path, "solo")
+    lane_dir = review_root / "repos" / "solo"
+    # The declared command writes ITS OWN sys.executable into the lane, so we can pin
+    # that the COMMAND (not just the probe) ran under the lane venv.
+    record = open_gr_review.record_review_verification(
+        review_root, "solo",
+        command=["python", "-c",
+                 "import sys, pathlib; pathlib.Path('CMD_PY.txt').write_text(sys.executable); "
+                 "import solo_pkg; sys.exit(0 if solo_pkg.WHERE == 'lane' else 1)"],
+        interpreter=sys.executable,  # bootstrap only; provisioning overrides to the lane venv
+        import_module="solo_pkg",
+        provision_venv=True,
+    )
+    assert record["exit_code"] == 0
+    assert record["provisioned"] is True
+    assert record["head_tested"] == head
+    venv_root = (lane_dir / ".venv").resolve()
+    # the interpreter that ran is the LANE's venv python, not the desk's. Do NOT
+    # resolve() the interpreter: a venv python is a symlink back to the base python,
+    # so resolving would follow it to the desk and hide the whole point.
+    assert venv_root in Path(record["interpreter"]).parents
+    assert record["interpreter"] != sys.executable
+    # the COMMAND itself ran under the lane venv (its recorded sys.executable), not the
+    # desk python on an inherited PATH.
+    cmd_python = (lane_dir / "CMD_PY.txt").read_text().strip()
+    assert venv_root in Path(cmd_python).parents
+    assert cmd_python != sys.executable
+    # and the imported package resolves under the lane
+    assert lane_dir.resolve() in Path(record["module_path"]).resolve().parents
+
+
 def test_multi_repo_records_declared_repos_in_receipt_order(tmp_path: Path) -> None:
     # Mixed case pins both the SKIP and the ORDER: three repos, the middle one
     # undeclared, so exactly two records land, app before tool, each bound to its own
@@ -216,6 +314,9 @@ def test_verification_records_a_green_run_inside_the_lane(tmp_path: Path) -> Non
     )
     assert record["exit_code"] == 0
     assert record["head_tested"] == head
+    # provisioned is DERIVED from the interpreter path; a non-provisioned run (desk
+    # python, no lane .venv) must record False, not carry a request flag.
+    assert record["provisioned"] is False
     lane_dir = review_root / "repos" / "solo"
     # cwd is MEASURED (the probe's os.getcwd()), so compare resolved paths -- on macOS
     # the lane dir under /var/folders resolves through the /private symlink.
