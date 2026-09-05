@@ -177,6 +177,66 @@ jobs:
         env:
           RUSTFLAGS: '-C link-arg=advapi32.lib -C link-arg=/STACK:8388608'
 
+  # ---------------------------------------------------------------------------
+  # EXPLORATORY diagnostic probe. NOT a gate, NOT in the `ci` needs list, NEVER
+  # merged -- the branch carrying this job is pruned once the log is captured.
+  # It instruments the cancel test's server path (spawn / cancel-flag-observed /
+  # whether kill_process was invoked / the child's own exit + time) and runs the
+  # FULL test binary a bounded number of times on windows-latest, because the
+  # concurrent-cancel flake only appears under suite load. The Rust binary itself
+  # appends "[cancel-timeline] ..." lines to GR_CANCEL_TIMELINE_LOG when that env
+  # var is set (no-op otherwise); this job sets it and dumps the raw log. There is
+  # deliberately NO pass/fail summary here -- an in-job counter miscounted a prior
+  # probe (30 exit-0 runs read as "90 non-zero"), so the raw log is the only
+  # trusted output. Two hypotheses, one run: an early exit before the ~120ms cancel
+  # shows as "flag_observed" absent / "kill_invoked" absent with a child_exit on its
+  # own; a tree-kill race shows as "kill_invoked ok=true" with the child still alive.
+  probe-cancel-timeline:
+    name: Probe cancel timeline (under suite load)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build the test binary
+        run: cargo test --test test_mcp_server --no-run
+        env:
+          RUSTFLAGS: '-C link-arg=advapi32.lib -C link-arg=/STACK:8388608'
+
+      - name: Run the full binary under load, logging the cancel timeline
+        shell: bash
+        env:
+          RUSTFLAGS: '-C link-arg=advapi32.lib -C link-arg=/STACK:8388608'
+        run: |
+          set -u
+          # ABSOLUTE path, native-Windows form ($GITHUB_WORKSPACE, e.g. D:\a\grip\grip).
+          # The server child is spawned with .current_dir(<per-test tempdir>), so a
+          # RELATIVE log path lands in that tempdir and is cleaned up before the dump
+          # step runs (v2 captured an empty log for exactly this reason). An absolute
+          # path is written regardless of the child's cwd. Persist it to GITHUB_ENV so
+          # the dump step reads the identical path.
+          LOG="$GITHUB_WORKSPACE/cancel-timeline.log"
+          echo "GR_CANCEL_TIMELINE_LOG=$LOG" >> "$GITHUB_ENV"
+          export GR_CANCEL_TIMELINE_LOG="$LOG"
+          : > "$LOG"
+          for i in $(seq 1 8); do
+            echo "[run $i] ==== starting full test_mcp_server ===="
+            cargo test --test test_mcp_server --no-fail-fast || echo "[run $i] cargo exit $?"
+          done
+
+      - name: Dump the raw cancel-timeline log
+        if: always()
+        shell: bash
+        run: |
+          echo "==== cancel-timeline.log (raw) ===="
+          cat "$GR_CANCEL_TIMELINE_LOG" || echo "(log absent)"
+
   build:
     name: Build Release
     runs-on: ubuntu-latest
