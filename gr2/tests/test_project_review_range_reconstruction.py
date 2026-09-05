@@ -12,12 +12,24 @@ sha so row 2 has its before/after.
 """
 from __future__ import annotations
 
+import argparse
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from gr2.python_cli import grip
+from gr2.prototypes import lane_workspace_prototype as lanes
+from gr2.python_cli import grip, open_gr_review
+
+
+@pytest.fixture
+def _isolated_review_cache(tmp_path, monkeypatch):
+    """open_gr_enter(sources=None) resolves each source through the SHARED per-host
+    review mirror; point it at a per-test dir so a stale mirror from another test never
+    answers, and drop the profile dir so there is no gripspace sparse fallback."""
+    monkeypatch.setenv("SYNAPT_REVIEW_CACHE_ROOT", str(tmp_path / "review-cache"))
+    monkeypatch.delenv("SYNAPT_REVIEW_PROFILE_DIR", raising=False)
 
 
 def _git(cwd: Path, *a: str) -> str:
@@ -208,3 +220,59 @@ def test_reconstruct_project_review_lane_refuses_a_non_project_commit(tmp_path: 
         ws, [{"key": "alpha", "remote": remote, "path": "repos/alpha", "commit": head, "base": base}])
     with pytest.raises(grip.GripCorruptError, match="project review"):
         grip.reconstruct_project_review_lane(ws, wrong, "alpha", tmp_path / "lane" / "alpha")
+
+
+def test_open_gr_enter_reconstructs_a_carried_range_end_to_end(tmp_path: Path, _isolated_review_cache) -> None:
+    # The verb path, end to end: a reviewer with NEITHER the pre-push head NOR a clone
+    # that holds it opens the review from the carrying gr commit ALONE. open_gr_enter
+    # with sources=None and no local_sources must reconstruct each carried range INSIDE
+    # the verb (clone remote at base, git am the carried range, re-stamp), materialize
+    # the reconstructed head, and record it -- the tree equal to the pinned head's tree,
+    # asserted TREE not sha because git am re-stamps the committer. Until this test the
+    # reconstruction was witnessed only at grip.reconstruct_project_review_lane (the
+    # helper); the open_gr_enter carried branch (open_gr_review.py, `carried = ... if
+    # sources is None`) was exercised by no committed test. The remote carries only base
+    # (the head is NEVER pushed), so a silent fallback to the remote or to a full clone
+    # would fail to produce the head at all -- reconstruction is the only path that can.
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    remote, base, head, head_tree, range_patch = _base_remote_and_range(tmp_path)
+    (ws / ".grip" / "workspace_spec.toml").write_text(
+        'schema_version = 1\nworkspace_name = "m1"\n\n'
+        f'[[repos]]\nname = "alpha"\npath = "sources/alpha"\nurl = "{remote}"\n'
+        '\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["alpha"]\n'
+    )
+    grip.grip_init(ws)
+    commit = grip.create_project_review_commit(
+        ws,
+        [{"key": "alpha", "repo": remote, "path": "repos/alpha", "base": base, "head": head}],
+        ranges={"alpha": range_patch},
+    )
+    prior_cwd = tmp_path / "home"
+    prior_cwd.mkdir()
+    lanes.create_lane(argparse.Namespace(
+        workspace_root=ws, owner_unit="atlas", lane_name="home", type="feature",
+        repos="alpha", branch="main", source="test", default_commands=[],
+    ))
+    lanes.enter_lane(argparse.Namespace(
+        workspace_root=ws, owner_unit="atlas", lane_name="home",
+        actor="agent:atlas", notify_channel=False, recall=False,
+    ))
+
+    # sources=None, NO local_sources: the head exists nowhere but as the carried range.
+    outcome = open_gr_review.open_gr_enter(
+        ws, "atlas", "review-carry", commit, None, prior_cwd=prior_cwd, allow_local=True,
+    )
+    assert outcome.status == "opened", outcome
+    lane_repo = outcome.review_root / "repos" / "alpha"
+    # the reconstructed tree equals the pinned head's tree (the git am produced it)
+    assert _git(lane_repo, "rev-parse", "HEAD^{tree}") == head_tree
+    # the range's added file is present -> the range actually applied, not a no-op
+    assert (lane_repo / "new.txt").read_text() == "added by the review\n"
+    # the receipt records the reconstructed head beside the pinned head (row 2's
+    # before/after) -- proof the carried branch, not the plain-clone branch, ran
+    receipt = json.loads(open_gr_review.open_gr_receipt_path(outcome.review_root).read_text())
+    alpha = next(r for r in receipt["repos"] if r["key"] == "alpha")
+    assert "reconstructed_head" in alpha and alpha["reconstructed_head"] != ""
+    assert alpha["head"] == head  # the pinned head sha is still what the gr commit binds
+    assert lanes.require_current_lane(ws, "atlas")["lane_name"] == "review-carry"
