@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -289,6 +290,36 @@ def open_gr_enter(
     return outcome
 
 
+def provision_lane_venv(lane_dir: Path, bootstrap_python: str) -> tuple[str, str]:
+    """Create a fresh ``.venv`` INSIDE the reviewed lane and install the repo into it
+    from its ``pyproject`` (editable), so verification runs under the LANE's OWN
+    interpreter rather than the desk's. ``bootstrap_python`` only builds the venv; the
+    RETURNED python is the one that then runs the tests, and its editable install makes
+    ``import <pkg>`` resolve to the lane checkout. Returns (venv_python, venv_bin_dir).
+    Raises ``OpenGrReviewError`` if venv creation or the editable install fails."""
+    lane_dir = Path(lane_dir)
+    venv_dir = lane_dir / ".venv"
+    bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
+    venv_python = bin_dir / ("python.exe" if os.name == "nt" else "python")
+    create = subprocess.run(
+        [bootstrap_python, "-m", "venv", str(venv_dir)],
+        cwd=lane_dir, text=True, capture_output=True,
+    )
+    if create.returncode != 0:
+        raise OpenGrReviewError(
+            f"lane venv creation failed in {lane_dir}: {create.stderr.strip()}"
+        )
+    install = subprocess.run(
+        [str(venv_python), "-m", "pip", "install", "-e", "."],
+        cwd=lane_dir, text=True, capture_output=True,
+    )
+    if install.returncode != 0:
+        raise OpenGrReviewError(
+            f"lane venv editable install failed in {lane_dir}: {install.stderr.strip()[-500:]}"
+        )
+    return str(venv_python), str(bin_dir)
+
+
 def record_review_verification(
     review_root: Path,
     key: str,
@@ -296,6 +327,7 @@ def record_review_verification(
     command: list[str],
     interpreter: str,
     import_module: str,
+    provision_venv: bool = False,
 ) -> dict:
     """Row 4 (run tests inside): run a repo's test COMMAND inside its materialized
     review lane and append a verification record to the project-tier receipt, so
@@ -346,10 +378,25 @@ def record_review_verification(
             f"materialized lane dir missing for {key!r}: {lane_dir}"
         )
 
+    # When the spec asks for it, provision the lane's OWN venv and run under it, so the
+    # verification interpreter is the reviewed checkout's python -- not the desk's whose
+    # editable install could import a different tree's package. `interpreter` is
+    # overridden to the lane venv python (the probe then reports IT), and the command is
+    # run with the venv's bin on PATH so its `python`/tools resolve to the lane venv too.
+    run_env = None
+    if provision_venv:
+        venv_python, venv_bin = provision_lane_venv(lane_dir, interpreter)
+        interpreter = venv_python
+        run_env = {
+            **os.environ,
+            "PATH": venv_bin + os.pathsep + os.environ.get("PATH", ""),
+            "VIRTUAL_ENV": str(Path(venv_bin).parent),
+        }
+
     # Run the tests inside the reviewed checkout; capture the REAL exit code. Both
     # this run and the probe below take the SAME `lane_dir` cwd variable, so the cwd
     # the probe MEASURES is the cwd the tests ran under.
-    exit_code = subprocess.run(command, cwd=lane_dir).returncode
+    exit_code = subprocess.run(command, cwd=lane_dir, env=run_env).returncode
 
     # Probe, under the SAME interpreter and cwd, for the python, the package file, and
     # the working directory that actually resolve here. `cwd` is recorded from the
@@ -357,32 +404,42 @@ def record_review_verification(
     # where the command ran rather than copying the intended path from the request; and
     # module_path exposes (not hides) a stale editable install that reaches outside the
     # lane.
-    probe = subprocess.run(
-        [
-            interpreter,
-            "-c",
-            "import sys, os, importlib; "
-            f"m = importlib.import_module({import_module!r}); "
-            "print(sys.executable); print(m.__file__); print(os.getcwd())",
-        ],
-        cwd=lane_dir,
-        text=True,
-        capture_output=True,
-    )
+    probe_args = [interpreter]
+    if provision_venv:
+        # -P (3.11+) drops the cwd/'' entry from sys.path, so `import <pkg>` must
+        # resolve through the lane venv's editable install rather than through the cwd
+        # copy that a plain `python -c` puts first. Without it the editable install is
+        # untested: module_path reads "lane" even if the install never ran.
+        probe_args.append("-P")
+    probe_args += [
+        "-c",
+        "import sys, os, importlib; "
+        f"m = importlib.import_module({import_module!r}); "
+        "print(sys.executable); print(m.__file__); print(os.getcwd())",
+    ]
+    probe = subprocess.run(probe_args, cwd=lane_dir, text=True, capture_output=True)
     if probe.returncode != 0:
         raise OpenGrReviewError(
             f"interpreter/module probe for {import_module!r} under {interpreter} "
             f"failed (exit {probe.returncode}): {probe.stderr.strip()}"
         )
     probe_lines = probe.stdout.splitlines()
+    measured_interpreter = probe_lines[0] if probe_lines else ""
+    # DERIVE provisioned from the interpreter that actually ran, not from the request:
+    # it is true iff the python that ran is under the lane's own .venv. A copied-from-
+    # request flag would read true even if provisioning silently no-op'd.
+    provisioned = bool(measured_interpreter) and (
+        (lane_dir.resolve() / ".venv") in Path(measured_interpreter).parents
+    )
     record = {
         "key": key,
         "command": list(command),
         "exit_code": exit_code,
         "head_tested": head_tested,
         "cwd": probe_lines[2] if len(probe_lines) > 2 else "",
-        "interpreter": probe_lines[0] if probe_lines else "",
+        "interpreter": measured_interpreter,
         "module_path": probe_lines[1] if len(probe_lines) > 1 else "",
+        "provisioned": provisioned,
     }
     receipt.setdefault("verification", []).append(record)
     receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
@@ -447,6 +504,7 @@ def record_review_verifications(workspace: Path, review_root: Path) -> list[dict
                 command=list(review_test["command"]),
                 interpreter=review_test["interpreter"],
                 import_module=review_test["import_module"],
+                provision_venv=bool(review_test.get("provision_venv", False)),
             )
         )
     if not records:
