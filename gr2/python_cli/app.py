@@ -16,7 +16,7 @@ from gr2.prototypes import repo_maintenance_prototype as repo_proto
 from . import add as add_ops
 from . import branch as branch_ops
 from . import commit as commit_ops
-from . import execops, failures, migration, spec_apply, syncops
+from . import execops, failures, grip, migration, spec_apply, syncops
 from . import pr as pr_ops
 from . import project_review
 from . import push as push_ops
@@ -108,7 +108,7 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             continue
         ctx = HookContext(
             workspace_root=workspace_root,
-            unit_root=workspace_root / "agents" / owner_unit,
+            unit_root=lane_proto.lane_state_root(workspace_root) / owner_unit,
             lane_root=lane_root,
             repo_root=target_repo_root,
             repo_name=repo_name,
@@ -142,7 +142,7 @@ def _run_lane_stage(workspace_root: Path, owner_unit: str, lane_name: str, stage
             continue
         ctx = HookContext(
             workspace_root=workspace_root,
-            unit_root=workspace_root / "agents" / owner_unit,
+            unit_root=lane_proto.lane_state_root(workspace_root) / owner_unit,
             lane_root=lane_root,
             repo_root=repo_root,
             repo_name=repo_name,
@@ -592,6 +592,31 @@ def workspace_status_cmd(
         typer.echo(migration.render_status(payload))
 
 
+@workspace_app.command("convert-clone")
+def workspace_convert_clone_cmd(
+    path: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Convert a linked git worktree at PATH into an own clone, in place.
+
+    Refuses a dirty tree, a symlinked .git, or a path that is not a linked
+    worktree at all -- gr does not support worktree-backed repos.
+    """
+    try:
+        receipt = repo_proto.convert_worktree_to_clone(path.resolve())
+    except repo_proto.ConvertCloneError as exc:
+        typer.echo(f"convert-clone refused: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if json_output:
+        typer.echo(json.dumps(receipt, indent=2))
+    else:
+        typer.echo(f"Converted {receipt['path']} from a linked worktree to an own clone.")
+        typer.echo(f"  branch: {receipt['branch']}")
+        typer.echo(f"  head:   {receipt['head_sha']}")
+        typer.echo(f"  was linked to: {receipt['old_common_dir']}")
+
+
 @workspace_app.command("detect-gr1")
 def workspace_detect_gr1(
     workspace_root: Path,
@@ -638,22 +663,68 @@ def workspace_migrate_gr1(
             typer.echo(f"\nSpec validation failed: {len(payload.get('validation_errors', []))} error(s).")
 
 
+@workspace_app.command("migrate-lane-state")
+def workspace_migrate_lane_state(
+    workspace_root: Path,
+    receipt: Path = typer.Option(..., "--receipt", help="New receipt path naming every lane tree the migration moved"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Move legacy agents/<unit>/lanes/<lane>/ trees to .grip/state/lanes/<unit>/<lane>/ once, with a receipt."""
+    workspace_root = workspace_root.resolve()
+    payload = migration.migrate_lane_state(workspace_root, receipt_path=receipt)
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        count = payload["count"]
+        typer.echo(f"Migrated {count} lane tree(s) to .grip/state/lanes/; receipt at {receipt}")
+        for row in payload["moved"]:
+            typer.echo(f"  {row['source']} -> {row['dest']} ({row['files']} file(s))")
+
+
 @workspace_app.command("bootstrap-gr1")
 def workspace_bootstrap_gr1(
     workspace_root: Path,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    regenerate: bool = typer.Option(False, "--regenerate", help="Atomically regenerate an existing generated spec"),
+    expected_spec_sha256: Optional[str] = typer.Option(None, "--expected-spec-sha256"),
+    receipt: Optional[Path] = typer.Option(None, "--receipt"),
+    rollback_receipt: Optional[Path] = typer.Option(None, "--rollback-receipt"),
+    expected_current_spec_sha256: Optional[str] = typer.Option(None, "--expected-current-spec-sha256"),
 ) -> None:
     """Compile the canonical gr1 manifest and initialize the gr2 grip store."""
     workspace_root = workspace_root.resolve()
-    payload = migration.bootstrap_gr1_workspace(workspace_root)
+    if rollback_receipt is not None:
+        if regenerate or expected_spec_sha256 is not None:
+            raise typer.BadParameter("--rollback-receipt is mutually exclusive with regeneration inputs")
+        if expected_current_spec_sha256 is None or receipt is None:
+            raise typer.BadParameter("--rollback-receipt requires --expected-current-spec-sha256 and --receipt")
+        payload = migration.rollback_gr1_workspace(
+            workspace_root,
+            rollback_receipt_path=rollback_receipt,
+            expected_current_spec_sha256=expected_current_spec_sha256,
+            receipt_path=receipt,
+        )
+    elif regenerate:
+        if expected_spec_sha256 is None or receipt is None:
+            raise typer.BadParameter("--regenerate requires --expected-spec-sha256 and --receipt")
+        payload = migration.regenerate_gr1_workspace(workspace_root, expected_spec_sha256=expected_spec_sha256, receipt_path=receipt)
+    else:
+        payload = migration.bootstrap_gr1_workspace(workspace_root)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:
-        typer.echo("Gr1Bootstrap")
-        for key in ("status", "workspace_root", "manifest_path", "workspace_spec_path", "grip_repo_path"):
-            typer.echo(f"{key} = {payload[key]}")
-        typer.echo(f"repo_count = {payload['repo_count']}")
-        typer.echo(f"unit_count = {payload['unit_count']}")
+        # Render each payload by its OWN keys. bootstrap, regenerate and rollback
+        # return different schemas (rollback has no manifest_path, regenerate has
+        # no repo_count); a fixed key list raised KeyError after a successful
+        # mutation, exiting 1 on a completed rollback. Print scalars in order;
+        # json-encode nested values so nothing is dropped.
+        typer.echo(str(payload.get("schema", "Gr1Bootstrap")))
+        for key, value in payload.items():
+            if key == "schema":
+                continue
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value)
+            typer.echo(f"{key} = {value}")
 
 
 @spec_app.command("show")
@@ -772,10 +843,52 @@ def commit_cmd(
     repo_path: Path | None = typer.Option(
         None,
         "--repo-path",
-        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo)",
+        help="Repo to operate on (defaults to cwd; single-repo)",
+    ),
+    workspace_root: Path | None = typer.Option(
+        None,
+        "--workspace-root",
+        help="Lane-aware: commit each repo of a lane in this workspace (requires --owner-unit)",
+    ),
+    owner_unit: str | None = typer.Option(
+        None,
+        "--owner-unit",
+        help="Lane-aware: the unit whose lane to commit across",
+    ),
+    lane_name: str | None = typer.Option(
+        None,
+        "--lane",
+        help="Lane-aware: lane name (defaults to the unit's current lane)",
     ),
 ) -> None:
-    """Create or amend one commit from the staged index."""
+    """Create or amend a commit from the staged index.
+
+    Single-repo by default (cwd or --repo-path). With --workspace-root and
+    --owner-unit, commits each repo of a materialized lane under one message
+    (bound lanes stay single-repo).
+    """
+    lane_mode = workspace_root is not None and owner_unit is not None
+    if lane_mode and repo_path is not None:
+        typer.echo("Error: --repo-path is single-repo; do not combine it with --workspace-root/--owner-unit", err=True)
+        raise typer.Exit(code=1)
+    if lane_mode:
+        try:
+            report = commit_ops.commit_lane(
+                workspace_root, owner_unit, message, lane_name=lane_name, amend=amend
+            )
+        except commit_ops.CommitError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        for row in report.results:
+            if row.status == "committed":
+                typer.echo(f"{row.repo}: committed {row.commit_sha}")
+            elif row.status == "skipped_empty":
+                typer.echo(f"{row.repo}: skipped (empty index)")
+            else:
+                typer.echo(f"{row.repo}: FAILED — {row.error}")
+        if report.any_failed:
+            raise typer.Exit(code=1)
+        return
     target = (repo_path or Path.cwd()).resolve()
     try:
         receipt = commit_ops.create_commit(target, message, amend=amend)
@@ -980,47 +1093,76 @@ def lane_create(
     owner_unit: str,
     lane_name: str,
     repos: str = typer.Option(..., help="Comma-separated repo names"),
-    branch: str = typer.Option(..., help="Default branch or repo=branch mappings"),
+    branch: Optional[str] = typer.Option(None, help="Default branch or repo=branch mappings (required unless --bind; ignored with --bind, where the branch is read from the bound worktree)"),
     lane_type: str = typer.Option("feature", "--type", help="Lane type"),
     source: str = typer.Option("manual", help="Creation source label"),
     command: list[str] = typer.Option(None, "--command", help="Default command for the lane"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual during lane materialization"),
+    bind: Optional[Path] = typer.Option(None, "--bind", help="Bind the lane to an EXISTING clean, non-detached single-repo worktree instead of materializing a fresh clone (gr2-lane-author-shape ruling). The receipt is stamped lane_kind=bound."),
 ) -> None:
-    """Create a lane."""
+    """Create a lane and materialize its repos.
+
+    A materialized lane clones each repo and records the fork base (the point it
+    forked from its integration branch) — the base a review measures from. Once you
+    have committed work in the lane, `review create-project <workspace> <owner>
+    <lane>` pins each repo at that fork base .. head and prints the gr:<sha> for
+    `review open-project`. A `--bind` lane owns no clone and is single-repo.
+    """
     workspace_root = workspace_root.resolve()
+    if bind is None and not branch:
+        raise typer.BadParameter("--branch is required unless --bind is given")
     ns = SimpleNamespace(
         workspace_root=workspace_root,
         owner_unit=owner_unit,
         lane_name=lane_name,
         repos=repos,
-        branch=branch,
+        branch=branch or "",
         type=lane_type,
         source=source,
         default_commands=command or [],
+        bind=str(bind) if bind is not None else None,
     )
     _exit(lane_proto.create_lane(ns))
-    _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks)
+    # A bound lane owns no clone: skip materialization. The branch_map for the
+    # event comes from the lane document create_lane just wrote (derived from the
+    # bound worktree), not from the --branch arg, which --bind ignores.
+    if bind is None:
+        _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks)
     repo_list = [r.strip() for r in repos.split(",")]
-    branch_parts = branch.split(",")
-    branch_map = {}
-    for part in branch_parts:
-        if "=" in part:
-            k, v = part.split("=", 1)
-            branch_map[k.strip()] = v.strip()
-        else:
-            for r in repo_list:
-                branch_map[r] = part.strip()
+    # The event payload carries lane_kind (and bound_worktree for a bound lane)
+    # so an event-stream consumer can tell a bound lane from a materialized one
+    # without a second read of lane.toml.
+    lane_kind = "materialized"
+    bound_worktree_payload: Optional[str] = None
+    if bind is not None:
+        doc = tomllib.loads(lane_proto.lane_file(workspace_root, owner_unit, lane_name).read_text())
+        branch_map = doc.get("branch_map", {})
+        lane_kind = doc.get("lane_kind", "bound")
+        bound_worktree_payload = doc.get("bound_worktree")
+    else:
+        branch_map = {}
+        for part in (branch or "").split(","):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                branch_map[k.strip()] = v.strip()
+            else:
+                for r in repo_list:
+                    branch_map[r] = part.strip()
+    payload: dict[str, object] = {
+        "lane_name": lane_name,
+        "lane_type": lane_type,
+        "lane_kind": lane_kind,
+        "repos": repo_list,
+        "branch_map": branch_map,
+    }
+    if bound_worktree_payload is not None:
+        payload["bound_worktree"] = bound_worktree_payload
     emit_after_outcome(
         event_type=EventType.LANE_CREATED,
         workspace_root=workspace_root,
         actor=source,
         owner_unit=owner_unit,
-        payload={
-            "lane_name": lane_name,
-            "lane_type": lane_type,
-            "repos": repo_list,
-            "branch_map": branch_map,
-        },
+        payload=payload,
     )
 
 
@@ -1169,6 +1311,42 @@ def lane_current(
         json=json_output,
     )
     _exit(lane_proto.current_lane(ns))
+
+
+@lane_app.command("bind")
+def lane_bind(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    base: Optional[str] = typer.Option(None, "--base", help="Base SHA the reviewed range is measured from: a full 40-hex commit that is an ancestor of the worktree head. Omit to read the lane's recorded fork base; an explicit --base wins. A lane with no recorded fork base and no --base refuses."),
+    allow_local: bool = typer.Option(False, "--allow-local", help="Allow a non-portable local: identity for a worktree with no GitHub origin (test/local use)"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Bind a review receipt for a BOUND lane, sourced live from its worktree.
+
+    Re-checks the bound worktree is a clean, non-detached git checkout whose HEAD
+    has NOT drifted from the head recorded at create, then writes the
+    (repo, base, head, lane_kind=bound) receipt into the worktree's own .git. A
+    moved HEAD, a dirty tree, or a base that is not an ancestor commit of head
+    refuses. When --base is omitted the base is the lane's recorded fork base (the
+    review base is never HEAD^); an explicit --base wins. Only for lanes created
+    with ``lane create --bind``.
+    """
+    base_source = "explicit --base" if base is not None else "lane fork base"
+    try:
+        record = lane_proto.bind_bound_lane(
+            workspace_root.resolve(), owner_unit, lane_name, base=base, allow_local=allow_local
+        )
+    except SystemExit as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2)
+    if json_output:
+        typer.echo(json.dumps(record.to_dict(), indent=2))
+    else:
+        typer.echo(
+            f"bound review receipt: repo={record.repo} base={record.base} "
+            f"head={record.head} (base from {base_source})"
+        )
 
 
 @lease_app.command("acquire")
@@ -1448,6 +1626,22 @@ def pr_create(
     workspace_root = workspace_root.resolve()
     resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, resolved_lane)
+    # A bound lane's PR is opened FROM the author's worktree, not a materialized
+    # clone, so it routes to the push-from-worktree path (verb #4): push the
+    # reviewed head, refusing an empty range. It does not use the group/adapter
+    # flow, which assumes materialized per-repo clones.
+    if lane_doc.get("lane_kind") == "bound":
+        try:
+            receipt = lane_proto.pr_create_bound_lane(workspace_root, owner_unit, resolved_lane)
+        except SystemExit as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2)
+        pushed = {
+            "lane_kind": "bound", "lane": resolved_lane, "remote": receipt.remote,
+            "branch": receipt.branch, "head": receipt.remote_sha,
+        }
+        typer.echo(json.dumps(pushed, indent=2))
+        return
     spec = lane_proto.load_workspace_spec(workspace_root)
     adapter = get_platform_adapter(platform)
     branch_map = dict(lane_doc.get("branch_map", {}))
@@ -1474,23 +1668,297 @@ def pr_create(
         typer.echo(json.dumps(payload, indent=2))
 
 
+@review_app.command("create-project")
+def review_create_project(
+    workspace_root: Path,
+    owner_unit: str = typer.Argument(..., help="Owner unit whose materialized lane to pin"),
+    lane_name: str = typer.Argument(..., help="Materialized lane whose repos to pin at base..head"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """CREATE a project-review-KIND gr commit from a materialized lane and print the
+    ``gr:<sha>`` that `review open-project` consumes.
+
+    This is the producer half of "one gr commit opens one exact multi-repo review":
+    each repo of the materialized lane (see `lane create`, which records the fork
+    base) is pinned at its RECORDED fork base .. current head (the fork-base ruling,
+    never HEAD^), so the review measures exactly what the lane changed. Then open it:
+
+        gr2 review open-project <workspace> gr:<sha> <owner> <review-lane> --enter
+
+    A lane with no recorded fork base, or a repo not materialized, is refused (never
+    silently pinned against a guessed base).
+    """
+    from . import workspace_snapshot as ws_snap
+    ws = workspace_root.resolve()
+    try:
+        pins = project_review.pins_from_lane(ws, owner_unit, lane_name)
+        spec = project_review.make_spec(ws, pins)
+    except (ValueError, ws_snap.WorkspaceSnapshotError) as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(code=2)
+    if json_output:
+        typer.echo(json.dumps({
+            "gr_commit": f"gr:{spec.grip_commit}",
+            "sha": spec.grip_commit,
+            "pins": [
+                {"key": p.key, "repo": p.repo, "path": p.path, "base": p.base, "head": p.head}
+                for p in spec.pins
+            ],
+        }, indent=2))
+    else:
+        typer.echo(f"gr:{spec.grip_commit}")
+        for p in spec.pins:
+            typer.echo(f"  {p.key}: {p.base[:12]}..{p.head[:12]} {p.repo}")
+
+
 @review_app.command("open-project")
 def review_open_project(
     workspace_root: Path,
-    owner_unit: str,
-    lane_name: str,
-    spec_json: Path = typer.Option(..., "--spec-json", help="Strict ProjectReviewSpec JSON"),
-    sources_json: Path = typer.Option(..., "--sources-json", help="Ephemeral key -> {source, branch} JSON"),
+    commit: str = typer.Argument(..., help="The project-review-KIND gr commit (gr:<sha> or bare sha); create one with `review create-project`"),
+    owner_unit: str = typer.Argument(..., help="Owner unit whose lane the review enters"),
+    lane_name: str = typer.Argument(..., help="Review lane name to materialize into and enter"),
+    enter: bool = typer.Option(False, "--enter", help="Materialize the pinned heads and enter the review lane (the only open mode)"),
+    sources_json: Optional[Path] = typer.Option(None, "--sources-json", help="Ephemeral key -> {source, branch} JSON for pre-push heads; OMIT to resolve each source from the pin's recorded remote"),
+    prior_cwd: Optional[Path] = typer.Option(None, "--prior-cwd", help="Directory to restore on `review exit-gr` (defaults to the current directory)"),
+    allow_local: bool = typer.Option(False, "--allow-local", help="Permit filesystem repository identities (fixtures/tests)"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Open a project review from an immutable spec plus ephemeral transport."""
-    raw = json.loads(spec_json.read_text())
-    pins = tuple(project_review.ProjectReviewPin(**pin) for pin in raw["pins"])
-    spec = project_review.ProjectReviewSpec(raw["schema"], raw["grip_commit"], pins)
-    source_rows = json.loads(sources_json.read_text())
-    sources = {key: (Path(row["source"]), row["branch"]) for key, row in source_rows.items()}
-    outcome = project_review.open_project_review(workspace=workspace_root.resolve(), owner_unit=owner_unit, lane_name=lane_name, spec=spec, sources=sources, allow_local=False)
-    typer.echo(json.dumps(project_review.outcome_payload(outcome), indent=2))
+    """MATERIALIZE a project review from a project-review-KIND gr commit and enter it.
+
+    Clones each pinned head from its RECORDED REMOTE (or from --sources-json for a
+    pre-push head not yet published), enters the review lane, and writes a receipt so
+    `review exit-gr` restores the prior lane and cwd. Contrast `review open-gr`, which
+    RECONSTRUCTS a review-BIND commit by `git am` over a carried range and asserts the
+    tree equals the bound head-tree. A commit of the wrong kind is refused, naming the
+    kind it found.
+    """
+    if not enter:
+        raise typer.BadParameter("--enter is required (materialization is the only open mode)")
+    from . import open_gr_review
+    sha = _strip_gr_prefix(commit)
+    sources = None
+    if sources_json is not None:
+        source_rows = json.loads(sources_json.read_text())
+        sources = {key: (Path(row["source"]), row["branch"]) for key, row in source_rows.items()}
+    outcome = _review_call(
+        open_gr_review.open_gr_enter,
+        workspace_root.resolve(), owner_unit, lane_name, sha, sources,
+        prior_cwd=(prior_cwd.resolve() if prior_cwd is not None else Path.cwd()),
+        allow_local=allow_local,
+    )
+    if json_output:
+        typer.echo(json.dumps(project_review.outcome_payload(outcome), indent=2))
+    else:
+        typer.echo(f"status={outcome.status} lane={lane_name} review_root={outcome.review_root}")
     if outcome.status != "opened":
+        raise typer.Exit(code=1)
+
+
+@review_app.command("exit-gr")
+def review_exit_gr(
+    workspace_root: Path,
+    owner_unit: str = typer.Argument(..., help="Owner unit whose review lane to exit"),
+    review_root: Path = typer.Argument(..., help="The review lane root written by `open-project --enter` (holds .grip-open-gr.json)"),
+    actor: str = typer.Option("agent:cli", "--actor", help="Actor recorded for the lane exit"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Exit a MATERIALIZED project review opened by `open-project --enter`: pop the
+    review lane and restore the prior lane, returning the prior cwd from the receipt.
+    This is the project-tier exit; `review close` drops a single-repo `review open` lane.
+    """
+    from . import open_gr_review
+    result = open_gr_review.exit_gr_review(
+        workspace_root.resolve(), owner_unit, review_root.resolve(), actor=actor
+    )
+    if json_output:
+        typer.echo(json.dumps({
+            "restored_lane": result.restored_lane,
+            "restored_cwd": result.restored_cwd,
+            "gr_commit": result.gr_commit,
+        }, indent=2))
+    else:
+        typer.echo(f"restored_lane={result.restored_lane} restored_cwd={result.restored_cwd}")
+
+
+def _strip_gr_prefix(commit: str) -> str:
+    """A review commit is addressed as ``gr:<sha>``; accept a bare sha too."""
+    return commit[3:] if commit.startswith("gr:") else commit
+
+
+def _review_call(fn, *args, **kwargs):
+    """Run an engine review function, converting a refusal or corruption into a
+    clean nonzero exit (code 2) with real error text on stderr — never a
+    traceback. The thin CLI is glue over the engine, and glue is exactly where a
+    caught exception can turn into a silent success; this makes the loud engine
+    failure surface loudly, not swallowed and not as a Python stack trace."""
+    try:
+        return fn(*args, **kwargs)
+    except grip.GripReviewRefused as exc:
+        typer.echo(
+            f"refused: {exc.refusal}: expected {exc.expected!r}, observed {exc.observed!r}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    except grip.GripCorruptError as exc:
+        typer.echo(f"corrupt: {exc}", err=True)
+        raise typer.Exit(code=2)
+    except grip.GripInitError as exc:
+        # The engine's own message already names what's missing and where
+        # (workspace path included); add the remediation verb rather than
+        # re-deriving the diagnosis, since _validate_grip_repo already did
+        # the naming precisely.
+        typer.echo(f"not_initialized: {exc} Run `gr2 grip init` to create it.", err=True)
+        raise typer.Exit(code=2)
+
+
+_ROW_REQUIRED = ("key", "remote", "base", "head")
+# Every field of a rows-json entry is a string; a JSON number/bool/null/object
+# in any of them must refuse cleanly, not traceback downstream on a string op.
+_ROW_STRING_FIELDS = ("key", "remote", "base", "head", "path", "ref", "title", "body", "source")
+
+
+def _normalize_review_row(raw: object) -> dict:
+    """Fill a rows-json entry to the shape create_review_bind_commit expects:
+    key/remote/base/head required; path defaults to key, ref to refs/heads/dev,
+    title/body to empty, source resolved to an absolute path when present."""
+    if not isinstance(raw, dict):
+        raise typer.BadParameter(f"each rows-json entry must be a JSON object, got {type(raw).__name__}")
+    # Type BEFORE presence: a number in a string field is a wrong-type error, not
+    # a missing one, and must be named before the string ops downstream see it.
+    for f in _ROW_STRING_FIELDS:
+        if f in raw and not isinstance(raw[f], str):
+            raise typer.BadParameter(
+                f"rows-json entry {raw.get('key', '?')!r} field {f!r} must be a string, "
+                f"got {type(raw[f]).__name__}"
+            )
+    missing = [f for f in _ROW_REQUIRED if not raw.get(f)]
+    if missing:
+        raise typer.BadParameter(f"rows-json entry {raw.get('key', '?')!r} is missing {', '.join(missing)}")
+    row = {
+        "key": raw["key"], "remote": raw["remote"], "base": raw["base"], "head": raw["head"],
+        "path": raw.get("path") or raw["key"], "ref": raw.get("ref", "refs/heads/dev"),
+        "title": raw.get("title", ""), "body": raw.get("body", ""),
+    }
+    if raw.get("source"):
+        row["source"] = str(Path(raw["source"]).resolve())
+    return row
+
+
+@review_app.command("bind")
+def review_bind(
+    workspace_root: Path,
+    key: Optional[str] = typer.Option(None, "--repo", help="Repository key for a single bound row"),
+    remote: Optional[str] = typer.Option(None, "--remote", help="Remote URL or path of the row"),
+    base: Optional[str] = typer.Option(None, "--base", help="Base SHA (must be the live remote head of --ref)"),
+    head: Optional[str] = typer.Option(None, "--head", help="Reviewed head SHA (the pre-push head under review)"),
+    ref: str = typer.Option("refs/heads/dev", "--ref", help="Target ref whose live head must equal --base"),
+    path: Optional[str] = typer.Option(None, "--path", help="Workspace path for the row (defaults to --repo)"),
+    source: Optional[Path] = typer.Option(None, "--source", help="Author clone holding the pre-push head; required to carry the range so open-gr can reconstruct"),
+    title: str = typer.Option("", "--title", help="Platform title text (NORM-hashed into the object)"),
+    body: str = typer.Option("", "--body", help="Platform body text (NORM-hashed into the object)"),
+    rows_json: Optional[Path] = typer.Option(None, "--rows-json", help="A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body/source); binds ALL rows into ONE gr commit. Exclusive with the single-row flags."),
+    ratified: Optional[str] = typer.Option(None, "--ratified", help="Named ratify receipt id: the sanctioned fix-forward when a --head is already on the remote"),
+) -> None:
+    """Bind a review gr commit for one or more repository rows; print ``gr:<commit>``.
+
+    One row from --repo/--remote/--base/--head, or many from --rows-json (all in
+    ONE commit). For every row, reads the live remote head of its ref and refuses
+    before writing if base is not that head (behind-must-be-0) or if head is
+    already on the remote without --ratified. That printed id is the whole artifact.
+    """
+    single = any(v is not None for v in (key, remote, base, head))
+    if rows_json is not None:
+        if single:
+            raise typer.BadParameter("--rows-json is exclusive with --repo/--remote/--base/--head")
+        try:
+            text = rows_json.read_text()
+        except OSError as exc:
+            raise typer.BadParameter(f"--rows-json {rows_json}: {exc.strerror or exc}")
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise typer.BadParameter(f"--rows-json {rows_json}: invalid JSON ({exc})")
+        if not isinstance(raw, list) or not raw:
+            raise typer.BadParameter("--rows-json must be a non-empty JSON list of row objects")
+        rows = [_normalize_review_row(r) for r in raw]
+    else:
+        missing = [f"--{n}" for n, v in (("repo", key), ("remote", remote), ("base", base), ("head", head)) if not v]
+        if missing:
+            raise typer.BadParameter(f"{', '.join(missing)} required without --rows-json")
+        row = {
+            "key": key, "remote": remote, "path": path or key,
+            "head": head, "base": base, "ref": ref, "title": title, "body": body,
+        }
+        if source is not None:
+            row["source"] = str(source.resolve())
+        rows = [row]
+    commit = _review_call(grip.create_review_bind_commit, workspace_root.resolve(), rows, ratified=ratified)
+    typer.echo(f"gr:{commit}")
+
+
+@review_app.command("open-gr")
+def review_open_gr(
+    workspace_root: Path,
+    commit: str = typer.Argument(..., help="The review bind commit, as gr:<sha> or a bare sha"),
+    key: Optional[str] = typer.Option(None, "--repo", help="Repository key to materialize; omit to materialize every bound row into <lane-dir>/<key>"),
+    lane_dir: Path = typer.Option(..., "--lane-dir", help="Directory to materialize into (the row's clone for one --repo, or a parent holding one subdir per row)"),
+    enter: bool = typer.Option(False, "--enter", help="Materialize the reconstruction (the only open mode)"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """RECONSTRUCT a review lane from a review-BIND commit: clone the recorded remote,
+    check out the bound base, ``git am`` the carried range, and assert the resulting
+    tree equals the bound head-tree. A tree mismatch refuses. With no --repo, every
+    bound row is reconstructed into its own subdirectory of --lane-dir. Contrast
+    `review open-project`, which MATERIALIZES a project-review-KIND commit's pinned
+    heads from their recorded remotes and enters the review lane."""
+    if not enter:
+        raise typer.BadParameter("--enter is required (reconstruction is the only open mode)")
+    sha = _strip_gr_prefix(commit)
+    root = lane_dir.resolve()
+    if key is None:
+        keys = _review_call(grip.review_row_keys, workspace_root.resolve(), sha)
+        if not keys:
+            typer.echo("refused: no_rows: the gr commit binds no repository rows", err=True)
+            raise typer.Exit(code=2)
+        results = {
+            row_key: _review_call(
+                grip.reconstruct_review_lane, workspace_root.resolve(), sha, row_key, root / row_key
+            )
+            for row_key in keys
+        }
+        if json_output:
+            typer.echo(json.dumps(results, indent=2))
+        else:
+            for row_key, res in results.items():
+                match = res["bound_head_tree"] == res["reconstructed_tree"]
+                typer.echo(f"{row_key}: lane={res['lane']} tree_match={match}")
+        return
+    result = _review_call(
+        grip.reconstruct_review_lane, workspace_root.resolve(), sha, key, root
+    )
+    if json_output:
+        typer.echo(json.dumps(result, indent=2))
+    else:
+        typer.echo(f"lane: {result['lane']}")
+        typer.echo(f"bound_head: {result['bound_head']}")
+        typer.echo(f"reconstructed_head: {result['reconstructed_head']}")
+        typer.echo(f"tree_match: {result['bound_head_tree'] == result['reconstructed_tree']}")
+
+
+@review_app.command("verify")
+def review_verify(
+    workspace_root: Path,
+    commit: str = typer.Argument(..., help="The review bind commit, as gr:<sha> or a bare sha"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Recompute the review gr commit tree from its own objects; a mismatch is
+    corruption, not drift."""
+    result = _review_call(grip.verify_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit))
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, default=str))
+    else:
+        typer.echo(f"tree_matches: {result['tree_matches']}")
+    if not result.get("tree_matches"):
         raise typer.Exit(code=1)
 
 

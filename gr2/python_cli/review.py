@@ -12,10 +12,12 @@ behavior the raw lane materialization does not carry:
   imports and cannot mistake a machine-wide install for the reviewed code;
 * every dispatched execution first asserts its cwd is CONTAINED by the lane
   (a child-routing defect: a dispatched child must not run against the base tree);
-* the review is recorded as EXACTLY the (repo, base, head) triple — where
-  ``repo`` is the canonical, transport-independent GitHub source identity — a
-  one-entry pin-delta, nothing less, so the project tier can adopt it without a
-  second pin spelling.
+* the review is recorded as the (repo, base, head) triple plus a required
+  ``lane_kind`` stamp — where ``repo`` is the canonical, transport-independent
+  GitHub source identity — a one-entry pin-delta so the project tier can adopt
+  it without a second pin spelling, and ``lane_kind`` tells a reader whether the
+  head reconstructs independently (``materialized``) or from the author's
+  worktree under the bind-time guard (``bound``).
 
 Two destructive operations are fenced: a REUSED lane is never deleted (cleanup
 may only remove what this call created), and ``close`` refuses any path that is
@@ -41,6 +43,14 @@ from .clone_exec import CloneExecutionError
 from .gitops import ensure_lane_checkout
 
 _SHA40 = re.compile(r"\A[0-9a-f]{40}\Z")
+
+# A review receipt is stamped with the KIND of lane it came from, so a reader
+# never has to infer the reconstruction guarantee. ``materialized``: an isolated
+# clone pinned at the recorded head, reconstructible independently of anything
+# else on disk. ``bound``: derived from an author's own worktree at bind time,
+# honest only under the clean-tree/HEAD-matches guard the bind imposes. The
+# field is REQUIRED on every receipt (gr2-lane-author-shape ruling 2026-09-03).
+LANE_KINDS = ("materialized", "bound", "review-ephemeral")
 
 Echo = Callable[[str], None]
 
@@ -100,14 +110,27 @@ class ReviewRecord:
     ``repo`` is the canonical, transport-independent source identity (never a
     clone URL or a local working path), ``base`` and ``head`` are lowercase full
     40-hex commit object IDs. Kept minimal on purpose so a project-tier lock can
-    project this record without a second pin spelling."""
+    project this record without a second pin spelling.
+
+    ``lane_kind`` (``materialized`` | ``bound``) is REQUIRED so a reader never
+    infers the reconstruction guarantee: a materialized lane reconstructs from a
+    carried range independently of the author's disk; a bound lane's bytes live
+    in the author's worktree and are honest only under the bind-time guard."""
 
     repo: str
     base: str
     head: str
+    lane_kind: str
+
+    def __post_init__(self) -> None:
+        if self.lane_kind not in LANE_KINDS:
+            raise ReviewError(
+                f"review record lane_kind must be one of {LANE_KINDS}, got "
+                f"{self.lane_kind!r}"
+            )
 
     def to_dict(self) -> dict[str, str]:
-        return {"repo": self.repo, "base": self.base, "head": self.head}
+        return {"repo": self.repo, "base": self.base, "head": self.head, "lane_kind": self.lane_kind}
 
 
 def review_record_path(lane_repo_root: Path | str) -> Path:
@@ -167,6 +190,8 @@ def open_review_lane(
     lane_repo_root: Path,
     workspace_root: Path,
     allow_local: bool = False,
+    ephemeral: bool = False,
+    repo_name: str | None = None,
     echo: Echo = print,
 ) -> ReviewRecord:
     """Materialize the review lane at the expected head and record the triple.
@@ -212,6 +237,43 @@ def open_review_lane(
     # stable across a later reopen. The immutable seed, not this branch spelling,
     # decides which commit is reviewed.
     lane_branch = "grip-review/open"
+    if ephemeral:
+        # A review-ephemeral lane is a blobless+sparse clone from the persistent
+        # mirror -- NEVER the work-lane clone seam (materialize_lane_clone), whose
+        # 8.1/8.2 invariants guard MUTABLE lanes. It is read-only and rm -rf'd on
+        # close, so those invariants exceed its needs; blobless keeps the whole
+        # commit+tree graph the review uses.
+        from . import review_ephemeral
+        if lane_repo_root.exists():
+            existing = gitops.current_head_sha(lane_repo_root)
+            if existing != expected_head_sha:
+                raise ReviewError(
+                    f"an existing review lane at {lane_repo_root} is at {existing!r}, not the "
+                    f"requested head {expected_head_sha}; run `review close` to drop it, then reopen."
+                )
+            first_materialize = False
+        else:
+            review_ephemeral.materialize_review_ephemeral(
+                mirror=source_repo_root, dest=lane_repo_root,
+                head=expected_head_sha, base=base_sha,
+                repo_name=(repo_name or source_repo_root.name.removesuffix(".git")),
+            )
+            first_materialize = True
+        lane_head = gitops.git(lane_repo_root, "rev-parse", "HEAD")
+        if lane_head.returncode != 0 or lane_head.stdout.strip() != expected_head_sha:
+            if first_materialize:
+                shutil.rmtree(lane_repo_root, ignore_errors=True)
+            raise ReviewError(
+                f"review-ephemeral lane is at {lane_head.stdout.strip()!r}, not the expected "
+                f"head {expected_head_sha}; lane discarded"
+            )
+        echo(f"review lane (ephemeral): {lane_repo_root.resolve()}")
+        record = ReviewRecord(repo=repo_identity, base=base_sha, head=expected_head_sha,
+                              lane_kind=review_ephemeral.REVIEW_EPHEMERAL_KIND)
+        path = review_record_path(lane_repo_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
+        return record
     try:
         first_materialize = ensure_lane_checkout(
             source_repo_root=source_repo_root,
@@ -265,8 +327,10 @@ def open_review_lane(
         "machine-wide install"
     )
 
-    # 6. Record the triple. Nothing less.
-    record = ReviewRecord(repo=repo_identity, base=base_sha, head=expected_head_sha)
+    # 6. Record the triple plus the lane kind. This path always materializes an
+    #    isolated clone pinned at the expected head, so the receipt is stamped
+    #    ``materialized`` — reconstructible independently of any author worktree.
+    record = ReviewRecord(repo=repo_identity, base=base_sha, head=expected_head_sha, lane_kind="materialized")
     path = review_record_path(lane_repo_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
@@ -315,8 +379,8 @@ def close_review_lane(
     strict descendant (an individual lane's own clone) is a legitimate target.
 
     The record checks — owned ``.git`` directory, a well-formed
-    ``(repo, base, head)`` triple, repo matching the lane's own origin, and HEAD
-    matching the recorded head — are SECONDARY consistency checks INSIDE that
+    ``(repo, base, head, lane_kind)`` receipt, repo matching the lane's own
+    origin, and HEAD matching the recorded head — are SECONDARY consistency checks INSIDE that
     boundary: they catch a corrupted or MOVED lane (a reviewer commit or reset
     that means the lane may hold work), not a foreign one. The base workspace is
     never touched — only the lane clone is removed."""
@@ -352,14 +416,15 @@ def close_review_lane(
         raise ReviewError(
             f"{lane} review record is unreadable or malformed ({exc}); refusing to delete."
         ) from exc
-    if set(record) != {"repo", "base", "head"} or not (
+    if set(record) != {"repo", "base", "head", "lane_kind"} or not (
         isinstance(record.get("repo"), str)
         and record["repo"]
         and _SHA40.match(str(record.get("base", "")))
         and _SHA40.match(str(record.get("head", "")))
+        and record.get("lane_kind") in LANE_KINDS
     ):
         raise ReviewError(
-            f"{lane} review record is not a well-formed (repo, base, head) triple; "
+            f"{lane} review record is not a well-formed (repo, base, head, lane_kind) receipt; "
             "refusing to delete."
         )
     lane_identity = canonical_source_identity(

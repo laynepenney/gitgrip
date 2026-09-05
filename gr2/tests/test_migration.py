@@ -5,8 +5,13 @@ plus coexistence state awareness and the workspace status command.
 """
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
+import os
+import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,9 +25,21 @@ from gr2.python_cli.migration import (
     compile_gr1_to_workspace_spec,
     detect_gr1_workspace,
     migrate_gr1_workspace,
+    regenerate_gr1_workspace,
+    rollback_gr1_workspace,
     render_workspace_spec,
     workspace_status,
 )
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI so a flag name in a Rich-rendered usage/error panel is a
+    literal substring under forced color (CI) as well as plain (local).
+    """
+    return _ANSI_RE.sub("", text)
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +481,361 @@ class TestBootstrapGr1:
         assert payload["manifest_path"].endswith(".gitgrip/spaces/main/gripspace.yml")
 
 
+class TestRegenerateGr1Workspace:
+    """Regeneration is deliberately narrower than bootstrap and materialization."""
+
+    def _prepared(self, workspace: Path) -> tuple[Path, str]:
+        bootstrap_gr1_workspace(workspace)
+        spec_path = workspace / ".grip" / "workspace_spec.toml"
+        return spec_path, hashlib.sha256(spec_path.read_bytes()).hexdigest()
+
+    def _url_only_manifest_change(self, workspace: Path) -> None:
+        manifest_path = workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
+        manifest = yaml.safe_load(manifest_path.read_text())
+        manifest["repos"]["synapt"]["url"] = "git@github.com:synapt-dev/recall.git"
+        manifest_path.write_text(yaml.dump(manifest))
+
+    def test_url_only_change_replaces_only_generated_spec_and_emits_nonmaterializing_receipt(
+        self, gr1_workspace: Path, tmp_path: Path
+    ) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        before_git = (gr1_workspace / ".grip" / ".git").stat().st_ino
+        self._url_only_manifest_change(gr1_workspace)
+        receipt = tmp_path / "receipt.json"
+
+        result = regenerate_gr1_workspace(
+            gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt
+        )
+
+        assert result["status"] == "regenerated"
+        assert result["materialization"] is False
+        assert result["expected_old_spec_sha256"] == expected
+        assert result["new_spec_sha256"] != expected
+        assert (gr1_workspace / ".grip" / ".git").stat().st_ino == before_git
+        assert "recall.git" in spec_path.read_text()
+        assert json.loads(receipt.read_text())["new_spec_sha256"] == result["new_spec_sha256"]
+
+    def test_wrong_expected_hash_refuses_before_replacing_spec(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, _ = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+
+        with pytest.raises(SystemExit, match="expected old spec hash"):
+            regenerate_gr1_workspace(
+                gr1_workspace, expected_spec_sha256="0" * 64, receipt_path=tmp_path / "receipt.json"
+            )
+
+        assert spec_path.read_bytes() == before
+        assert not (tmp_path / "receipt.json").exists()
+
+    def test_dirty_object_store_refuses_before_replacing_spec(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+        (gr1_workspace / ".grip" / "unexpected").write_text("dirty\n")
+
+        with pytest.raises(SystemExit, match="dirty object store"):
+            regenerate_gr1_workspace(
+                gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json"
+            )
+
+        assert spec_path.read_bytes() == before
+
+    def test_active_lane_and_lease_refuse_before_replacing_spec(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+        current = gr1_workspace / ".grip" / "state" / "current_lane" / "apollo.json"
+        current.parent.mkdir(parents=True)
+        current.write_text(json.dumps({"current": {"lane_name": "review"}}))
+
+        with pytest.raises(SystemExit, match="active lanes"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json")
+        assert spec_path.read_bytes() == before
+
+        current.write_text(json.dumps({"current": None}))
+        leases = gr1_workspace / ".grip" / "state" / "lanes" / "apollo" / "review" / "leases.json"
+        leases.parent.mkdir(parents=True)
+        leases.write_text(json.dumps([{"actor": "apollo"}]))
+        with pytest.raises(SystemExit, match="active lane leases"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json")
+        assert spec_path.read_bytes() == before
+
+    def test_atomic_publish_failure_preserves_old_spec(self, gr1_workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+        monkeypatch.setattr(migration, "_atomic_write", lambda _path, _content: (_ for _ in ()).throw(OSError("injected atomic failure")))
+
+        with pytest.raises(OSError, match="injected atomic failure"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json")
+        assert spec_path.read_bytes() == before
+
+    def test_lock_rechecks_expected_hash_after_a_competing_writer(self, gr1_workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+
+        @contextlib.contextmanager
+        def competing_writer(_path: Path):
+            spec_path.write_bytes(b"competing bytes\n")
+            yield
+
+        monkeypatch.setattr(migration.lane_proto, "exclusive_lock", competing_writer)
+        with pytest.raises(SystemExit, match="expected old spec hash"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json")
+        assert spec_path.read_bytes() == b"competing bytes\n"
+        assert not (tmp_path / "receipt.json").exists()
+
+    def test_symlinked_generated_spec_refuses_without_touching_target(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        external = tmp_path / "external-spec"
+        external.write_bytes(spec_path.read_bytes())
+        spec_path.unlink()
+        spec_path.symlink_to(external)
+        self._url_only_manifest_change(gr1_workspace)
+
+        with pytest.raises(SystemExit, match="must not be a symlink"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json")
+        assert external.read_bytes() != b""
+
+    def test_cli_requires_caller_selected_receipt_for_regeneration(self, gr1_workspace: Path) -> None:
+        _spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        result = CliRunner().invoke(
+            app,
+            ["workspace", "bootstrap-gr1", str(gr1_workspace), "--regenerate", "--expected-spec-sha256", expected],
+            env={"COLUMNS": "200"},
+        )
+        assert result.exit_code != 0
+        assert "--receipt" in _plain(result.output)
+
+    def test_receipt_bound_round_trip_restores_exact_old_bytes(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+        forward_receipt = tmp_path / "forward.json"
+        forward = regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=forward_receipt)
+        sidecar = tmp_path / json.loads(forward_receipt.read_text())["sidecar_relative_path"]
+        assert sidecar.read_bytes() == before
+        assert forward["sidecar_sha256"] == expected
+
+        rollback = rollback_gr1_workspace(
+            gr1_workspace,
+            rollback_receipt_path=forward_receipt,
+            expected_current_spec_sha256=forward["new_spec_sha256"],
+            receipt_path=tmp_path / "rollback.json",
+        )
+        assert spec_path.read_bytes() == before
+        assert rollback["status"] == "rolled_back"
+        assert rollback["materialization"] is False
+
+    def test_rollback_refuses_stale_or_tampered_authority(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+        forward_receipt = tmp_path / "forward.json"
+        forward = regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=forward_receipt)
+
+        with pytest.raises(SystemExit, match="current spec hash"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=forward_receipt, expected_current_spec_sha256=expected, receipt_path=tmp_path / "stale.json")
+        assert spec_path.read_bytes() != before
+
+        sidecar = tmp_path / json.loads(forward_receipt.read_text())["sidecar_relative_path"]
+        sidecar.write_text("tampered\n")
+        with pytest.raises(SystemExit, match="sidecar hash"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=forward_receipt, expected_current_spec_sha256=forward["new_spec_sha256"], receipt_path=tmp_path / "tampered.json")
+
+    def test_existing_receipt_and_unsafe_sidecar_path_refuse(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        _spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        receipt = tmp_path / "forward.json"
+        receipt.write_text("existing\n")
+        with pytest.raises(SystemExit, match="overwrite"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
+
+        receipt.write_text(json.dumps({"schema": "gr2-workspace-regeneration/v2", "workspace_root": str(gr1_workspace), "workspace_spec_path": str(gr1_workspace / ".grip" / "workspace_spec.toml"), "grip_repo_path": str(gr1_workspace / ".grip"), "manifest_sha256": hashlib.sha256((gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml").read_bytes()).hexdigest(), "agents_sha256": hashlib.sha256((gr1_workspace / ".gitgrip" / "agents.toml").read_bytes()).hexdigest(), "object_store_head": "x", "object_store_status": [], "lane_snapshot": {"files": []}, "observed_old_spec_sha256": "0" * 64, "new_spec_sha256": "0" * 64, "sidecar_sha256": "0" * 64, "materialization": False, "sidecar_relative_path": "../escape"}))
+        with pytest.raises(SystemExit, match="sidecar path is unsafe"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=receipt, expected_current_spec_sha256="0" * 64, receipt_path=tmp_path / "out.json")
+
+    def test_rollback_refuses_altered_receipt_workspace_and_symlinked_sidecar(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        _spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        receipt = tmp_path / "forward.json"
+        forward = regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
+        doc = json.loads(receipt.read_text())
+        doc["workspace_root"] = "/wrong/workspace"
+        receipt.write_text(json.dumps(doc))
+        with pytest.raises(SystemExit, match="workspace binding"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=receipt, expected_current_spec_sha256=forward["new_spec_sha256"], receipt_path=tmp_path / "wrong-workspace.json")
+
+        doc["workspace_root"] = str(gr1_workspace)
+        receipt.write_text(json.dumps(doc))
+        sidecar = tmp_path / doc["sidecar_relative_path"]
+        copy = tmp_path / "sidecar-copy"
+        copy.write_bytes(sidecar.read_bytes())
+        sidecar.unlink()
+        sidecar.symlink_to(copy)
+        with pytest.raises(SystemExit, match="must not be a symlink"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=receipt, expected_current_spec_sha256=forward["new_spec_sha256"], receipt_path=tmp_path / "symlink.json")
+
+    def test_rollback_refuses_existing_output_and_wrong_store_binding(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        receipt = tmp_path / "forward.json"
+        forward = regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
+        existing_output = tmp_path / "rollback.json"
+        existing_output.write_text("do not replace\n")
+        with pytest.raises(SystemExit, match="overwrite"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=receipt, expected_current_spec_sha256=forward["new_spec_sha256"], receipt_path=existing_output)
+        assert spec_path.read_bytes() != b""
+
+        doc = json.loads(receipt.read_text())
+        doc["object_store_head"] = "0" * 40
+        receipt.write_text(json.dumps(doc))
+        with pytest.raises(SystemExit, match="object-store binding"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=receipt, expected_current_spec_sha256=forward["new_spec_sha256"], receipt_path=tmp_path / "wrong-store.json")
+
+    def test_prepared_marker_recovers_complete_forward_receipt_before_next_attempt(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        receipt = tmp_path / "forward.json"
+        forward = regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
+        receipt.unlink()
+        marker = tmp_path / "forward.json.prepared.json"
+        marker.write_text(json.dumps({"schema": "gr2-workspace-regeneration-prepared/v1", "phase": "prepared", "forward_receipt": receipt.name, "payload": forward}))
+        with pytest.raises(SystemExit, match="overwrite"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
+        assert json.loads(receipt.read_text())["new_spec_sha256"] == forward["new_spec_sha256"]
+        assert not marker.exists()
+        assert hashlib.sha256(spec_path.read_bytes()).hexdigest() == forward["new_spec_sha256"]
+
+    def test_rollback_receipt_failure_compensates_to_pre_rollback_bytes(self, gr1_workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        forward_receipt = tmp_path / "forward.json"
+        forward = regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=forward_receipt)
+        current = spec_path.read_bytes()
+        monkeypatch.setattr(migration, "_write_new_receipt", lambda *_args: (_ for _ in ()).throw(OSError("receipt failure")))
+        with pytest.raises(OSError, match="receipt failure"):
+            rollback_gr1_workspace(gr1_workspace, rollback_receipt_path=forward_receipt, expected_current_spec_sha256=forward["new_spec_sha256"], receipt_path=tmp_path / "rollback.json")
+        assert spec_path.read_bytes() == current
+        assert forward_receipt.exists()
+        assert not (tmp_path / "rollback.json").exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL crash simulation is POSIX-only; signal.SIGKILL is absent on Windows")
+    @pytest.mark.parametrize("phase", ["marker_durable", "spec_replaced", "receipt_durable", "marker_cleared"])
+    def test_sigkill_at_every_forward_phase_leaves_recoverable_or_actionable_state(self, gr1_workspace: Path, tmp_path: Path, phase: str) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        receipt = tmp_path / "kill-forward.json"
+        program = (
+            "import os,signal,sys,types; from pathlib import Path; root=Path(sys.argv[1]).resolve(); pkg=types.ModuleType('gr2'); pkg.__path__=[str(root)]; sys.modules['gr2']=pkg; "
+            "from gr2.python_cli import migration; "
+            "assert str(Path(migration.__file__).resolve()).startswith(str(root)), migration.__file__; "
+            "p=sys.argv[2]; migration._transaction_phase_hook=lambda x: os.kill(os.getpid(), signal.SIGKILL) if x==p else None; "
+            "migration.regenerate_gr1_workspace(Path(sys.argv[3]), expected_spec_sha256=sys.argv[4], receipt_path=Path(sys.argv[5]))"
+        )
+        gr2_root = Path(__file__).parents[1]
+        child = subprocess.run([sys.executable, "-c", program, str(gr2_root), phase, str(gr1_workspace), expected, str(receipt)])
+        assert child.returncode != 0
+        marker = tmp_path / "kill-forward.json.prepared.json"
+        if phase == "marker_durable":
+            assert marker.exists() and hashlib.sha256(spec_path.read_bytes()).hexdigest() == expected
+        else:
+            assert hashlib.sha256(spec_path.read_bytes()).hexdigest() != expected
+        with pytest.raises(SystemExit):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
+        assert receipt.exists() or marker.exists()
+
+    @pytest.mark.parametrize("written", [b"", b"partial", b"complete receipt"])
+    def test_forward_receipt_writer_failure_compensates_all_output_shapes(self, gr1_workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written: bytes) -> None:
+        spec_path, expected = self._prepared(gr1_workspace)
+        old = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+        receipt = tmp_path / "forward-failure.json"
+        def fail_writer(path: Path, _payload: dict[str, object]) -> None:
+            if written:
+                path.write_bytes(written)
+            raise OSError("injected forward receipt failure")
+        monkeypatch.setattr(migration, "_write_new_receipt", fail_writer)
+        with pytest.raises(OSError, match="injected forward receipt failure"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=receipt)
+        assert spec_path.read_bytes() == old
+        assert not receipt.exists()
+        assert not (tmp_path / "forward-failure.json.prepared.json").exists()
+        assert not (tmp_path / f"forward-failure.json.old-spec-{expected}.toml").exists()
+
+    def test_inactive_lane_state_is_not_object_store_dirt(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        """An inactive lane file under state/ is the control plane, not store dirt.
+        Regeneration proceeds (active lanes are refused separately); before the
+        state/ exclusion this refused as 'dirty object store'."""
+        spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        current = gr1_workspace / ".grip" / "state" / "current_lane" / "apollo.json"
+        current.parent.mkdir(parents=True)
+        current.write_text(json.dumps({"current": None}))
+        result = regenerate_gr1_workspace(
+            gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json"
+        )
+        assert result["status"] == "regenerated"
+
+    def test_in_lock_active_lane_recheck_refuses(self, gr1_workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A lane can go active while a regenerator waits for the lock, so the
+        active-lane guard is re-checked after acquisition. Activate a lane at the
+        lock_acquired seam: the pre-lock check already passed, so only the in-lock
+        re-check can refuse. Removing that re-check leaves this green."""
+        spec_path, expected = self._prepared(gr1_workspace)
+        before = spec_path.read_bytes()
+        self._url_only_manifest_change(gr1_workspace)
+        current = gr1_workspace / ".grip" / "state" / "current_lane" / "apollo.json"
+
+        def hook(phase: str) -> None:
+            if phase == "lock_acquired":
+                current.parent.mkdir(parents=True, exist_ok=True)
+                current.write_text(json.dumps({"current": {"lane_name": "review"}}))
+
+        monkeypatch.setattr(migration, "_transaction_phase_hook", hook)
+        with pytest.raises(SystemExit, match="active lanes"):
+            regenerate_gr1_workspace(gr1_workspace, expected_spec_sha256=expected, receipt_path=tmp_path / "receipt.json")
+        assert spec_path.read_bytes() == before  # refused before replacing the spec
+
+    def test_regeneration_lock_file_kept_across_release(self, tmp_path: Path) -> None:
+        """The lock file is KEPT across release (no unlink/rmdir): flock on a path
+        unlinked and re-created binds a new inode and excludes no waiter. Restoring
+        the unlink makes the second acquisition see a different inode."""
+        lock = tmp_path / "state" / "x.lock"
+        with migration._regeneration_lock(lock):
+            assert lock.exists()
+            ino = lock.stat().st_ino
+        assert lock.exists()  # kept, not unlinked
+        with migration._regeneration_lock(lock):
+            assert lock.stat().st_ino == ino  # same inode == real mutual exclusion
+
+    def test_regenerate_and_rollback_render_through_cli_without_keyerror(self, gr1_workspace: Path, tmp_path: Path) -> None:
+        """The non-JSON render hardcoded bootstrap keys, so rollback (no
+        manifest_path) and regenerate (no repo_count) raised KeyError AFTER a
+        successful mutation -- exit 1 on a completed rollback. Render per schema.
+        Exercised through the real CLI verb, one assertion per verb path."""
+        runner = CliRunner()
+        spec_path, expected = self._prepared(gr1_workspace)
+        self._url_only_manifest_change(gr1_workspace)
+        fwd = tmp_path / "forward.json"
+        r = runner.invoke(app, ["workspace", "bootstrap-gr1", str(gr1_workspace),
+                                "--regenerate", "--expected-spec-sha256", expected, "--receipt", str(fwd)])
+        assert r.exit_code == 0, r.output
+        assert "Traceback" not in r.output and "KeyError" not in r.output
+        assert "regenerated" in r.output
+        new_sha = json.loads(fwd.read_text())["new_spec_sha256"]
+        rb = runner.invoke(app, ["workspace", "bootstrap-gr1", str(gr1_workspace),
+                                 "--rollback-receipt", str(fwd),
+                                 "--expected-current-spec-sha256", new_sha,
+                                 "--receipt", str(tmp_path / "rollback.json")])
+        assert rb.exit_code == 0, rb.output
+        assert "Traceback" not in rb.output and "KeyError" not in rb.output
+        assert "rolled_back" in rb.output
+
+
 # ---------------------------------------------------------------------------
 # workspace status (new command)
 # ---------------------------------------------------------------------------
@@ -531,3 +903,132 @@ class TestMigrationEndToEnd:
         for unit in spec["units"]:
             assert "repos" in unit
             assert len(unit["repos"]) > 0
+
+
+def test_regeneration_guard_ignores_plumbing_store_head_deletions(tmp_path):
+    """A .grip store is plumbing-only: HEAD is a real commit whose tree is never
+    checked out, so `git status --porcelain` reports every HEAD path as a
+    deletion. That is the store's normal state, not dirt -- the guard used to
+    refuse every store that had ever held a review commit (Stromus m_4a3fdd37).
+    It must judge untracked files only; an untracked file it would clobber still
+    refuses."""
+    grip = tmp_path / "store"
+    grip.mkdir()
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
+
+    def g(*a, inp=None):
+        return subprocess.run(["git", "-C", str(grip), *a], env=env, input=inp,
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    g("init", "-q")
+    # Build a commit by PLUMBING ONLY, exactly like grip.py: hash a blob, mktree,
+    # commit-tree, update-ref. Never `git add`, never check the tree out.
+    blob = g("hash-object", "-w", "--stdin", inp="review commit content\n")
+    tree = g("mktree", inp=f"100644 blob {blob}\treview\n")
+    commit = g("commit-tree", tree, "-m", "grip project review")
+    g("update-ref", "HEAD", commit)
+
+    # The scenario: porcelain reports the HEAD path as a deletion.
+    porcelain = subprocess.run(["git", "-C", str(grip), "status", "--porcelain"],
+                               env=env, capture_output=True, text=True).stdout
+    assert any("review" in line and "D" in line for line in porcelain.splitlines()), porcelain
+
+    # The fix: a clean plumbing store is NOT refused (this raised before the fix).
+    migration._require_clean_regeneration_store(grip)
+    # The allowed generated spec is still fine.
+    (grip / "workspace_spec.toml").write_text("x\n")
+    migration._require_clean_regeneration_store(grip)
+    # A real untracked file still refuses.
+    (grip / "unexpected").write_text("dirt\n")
+    with pytest.raises(SystemExit, match="dirty object store"):
+        migration._require_clean_regeneration_store(grip)
+
+
+# --- lane-state migration (agents/<unit>/lanes -> .grip/state/lanes) ---
+
+from gr2.python_cli.migration import migrate_lane_state
+
+
+def _legacy_lane(workspace: Path, unit: str, lane: str, *, repos=("app",)) -> Path:
+    """Build a legacy lane tree with a lane.toml, leases, and a repo."""
+    lane_dir = workspace / "agents" / unit / "lanes" / lane
+    (lane_dir).mkdir(parents=True)
+    (lane_dir / "lane.toml").write_text(f'lane_name = "{lane}"\nowner_unit = "{unit}"\n')
+    (lane_dir / "leases.json").write_text("[]")
+    for repo in repos:
+        rd = lane_dir / "repos" / repo
+        rd.mkdir(parents=True)
+        (rd / "README.md").write_text("x\n")
+    return lane_dir
+
+
+class TestMigrateLaneState:
+    def test_moves_legacy_tree_and_receipt_names_it(self, tmp_path: Path) -> None:
+        src = _legacy_lane(tmp_path, "atlas", "feature")
+        src_files = sorted(p.relative_to(src).as_posix() for p in src.rglob("*") if p.is_file())
+        receipt = tmp_path / "migrate-receipt.json"
+
+        payload = migrate_lane_state(tmp_path, receipt_path=receipt)
+
+        dest = tmp_path / ".grip" / "state" / "lanes" / "atlas" / "feature"
+        assert dest.is_dir()
+        assert sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file()) == src_files
+        assert not (tmp_path / "agents" / "atlas" / "lanes" / "feature").exists()
+        assert payload["count"] == 1
+        row = payload["moved"][0]
+        assert row["unit"] == "atlas" and row["lane"] == "feature"
+        assert row["dest"] == ".grip/state/lanes/atlas/feature"
+        assert row["files"] == len(src_files)
+        # Receipt is the durable record of what moved.
+        assert json.loads(receipt.read_text())["moved"][0]["source"] == "agents/atlas/lanes/feature"
+
+    def test_zero_move_when_no_legacy_tree(self, tmp_path: Path) -> None:
+        receipt = tmp_path / "empty-receipt.json"
+        payload = migrate_lane_state(tmp_path, receipt_path=receipt)
+        assert payload["count"] == 0 and payload["moved"] == []
+        assert receipt.is_file()
+
+    def test_refuses_active_lease_and_moves_nothing(self, tmp_path: Path) -> None:
+        src = _legacy_lane(tmp_path, "atlas", "feature")
+        (src / "leases.json").write_text(json.dumps([{"actor": "atlas", "mode": "edit"}]))
+        receipt = tmp_path / "receipt.json"
+        with pytest.raises(SystemExit, match="active lane leases"):
+            migrate_lane_state(tmp_path, receipt_path=receipt)
+        assert src.exists()  # nothing moved
+        assert not receipt.exists()  # no receipt for a refused migration
+
+    def test_refuses_active_current_lane_pointer(self, tmp_path: Path) -> None:
+        _legacy_lane(tmp_path, "atlas", "feature")
+        current = tmp_path / ".grip" / "state" / "current_lane" / "atlas.json"
+        current.parent.mkdir(parents=True)
+        current.write_text(json.dumps({"current": {"lane_name": "feature"}}))
+        with pytest.raises(SystemExit, match="active lanes"):
+            migrate_lane_state(tmp_path, receipt_path=tmp_path / "r.json")
+
+    def test_refuses_existing_destination_and_moves_nothing(self, tmp_path: Path) -> None:
+        # Two lanes in legacy; one already present at the new path. Two-pass must
+        # refuse BEFORE moving either, so the clean lane is not half-migrated.
+        _legacy_lane(tmp_path, "atlas", "already")
+        clean = _legacy_lane(tmp_path, "atlas", "clean")
+        (tmp_path / ".grip" / "state" / "lanes" / "atlas" / "already").mkdir(parents=True)
+        with pytest.raises(SystemExit, match="refuses to overwrite existing destinations"):
+            migrate_lane_state(tmp_path, receipt_path=tmp_path / "r.json")
+        assert clean.exists()  # the clean lane was NOT moved
+
+    def test_idempotent_across_two_runs_with_fresh_receipts(self, tmp_path: Path) -> None:
+        _legacy_lane(tmp_path, "atlas", "feature")
+        first = migrate_lane_state(tmp_path, receipt_path=tmp_path / "r1.json")
+        assert first["count"] == 1
+        second = migrate_lane_state(tmp_path, receipt_path=tmp_path / "r2.json")
+        assert second["count"] == 0
+
+    def test_cli_migrate_lane_state(self, tmp_path: Path) -> None:
+        _legacy_lane(tmp_path, "atlas", "feature")
+        receipt = tmp_path / "cli-receipt.json"
+        result = CliRunner().invoke(app, ["workspace", "migrate-lane-state", str(tmp_path), "--receipt", str(receipt), "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["count"] == 1
+        assert (tmp_path / ".grip" / "state" / "lanes" / "atlas" / "feature").is_dir()

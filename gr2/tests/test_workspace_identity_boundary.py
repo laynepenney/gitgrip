@@ -149,12 +149,16 @@ def test_exec_lease_event_does_not_emit_agent_id_from_workspace_spec(tmp_path: P
     assert all(row["owner_unit"] == "atlas" for row in lease_rows)
 
 
-def test_lane_records_remain_in_oss_agent_lane_namespace(tmp_path: Path) -> None:
+def test_lane_records_remain_in_oss_state_namespace_not_the_reserved_envelope(tmp_path: Path) -> None:
     from gr2.prototypes import lane_workspace_prototype as lane_proto
 
     lane_path = lane_proto.lane_dir(tmp_path, "unit-alpha", "feat-auth")
 
-    assert lane_path == tmp_path / "agents" / "unit-alpha" / "lanes" / "feat-auth"
+    # Lane records move beside the rest of the
+    # lane control plane under .grip/state/, out of the workspace-root agents/
+    # namespace. The d2 contract still forbids the reserved .grip/lanes fragment,
+    # so this stays green: .grip/state/lanes is not .grip/lanes.
+    assert lane_path == tmp_path / ".grip" / "state" / "lanes" / "unit-alpha" / "feat-auth"
     assert ".grip/lanes" not in lane_path.as_posix()
 
 

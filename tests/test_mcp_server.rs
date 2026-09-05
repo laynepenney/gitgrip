@@ -131,7 +131,13 @@ impl ServerHarness {
             .recv()
             .unwrap_or_else(|error| panic!("read newline-delimited response: {error:?}"));
         assert!(!line.is_empty(), "unexpected EOF while reading response");
-        serde_json::from_str(line.trim_end_matches(['\r', '\n'])).expect("parse JSON response line")
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        serde_json::from_str(trimmed).unwrap_or_else(|error| {
+            panic!(
+                "parse JSON response line (len {}): {trimmed:?} -- {error}",
+                trimmed.len()
+            )
+        })
     }
 
     fn initialize(&mut self) {

@@ -18,6 +18,7 @@ import dataclasses
 import fcntl
 import json
 import os
+import re
 import shlex
 import sys
 import tempfile
@@ -33,6 +34,9 @@ from gr2.prototypes.jsonl_store import (
     read_jsonl,
     warn_unreadable,
 )
+from gr2.python_cli import gitops
+from gr2.python_cli import review as _review
+from gr2.python_cli import push as _push
 
 LANE_SCHEMA_VERSION = 1
 SCRATCHPAD_SCHEMA_VERSION = 1
@@ -84,6 +88,25 @@ class LaneMetadata:
     creation_source: str
     shared_with: list[str]
     handoff_source: dict[str, str] | None
+    # gr2-lane-author-shape ruling (2026-09-03): lane_kind is required on every
+    # lane document so a reader never infers the reconstruction guarantee. A
+    # "materialized" lane holds an isolated clone pinned at a head; a "bound"
+    # lane is a label on the author's own existing worktree (single-repo only),
+    # honest under the clean-tree/HEAD guard bind re-checks. bound_worktree is
+    # the resolved worktree path, present only for bound lanes. bound_head is the
+    # worktree HEAD recorded at create time — the drift baseline a review bind on a
+    # bound lane re-checks against (a moved HEAD or a dirty tree refuses).
+    lane_kind: str = "materialized"
+    bound_worktree: str | None = None
+    bound_head: str | None = None
+    # fork-base ruling (2026-09-04): the per-repo coordinate the lane
+    # forked from on its integration branch, recorded ONCE at create and never
+    # recomputed. Each entry is {branch: <integration branch, e.g. dev>, sha: <its
+    # tip when the lane was cut>}. The reproduction paths (workspace snapshot,
+    # review bind) read `base` from here; a lane with no entry reads base as
+    # unknown (explicit), never HEAD^. Recorded, not derived: the caller that knows
+    # the integration tip (materialization) supplies it; create_lane only stores it.
+    fork_base: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
 
     def as_toml(self) -> str:
         document: dict[str, object] = {
@@ -92,6 +115,7 @@ class LaneMetadata:
             "owner_unit": self.owner_unit,
             "agent_id": self.agent_id or "",
             "lane_type": self.lane_type,
+            "lane_kind": self.lane_kind,
             "creation_source": self.creation_source,
             "repos": self.repos,
             "shared_with": self.shared_with,
@@ -102,6 +126,15 @@ class LaneMetadata:
             },
             "exec_defaults": self.exec_defaults,
         }
+        if self.bound_worktree is not None:
+            document["bound_worktree"] = self.bound_worktree
+        if self.bound_head is not None:
+            document["bound_head"] = self.bound_head
+        if self.fork_base:
+            document["fork_base"] = {
+                repo: {"branch": entry["branch"], "sha": entry["sha"]}
+                for repo, entry in sorted(self.fork_base.items())
+            }
         if self.pr_associations:
             document["pr_associations"] = [{"ref": ref} for ref in self.pr_associations]
         if self.handoff_source:
@@ -360,8 +393,26 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def lane_state_root(workspace_root: Path) -> Path:
+    """The one home for workspace lane state.
+
+    Lane state is grip plumbing: it lives beside the rest of the lane control
+    plane under ``.grip/state/`` -- the same tree that already holds
+    ``current_lane``, ``lane_transitions``, ``lane_creation`` and the lease
+    locks. The old ``workspace_root/agents/`` root was pollution at the
+    workspace top level; every path that reaches into lane state funnels
+    through here so the layout has a single point of truth.
+
+    Deliberately NOT ``.grip/lanes``:
+    the boundary test (``test_oss_gr2_has_no_external_lane_envelope_reader``)
+    reserves the ``.grip/lanes`` fragment; records go beside the control plane
+    at ``.grip/state/lanes`` instead.
+    """
+    return workspace_root / ".grip" / "state" / "lanes"
+
+
 def lane_dir(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
-    return workspace_root / "agents" / owner_unit / "lanes" / lane_name
+    return lane_state_root(workspace_root) / owner_unit / lane_name
 
 
 def lane_file(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
@@ -681,14 +732,16 @@ def mutate_workspace_edit_lease(
 
 
 def iter_lane_files(workspace_root: Path, owner_unit: str | None = None) -> list[Path]:
-    agents_root = workspace_root / "agents"
+    state_root = lane_state_root(workspace_root)
+    if not state_root.exists():
+        return []
     if owner_unit:
-        lane_roots = [agents_root / owner_unit / "lanes"]
+        unit_roots = [state_root / owner_unit]
     else:
-        lane_roots = [path / "lanes" for path in agents_root.iterdir() if path.is_dir()]
+        unit_roots = [path for path in state_root.iterdir() if path.is_dir()]
 
     files: list[Path] = []
-    for root in lane_roots:
+    for root in unit_roots:
         if not root.exists():
             continue
         files.extend(sorted(root.glob("*/lane.toml")))
@@ -789,6 +842,52 @@ def parse_branch_arg(raw: str, repos: list[str]) -> dict[str, str]:
     return branch_map
 
 
+def _validate_bound_worktree(bind_path: Path, workspace_root: Path) -> tuple[str, str]:
+    """Validate a worktree an author wants a bound lane to LABEL, returning
+    ``(head_sha, branch)``.
+
+    A bound lane derives its reviewed bytes from this worktree instead of a
+    pinned clone, so the reconstruction guarantee holds only if the tree is a
+    real, clean, non-detached git checkout — the same discipline the
+    freeze-public-range gate applies before it trusts a range. Any failure is a
+    hard refusal (``SystemExit``); a bound lane is never created over a tree that
+    could make its recorded head fail to reconstruct the reviewed bytes.
+
+    Containment: the resolved worktree must live UNDER ``workspace_root`` (a plain
+    filesystem containment, same shape as ``close_review_lane``'s strict-descendant
+    gate). This is the ruling's "a path outside the author's own gripspace"
+    refusal, implemented as a path check rather than via identity resolution — so
+    it needs no owner-unit -> gripspace mapping and stays clear of the premium
+    boundary."""
+    resolved = bind_path.resolve()
+    root = workspace_root.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise SystemExit(
+            f"--bind path {resolved} is not under the workspace root {root}: a bound lane may "
+            "only label a worktree inside the author's own workspace"
+        )
+    if not resolved.is_dir():
+        raise SystemExit(f"--bind path is not a directory: {resolved}")
+    if not gitops.is_git_repo(resolved):
+        raise SystemExit(f"--bind path is not a git work tree: {resolved}")
+    branch = gitops.current_branch(resolved)
+    if not branch:
+        raise SystemExit(
+            f"--bind refuses a detached HEAD at {resolved}: a bound lane's head must be a "
+            "named branch so pr create has something to push"
+        )
+    if gitops.repo_dirty(resolved):
+        raise SystemExit(
+            f"--bind refuses a dirty tree at {resolved}: a bound lane's receipt records the "
+            "worktree HEAD, and uncommitted changes (tracked OR untracked) would make the "
+            "recorded head fail to reconstruct the reviewed bytes. Commit or stash first."
+        )
+    head = gitops.current_head_sha(resolved)
+    if not head:
+        raise SystemExit(f"--bind could not read HEAD at {resolved}")
+    return head, branch
+
+
 def create_lane(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     validate_lane_path_component(args.owner_unit, "owner_unit")
@@ -802,6 +901,49 @@ def create_lane(args: argparse.Namespace) -> int:
     if missing:
         raise SystemExit(f"unknown repos for lane: {', '.join(missing)}")
 
+    # gr2-lane-author-shape ruling (2026-09-03): --bind makes the lane a LABEL on
+    # an existing worktree instead of a fresh materialization. A bound lane is
+    # single-repo only, and its head/branch come from the worktree under the
+    # clean-tree/HEAD guard; no clone is materialized (no repos/ subdir).
+    bind = getattr(args, "bind", None)
+    lane_kind = "materialized"
+    bound_worktree: str | None = None
+    bound_head: str | None = None
+    if bind is not None:
+        # Single-repo check comes BEFORE branch parsing: a bound lane's branch is
+        # derived from the worktree, not the --branch arg, so parse_branch_arg
+        # must not run (and must not mask the single-repo refusal with a
+        # missing-mapping error for a repo a bound lane would never carry).
+        if len(repos) != 1:
+            raise SystemExit(
+                "a bound lane is single-repo only (gr2-lane-author-shape ruling): pass exactly "
+                f"one repo to --repos, got {repos or '[]'}"
+            )
+        head, branch = _validate_bound_worktree(Path(bind), workspace_root)
+        lane_kind = "bound"
+        bound_worktree = str(Path(bind).resolve())
+        # Record the worktree HEAD at create: the drift baseline a review bind on
+        # this bound lane re-checks against (moved HEAD or dirty tree refuses).
+        bound_head = head
+        branch_map = {repos[0]: branch}
+    else:
+        branch_map = parse_branch_arg(args.branch, repos)
+
+    # fork-base ruling: record what the caller supplies, do not derive.
+    # Each entry names a repo IN the lane and carries a 40-hex integration-branch tip.
+    raw_fork_base = getattr(args, "fork_base", None) or {}
+    fork_base: dict[str, dict[str, str]] = {}
+    for repo, entry in raw_fork_base.items():
+        if repo not in repos:
+            raise SystemExit(f"fork_base references repo outside lane: {repo}")
+        branch = str(entry.get("branch", "")).strip()
+        sha = str(entry.get("sha", "")).strip()
+        if not branch:
+            raise SystemExit(f"fork_base for {repo} has no branch")
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise SystemExit(f"fork_base sha for {repo} must be a 40-hex commit, got: {sha!r}")
+        fork_base[repo] = {"branch": branch, "sha": sha}
+
     metadata = LaneMetadata(
         schema_version=LANE_SCHEMA_VERSION,
         lane_name=args.lane_name,
@@ -809,12 +951,17 @@ def create_lane(args: argparse.Namespace) -> int:
         agent_id=unit_spec.get("agent_id"),
         lane_type=args.type,
         repos=repos,
-        branch_map=parse_branch_arg(args.branch, repos),
+        branch_map=branch_map,
         pr_associations=list(getattr(args, "pr_associations", [])),
         shared_context_roots=["config", ".grip/context/shared"],
         private_context_roots=[
             f"agents/{args.owner_unit}/home/context",
-            f"agents/{args.owner_unit}/lanes/{args.lane_name}/context",
+            str(
+                lane_dir(workspace_root, args.owner_unit, args.lane_name).relative_to(
+                    workspace_root
+                )
+                / "context"
+            ),
         ],
         exec_defaults={
             "parallelism": "workspace-default",
@@ -825,6 +972,10 @@ def create_lane(args: argparse.Namespace) -> int:
         creation_source=args.source,
         shared_with=[],
         handoff_source=None,
+        lane_kind=lane_kind,
+        bound_worktree=bound_worktree,
+        bound_head=bound_head,
+        fork_base=fork_base,
     )
     lane_root = lane_dir(workspace_root, args.owner_unit, args.lane_name)
     metadata_path = lane_file(workspace_root, args.owner_unit, args.lane_name)
@@ -847,11 +998,179 @@ def create_lane(args: argparse.Namespace) -> int:
         if lane_root.exists():
             raise SystemExit(f"refusing to create lane over existing path: {lane_root}")
         lane_root.mkdir(parents=True)
-        (lane_root / "repos").mkdir()
+        # A bound lane owns no clone, so it has no repos/ subdir — the absence is
+        # itself a signal to materialization that there is nothing to clone.
+        if lane_kind != "bound":
+            (lane_root / "repos").mkdir()
         (lane_root / "context").mkdir()
         atomic_replace_text(metadata_path, expected)
     print(metadata_path)
     return 0
+
+
+def bind_bound_lane(
+    workspace_root: Path, owner_unit: str, lane_name: str, *, base: str | None = None, allow_local: bool = False
+) -> "_review.ReviewRecord":
+    """Bind a review receipt for a BOUND lane, sourced LIVE from the author's
+    worktree (gr2-lane-author-shape ruling verb #2).
+
+    A bound lane has no materialized clone and no carried range: its reviewed
+    bytes are the author's own worktree, so reconstruction is "read the local
+    tree". This re-checks, at bind time, the same invariants create imposed —
+    the worktree is a clean, non-detached git checkout — AND that HEAD has not
+    DRIFTED from the head recorded at create (``bound_head``). A moved HEAD or a
+    dirty tree (tracked OR untracked) is a hard refusal: the receipt promises the
+    recorded head reconstructs the reviewed bytes, and drift breaks that promise.
+
+    On success it writes the ``(repo, base, head, lane_kind="bound")`` receipt to
+    the worktree's own ``.git/grip-review.json`` (the same path helper a
+    materialized lane uses) and returns the record.
+
+    ``base`` is the pin the reviewed range is measured from. It MUST be a full
+    40-hex commit that is an ANCESTOR of the worktree head — a non-hex string, a
+    well-formed-but-nonexistent sha (``ffff…``), or a commit head does not descend
+    from is refused, so a nonsense base can never reach the receipt. Deriving base
+    automatically from the lane branch's upstream is a follow-up (the open
+    receipt-contract question flagged to review); the drift mechanism does not
+    depend on how base is chosen.
+
+    ``allow_local`` gates a non-portable ``local:<path>`` identity for a worktree
+    with no GitHub origin. It defaults False (a review identity must be a portable
+    GitHub source); pass it only for a local test worktree."""
+    lane_doc = load_lane_doc(workspace_root.resolve(), owner_unit, lane_name)
+    if lane_doc.get("lane_kind") != "bound":
+        raise SystemExit(
+            f"bind_bound_lane: lane {owner_unit}/{lane_name} is not a bound lane "
+            f"(lane_kind={lane_doc.get('lane_kind')!r}); use the materialized review path"
+        )
+    # Base resolution (fork-base ruling): an explicit base wins; when omitted, read
+    # the recorded fork base for this bound lane's single repo. A lane with neither
+    # is refused with the unknown message — the review base is never HEAD^.
+    if base is None:
+        fork_base = lane_doc.get("fork_base", {})
+        repos = lane_doc.get("repos", [])
+        entry = fork_base.get(repos[0]) if repos else None
+        recorded = (entry or {}).get("sha")
+        if not recorded:
+            raise SystemExit(
+                f"bind refuses: lane {owner_unit}/{lane_name} has no recorded fork base and no "
+                "--base was given; the review base is unknown (it is never HEAD^). Recreate the "
+                "lane with a fork base, or pass --base explicitly."
+            )
+        base = recorded
+    worktree = Path(lane_doc.get("bound_worktree") or "")
+    recorded_head = lane_doc.get("bound_head")
+    if not worktree or not recorded_head:
+        raise SystemExit(
+            f"bind_bound_lane: bound lane {owner_unit}/{lane_name} is missing "
+            "bound_worktree or bound_head; it was not created by lane create --bind"
+        )
+    resolved = worktree.resolve()
+    if not gitops.is_git_repo(resolved):
+        raise SystemExit(f"bind refuses: bound worktree {resolved} is no longer a git work tree")
+    if not gitops.current_branch(resolved):
+        raise SystemExit(f"bind refuses: bound worktree {resolved} is in detached HEAD")
+    if gitops.repo_dirty(resolved):
+        raise SystemExit(
+            f"bind refuses (DRIFT): bound worktree {resolved} is dirty (tracked OR untracked "
+            "changes); the recorded head would not reconstruct the reviewed bytes. Commit or "
+            "stash, then re-bind."
+        )
+    current_head = gitops.current_head_sha(resolved)
+    if current_head != recorded_head:
+        raise SystemExit(
+            f"bind refuses (DRIFT): bound worktree {resolved} HEAD is {current_head}, not the "
+            f"head recorded at create ({recorded_head}); the lane has moved. Re-create the bound "
+            "lane at the new head, or reset the worktree to the recorded head."
+        )
+    # base must be a real ancestor of head, not just a well-formed sha: a 40-hex
+    # string that is not a commit (ffff...), or a commit head does not descend
+    # from, would put a base into the receipt that does not bound the reviewed
+    # range. The hex check refuses non-sha strings before git sees them; the
+    # merge-base --is-ancestor check refuses a well-formed-but-wrong base.
+    if len(base) != 40 or any(c not in "0123456789abcdef" for c in base):
+        raise SystemExit(
+            f"bind refuses: base {base!r} is not a full 40-hex commit sha"
+        )
+    if gitops.git(resolved, "merge-base", "--is-ancestor", base, current_head).returncode != 0:
+        raise SystemExit(
+            f"bind refuses: base {base} is not an ancestor of the worktree head {current_head} "
+            "(not a commit, or head does not descend from it); it cannot bound the reviewed range"
+        )
+    origin = gitops.remote_origin_url(resolved)
+    try:
+        repo_identity = _review.canonical_source_identity(origin or str(resolved), allow_local=allow_local)
+    except _review.ReviewError as exc:
+        raise SystemExit(
+            f"bind refuses: bound worktree {resolved} has no portable GitHub origin "
+            f"({exc}); pass --allow-local to bind a non-portable local: identity"
+        ) from exc
+    record = _review.ReviewRecord(
+        repo=repo_identity, base=base, head=current_head, lane_kind="bound"
+    )
+    receipt_path = _review.review_record_path(resolved)
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
+    return record
+
+
+def pr_create_bound_lane(
+    workspace_root: Path, owner_unit: str, lane_name: str, *, remote: str | None = None,
+    set_upstream: bool = True,
+) -> "_push.PushReceipt":
+    """`pr create` for a BOUND lane: push the reviewed head from the author's own
+    worktree (gr2-lane-author-shape ruling verb #4).
+
+    A bound lane's PR is opened FROM the worktree, not from a materialized clone,
+    so this reuses the ordinary push seam (``push_current_branch``, which verifies
+    the remote ref equals HEAD). It is gated on the bind receipt:
+
+    * the lane must be bound and must have a bind receipt (``gr2 lane bind`` first);
+    * the reviewed range ``base..head`` must be NON-EMPTY — ``base == head`` is
+      refused HERE, at pr create, not at bind: bind records whatever head the
+      author is on, but there is nothing to open a PR for when the range is empty;
+    * the worktree HEAD must still equal the receipt head — if it drifted since
+      bind, the push would carry an unreviewed head, so re-bind first.
+
+    The smallest end-to-end proof pushes to a local bare remote and opens nothing;
+    the platform (gh) path sits behind this same push seam."""
+    lane_doc = load_lane_doc(workspace_root.resolve(), owner_unit, lane_name)
+    if lane_doc.get("lane_kind") != "bound":
+        raise SystemExit(
+            f"pr_create_bound_lane: lane {owner_unit}/{lane_name} is not a bound lane "
+            f"(lane_kind={lane_doc.get('lane_kind')!r}); use the group/adapter pr path"
+        )
+    worktree = Path(lane_doc.get("bound_worktree") or "")
+    if not worktree:
+        raise SystemExit(f"pr create refuses: bound lane {owner_unit}/{lane_name} has no bound_worktree")
+    resolved = worktree.resolve()
+    receipt_path = _review.review_record_path(resolved)
+    if not receipt_path.is_file():
+        raise SystemExit(
+            f"pr create refuses: bound lane {owner_unit}/{lane_name} has no review receipt at "
+            f"{receipt_path}; run `gr2 lane bind` first"
+        )
+    try:
+        receipt = json.loads(receipt_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"pr create refuses: review receipt is unreadable or malformed ({exc})")
+    base, head = receipt.get("base"), receipt.get("head")
+    if base == head:
+        raise SystemExit(
+            f"pr create refuses: the reviewed range is EMPTY (base == head == {head}); there is "
+            "nothing to open a PR for. Commit work, re-bind, then pr create."
+        )
+    current_head = gitops.current_head_sha(resolved)
+    if current_head != head:
+        raise SystemExit(
+            f"pr create refuses: bound worktree HEAD {current_head} no longer equals the reviewed "
+            f"head {head} recorded in the bind receipt; the worktree moved since bind. Re-bind, "
+            "then pr create."
+        )
+    try:
+        return _push.push_current_branch(resolved, remote=remote, set_upstream=set_upstream)
+    except _push.PushError as exc:
+        raise SystemExit(f"pr create refuses: push from the bound worktree failed ({exc})")
 
 
 def enter_lane(args: argparse.Namespace) -> LaneTransitionOutcome:
@@ -1257,7 +1576,12 @@ def create_continuation_lane(args: argparse.Namespace) -> int:
         shared_context_roots=source.get("context", {}).get("shared_roots", []),
         private_context_roots=[
             f"agents/{args.target_unit}/home/context",
-            f"agents/{args.target_unit}/lanes/{args.target_lane_name}/context",
+            str(
+                lane_dir(
+                    workspace_root, args.target_unit, args.target_lane_name
+                ).relative_to(workspace_root)
+                / "context"
+            ),
         ],
         exec_defaults=source.get("exec_defaults", {}),
         creation_source="lane-handoff",
@@ -1318,11 +1642,11 @@ def plan_handoff(args: argparse.Namespace) -> int:
                     "lane_name": args.source_lane_name,
                     "repo": repo,
                     "cwd": str(
-                        workspace_root
-                        / "agents"
-                        / args.source_owner_unit
-                        / "lanes"
-                        / args.source_lane_name
+                        lane_dir(
+                            workspace_root,
+                            args.source_owner_unit,
+                            args.source_lane_name,
+                        )
                         / "repos"
                         / repo
                     ),
@@ -1350,11 +1674,11 @@ def plan_handoff(args: argparse.Namespace) -> int:
                     "lane_name": target_lane_name,
                     "repo": repo,
                     "cwd": str(
-                        workspace_root
-                        / "agents"
-                        / args.target_unit
-                        / "lanes"
-                        / target_lane_name
+                        lane_dir(
+                            workspace_root,
+                            args.target_unit,
+                            target_lane_name,
+                        )
                         / "repos"
                         / repo
                     ),
@@ -1646,11 +1970,7 @@ def plan_exec(args: argparse.Namespace) -> int:
                 "repo": repo,
                 "branch": lane_doc["branch_map"].get(repo),
                 "cwd": str(
-                    workspace_root
-                    / "agents"
-                    / args.owner_unit
-                    / "lanes"
-                    / args.lane_name
+                    lane_dir(workspace_root, args.owner_unit, args.lane_name)
                     / "repos"
                     / repo
                 ),

@@ -33,6 +33,11 @@ fn repo(root: &Path, name: &str, files: &[(&str, &str)]) -> PathBuf {
     git(&dir, &["init", "-q", "-b", "main"]);
     git(&dir, &["config", "user.email", "test@example.com"]);
     git(&dir, &["config", "user.name", "test"]);
+    // Byte-exact checkout across gr's clone (Windows runner autocrlf=true would
+    // otherwise CRLF-convert committed `\n` content). See the fuller note on
+    // link_apply_detached_freshness::repo. `.gitattributes` travels with clones.
+    git(&dir, &["config", "core.autocrlf", "false"]);
+    std::fs::write(dir.join(".gitattributes"), "* -text\n").unwrap();
     for (path, body) in files {
         let full = dir.join(path);
         if let Some(parent) = full.parent() {
@@ -74,10 +79,10 @@ fn link_apply_refuses_a_gripspace_source_that_is_behind_upstream() {
             &format!(
                 r#"version: 2
 gripspaces:
-  - url: "{}"
+  - url: '{}'
     rev: main
 manifest:
-  url: "{}"
+  url: '{}'
   revision: main
   composefile:
     - dest: OUT.md
@@ -86,7 +91,7 @@ manifest:
           src: SECTION.md
 repos:
   dummy-repo:
-    url: "{}"
+    url: '{}'
     path: ./dummy-repo
     revision: main
 "#,

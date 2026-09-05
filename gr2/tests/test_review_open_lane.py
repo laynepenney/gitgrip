@@ -225,15 +225,46 @@ def test_run_in_review_lane_refuses_an_escaping_cwd_before_spawning(review_world
 # --------------------------------------------------------------------------- #
 # 5. the review record is EXACTLY the (repo, base, head) triple
 # --------------------------------------------------------------------------- #
-def test_review_record_is_exactly_the_pin_delta_triple(review_world):
+def test_review_record_is_the_pin_delta_triple_plus_lane_kind(review_world):
+    # Per the gr2-lane-author-shape ruling (2026-09-03), a receipt carries the
+    # (repo, base, head) triple PLUS a required lane_kind stamp so a reader never
+    # infers the reconstruction guarantee. open_review_lane always materializes
+    # an isolated clone, so its receipt is stamped "materialized".
     _open(review_world)
     data = json.loads(review_record_path(review_world["lane"]).read_text())
-    assert set(data) == {"repo", "base", "head"}  # nothing less, nothing more
+    assert set(data) == {"repo", "base", "head", "lane_kind"}  # nothing less, nothing more
     assert _HEX40.match(data["base"]) and _HEX40.match(data["head"])
+    assert data["lane_kind"] == "materialized"
     # repo is derived from the source origin identity, not the lane working path
     origin = remote_origin_url(review_world["source"])
     assert data["repo"] == f"local:{Path(origin).resolve()}"
     assert str(review_world["lane"]) not in data["repo"]
+
+
+def test_review_record_rejects_an_unknown_lane_kind():
+    # lane_kind is a required, closed enum: a receipt that names a kind outside
+    # {materialized, bound} is refused at construction, so no unrecognizable
+    # guarantee can ever be written to disk.
+    with pytest.raises(ReviewError, match="lane_kind must be one of"):
+        ReviewRecord(repo="local:/x", base="a" * 40, head="b" * 40, lane_kind="quicklane")
+
+
+def test_close_refuses_a_receipt_missing_lane_kind(review_world):
+    """A receipt that would be a valid legacy triple but omits lane_kind is
+    refused as not-well-formed — the required stamp cannot be silently absent.
+
+    The lane is a real materialized clone (matching origin and HEAD), so the
+    ONLY defect the close validator can be reacting to is the missing lane_kind:
+    if the requirement were dropped, this record would pass the well-formed gate
+    and close would proceed."""
+    _open(review_world)
+    lane = review_world["lane"]
+    record = json.loads(review_record_path(lane).read_text())
+    del record["lane_kind"]
+    review_record_path(lane).write_text(json.dumps(record))
+    with pytest.raises(ReviewError, match="not a well-formed"):
+        close_review_lane(lane_repo_root=lane, review_lane_root=review_world["lane_root"])
+    assert lane.exists()  # refused, not deleted
 
 
 # --------------------------------------------------------------------------- #
@@ -420,7 +451,7 @@ def test_close_refuses_a_clone_whose_record_names_a_different_repo(review_world,
     clone = root / "mismatched"
     _run(root, "clone", "--quiet", str(src), str(clone))
     (clone / ".git" / "grip-review.json").write_text(
-        json.dumps({"repo": "https://github.com/someone/else", "base": "a" * 40, "head": "b" * 40})
+        json.dumps({"repo": "https://github.com/someone/else", "base": "a" * 40, "head": "b" * 40, "lane_kind": "materialized"})
     )
     keep = clone / "keep.txt"
     keep.write_text("keep\n")

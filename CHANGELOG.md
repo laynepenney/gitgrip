@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-09-05
+
+**Scope.** This release promotes `v1.3.1..dde8c816`: **144 commits and 35 first-parent
+units**, measured with `git rev-list --count` and `git rev-list --first-parent --count`
+over that exact range, with the empty range `v1.3.1..v1.3.1` returning 0 as the control.
+The release-prep commit carrying this entry sits one beyond that range and is excluded.
+
+Units are classified by diffing each against its **first parent** (a merge commit has no
+canonical diff, and `--name-only` returns nothing on a merge). **Five of the 35 units
+touch the published Rust CLI (`src/`)**: gripspace-name validation for Windows path
+separators, two MCP cancellation fixes (a stdout leak and a concurrent-cancel class), the
+refusal of `clone_strategy: worktree`, and the CI-green catch-up promotion. The remaining
+30 are the gr2 Python overlay and CI/release-pipeline hardening, which do not change the
+shipped Rust binary.
+
+**gr2 overlay (the bulk of this release).** The R2 "Exact Work" review chain: project
+review over an immutable multi-repo pin, `review bind`/`open-gr` reconstruction with a
+tree-equality assertion, the `review create-project` producer verb and the materialize
+path (`open-project --enter`), and review-ephemeral lanes cloned blobless + sparse from a
+persistent per-host mirror. The fork-base ruling: a review's per-repo base is the recorded
+fork point, never `HEAD^`. Lane lifecycle safety, lane-aware commit, workspace kinds, and
+`workspace convert-clone` with a no-worktree materialization playbook.
+
+**Release pipeline.** `release.yml` now gates on CI: `build` needs `ci`, and both
+`release` and `publish-crates` need `[ci, build]`; `cargo publish` runs `--locked` with
+`--no-verify` removed. CI runs on `dev`, with no-fail-fast reporting.
+
 ## [1.3.1] - 2026-08-30
 
 **Scope.** This release promotes `v1.3.0..3a8df911`: **22 commits and 5 first-parent

@@ -30,6 +30,16 @@ fn repo(root: &Path, name: &str, files: &[(&str, &str)]) -> PathBuf {
     git(&dir, &["init", "-q", "-b", "main"]);
     git(&dir, &["config", "user.email", "t@e.com"]);
     git(&dir, &["config", "user.name", "t"]);
+    // Keep content byte-exact across checkout. The GitHub Windows runner sets
+    // core.autocrlf=true globally, so committed `\n` content (e.g. SECTION.md
+    // "v1\n") would check out as `\r\n` in gr's materialized CLONE of this repo
+    // — and compose copies bytes faithfully (src/files/mod.rs), so OUT.md then
+    // reads "v1\r\n" and the content assertions fail. The source repo's own
+    // config does not propagate to the clone, so a committed `.gitattributes`
+    // (`* -text`, which travels with the repo and overrides autocrlf) is the
+    // load-bearing lever; the local config setting covers this repo's own tree.
+    git(&dir, &["config", "core.autocrlf", "false"]);
+    std::fs::write(dir.join(".gitattributes"), "* -text\n").unwrap();
     for (p, b) in files {
         let full = dir.join(p);
         if let Some(par) = full.parent() {
@@ -78,10 +88,10 @@ where
             &format!(
                 r#"version: 2
 gripspaces:
-  - url: "{}"
+  - url: '{}'
     rev: {}
 manifest:
-  url: "{}"
+  url: '{}'
   revision: main
   composefile:
     - dest: OUT.md
@@ -90,7 +100,7 @@ manifest:
           src: SECTION.md
 repos:
   dummy-repo:
-    url: "{}"
+    url: '{}'
     path: ./dummy-repo
     revision: main
 "#,
@@ -191,10 +201,10 @@ fn recorded(space: &Path) -> String {
 #[test]
 fn link_apply_refuses_an_attached_source_on_the_wrong_configured_branch() {
     let fx = setup("main");
+    let out = std::fs::read_to_string(fx.workspace.join("OUT.md")).unwrap();
     assert_eq!(
-        std::fs::read_to_string(fx.workspace.join("OUT.md")).unwrap(),
-        "v1\n",
-        "precondition: the workspace starts from configured main"
+        out, "v1\n",
+        "precondition: the workspace starts from configured main; got {out:?}"
     );
     git(&fx.source, &["branch", "scratch", "HEAD"]);
     git(&fx.space, &["checkout", "-qb", "scratch"]);
@@ -232,10 +242,8 @@ fn control_attached_source_on_the_configured_current_branch_is_accepted() {
 
     let (code, diag) = apply(&fx.workspace);
     assert_eq!(code, Some(0), "current configured branch must pass: {diag}");
-    assert_eq!(
-        std::fs::read_to_string(fx.workspace.join("OUT.md")).unwrap(),
-        "v1\n"
-    );
+    let out = std::fs::read_to_string(fx.workspace.join("OUT.md")).unwrap();
+    assert_eq!(out, "v1\n", "composed OUT.md content; got {out:?}");
 }
 
 #[test]
@@ -347,10 +355,10 @@ fn assert_explicit_sha_pin_is_accepted(pin_len: usize) {
             &format!(
                 r#"version: 2
 gripspaces:
-  - url: "{}"
+  - url: '{}'
     rev: {}
 manifest:
-  url: "{}"
+  url: '{}'
   revision: main
   composefile:
     - dest: OUT.md
@@ -359,7 +367,7 @@ manifest:
           src: SECTION.md
 repos:
   dummy-repo:
-    url: "{}"
+    url: '{}'
     path: ./dummy-repo
     revision: main
 "#,
@@ -457,7 +465,10 @@ fn moved_tag_is_refused_until_sync_updates_the_managed_clone() {
         "moved-tag diagnostic: {diag}"
     );
     assert_eq!(after, before, "refusal must not move the managed clone");
-    assert_eq!(out, "v1\n", "refusal must not compose stale content again");
+    assert_eq!(
+        out, "v1\n",
+        "refusal must not compose stale content again; got {out:?}"
+    );
 
     let (sync_code, sync_diag) = run_sync(&workspace);
     assert_eq!(sync_code, Some(0), "gr sync must recover: {sync_diag}");
@@ -478,10 +489,10 @@ fn moved_tag_is_refused_until_sync_updates_the_managed_clone() {
         Some(0),
         "apply after recovery must succeed: {apply_diag}"
     );
+    let recovered = std::fs::read_to_string(workspace.join("OUT.md")).unwrap();
     assert_eq!(
-        std::fs::read_to_string(workspace.join("OUT.md")).unwrap(),
-        "v2-MOVED-TAG\n",
-        "recovered apply must compose the upstream tag content"
+        recovered, "v2-MOVED-TAG\n",
+        "recovered apply must compose the upstream tag content; got {recovered:?}"
     );
 }
 
@@ -509,9 +520,9 @@ fn an_all_hex_tag_deleted_from_origin_is_not_reinterpreted_as_a_commit_prefix() 
         before,
         "refusal must not move the managed clone"
     );
+    let out = std::fs::read_to_string(fx.workspace.join("OUT.md")).unwrap();
     assert_eq!(
-        std::fs::read_to_string(fx.workspace.join("OUT.md")).unwrap(),
-        "v1\n",
-        "refusal must not compose again from the stale local tag"
+        out, "v1\n",
+        "refusal must not compose again from the stale local tag; got {out:?}"
     );
 }
