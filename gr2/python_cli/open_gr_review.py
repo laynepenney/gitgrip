@@ -389,6 +389,73 @@ def record_review_verification(
     return record
 
 
+def record_review_verifications(workspace: Path, review_root: Path) -> list[dict]:
+    """Row 4 follow-on (multi-repo): run EVERY reviewed repo's declared test command
+    inside its lane and record each in the receipt.
+
+    The command lives in the workspace spec, per repo, so a review of N repos runs N
+    verifications from one call rather than N hand-typed commands::
+
+        [[repos]]
+        name = "app"
+        ...
+        [repos.review_test]
+        command = ["python", "-m", "pytest", "-q"]
+        interpreter = "python3"
+        import_module = "app_pkg"
+
+    Iterates the repos the review materialized (from the receipt) and, for each that
+    declares a ``review_test``, calls ``record_review_verification`` -- which binds the
+    real exit code, the reviewed head, the measured cwd, and the interpreter/module
+    actually resolved. A repo with no declaration is skipped. Returns the records
+    appended this call, in the receipt's repo order.
+
+    Refuses if the receipt names a repo absent from the spec, if a ``review_test`` is
+    missing a required field, or if no reviewed repo declares one at all (a multi-repo
+    verify that verified nothing is a silent pass, not a result)."""
+    review_root = Path(review_root)
+    receipt_path = open_gr_receipt_path(review_root)
+    if not receipt_path.exists():
+        raise OpenGrReviewError(
+            f"no open-gr receipt at {receipt_path}; not a review opened by open-gr"
+        )
+    receipt = json.loads(receipt_path.read_text())
+    keys = [r["key"] for r in receipt.get("repos", [])]
+    spec = lane_proto.load_workspace_spec(Path(workspace))
+    by_name = {r.get("name"): r for r in spec.get("repos", [])}
+
+    records: list[dict] = []
+    for key in keys:
+        repo = by_name.get(key)
+        if repo is None:
+            raise OpenGrReviewError(
+                f"reviewed repo {key!r} is not in the workspace spec; cannot resolve "
+                f"its test command"
+            )
+        review_test = repo.get("review_test")
+        if not review_test:
+            continue
+        for field in ("command", "interpreter", "import_module"):
+            if field not in review_test:
+                raise OpenGrReviewError(
+                    f"review_test for {key!r} is missing required field {field!r}"
+                )
+        records.append(
+            record_review_verification(
+                review_root,
+                key,
+                command=list(review_test["command"]),
+                interpreter=review_test["interpreter"],
+                import_module=review_test["import_module"],
+            )
+        )
+    if not records:
+        raise OpenGrReviewError(
+            "no reviewed repo declares a [repos.review_test] command; nothing to verify"
+        )
+    return records
+
+
 @dataclasses.dataclass(frozen=True)
 class OpenGrExit:
     restored_lane: str | None
