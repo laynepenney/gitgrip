@@ -220,3 +220,40 @@ def test_resolve_target_explicit_is_used(tmp_path: Path) -> None:
     ref, source = prune_ops.resolve_target(repo, "dev", "origin")
     assert ref == "dev"
     assert "explicit" in source
+
+
+def _set_remote_tracking(repo: Path, name: str, sha: str) -> None:
+    _git(repo, "update-ref", f"refs/remotes/origin/{name}", sha)
+
+
+def test_default_target_prefers_dev_over_origin_head(tmp_path: Path) -> None:
+    """The reorder witness: origin/HEAD points at main on a fresh clone, so
+    resolving HEAD first would measure prune against main and read dev-merged
+    branches as unmerged. dev must win. (Old HEAD-first order returned main.)"""
+    repo = _repo(tmp_path)
+    sha = _git(repo, "rev-parse", "HEAD")
+    _set_remote_tracking(repo, "dev", sha)
+    _set_remote_tracking(repo, "main", sha)
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+    ref, source = prune_ops.resolve_target(repo, None, "origin")
+    assert ref == "origin/dev"
+    assert "integration branch" in source
+
+
+def test_default_target_falls_to_origin_head_when_no_dev(tmp_path: Path) -> None:
+    """No origin/dev: fall to the remote's own default via origin/HEAD."""
+    repo = _repo(tmp_path)
+    sha = _git(repo, "rev-parse", "HEAD")
+    _set_remote_tracking(repo, "main", sha)
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+    ref, source = prune_ops.resolve_target(repo, None, "origin")
+    assert ref == "origin/main"
+    assert "origin/HEAD" in source
+
+
+def test_default_target_raises_when_nothing_resolves(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)  # no remote-tracking refs at all
+    with pytest.raises(prune_ops.PruneError):
+        prune_ops.resolve_target(repo, None, "origin")

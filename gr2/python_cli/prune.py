@@ -87,26 +87,37 @@ def _ref_exists(repo: Path, ref: str) -> bool:
 def resolve_target(repo: Path, target: str | None, remote: str) -> tuple[str, str]:
     """Resolve the ref merged-ness is measured against.
 
-    Explicit --target wins. Otherwise the remote's own default branch
-    (`refs/remotes/<remote>/HEAD`), then `<remote>/dev`, then `<remote>/main`.
-    Returns (target_ref, how_it_was_resolved). Raises if nothing resolves, rather
-    than silently falling back to a wrong ref (a wrong target makes every
-    merged/not-merged verdict wrong).
+    Order: explicit ``--target``, then the integration branch ``<remote>/dev``,
+    then the remote's own default branch (``refs/remotes/<remote>/HEAD``), then
+    ``<remote>/main``. ``dev`` is tried BEFORE ``origin/HEAD`` on purpose: our
+    integration branch is ``dev``, but ``origin/HEAD`` points at ``main`` on a
+    fresh clone, so resolving HEAD first would silently measure prune against
+    ``main`` and report dev-merged branches as unmerged. Returns
+    ``(target_ref, how_it_was_resolved)``; raises rather than falling back to a
+    wrong ref, because a wrong target makes every merged/not-merged verdict wrong.
+
+    (Follow-on, tracked separately: a stored per-gripspace target would sit ahead
+    of ``dev`` here, but gr2 has no such stored target today -- the workspace spec
+    ``[settings]`` carries only ``merge_method`` -- and this verb is single-repo,
+    so wiring a gripspace target needs a workspace context first.)
     """
     if target is not None:
         if not _ref_exists(repo, target):
             raise PruneError(f"target ref '{target}' does not exist in {repo}")
         return target, "explicit --target"
+    dev = f"{remote}/dev"
+    if _ref_exists(repo, dev):
+        return dev, f"integration branch ({dev})"
     head = git(repo, "symbolic-ref", "--quiet", f"refs/remotes/{remote}/HEAD")
     if head.returncode == 0 and head.stdout.strip():
         ref = _short_remote(head.stdout.strip(), remote)
         if _ref_exists(repo, ref):
             return ref, f"{remote}/HEAD"
-    for candidate in (f"{remote}/dev", f"{remote}/main"):
-        if _ref_exists(repo, candidate):
-            return candidate, f"fallback ({candidate})"
+    main = f"{remote}/main"
+    if _ref_exists(repo, main):
+        return main, f"fallback ({main})"
     raise PruneError(
-        f"could not resolve a target in {repo}: no {remote}/HEAD, {remote}/dev, or "
+        f"could not resolve a target in {repo}: no {remote}/dev, {remote}/HEAD, or "
         f"{remote}/main. Pass --target explicitly."
     )
 
