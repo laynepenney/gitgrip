@@ -2060,7 +2060,7 @@ def _review_call(fn, *args, **kwargs):
 _ROW_REQUIRED = ("key", "remote", "base", "head")
 # Every field of a rows-json entry is a string; a JSON number/bool/null/object
 # in any of them must refuse cleanly, not traceback downstream on a string op.
-_ROW_STRING_FIELDS = ("key", "remote", "base", "head", "path", "ref", "title", "body", "source")
+_ROW_STRING_FIELDS = ("key", "remote", "base", "head", "path", "ref", "title", "body", "source", "range")
 
 
 def _normalize_review_row(raw: object) -> dict:
@@ -2085,8 +2085,20 @@ def _normalize_review_row(raw: object) -> dict:
         "path": raw.get("path") or raw["key"], "ref": raw.get("ref", "refs/heads/dev"),
         "title": raw.get("title", ""), "body": raw.get("body", ""),
     }
+    if raw.get("source") and raw.get("range"):
+        raise typer.BadParameter(
+            f"rows-json entry {raw['key']!r}: 'source' and 'range' are mutually exclusive"
+        )
     if raw.get("source"):
         row["source"] = str(Path(raw["source"]).resolve())
+    if raw.get("range"):
+        range_path = Path(raw["range"])
+        try:
+            row["range_patch"] = range_path.read_text()
+        except OSError as exc:
+            raise typer.BadParameter(
+                f"rows-json entry {raw['key']!r} range {range_path}: {exc.strerror or exc}"
+            )
     return row
 
 
@@ -2100,6 +2112,7 @@ def review_bind(
     ref: str = typer.Option("refs/heads/dev", "--ref", help="Target ref whose live head must equal --base"),
     path: Optional[str] = typer.Option(None, "--path", help="Workspace path for the row (defaults to --repo)"),
     source: Optional[Path] = typer.Option(None, "--source", help="Author clone holding the pre-push head; required to carry the range so open-gr can reconstruct"),
+    from_range: Optional[Path] = typer.Option(None, "--from-range", help="A frozen range.patch (freeze-public-range.sh output). Carries the range so open-gr reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source."),
     title: str = typer.Option("", "--title", help="Platform title text (NORM-hashed into the object)"),
     body: str = typer.Option("", "--body", help="Platform body text (NORM-hashed into the object)"),
     rows_json: Optional[Path] = typer.Option(None, "--rows-json", help="A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body/source); binds ALL rows into ONE gr commit. Exclusive with the single-row flags."),
@@ -2114,8 +2127,8 @@ def review_bind(
     """
     single = any(v is not None for v in (key, remote, base, head))
     if rows_json is not None:
-        if single:
-            raise typer.BadParameter("--rows-json is exclusive with --repo/--remote/--base/--head")
+        if single or source is not None or from_range is not None:
+            raise typer.BadParameter("--rows-json is exclusive with --repo/--remote/--base/--head/--source/--from-range")
         try:
             text = rows_json.read_text()
         except OSError as exc:
@@ -2131,12 +2144,19 @@ def review_bind(
         missing = [f"--{n}" for n, v in (("repo", key), ("remote", remote), ("base", base), ("head", head)) if not v]
         if missing:
             raise typer.BadParameter(f"{', '.join(missing)} required without --rows-json")
+        if source is not None and from_range is not None:
+            raise typer.BadParameter("--source and --from-range are mutually exclusive")
         row = {
             "key": key, "remote": remote, "path": path or key,
             "head": head, "base": base, "ref": ref, "title": title, "body": body,
         }
         if source is not None:
             row["source"] = str(source.resolve())
+        if from_range is not None:
+            try:
+                row["range_patch"] = from_range.read_text()
+            except OSError as exc:
+                raise typer.BadParameter(f"--from-range {from_range}: {exc.strerror or exc}")
         rows = [row]
     commit = _review_call(grip.create_review_bind_commit, workspace_root.resolve(), rows, ratified=ratified)
     typer.echo(f"gr:{commit}")

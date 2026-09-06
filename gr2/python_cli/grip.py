@@ -445,6 +445,21 @@ def _run_policy_hook(policy_hook: list[str] | None, scan_items: list[tuple[str, 
         return f"clean: {' '.join(policy_hook)} exit 0"
 
 
+def _range_terminal_head(range_patch: str) -> str | None:
+    """The sha the range's LAST commit was formatted from. `git format-patch` writes
+    one ``From <40-hex> `` header per commit, in apply order, so the terminal one is
+    the range's head. Returns None if the patch carries no From header. Used to defend
+    the bind: the head a range describes must equal the declared --head (the same
+    guarantee the --source path gets from its rev-parse of the head in the clone)."""
+    found: str | None = None
+    for line in range_patch.splitlines():
+        if line.startswith("From ") and len(line) >= 45 and line[45] == " ":
+            cand = line[5:45]
+            if _SHA40.match(cand):
+                found = cand
+    return found
+
+
 def create_review_bind_commit(
     workspace: Path, rows: list[dict[str, str]], *, ratified: str | None = None,
     policy_hook: list[str] | None = None,
@@ -518,8 +533,30 @@ def create_review_bind_commit(
         scan_items.append((f"{key}.title", title))
         scan_items.append((f"{key}.body", body))
         source = row.get("source")
+        range_patch = row.get("range_patch")
+        if source and range_patch:
+            raise GripCorruptError(
+                f"row {key}: source and range_patch are mutually exclusive "
+                "(a clone that holds the head vs the frozen range itself)")
+        obj: dict[str, str] | None = None
         if source:
             obj = _carry_objects(workspace, source, base, head)
+        elif range_patch:
+            # A classic freeze-public-range.sh range.patch, head local-only: derive
+            # the head-tree by applying the range over base in a throwaway clone, so
+            # the producer owns the git am end to end (no author clone required).
+            # Head defense (parity with the --source path's source_missing_head
+            # check): the range's terminal `From <sha>` header is the head the patch
+            # was formatted from; it must equal the declared head, or the row would
+            # bind a range describing a DIFFERENT head than the one recorded here and
+            # refused-against on the remote.
+            from_head = _range_terminal_head(range_patch)
+            if from_head is None:
+                raise GripReviewRefused("range_no_from_header", key, "range.patch carries no From <sha> header")
+            if from_head != head:
+                raise GripReviewRefused("range_head_mismatch", head, from_head)
+            obj = _carry_objects_from_range(workspace, remote, base, range_patch)
+        if obj is not None:
             obj_fields = [f"100644 blob {_hash_blob(workspace, obj[n])}\t{n}"
                           for n in ("range.patch", "metadata", "head-tree")]
             objects_entries.append(f"040000 tree {_mktree(workspace, obj_fields)}\t{key}")
