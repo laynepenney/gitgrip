@@ -321,6 +321,33 @@ def _configured_merge_method(workspace_root: Path) -> str | None:
     return value
 
 
+def _find_workspace_root(start: Path) -> Path | None:
+    """Nearest ancestor of `start` (inclusive) holding a gr2 workspace spec, else None.
+
+    prune runs single-repo (cwd/--repo-path) but the stored PR target lives in the
+    WORKSPACE spec, so we walk up to find it. No spec found -- a bare repo, or gr2
+    used outside a gripspace -- returns None, and the stored-target step is skipped
+    so prune keeps working standalone.
+    """
+    for candidate in (start, *start.parents):
+        if (candidate / ".grip" / "workspace_spec.toml").is_file():
+            return candidate
+    return None
+
+
+def _configured_target(workspace_root: Path) -> str | None:
+    """The gripspace's stored PR target (`[settings].target`), read never written."""
+    settings = lane_proto.load_workspace_spec(workspace_root).get("settings", {})
+    if not isinstance(settings, dict):
+        raise SystemExit("workspace spec [settings] must be a table")
+    value = settings.get("target")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise SystemExit("workspace setting target must be a string")
+    return value
+
+
 def _toml_basic_string(value: str) -> str:
     """Render one string through the TOML basic-string grammar.
 
@@ -963,12 +990,12 @@ def prune_cmd(
     target: str | None = typer.Option(
         None,
         "--target",
-        help="Ref to measure merged-ness against (default: origin/dev, then origin/HEAD, then origin/main)",
+        help="Ref to measure merged-ness against (default: the gripspace's stored PR target, then origin/dev, then origin/HEAD, then origin/main)",
     ),
     remote: str = typer.Option(
         "origin",
         "--remote",
-        help="Remote whose dev/HEAD/main resolve the default --target (ignored when --target is given)",
+        help="Remote whose stored-target/dev/HEAD/main resolve the default --target (ignored when --target is given)",
     ),
     execute: bool = typer.Option(
         False,
@@ -998,10 +1025,22 @@ def prune_cmd(
     per local branch, plus (only when a branch is not already patch-id-merged) one
     bounded first-parent scan of the target that is built once and shared across
     branches.
+
+    With no --target, the gripspace's stored \[settings].target (the branch this
+    workspace merges into -- an epic branch, say) is preferred over origin/dev.
+    prune only READS it; `gr target set` is the only writer. A stale stored target
+    (its remote ref absent) is skipped and the report's target line names it.
     """
     target_repo = (repo_path or Path.cwd()).resolve()
+    stored_target: str | None = None
+    if target is None:
+        workspace_root = _find_workspace_root(target_repo)
+        if workspace_root is not None:
+            stored_target = _configured_target(workspace_root)
     try:
-        report = prune_ops.prune(target_repo, target=target, remote=remote, execute=execute)
+        report = prune_ops.prune(
+            target_repo, target=target, remote=remote, stored_target=stored_target, execute=execute
+        )
     except prune_ops.PruneError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
