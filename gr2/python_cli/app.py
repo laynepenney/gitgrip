@@ -18,6 +18,7 @@ from . import branch as branch_ops
 from . import commit as commit_ops
 from . import execops, failures, grip, migration, spec_apply, syncops
 from . import pr as pr_ops
+from . import prune as prune_ops
 from . import project_review
 from . import push as push_ops
 from .events import EventType, emit_after_outcome
@@ -955,6 +956,43 @@ def push_cmd(
         f"Pushed {receipt.branch} to {receipt.remote} at {receipt.remote_sha} "
         "(remote ref verified)"
     )
+
+
+@app.command("prune")
+def prune_cmd(
+    target: str | None = typer.Option(
+        None,
+        "--target",
+        help="Ref to measure merged-ness against (default: origin/HEAD, then origin/dev, origin/main)",
+    ),
+    remote: str = typer.Option("origin", "--remote", help="Remote whose default branch resolves the target"),
+    execute: bool = typer.Option(
+        False,
+        "--execute",
+        help="Actually delete the merged branches (default: dry-run, prints what it would delete)",
+    ),
+    repo_path: Path | None = typer.Option(
+        None,
+        "--repo-path",
+        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo)",
+    ),
+) -> None:
+    """List merged local branches and delete them only with --execute.
+
+    Merged is decided by PATCH-ID (git cherry) then a SQUASH tree check, never by
+    containment alone -- so squash- and rebase-merged lane branches, which gr1's
+    containment prune leaves behind, are caught. Never deletes the current branch,
+    the target, or main/dev, and never touches a remote ref.
+    """
+    target_repo = (repo_path or Path.cwd()).resolve()
+    try:
+        report = prune_ops.prune(target_repo, target=target, remote=remote, execute=execute)
+    except prune_ops.PruneError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(prune_ops.render_report(report))
+    if report.failed:
+        raise typer.Exit(code=1)
 
 
 @exec_app.command("status")
