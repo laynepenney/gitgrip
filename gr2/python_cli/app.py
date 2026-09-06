@@ -1992,6 +1992,10 @@ def review_open_project(
         typer.echo(json.dumps(project_review.outcome_payload(outcome), indent=2))
     else:
         typer.echo(f"status={outcome.status} lane={lane_name} review_root={outcome.review_root}")
+        # A refusal a stranger cannot read is the worst exit point: print each
+        # failure's reason on the DEFAULT output, not only under --json.
+        for failure in outcome.failures:
+            typer.echo(f"  refused[{failure.key}]: {failure.reason}")
     if outcome.status != "opened":
         raise typer.Exit(code=1)
 
