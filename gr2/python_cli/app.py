@@ -965,7 +965,11 @@ def prune_cmd(
         "--target",
         help="Ref to measure merged-ness against (default: origin/dev, then origin/HEAD, then origin/main)",
     ),
-    remote: str = typer.Option("origin", "--remote", help="Remote whose default branch resolves the target"),
+    remote: str = typer.Option(
+        "origin",
+        "--remote",
+        help="Remote whose dev/HEAD/main resolve the default --target (ignored when --target is given)",
+    ),
     execute: bool = typer.Option(
         False,
         "--execute",
@@ -977,12 +981,23 @@ def prune_cmd(
         help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo)",
     ),
 ) -> None:
-    """List merged local branches and delete them only with --execute.
+    r"""List merged local branches and delete them only with --execute.
 
     Merged is decided by PATCH-ID (git cherry) then a SQUASH tree check, never by
     containment alone -- so squash- and rebase-merged lane branches, which gr1's
-    containment prune leaves behind, are caught. Never deletes the current branch,
-    the target, or main/dev, and never touches a remote ref.
+    containment prune leaves behind, are caught. The SQUASH check matches a
+    branch's whole diff against a single commit already on the target's
+    first-parent line (the shape a squash-merge produces). The per-branch reason
+    is labelled in the output: \[patch-id] means the branch's commits are already
+    present in the target by patch-id; \[squash] means its combined diff matches
+    one target commit.
+
+    Never deletes the current branch, the target, or main/dev, and never touches
+    a remote ref. There is no verbose or debug flag -- the default dry-run already
+    prints every branch it would delete and why. Cost scales as one `git cherry`
+    per local branch, plus (only when a branch is not already patch-id-merged) one
+    bounded first-parent scan of the target that is built once and shared across
+    branches.
     """
     target_repo = (repo_path or Path.cwd()).resolve()
     try:
