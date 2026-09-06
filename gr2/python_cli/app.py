@@ -2181,6 +2181,16 @@ def review_open_gr(
         raise typer.BadParameter("--enter is required (reconstruction is the only open mode)")
     sha = _strip_gr_prefix(commit)
     root = lane_dir.resolve()
+    # close-gr reclaims the WHOLE --lane-dir, so open-gr must OWN it: refuse a
+    # pre-existing non-empty dir rather than write a lane into someone's files and
+    # let teardown remove them. An absent or empty dir is fine (open-gr fills it).
+    if root.exists() and any(root.iterdir()):
+        typer.echo(
+            f"refused: lane_dir_not_empty: --lane-dir {root} exists and is not empty; "
+            "pass a fresh directory (close-gr reclaims the whole lane)",
+            err=True,
+        )
+        raise typer.Exit(code=2)
     if key is None:
         keys = _review_call(grip.review_row_keys, workspace_root.resolve(), sha)
         if not keys:
@@ -2192,6 +2202,8 @@ def review_open_gr(
             )
             for row_key in keys
         }
+        from . import open_gr_review
+        open_gr_review.write_open_gr_marker(root, sha, results)
         if json_output:
             typer.echo(json.dumps(results, indent=2))
         else:
@@ -2202,6 +2214,8 @@ def review_open_gr(
     result = _review_call(
         grip.reconstruct_review_lane, workspace_root.resolve(), sha, key, root
     )
+    from . import open_gr_review
+    open_gr_review.write_open_gr_marker(root, sha, {key: result})
     if json_output:
         typer.echo(json.dumps(result, indent=2))
     else:
@@ -2209,6 +2223,28 @@ def review_open_gr(
         typer.echo(f"bound_head: {result['bound_head']}")
         typer.echo(f"reconstructed_head: {result['reconstructed_head']}")
         typer.echo(f"tree_match: {result['bound_head_tree'] == result['reconstructed_tree']}")
+
+
+@review_app.command("close-gr")
+def review_close_gr(
+    lane_dir: Path = typer.Argument(..., help="The open-gr reconstruction lane (the --lane-dir from `review open-gr --enter`) to reclaim"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Reclaim an `open-gr --enter` reconstruction lane: verify the open-gr marker and
+    remove the disposable tree. The teardown counterpart to `open-gr --enter`; unlike
+    `exit-gr` (the open-PROJECT pop) it needs no OWNER_UNIT, because open-gr pushes no
+    lane and changes no cwd. Refuses a directory without an open-gr marker rather than
+    remove an arbitrary path."""
+    from . import open_gr_review
+    try:
+        result = open_gr_review.close_open_gr_lane(lane_dir.resolve())
+    except open_gr_review.OpenGrReviewError as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(code=2)
+    if json_output:
+        typer.echo(json.dumps(result, indent=2))
+    else:
+        typer.echo(f"reclaimed {result['reclaimed']} (gr:{result['gr_commit']})")
 
 
 @review_app.command("verify")

@@ -29,6 +29,56 @@ class OpenGrReviewError(Exception):
 
 _RECEIPT_NAME = ".grip-open-gr.json"
 
+# open-gr's teardown marker. Distinct from _RECEIPT_NAME (the open-PROJECT receipt
+# exit-gr reads): open-gr pushes no lane and changes no cwd, so its teardown is only
+# the rm of this disposable tree, and it must NOT be mistaken for an exit-gr receipt.
+_OPEN_GR_MARKER = ".grip-open-gr-reconstruct.json"
+
+
+def write_open_gr_marker(lane_dir: Path, gr_commit: str, results: dict) -> None:
+    """Record a small teardown marker at the open-gr lane root so ``close_open_gr_lane``
+    can verify the directory is an open-gr reconstruction before removing it, rather
+    than rm an arbitrary path. ``results`` maps repo key -> the reconstruct dict."""
+    marker = {
+        "kind": "open-gr-reconstruct",
+        "gr_commit": gr_commit,
+        "repos": [
+            {
+                "key": key,
+                "reconstructed_head": res.get("reconstructed_head", ""),
+                "tree_match": res.get("bound_head_tree") == res.get("reconstructed_tree"),
+            }
+            for key, res in results.items()
+        ],
+    }
+    (Path(lane_dir) / _OPEN_GR_MARKER).write_text(json.dumps(marker, indent=2) + "\n")
+
+
+def close_open_gr_lane(lane_dir: Path) -> dict:
+    """Reclaim an ``open-gr --enter`` reconstruction lane: verify its marker, then rm
+    the disposable tree. Refuses a directory with no open-gr marker (so a wrong
+    ``--lane-dir`` can never remove an arbitrary path). No OWNER_UNIT, no lane pop,
+    no cwd restore -- open-gr did none of those, so teardown undoes only the clone."""
+    import shutil
+
+    lane_dir = Path(lane_dir)
+    marker_path = lane_dir / _OPEN_GR_MARKER
+    if not marker_path.exists():
+        raise OpenGrReviewError(
+            f"no open-gr marker at {marker_path}; not a lane opened by "
+            "`review open-gr --enter` (refusing to remove a directory that is not "
+            "an open-gr reconstruction)"
+        )
+    marker = json.loads(marker_path.read_text())
+    if marker.get("kind") != "open-gr-reconstruct":
+        raise OpenGrReviewError(
+            f"marker at {marker_path} is not an open-gr reconstruction "
+            f"(kind={marker.get('kind')!r})"
+        )
+    gr_commit = marker.get("gr_commit", "")
+    shutil.rmtree(lane_dir, ignore_errors=True)
+    return {"reclaimed": str(lane_dir), "gr_commit": gr_commit}
+
 
 def _pin_transport_location(pin_repo: str) -> str:
     """The clone LOCATION named by a pin's recorded remote.
