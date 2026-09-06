@@ -963,7 +963,7 @@ def prune_cmd(
     target: str | None = typer.Option(
         None,
         "--target",
-        help="Ref to measure merged-ness against (default: origin/HEAD, then origin/dev, origin/main)",
+        help="Ref to measure merged-ness against (default: origin/dev, then origin/HEAD, then origin/main)",
     ),
     remote: str = typer.Option("origin", "--remote", help="Remote whose default branch resolves the target"),
     execute: bool = typer.Option(
