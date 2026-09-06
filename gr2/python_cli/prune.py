@@ -84,42 +84,73 @@ def _ref_exists(repo: Path, ref: str) -> bool:
     return git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").returncode == 0
 
 
-def resolve_target(repo: Path, target: str | None, remote: str) -> tuple[str, str]:
+def resolve_target(
+    repo: Path,
+    target: str | None,
+    remote: str,
+    stored_target: str | None = None,
+) -> tuple[str, str]:
     """Resolve the ref merged-ness is measured against.
 
-    Order: explicit ``--target``, then the integration branch ``<remote>/dev``,
-    then the remote's own default branch (``refs/remotes/<remote>/HEAD``), then
-    ``<remote>/main``. ``dev`` is tried BEFORE ``origin/HEAD`` on purpose: our
-    integration branch is ``dev``, but ``origin/HEAD`` points at ``main`` on a
-    fresh clone, so resolving HEAD first would silently measure prune against
-    ``main`` and report dev-merged branches as unmerged. Returns
-    ``(target_ref, how_it_was_resolved)``; raises rather than falling back to a
-    wrong ref, because a wrong target makes every merged/not-merged verdict wrong.
+    Order: explicit ``--target``, then the gripspace's stored ``[settings].target``
+    (``stored_target``), then the integration branch ``<remote>/dev``, then the
+    remote's own default branch (``refs/remotes/<remote>/HEAD``), then
+    ``<remote>/main``. Returns ``(target_ref, how_it_was_resolved)``.
 
-    (Follow-on, tracked separately: a stored per-gripspace target would sit ahead
-    of ``dev`` here, but gr2 has no such stored target today -- the workspace spec
-    ``[settings]`` carries only ``merge_method`` -- and this verb is single-repo,
-    so wiring a gripspace target needs a workspace context first.)
+    The stored target is the branch work in THIS gripspace actually merges into
+    (an epic branch, say, where ``dev`` is not the base). It is READ here, never
+    written -- ``gr target set`` is the only writer. A bare name (``epic/x``) is
+    mapped to ``<remote>/<name>`` because merged-ness is measured against a
+    remote-tracking ref. A stored target whose remote ref is ABSENT (a stale or
+    typo'd setting) is SKIPPED, not fatal: resolution falls through to ``dev`` and
+    the returned source names the skipped stored value, so a stranger reading the
+    report sees why ``dev`` was chosen. Skipping (rather than raising) keeps
+    deletion on the safe side -- a rotted setting never leaves branches
+    under-protected.
+
+    ``dev`` is tried BEFORE ``origin/HEAD`` on purpose: our integration branch is
+    ``dev``, but ``origin/HEAD`` points at ``main`` on a fresh clone, so resolving
+    HEAD first would silently measure prune against ``main`` and report dev-merged
+    branches as unmerged. An explicit ``--target`` that does not exist still
+    raises, because a wrong operator-named target makes every verdict wrong.
     """
     if target is not None:
         if not _ref_exists(repo, target):
             raise PruneError(f"target ref '{target}' does not exist in {repo}")
         return target, "explicit --target"
+
+    stored_note: str | None = None
+    if stored_target:
+        stored_ref = (
+            stored_target
+            if stored_target.startswith(f"{remote}/")
+            else f"{remote}/{stored_target}"
+        )
+        if _ref_exists(repo, stored_ref):
+            return stored_ref, f"stored target ({stored_ref})"
+        stored_note = f"stored target '{stored_target}' skipped ({stored_ref} not found)"
+
+    def _with_note(source: str) -> str:
+        return f"{source}; {stored_note}" if stored_note else source
+
     dev = f"{remote}/dev"
     if _ref_exists(repo, dev):
-        return dev, f"integration branch ({dev})"
+        return dev, _with_note(f"integration branch ({dev})")
     head = git(repo, "symbolic-ref", "--quiet", f"refs/remotes/{remote}/HEAD")
     if head.returncode == 0 and head.stdout.strip():
         ref = _short_remote(head.stdout.strip(), remote)
         if _ref_exists(repo, ref):
-            return ref, f"{remote}/HEAD"
+            return ref, _with_note(f"{remote}/HEAD")
     main = f"{remote}/main"
     if _ref_exists(repo, main):
-        return main, f"fallback ({main})"
-    raise PruneError(
+        return main, _with_note(f"fallback ({main})")
+    msg = (
         f"could not resolve a target in {repo}: no {remote}/dev, {remote}/HEAD, or "
         f"{remote}/main. Pass --target explicitly."
     )
+    if stored_note:
+        msg += f" ({stored_note})"
+    raise PruneError(msg)
 
 
 def _short_remote(symref: str, remote: str) -> str:
@@ -282,11 +313,12 @@ def prune(
     *,
     target: str | None = None,
     remote: str = "origin",
+    stored_target: str | None = None,
     execute: bool = False,
 ) -> PruneReport:
     """List (and, with execute=True, delete) merged local branches in one repo."""
     repo = Path(repo).resolve()
-    target_ref, source = resolve_target(repo, target, remote)
+    target_ref, source = resolve_target(repo, target, remote, stored_target)
     merged, protected_skipped = list_merged_branches(repo, target_ref)
 
     deleted: list[str] = []

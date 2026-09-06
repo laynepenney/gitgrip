@@ -272,3 +272,104 @@ def test_default_target_raises_when_nothing_resolves(tmp_path: Path) -> None:
     repo = _repo(tmp_path)  # no remote-tracking refs at all
     with pytest.raises(prune_ops.PruneError):
         prune_ops.resolve_target(repo, None, "origin")
+
+
+# --- stored [settings].target (read, never written) ---------------------------
+
+
+def test_stored_target_resolves_to_its_remote_ref(tmp_path: Path) -> None:
+    """Witness A: a stored bare name (`epic/x`) whose remote ref exists resolves to
+    origin/epic/x, and the source names it 'stored target'."""
+    repo = _repo(tmp_path)
+    sha = _git(repo, "rev-parse", "HEAD")
+    _set_remote_tracking(repo, "epic/x", sha)
+
+    ref, source = prune_ops.resolve_target(repo, None, "origin", stored_target="epic/x")
+    assert ref == "origin/epic/x"
+    assert "stored target" in source
+
+
+def test_stored_target_is_preferred_over_dev(tmp_path: Path) -> None:
+    """The ordering witness: stored target sits AHEAD of origin/dev. With BOTH
+    present, the stored target wins. Dropping the stored branch in resolve_target
+    makes this red (it would resolve origin/dev instead)."""
+    repo = _repo(tmp_path)
+    sha = _git(repo, "rev-parse", "HEAD")
+    _set_remote_tracking(repo, "dev", sha)
+    _set_remote_tracking(repo, "epic/x", sha)
+
+    ref, source = prune_ops.resolve_target(repo, None, "origin", stored_target="epic/x")
+    assert ref == "origin/epic/x"
+    assert "stored target" in source
+
+
+def test_stale_stored_target_falls_through_to_dev_and_names_the_skip(tmp_path: Path) -> None:
+    """Witness B: a stored target whose remote ref is ABSENT is skipped, not fatal
+    -- resolution falls through to origin/dev, and the returned source names the
+    skipped stored value so a stranger sees why dev was chosen (no raise)."""
+    repo = _repo(tmp_path)
+    sha = _git(repo, "rev-parse", "HEAD")
+    _set_remote_tracking(repo, "dev", sha)  # dev present; the stored ref is not
+
+    ref, source = prune_ops.resolve_target(repo, None, "origin", stored_target="epic/gone")
+    assert ref == "origin/dev"
+    assert "stored target 'epic/gone' skipped" in source
+    assert "origin/epic/gone not found" in source
+
+
+def test_explicit_target_beats_stored_target(tmp_path: Path) -> None:
+    """--target is the operator's override; it wins over any stored target."""
+    repo = _repo(tmp_path)
+    sha = _git(repo, "rev-parse", "HEAD")
+    _set_remote_tracking(repo, "epic/x", sha)
+
+    ref, source = prune_ops.resolve_target(repo, "dev", "origin", stored_target="epic/x")
+    assert ref == "dev"
+    assert "explicit" in source
+
+
+def test_stored_target_already_remote_qualified_is_used_as_is(tmp_path: Path) -> None:
+    """A stored value already carrying the remote prefix is not double-prefixed."""
+    repo = _repo(tmp_path)
+    sha = _git(repo, "rev-parse", "HEAD")
+    _set_remote_tracking(repo, "epic/x", sha)
+
+    ref, _ = prune_ops.resolve_target(repo, None, "origin", stored_target="origin/epic/x")
+    assert ref == "origin/epic/x"
+
+
+# --- app-layer stored-target read (walk-up + [settings].target) ----------------
+
+
+def _write_workspace_spec(root: Path, body: str) -> None:
+    (root / ".grip").mkdir(parents=True, exist_ok=True)
+    (root / ".grip" / "workspace_spec.toml").write_text(body)
+
+
+def test_configured_target_reads_settings_target(tmp_path: Path) -> None:
+    """Witness C: the app-layer read returns [settings].target when present."""
+    from gr2.python_cli import app
+
+    _write_workspace_spec(tmp_path, '[settings]\ntarget = "epic/x"\n')
+    assert app._configured_target(tmp_path) == "epic/x"
+
+
+def test_configured_target_is_none_without_the_field(tmp_path: Path) -> None:
+    from gr2.python_cli import app
+
+    _write_workspace_spec(tmp_path, '[settings]\nmerge_method = "merge"\n')
+    assert app._configured_target(tmp_path) is None
+
+
+def test_find_workspace_root_walks_up_and_returns_none_without_a_spec(tmp_path: Path) -> None:
+    from gr2.python_cli import app
+
+    root = tmp_path / "ws"
+    _write_workspace_spec(root, '[settings]\ntarget = "dev"\n')
+    nested = root / "repos" / "grip"
+    nested.mkdir(parents=True)
+    assert app._find_workspace_root(nested) == root
+
+    bare = tmp_path / "elsewhere"
+    bare.mkdir()
+    assert app._find_workspace_root(bare) is None
