@@ -19,6 +19,7 @@ from . import commit as commit_ops
 from . import execops, failures, grip, migration, spec_apply, syncops
 from . import pr as pr_ops
 from . import prune as prune_ops
+from . import target as target_ops
 from . import project_review
 from . import push as push_ops
 from .events import EventType, emit_after_outcome
@@ -57,6 +58,7 @@ workspace_app = typer.Typer(help="Workspace bootstrap and materialization")
 spec_app = typer.Typer(help="Declarative workspace spec operations")
 exec_app = typer.Typer(help="Lane-aware execution planning and execution")
 sync_app = typer.Typer(help="Workspace-wide sync inspection and execution")
+target_app = typer.Typer(help="Stored PR target (settings.target) that prune and future verbs default to")
 
 app.add_typer(repo_app, name="repo")
 app.add_typer(lane_app, name="lane")
@@ -67,6 +69,7 @@ app.add_typer(workspace_app, name="workspace")
 app.add_typer(spec_app, name="spec")
 app.add_typer(exec_app, name="exec")
 app.add_typer(sync_app, name="sync")
+app.add_typer(target_app, name="target")
 app.add_typer(grip_app, name="grip")
 app.add_typer(config_cli_app, name="config")
 
@@ -1047,6 +1050,87 @@ def prune_cmd(
     typer.echo(prune_ops.render_report(report))
     if report.failed:
         raise typer.Exit(code=1)
+
+
+def _target_workspace_root(repo_path: Path | None) -> tuple[Path, Path]:
+    """(start, workspace_root) for a target command, or exit 1 if outside a gripspace."""
+    start = (repo_path or Path.cwd()).resolve()
+    workspace_root = _find_workspace_root(start)
+    if workspace_root is None:
+        typer.echo(
+            f"Error: no gr2 workspace spec at or above {start}; a stored target needs a "
+            f"workspace (run inside a gripspace, or pass --target to prune directly).",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return start, workspace_root
+
+
+@target_app.command("set")
+def target_set(
+    branch: str = typer.Argument(..., help="Branch to store as the PR target, e.g. dev or epic/x"),
+    remote: str = typer.Option(
+        "origin", "--remote", help="Remote to check <branch> against for the absent-ref warning"
+    ),
+    repo_path: Path | None = typer.Option(
+        None, "--repo-path", help="Repo to check the ref against (defaults to cwd)"
+    ),
+) -> None:
+    """Store <branch> as the gripspace PR target (settings.target).
+
+    Preserves every other spec field (repos, units, an existing merge_method) via
+    a full tomllib->tomli_w round-trip; the spec is machine-written, so dropping
+    TOML comments in the round-trip is a non-issue. WARNS, never refuses, when
+    <remote>/<branch> is absent in the checked clone -- prune tolerates the same
+    stale case by skipping the stored step -- so a typo is visible at write time.
+    """
+    start, workspace_root = _target_workspace_root(repo_path)
+    try:
+        target_ops.set_target(workspace_root, branch)
+    except target_ops.TargetError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"stored target: {branch}  ({target_ops.spec_path(workspace_root)})")
+    # Absent-ref warning (never fatal): check the clone the caller is standing in.
+    if is_git_repo(start):
+        ref = branch if branch.startswith(f"{remote}/") else f"{remote}/{branch}"
+        if not prune_ops._ref_exists(start, ref):
+            typer.echo(
+                f"warning: {ref} not found in this clone; stored anyway "
+                f"(prune skips the stored target until the ref exists)"
+            )
+
+
+@target_app.command("show")
+def target_show(
+    repo_path: Path | None = typer.Option(
+        None, "--repo-path", help="Repo whose workspace spec to read (defaults to cwd)"
+    ),
+) -> None:
+    """Print the stored settings.target, or 'unset'."""
+    _start, workspace_root = _target_workspace_root(repo_path)
+    try:
+        value = target_ops.show_target(workspace_root)
+    except target_ops.TargetError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(value if value is not None else "unset")
+
+
+@target_app.command("unset")
+def target_unset(
+    repo_path: Path | None = typer.Option(
+        None, "--repo-path", help="Repo whose workspace spec to edit (defaults to cwd)"
+    ),
+) -> None:
+    """Remove settings.target, preserving every other field."""
+    _start, workspace_root = _target_workspace_root(repo_path)
+    try:
+        removed = target_ops.unset_target(workspace_root)
+    except target_ops.TargetError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo("target unset" if removed else "target was not set")
 
 
 @exec_app.command("status")
