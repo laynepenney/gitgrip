@@ -113,6 +113,31 @@ def test_write_is_atomic_no_temp_left_behind(tmp_path: Path) -> None:
     assert leftovers == []  # temp file was replaced, none stranded
 
 
+def test_failure_between_temp_write_and_replace_preserves_original(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ATOMICITY witness (not just cleanup): if the process dies between
+    writing the temp file and the os.replace, the original spec must survive
+    byte-identical -- a partial/truncated spec is never observable. Injects a
+    failure at os.replace and asserts the on-disk bytes are unchanged and no
+    temp file is stranded. A direct write() into the spec path would fail this
+    (the original bytes would already be gone); os.replace + temp is what makes
+    it hold.
+    """
+    spec_file = _write_spec(tmp_path, _base_spec())
+    original = spec_file.read_bytes()
+
+    def boom(_src: str, _dst: str) -> None:
+        raise OSError("injected failure between temp write and replace")
+
+    monkeypatch.setattr(target_ops.os, "replace", boom)
+    with pytest.raises(OSError):
+        target_ops.set_target(tmp_path, "epic/x")
+
+    assert spec_file.read_bytes() == original  # original survived byte-identical
+    assert list((tmp_path / ".grip").glob(".workspace_spec.*")) == []  # temp cleaned
+
+
 def test_toml_hostile_branch_name_round_trips(tmp_path: Path) -> None:
     """A branch name with TOML-special characters survives via the serializer,
     no hand-escaping."""
