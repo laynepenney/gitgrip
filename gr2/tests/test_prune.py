@@ -253,6 +253,21 @@ def test_default_target_falls_to_origin_head_when_no_dev(tmp_path: Path) -> None
     assert "origin/HEAD" in source
 
 
+def test_default_target_falls_to_main_when_no_dev_and_no_head_symref(tmp_path: Path) -> None:
+    """The bare main-fallback branch: origin/main exists but there is no
+    origin/dev and no origin/HEAD symref. Resolves to origin/main via the
+    fallback, not a raise. Witnesses the main-fallback branch itself (the
+    HEAD-driven test above never exercises it); dropping that branch reds this.
+    """
+    repo = _repo(tmp_path)
+    sha = _git(repo, "rev-parse", "HEAD")
+    _set_remote_tracking(repo, "main", sha)  # no dev, no origin/HEAD symref
+
+    ref, source = prune_ops.resolve_target(repo, None, "origin")
+    assert ref == "origin/main"
+    assert source == "fallback (origin/main)"
+
+
 def test_default_target_raises_when_nothing_resolves(tmp_path: Path) -> None:
     repo = _repo(tmp_path)  # no remote-tracking refs at all
     with pytest.raises(prune_ops.PruneError):
